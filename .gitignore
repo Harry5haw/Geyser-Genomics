@@ -192,3 +192,18 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# -----------------
+# Terraform Files
+# -----------------
+
+# Ignore the local Terraform workspace and providers
+.terraform/
+
+# Ignore the lock file that pins provider versions
+.terraform.lock.hcl
+
+# Ignore the state files, which can contain sensitive info
+# and are specific to a single user's environment.
+*.tfstate
+*.tfstate.*
