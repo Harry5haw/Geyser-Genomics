@@ -4,6 +4,7 @@ from __future__ import annotations
 import pendulum
 import subprocess
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 
 from airflow.models.dag import DAG
@@ -15,7 +16,114 @@ from airflow.operators.bash import BashOperator
 # Define your S3 bucket name as a global constant so it's easy to change later.
 BUCKET_NAME = "harry-genomeflow-data-lake-b33c1e0186c968cc"
 
+# Replace the old function with this new one
+
 def decompress_s3_file():
+    """
+    Downloads a gzipped file from S3 using a robust, multi-threaded
+    configuration, decompresses it, and uploads the result.
+    """
+    # --- NEW: Define a robust Transfer Configuration ---
+    # This tells boto3 how to handle large files.
+    # We set a 60-second timeout for any network connection.
+    config = TransferConfig(
+        use_threads=True,
+        s3={'connect_timeout': 60, 'read_timeout': 60}
+    )
+
+    # We now pass this config when creating the client.
+    s3_client = boto3.client('s3')
+
+    # Define our file paths
+    input_key = "raw_reads/SRR062634.fastq.gz"
+    output_key = "decompressed/SRR062634.fastq"
+    local_gz_file = "/tmp/SRR062634.fastq.gz"
+    local_decompressed_file = "/tmp/SRR062634.fastq"
+
+    # --- Idempotency Check (This part is still good) ---
+    print(f"Checking for existing output file: s3://{BUCKET_NAME}/{output_key}")
+    try:
+        s3_client.head_object(Bucket=BUCKET_NAME, Key=output_key)
+        print("Output file already exists. Skipping task.")
+        return
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            print("Output file not found. Proceeding with task.")
+        else:
+            print("Unexpected error checking for S3 object.")
+            raise
+
+    # --- Step 1: Download the file from S3 with the new config ---
+    print(f"Downloading s3://{BUCKET_NAME}/{input_key} to {local_gz_file}...")
+    # We now use the S3 Resource object which works better with TransferConfig
+    s3_resource = boto3.resource('s3')
+    s3_resource.meta.client.download_file(
+        Bucket=BUCKET_NAME,
+        Key=input_key,
+        Filename=local_gz_file,
+        Config=config  # <-- We apply our new robust config here
+    )
+    print("Download complete.")
+
+    # --- The rest of the function remains the same ---
+    print(f"Decompressing {local_gz_file}...")
+    subprocess.run(["gunzip", "-f", local_gz_file], check=True)
+    print("Decompression complete.")
+
+    print(f"Uploading {local_decompressed_file} to s3://{BUCKET_NAME}/{output_key}...")
+    s3_client.upload_file(local_decompressed_file, BUCKET_NAME, output_key)
+    print("Upload complete.")
+
+    print("Cleaning up temporary local files...")
+    subprocess.run(["rm", "-f", local_decompressed_file], check=True)
+    print("Cleanup complete. Task finished.")
+
+    """
+    This function performs the first step of our cloud-native pipeline.
+    It checks if the output already exists. If not, it downloads the raw
+    file from S3, decompresses it, and uploads the result back to S3.
+    """
+    s3_client = boto3.client('s3')
+
+    # Define the "keys" (file paths) within our S3 bucket.
+    input_key = "raw_reads/SRR062634.fastq.gz"
+    output_key = "decompressed/SRR062634.fastq"
+    
+    # --- NEW: Idempotency Check ---
+    print(f"Checking for existing output file: s3://{BUCKET_NAME}/{output_key}")
+    try:
+        s3_client.head_object(Bucket=BUCKET_NAME, Key=output_key)
+        print("Output file already exists. Skipping task.")
+        return  # This exits the function immediately, marking the task a success.
+    except ClientError as e:
+        # If the error code is 404 (Not Found), then the file doesn't exist and we can proceed.
+        if e.response['Error']['Code'] == '404':
+            print("Output file not found. Proceeding with task.")
+        else:
+            # If it's some other error (like permissions), we should fail the task.
+            print("Unexpected error checking for S3 object.")
+            raise
+
+    # --- The rest of the function is the same ---
+    local_gz_file = "/tmp/SRR062634.fastq.gz"
+    local_decompressed_file = "/tmp/SRR062634.fastq"
+
+    print(f"Downloading s3://{BUCKET_NAME}/{input_key} to {local_gz_file}...")
+    s3_client.download_file(BUCKET_NAME, input_key, local_gz_file)
+    print("Download complete.")
+
+    print(f"Decompressing {local_gz_file}...")
+    subprocess.run(["gunzip", "-f", local_gz_file], check=True)
+    print("Decompression complete.")
+
+    print(f"Uploading {local_decompressed_file} to s3://{BUCKET_NAME}/{output_key}...")
+    s3_client.upload_file(local_decompressed_file, BUCKET_NAME, output_key)
+    print("Upload complete.")
+
+    print("Cleaning up temporary local files...")
+    subprocess.run(["rm", "-f", local_decompressed_file], check=True)
+    print("Cleanup complete. Task finished.")
+
     """
     This function performs the first step of our cloud-native pipeline.
     It downloads the raw, gzipped FASTQ file from our S3 data lake,
@@ -60,6 +168,51 @@ def decompress_s3_file():
     subprocess.run(["rm", "-f", local_decompressed_file], check=True)
     print("Cleanup complete. Task finished.")
 
+def run_fastqc_on_s3_file():
+    """
+    Downloads a decompressed FASTQ file from S3, runs FastQC on it,
+    and uploads the resulting HTML and ZIP reports back to S3.
+    """
+    s3_client = boto3.client('s3')
+
+    # Define our S3 keys and temporary local paths
+    input_key = "decompressed/SRR062634.fastq"
+    local_input_file = "/tmp/SRR062634.fastq"
+    local_output_dir = "/tmp/qc_reports/" # A temporary directory for FastQC's output
+
+    # --- Step 1: Download the file from S3 ---
+    print(f"Downloading s3://{BUCKET_NAME}/{input_key}...")
+    s3_client.download_file(BUCKET_NAME, input_key, local_input_file)
+    print("Download complete.")
+
+    # --- Step 2: Run FastQC using a subprocess ---
+    # FastQC is already installed in our Docker container.
+    print(f"Running FastQC on {local_input_file}...")
+    # FastQC requires its output directory to exist, so we create it first.
+    subprocess.run(["mkdir", "-p", local_output_dir], check=True)
+    fastqc_command = ["fastqc", local_input_file, "-o", local_output_dir]
+    subprocess.run(fastqc_command, check=True)
+    print("FastQC analysis complete.")
+
+    # --- Step 3: Upload the two result files back to S3 ---
+    # FastQC creates predictable filenames based on the input file.
+    output_html_local_path = f"{local_output_dir}SRR062634_fastqc.html"
+    output_zip_local_path = f"{local_output_dir}SRR062634_fastqc.zip"
+    
+    output_html_s3_key = "qc_reports/SRR062634_fastqc.html"
+    output_zip_s3_key = "qc_reports/SRR062634_fastqc.zip"
+
+    print(f"Uploading HTML report to S3...")
+    s3_client.upload_file(output_html_local_path, BUCKET_NAME, output_html_s3_key)
+
+    print(f"Uploading ZIP archive to S3...")
+    s3_client.upload_file(output_zip_local_path, BUCKET_NAME, output_zip_s3_key)
+    print("Uploads complete.")
+    
+    # --- Step 4: Clean up temporary files ---
+    print("Cleaning up temporary local files...")
+    subprocess.run(["rm", "-rf", local_input_file, local_output_dir], check=True)
+    print("Cleanup complete. Task finished.")
 
 
 # ----------------------------------------------------
@@ -101,25 +254,12 @@ with DAG(
 )
 
 
-      # Task 2: Run quality control using FastQC
-    run_quality_control = BashOperator(
-        task_id="run_quality_control",
-        bash_command=f"""
-            INPUT_FILE="{DECOMPRESSED_DIR}/sample_1.fastq"
-            OUTPUT_DIR="{QC_REPORTS_DIR}"
-            # THE FIX IS HERE: Use the Python variable for the directory path.
-            EXPECTED_REPORT="{QC_REPORTS_DIR}/sample_1_fastqc.html"
+    # Task 2: Run quality control using FastQC
+    run_quality_control_cloud = PythonOperator(
+    task_id="run_quality_control_on_s3_file",
+    python_callable=run_fastqc_on_s3_file
+)
 
-            # The rest of the script uses Bash variables, which is correct.
-            if [ -f "$EXPECTED_REPORT" ]; then
-                echo "FastQC report '$EXPECTED_REPORT' already exists. Skipping."
-            else
-                echo "Running FastQC on '$INPUT_FILE'..."
-                fastqc "$INPUT_FILE" -o "$OUTPUT_DIR"
-                echo "FastQC analysis complete."
-            fi
-        """,
-    )
 
     # Task 3: Align reads to the reference genome using BWA-MEM and Samtools
     align_genome = BashOperator(
@@ -170,5 +310,7 @@ with DAG(
     # ----------------------------------------------------
     # The dependency chain is also indented inside the DAG block.
     # ----------------------------------------------------
-    decompress_sample_cloud >> run_quality_control >> align_genome >> call_and_flag_variants
+    # The dependency chain now has two cloud-native tasks
+    decompress_sample_cloud >> run_quality_control_cloud >> align_genome >> call_and_flag_variants
+
 

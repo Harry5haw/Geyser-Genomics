@@ -161,6 +161,8 @@ services:
       - ./plugins:/opt/airflow/plugins
       - ./data:/opt/airflow/data
       - ~/.aws:/home/airflow/.aws:ro
+      # Mount our named volume as a shared workspace
+      - airflow-workspace:/opt/airflow/workspace
     healthcheck:
       # yamllint disable rule:line-length
       test:
@@ -297,3 +299,5 @@ services:
 
 volumes:
   postgres-db-volume:
+  airflow-workspace:
+

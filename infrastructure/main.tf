@@ -73,3 +73,82 @@ resource "aws_s3_object" "variants_folder" {
   bucket = aws_s3_bucket.data_lake.id
   key    = "variants/"
 }
+
+# --- ECR (Elastic Container Registry) ---
+# This block creates a private repository to store our custom Docker image.
+
+resource "aws_ecr_repository" "genomeflow_app" {
+  name                 = "genomeflow-app" # The name of our repository
+  image_tag_mutability = "MUTABLE"      # Allows us to overwrite image tags like 'latest'
+
+  image_scanning_configuration {
+    scan_on_push = true # A good security practice: scans image for vulnerabilities on push
+  }
+
+  tags = {
+    Name    = "GenomeFlow Application Repository"
+    Project = "TerraFlow Genomics FYP"
+  }
+}
+
+# --- AWS Batch Compute Environment ---
+# This defines the "computers" that will run our jobs. We are using
+# Fargate, which is serverless, so we don't have to manage any servers.
+resource "aws_batch_compute_environment" "genomeflow_fargate" {
+  compute_environment_name = "genomeflow-fargate-env"
+  type                     = "MANAGED"
+  service_role             = aws_iam_role.aws_batch_service_role.arn # We will create this IAM role next
+
+  compute_resources {
+    type        = "FARGATE_SPOT" # Use Fargate Spot for cost savings
+    max_vcpus   = 16             # The maximum number of CPUs to use across all jobs
+    subnets     = ["subnet-0a26a1982d7f4fa5b"] # We need to tell it where to run
+    security_group_ids = ["sg-0552846c7dfc98b7b"] # And what firewall rules to use
+  }
+
+  tags = {
+    Project = "TerraFlow Genomics FYP"
+  }
+}
+
+# --- IAM Role for AWS Batch ---
+# AWS Batch needs permissions to operate. This standard role grants them.
+resource "aws_iam_role" "aws_batch_service_role" {
+  name = "AWSBatchServiceRoleForGenomeFlow"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = {
+          Service = "batch.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "aws_batch_service_role_policy" {
+  role       = aws_iam_role.aws_batch_service_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"
+}
+
+# --- AWS Batch Job Queue ---
+# This creates the "waiting line" for our jobs.
+resource "aws_batch_job_queue" "genomeflow_queue" {
+  name     = "genomeflow-job-queue"
+  priority = 1
+  state    = "ENABLED"
+
+  compute_environment_order {
+    order                = 1
+    compute_environment = aws_batch_compute_environment.genomeflow_fargate.arn
+  }
+
+  tags = {
+    Project = "TerraFlow Genomics FYP"
+  }
+}
+
