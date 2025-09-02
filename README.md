@@ -8,12 +8,11 @@
     <a href="#"><img src="https://img.shields.io/badge/Project-Complete-green?style=for-the-badge" alt="Project Status"></a>
   </p>
 
-  <h4>Core Technologies</h4>
   <p>
-    <code>📜 Terraform</code> &nbsp;&nbsp;
-    <code>☁️ Amazon Web Services (AWS)</code> &nbsp;&nbsp;
-    <code>💨 Apache Airflow</code> &nbsp;&nbsp;
-    <code>🐳 Docker</code>
+    <a href="#"><img src="https://img.shields.io/badge/Terraform-7B42BC?style=for-the-badge&logo=terraform&logoColor=white" alt="Terraform"></a>
+    <a href="#"><img src="https://img.shields.io/badge/AWS-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white" alt="AWS"></a>
+    <a href="#"><img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker"></a>
+    <a href="#"><img src="https://img.shields.io/badge/Apache%20Airflow-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white" alt="Apache Airflow"></a>
   </p>
 </div>
 
