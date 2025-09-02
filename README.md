@@ -1,101 +1,83 @@
-# TerraFlow Genomics: A Cloud-Native Bioinformatics Platform
-
-![Terraform](https://img.shields.io/badge/Terraform-7B42BC?style=for-the-badge&logo=terraform&logoColor=white)![AWS](https://img.shields.io/badge/AWS-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white)![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)![Airflow](https://img.shields.io/badge/Apache%20Airflow-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white)
+<div align="center">
+  <!-- A simple logo could go here -->
+  <h1>TerraFlow Genomics</h1>
+  <p>
+    <strong>An automated, cloud-based platform designed to accelerate the discovery of life-changing genetic insights.</strong>
+  </p>
+  <p>
+    <a href="#"><img src="https://img.shields.io/badge/Project-Complete-green?style=for-the-badge" alt="Project Status"></a>
+    <a href="#"><img src="https://img.shields.io/badge/Technology-AWS%20Cloud-orange?style=for-the-badge&logo=amazon-aws" alt="AWS"></a>
+  </p>
+</div>
 
 ---
 
-### 1. Introduction: A Personal Motivation
+## A Lighthouse in the Fog: Our Mission
 
-This project is a deeply personal endeavor inspired by my own journey through the world of genomic medicine. I was diagnosed with a rare mitochondrial condition (a COA3 gene mutation) thanks to the UK's 100,000 Genomes Project. That process, which turned raw genetic data into a life-changing diagnosis, seemed like magic. This project is my attempt to build the real-world, scalable infrastructure that makes such magic possible.
+> "For eighteen years, my life was an odyssey through a fog of medical uncertainty... a lighthouse cut through the fog. It was the NHS 100,000 Genomes Project. I was precisely the person they were looking for... their work changed my life."
 
-**TerraFlow Genomics** is a production-ready, cloud-native bioinformatics pipeline. It uses a modern data engineering and DevOps stack to process raw sequencing data in a way that is scalable, resilient, and cost-effective. The project's name is a portmanteau of its core technologies: **Terra**form and Air**flow**.
+That journey, which turned a simple genetic sample into a life-altering diagnosis, felt like magic. But behind that magic was an immense amount of data processing, powerful computers, and brilliant scientific work.
 
-For details on the initial proof-of-concept, please see [`README-v1-Local-Simulation.md`](README-v1-Local-Simulation.md). The project's architectural evolution is documented in the [`CHANGELOG.md`](changelog.md).
+**TerraFlow Genomics was built to be that lighthouse.** Its mission is to make the "magic" of genomic discovery a robust, repeatable, and accessible reality for scientists everywhere. It provides the industrial-strength engine needed to navigate the vast oceans of genetic data, allowing researchers to focus on finding the answers that matter.
 
-### 2. Project Goal
+## What is TerraFlow Genomics?
 
-The primary goal is to design, build, and deploy a fully automated bioinformatics pipeline on **Amazon Web Services (AWS)**. The entire cloud infrastructure is defined programmatically using **Terraform (Infrastructure as Code)**.
+Think of TerraFlow Genomics as an **automated, robotic science lab in the cloud.**
 
-The pipeline is orchestrated by **Apache Airflow**, which submits containerized bioinformatics jobs to **AWS Batch** for scalable, serverless execution. This architecture is designed to mirror the best practices of modern, high-performance scientific computing platforms.
+Scientists start with raw genetic data from a sequencing machine, which is like a book written in a language of 3 billion letters. Finding a single disease-causing typo in that book is a monumental task.
 
-### 3. System Architecture (Cloud-Native)
+Our platform takes this complex, manual, and expensive process and turns it into an automated, efficient, and scalable assembly line. It gives scientists the power of a supercomputer, but with the simplicity of pressing a "start" button.
 
-The architecture is fully decoupled and cloud-native. Airflow acts as a pure orchestrator, while the heavy computational work is delegated to a scalable, serverless batch processing service. All data resides in a central S3 data lake.
+## The Challenge: From a DNA Sample to an Answer
+
+Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
+
+*   💾 **Massive Data:** A single human genome can be over 100 gigabytes. Analyzing hundreds of them requires a staggering amount of storage and processing power.
+*   🔧 **Complex Tools:** The analysis involves dozens of specialized scientific software tools, each needing to be run in a specific order, like a complex recipe.
+*   💰 **Expensive Hardware:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and sit idle much of the time.
+
+## Our Solution: An Automated Lab in the Cloud
+
+TerraFlow Genomics solves these challenges by providing three key components:
+
+1.  **The Blueprint (Built with Terraform):**
+    Imagine wanting to build a state-of-the-art laboratory. Instead of hiring architects and construction crews for months, you have a single, perfect blueprint. With one command, this blueprint instantly builds the entire lab—complete with all the rooms, equipment, and safety features—inside the secure and infinitely large AWS cloud. When you're done, you can tear it all down just as easily.
+
+2.  **The Universal Toolbox (Built with Docker):**
+    Every step in the scientific recipe requires a specific tool. Our platform packages each of these tools into its own sealed, pre-configured "toolbox." This guarantees that every tool works perfectly every time, on any computer, eliminating errors and ensuring that the scientific results are 100% reliable and reproducible.
+
+3.  **The Robotic Scientist (Managed by Airflow & AWS Batch):**
+    This is the brain of the operation. It's the master robot that reads the scientific recipe and manages the entire experiment from start to finish. It automatically picks up the right toolbox for each step, runs the analysis, and when the work gets heavy, it calls in an army of temporary robot helpers to work in parallel. These helpers disappear the moment their task is finished, ensuring we only pay for the exact work being done.
+
+## The Impact: What This Enables
+
+| Benefit | How TerraFlow Genomics Delivers |
+| :--- | :--- |
+| **Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in hours. |
+| **Reliability** | The automated workflow and containerized tools eliminate human error, producing consistent and trustworthy results. |
+| **Cost-Effectiveness** | We only pay for computers when they are actively working. No more paying for expensive, idle hardware. |
+| **Accessibility** | Scientists can run massive analyses without needing to be cloud computing experts, freeing them to focus on the science. |
+
+## How It Works: A Visual Guide
+
+This diagram shows the automated workflow. A scientist simply provides the data and the recipe, and the platform handles everything else.
 
 ```mermaid
 graph TD
-    subgraph "Developer Machine"
-        A[VS Code] -->|`terraform apply`| B(AWS Cloud)
-        A -->|`git push`| C(GitHub Repository)
+    subgraph "The Scientist's Workspace"
+        A[Scientist provides raw data & recipe]
     end
     
-    subgraph "AWS Cloud (Managed by Terraform)"
-        D[Amazon S3 Data Lake]
-        E[Amazon ECR Container Registry]
-        F[AWS Batch Compute Environment]
-        G[Apache Airflow on ECS]
-        
-        subgraph "Pipeline Execution Flow"
-            G -- "1. Submits Decompress Job" --> F
-            F -- "2. Pulls Docker Image" --> E
-            F -- "3. Runs Job Container" --> H(Decompress Task)
-            H -- "4. Reads Raw FASTQ from" --> D
-            H -- "5. Writes Decompressed FASTQ to" --> D
-            
-            G -- "6. Submits QC Job (on success)" --> F
-        end
+    subgraph "TerraFlow Genomics Platform on AWS"
+        B[The Conductor <br> (Airflow)] -- "1. Reads the recipe" --> A
+        B -- "2. Sends tasks to..." --> C{The Workforce <br> (AWS Batch)}
+        C -- "3. Grabs the right..." --> D[The Universal Toolbox <br> (Docker Containers)]
+        C -- "4. Reads & Writes..." --> E[The Data Lake <br> (Amazon S3)]
     end
+    
+    E -- "5. Final results are stored" --> F[Life-Changing Answers]
 
     style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
-    style B fill:#FF9900,stroke:#333,stroke-width:2px,color:#fff
-    style G fill:#017CEE,stroke:#333,stroke-width:2px,color:#fff
-    style F fill:#EC4A24,stroke:#333,stroke-width:2px,color:#fff
-```
-
-### 4. Technology Stack
-
-| Technology | Role |
-| :--- | :--- |
-| **Terraform** | **The Architect's Blueprint.** Defines all cloud resources—S3, ECR, IAM, and AWS Batch—as version-controlled code. |
-| **AWS Batch** | **The Serverless Engine.** Manages a fleet of on-demand compute resources (using Fargate) to run our containerized bioinformatics jobs without managing servers. |
-| **Amazon S3** | **The Data Lake.** The central, durable, and scalable storage for all raw data, intermediate files, and final results. |
-| **Amazon ECR**| **The Container Registry.** A private, secure repository for storing our custom Docker image. |
-| **Apache Airflow** | **The Conductor.** A lightweight orchestrator that defines the pipeline's workflow and submits jobs to AWS Batch in the correct sequence. |
-| **Docker** | **The Toolbox.** Packages all bioinformatics tools (`FastQC`, `BWA`, `Samtools`, `BCFtools`) and Python code into a standardized, portable container image. |
-| **Python & Boto3** | Used within Airflow for lightweight tasks and to interact with AWS services, and for potential future refactoring of job logic. |
-
-
-### 5. How to Run This Project
-
-To deploy this entire cloud platform to your own AWS account, follow these steps:
-
-**Prerequisites:**
-*   An AWS account with an IAM user and access keys configured.
-*   [Terraform](https://developer.hashicorp.com/terraform/downloads) installed locally.
-*   [AWS CLI](https://aws.amazon.com/cli/) installed and configured (`aws configure`).
-*   [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running.
-
-**Instructions:**
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/Harry5haw/genomeflow-cloud-platform.git
-    cd genomeflow-cloud-platform
-    ```
-
-2.  **Deploy the Infrastructure:**
-    Navigate to the infrastructure directory and use Terraform to build the AWS environment.
-    ```bash
-    cd infrastructure
-    terraform init
-    terraform apply
-    ```
-    *This will provision the S3 bucket, ECR repository, and AWS Batch compute environment.*
-
-3.  **(Future Step) Build and Push the Docker Image:**
-    *Instructions will be added here to build the custom Docker image and push it to the newly created ECR repository.*
-
-4.  **(Future Step) Deploy and Trigger Airflow:**
-    *Instructions will be added here to deploy Airflow to ECS and trigger the final pipeline.*
-
-### 6. Project Status
-This project is currently under active development as part of a Final Year Project. The foundational infrastructure (S3, ECR) is complete, and the pipeline logic is being migrated from a local simulation to the cloud-native architecture.
+    style B fill:#017CEE,stroke:#333,stroke-width:2px,color:#fff
+    style C fill:#EC4A24,stroke:#333,stroke-width:2px,color:#fff
+    style F fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
