@@ -7,60 +7,72 @@
   <p>
     <a href="#"><img src="https://img.shields.io/badge/Project-Complete-green?style=for-the-badge" alt="Project Status"></a>
     <a href="#"><img src="https://img.shields.io/badge/Technology-AWS%20Cloud-orange?style=for-the-badge&logo=amazon-aws" alt="AWS"></a>
+    <a href="#"><img src="https://img.shields.io/badge/Orchestration-Airflow-blue?style=for-the-badge&logo=apacheairflow" alt="Airflow"></a>
   </p>
 </div>
 
 ---
 
-## A Lighthouse in the Fog: Our Mission
+## 🧭 A Lighthouse in the Fog: Our Mission
 
 > "For eighteen years, my life was an odyssey through a fog of medical uncertainty... a lighthouse cut through the fog. It was the NHS 100,000 Genomes Project. I was precisely the person they were looking for... their work changed my life."
 
-That journey, which turned a simple genetic sample into a life-altering diagnosis, felt like magic. But behind that magic was an immense amount of data processing, powerful computers, and brilliant scientific work.
+That journey, which turned a simple genetic sample into a life-altering diagnosis, felt like magic. But behind that magic was an immense amount of data processing and brilliant scientific work.
 
 **TerraFlow Genomics was built to be that lighthouse.** Its mission is to make the "magic" of genomic discovery a robust, repeatable, and accessible reality for scientists everywhere. It provides the industrial-strength engine needed to navigate the vast oceans of genetic data, allowing researchers to focus on finding the answers that matter.
 
-## What is TerraFlow Genomics?
+## 💡 What is TerraFlow Genomics?
 
-Think of TerraFlow Genomics as an **automated, robotic science lab in the cloud.**
+Think of TerraFlow Genomics as an **automated, robotic science lab in the cloud.** It takes the complex, manual, and expensive process of genome analysis and transforms it into an efficient, scalable assembly line.
 
-Scientists start with raw genetic data from a sequencing machine, which is like a book written in a language of 3 billion letters. Finding a single disease-causing typo in that book is a monumental task.
-
-Our platform takes this complex, manual, and expensive process and turns it into an automated, efficient, and scalable assembly line. It gives scientists the power of a supercomputer, but with the simplicity of pressing a "start" button.
+*   ⚙️ **Fully Automated:** Scientists can launch complex analyses with a single click, eliminating manual setup and human error.
+*   🚀 **Infinitely Scalable:** The platform can summon the power of hundreds of computers to process massive datasets in parallel, then vanish when the work is done.
+*   💰 **Cost-Effective:** By using cloud resources on-demand, we only pay for the exact compute time used, drastically reducing the cost compared to owning physical servers.
+*   🔬 **Scientifically Rigorous:** Every step is standardized and reproducible, ensuring the results are reliable and trustworthy.
 
 ## The Challenge: From a DNA Sample to an Answer
 
 Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
-*   💾 **Massive Data:** A single human genome can be over 100 gigabytes. Analyzing hundreds of them requires a staggering amount of storage and processing power.
-*   🔧 **Complex Tools:** The analysis involves dozens of specialized scientific software tools, each needing to be run in a specific order, like a complex recipe.
-*   💰 **Expensive Hardware:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and sit idle much of the time.
+*   💾 **The Data Deluge:** A single human genome can be over 100 gigabytes. Analyzing hundreds requires a staggering amount of storage and power.
+*   🔧 **The Complex Recipe:** The analysis involves dozens of specialized scientific tools, each needing to be run in a specific order. One mistake can invalidate the results.
+*   💸 **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage.
 
-## Our Solution: An Automated Lab in the Cloud
+## Our Solution: The Automated Cloud Laboratory
 
-TerraFlow Genomics solves these challenges by providing three key components:
+TerraFlow Genomics solves these challenges with three core components, explained through analogy:
 
-1.  **The Blueprint (Built with Terraform):**
-    Imagine wanting to build a state-of-the-art laboratory. Instead of hiring architects and construction crews for months, you have a single, perfect blueprint. With one command, this blueprint instantly builds the entire lab—complete with all the rooms, equipment, and safety features—inside the secure and infinitely large AWS cloud. When you're done, you can tear it all down just as easily.
+| The Analogy | The Technology | Its Purpose in Plain English |
+| :--- | :--- | :--- |
+| **📜 The Blueprint** | **Terraform** | A single file that acts as a master blueprint. It allows us to build—and tear down—our entire virtual laboratory in the cloud in minutes, perfectly, every single time. |
+| **🧰 The Universal Toolbox** | **Docker** | Each scientific tool is packaged into its own sealed, pre-configured "toolbox." This guarantees the tool works perfectly every time, eliminating errors and ensuring reliable results. |
+| **🤖 The Robotic Scientist** | **Airflow & AWS Batch** | The "brain" of the operation. It reads the scientific recipe, automatically picks up the right toolbox for each step, and manages an army of temporary robot helpers to do the heavy lifting. |
 
-2.  **The Universal Toolbox (Built with Docker):**
-    Every step in the scientific recipe requires a specific tool. Our platform packages each of these tools into its own sealed, pre-configured "toolbox." This guarantees that every tool works perfectly every time, on any computer, eliminating errors and ensuring that the scientific results are 100% reliable and reproducible.
-
-3.  **The Robotic Scientist (Managed by Airflow & AWS Batch):**
-    This is the brain of the operation. It's the master robot that reads the scientific recipe and manages the entire experiment from start to finish. It automatically picks up the right toolbox for each step, runs the analysis, and when the work gets heavy, it calls in an army of temporary robot helpers to work in parallel. These helpers disappear the moment their task is finished, ensuring we only pay for the exact work being done.
-
-## The Impact: What This Enables
+## ✨ The Impact: Key Benefits
 
 | Benefit | How TerraFlow Genomics Delivers |
 | :--- | :--- |
-| **Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in hours. |
-| **Reliability** | The automated workflow and containerized tools eliminate human error, producing consistent and trustworthy results. |
-| **Cost-Effectiveness** | We only pay for computers when they are actively working. No more paying for expensive, idle hardware. |
-| **Accessibility** | Scientists can run massive analyses without needing to be cloud computing experts, freeing them to focus on the science. |
+| **⚡️ Blazing Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in a matter of hours. |
+| **🎯 Unwavering Reliability** | The automated workflow and standardized toolboxes eliminate human error, producing consistent and trustworthy results every time. |
+| **📊 Drastic Cost Reduction** | We only pay for computers when they are actively working. No more paying for expensive, idle hardware. |
+| **🧑‍🔬 Empowered Scientists** | Researchers can run massive analyses without needing to be cloud computing experts, freeing them to focus entirely on the science. |
 
-## How It Works: A Visual Guide
+## 🗺️ Project Status & Features
 
-This diagram shows the automated workflow. A scientist simply provides the data and the recipe, and the platform handles everything else.
+The platform is feature-complete and capable of running a full-scale analysis from raw genetic data to final results.
+
+| Feature | Status | Description |
+| :--- | :---: | :--- |
+| **Automated Infrastructure** | ✅ Complete | The entire cloud environment can be deployed with a single command. |
+| **Core Bioinformatics Pipeline** | ✅ Complete | A full DNA-Seq pipeline (FASTQ to VCF) is implemented and automated. |
+| **Scalable Compute Engine** | ✅ Complete | The system automatically scales from zero to thousands of vCPUs as needed. |
+| **Data Management** | ✅ Complete | A centralized data lake architecture for organized and secure data storage. |
+| **Workflow Orchestration** | ✅ Complete | The scientific workflow is managed end-to-end, with error handling and retries. |
+| **Cost & Performance Monitoring** | 🗓️ Future Idea | Integration with cloud monitoring tools to provide detailed cost breakdowns per run. |
+
+## 🔬 How It Works: A Visual Guide
+
+This diagram shows the automated workflow. A scientist provides the data and the recipe, and the platform handles everything else.
 
 ```mermaid
 graph TD
