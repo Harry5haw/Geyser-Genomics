@@ -1,4 +1,4 @@
-<div align="center">
+<div align-center">
   <!-- A simple logo could go here -->
   <h1>TerraFlow Genomics</h1>
   <p>
@@ -30,23 +30,13 @@ Think of TerraFlow Genomics as an **automated, robotic science lab in the cloud.
 *   💰 **Cost-Effective:** By using cloud resources on-demand, we only pay for the exact compute time used, drastically reducing the cost compared to owning physical servers.
 *   🔬 **Scientifically Rigorous:** Every step is standardized and reproducible, ensuring the results are reliable and trustworthy.
 
-## The Challenge: From a DNA Sample to an Answer
+## 🤔 The Challenge: From a DNA Sample to an Answer
 
 Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
-*   💾 **The Data Deluge:** A single human genome can be over 100 gigabytes. Analyzing hundreds requires a staggering amount of storage and power.
-*   🔧 **The Complex Recipe:** The analysis involves dozens of specialized scientific tools, each needing to be run in a specific order. One mistake can invalidate the results.
-*   💸 **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage.
-
-## Our Solution: The Automated Cloud Laboratory
-
-TerraFlow Genomics solves these challenges with three core components, explained through analogy:
-
-| The Analogy | The Technology | Its Purpose in Plain English |
-| :--- | :--- | :--- |
-| **📜 The Blueprint** | **Terraform** | A single file that acts as a master blueprint. It allows us to build—and tear down—our entire virtual laboratory in the cloud in minutes, perfectly, every single time. |
-| **🧰 The Universal Toolbox** | **Docker** | Each scientific tool is packaged into its own sealed, pre-configured "toolbox." This guarantees the tool works perfectly every time, eliminating errors and ensuring reliable results. |
-| **🤖 The Robotic Scientist** | **Airflow & AWS Batch** | The "brain" of the operation. It reads the scientific recipe, automatically picks up the right toolbox for each step, and manages an army of temporary robot helpers to do the heavy lifting. |
+*   🌊 **The Data Deluge:** A single human genome can be over 100 gigabytes. Analyzing hundreds requires a staggering amount of storage and power.
+*   🧩 **The Complex Recipe:** The analysis involves dozens of specialized scientific tools, each needing to be run in a specific order. One mistake can invalidate the results.
+*   💸🚧💸 **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and often sit idle.
 
 ## ✨ The Impact: Key Benefits
 
@@ -54,7 +44,7 @@ TerraFlow Genomics solves these challenges with three core components, explained
 | :--- | :--- |
 | **⚡️ Blazing Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in a matter of hours. |
 | **🎯 Unwavering Reliability** | The automated workflow and standardized toolboxes eliminate human error, producing consistent and trustworthy results every time. |
-| **📊 Drastic Cost Reduction** | We only pay for computers when they are actively working. No more paying for expensive, idle hardware. |
+| **📉 Drastic Cost Reduction** | We only pay for computers when they are actively working. No more paying for expensive, idle hardware. |
 | **🧑‍🔬 Empowered Scientists** | Researchers can run massive analyses without needing to be cloud computing experts, freeing them to focus entirely on the science. |
 
 ## 🗺️ Project Status & Features
@@ -70,7 +60,7 @@ The platform is feature-complete and capable of running a full-scale analysis fr
 | **Workflow Orchestration** | ✅ Complete | The scientific workflow is managed end-to-end, with error handling and retries. |
 | **Cost & Performance Monitoring** | 🗓️ Future Idea | Integration with cloud monitoring tools to provide detailed cost breakdowns per run. |
 
-## 🔬 How It Works: A Visual Guide
+## 🛠️ How It Works: A Visual Guide
 
 This diagram shows the automated workflow. A scientist provides the data and the recipe, and the platform handles everything else.
 
