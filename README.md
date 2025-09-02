@@ -69,10 +69,14 @@ graph TD
     end
     
     subgraph "TerraFlow Genomics Platform on AWS"
-        B[The Conductor <br> (Airflow)] -- "1. Reads the recipe" --> A
-        B -- "2. Sends tasks to..." --> C{The Workforce <br> (AWS Batch)}
-        C -- "3. Grabs the right..." --> D[The Universal Toolbox <br> (Docker Containers)]
-        C -- "4. Reads & Writes..." --> E[The Data Lake <br> (Amazon S3)]
+        B["The Conductor
+        (Airflow)"] -- "1. Reads the recipe" --> A
+        B -- "2. Sends tasks to..." --> C{"The Workforce
+        (AWS Batch)"}
+        C -- "3. Grabs the right..." --> D["The Universal Toolbox
+        (Docker Containers)"]
+        C -- "4. Reads & Writes..." --> E["The Data Lake
+        (Amazon S3)"]
     end
     
     E -- "5. Final results are stored" --> F[Life-Changing Answers]
