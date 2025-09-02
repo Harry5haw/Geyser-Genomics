@@ -41,7 +41,7 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
 *   🌊 **The Data Deluge:** A single human genome can be over 100 gigabytes. Analyzing hundreds requires a staggering amount of storage and power.
 *   🧩 **The Complex Recipe:** The analysis involves dozens of specialized scientific tools, each needing to be run in a specific order. One mistake can invalidate the results.
-*   💸🚧💸 **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and often sit idle.
+*   🚧 **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and often sit idle.
 
 ## ✨ The Impact: Key Benefits
 
