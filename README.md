@@ -1,13 +1,19 @@
-<div align-center">
-  <!-- A simple logo could go here -->
+<div align="center">
   <h1>TerraFlow Genomics</h1>
   <p>
     <strong>An automated, cloud-based platform designed to accelerate the discovery of life-changing genetic insights.</strong>
   </p>
+  
   <p>
     <a href="#"><img src="https://img.shields.io/badge/Project-Complete-green?style=for-the-badge" alt="Project Status"></a>
-    <a href="#"><img src="https://img.shields.io/badge/Technology-AWS%20Cloud-orange?style=for-the-badge&logo=amazon-aws" alt="AWS"></a>
-    <a href="#"><img src="https://img.shields.io/badge/Orchestration-Airflow-blue?style=for-the-badge&logo=apacheairflow" alt="Airflow"></a>
+  </p>
+
+  <h4>Core Technologies</h4>
+  <p>
+    <code>📜 Terraform</code> &nbsp;&nbsp;
+    <code>☁️ Amazon Web Services (AWS)</code> &nbsp;&nbsp;
+    <code>💨 Apache Airflow</code> &nbsp;&nbsp;
+    <code>🐳 Docker</code>
   </p>
 </div>
 
