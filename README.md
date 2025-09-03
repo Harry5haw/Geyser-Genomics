@@ -68,9 +68,9 @@ The statistical probability of this discovery is staggering. The odds of both pa
 >*   **🧑 Carrier Frequency:** The estimated chance of one person being a carrier (`2pq`) is **1 in 8,000**.
 >*   **🧑‍🤝‍🧑 Two Carriers Meet:** The probability of two such carriers meeting is therefore:
 >
->  <div align="center">
+><p align="center">
   <code>(1 / 8,000)   ×   (1 / 8,000)   =   1 / 64,000,000</code>
-</div>
+</p>
 
 My donated genome will now serve as a data point to help others, ensuring that a single-letter fault doesn't define another patient's life. My odyssey of discovery took two decades, but it doesn't need to be that way for others. With technologies like TerraFlow Genomics, we can accelerate these discoveries and build solutions that may one day repair the very code of life itself.
 
