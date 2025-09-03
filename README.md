@@ -31,9 +31,16 @@ This project was born from a profound, life-changing journey through the world o
 
 For eighteen years, my life was an odyssey through a fog of medical uncertainty with no linking diagnosis. As part of the project, my mother, my father, and I all donated our blood. Our entire genomes would be sequenced and explored, becoming three more data points in a vast ocean of information. We were told it was unlikely we would hear anything back.
 
-<div align="center">
-  <img src="docs/assets/Family_Samples.jpg" alt="Three test tubes representing family DNA samples" width="600"/>
-</div>
+<table align="center" border="0" cellspacing="0" cellpadding="10">
+  <tr>
+    <td align="center">
+      <img src="docs/assets/Family_Samples.jpg" alt="DNA samples from my family for the project" width="300"/>
+    </td>
+    <td align="center">
+      <img src="docs/assets/family_samples_2.jpg" alt="A closer view of the genomic samples" width="300"/>
+    </td>
+  </tr>
+</table>
 
 A year later, against all odds, I received a result. The project had delivered a link. In the three billion letters of my genetic code, they had found a single, ultra-rare mutation in the **COA3 gene**, causing a mitochondrial defect.
 
@@ -109,7 +116,7 @@ The platform is feature-complete and capable of running a full-scale analysis fr
 | **Automated Infrastructure** | ✅ Complete | The entire cloud environment can be deployed with a single command. |
 | **Core Bioinformatics Pipeline** | ✅ Complete | A full DNA-Seq pipeline (FASTQ to VCF) is implemented and automated. |
 | **Scalable Compute Engine** | ✅ Complete | The system automatically scales from zero to thousands of vCPUs as needed. |
-| **Data Management** | ✅ Complete | A centralized data lake architecture for organized and secure data storage. |
+| **Data Management** | ✅ Complete | A centralized data lake architecture for organized and secure data storage.
 | **Workflow Orchestration** | ✅ Complete | The scientific workflow is managed end-to-end, with error handling and retries. |
 | **Cost & Performance Monitoring** | 🗓️ Future Idea | Integration with cloud monitoring tools to provide detailed cost breakdowns per run. |
 
