@@ -57,18 +57,18 @@ A year later, against all odds, I received a result. The project had delivered a
 
 The statistical probability of this discovery is staggering. The odds of both parents carrying the same rare recessive fault and passing it on is approximately **1 in 64 million**.
 
->### The 1 in 64 Million Chance
->
->This isn't a random number; it's grounded in a core concept of population genetics known as the **Hardy-Weinberg principle**. It's the scientific method for estimating how rare a genetic trait is. The principle is expressed with this elegant equation:
->
->$$ p^2 + 2pq + q^2 = 1 $$
->
->This describes how genetic variations are distributed in a population, where `2pq` represents the probability of being a carrier—like my parents. The calculation itself is a straightforward product of these rare probabilities:
->
->*   **🧑 Carrier Frequency:** The estimated chance of one person being a carrier (`2pq`) is **1 in 8,000**.
->*   **🧑‍🤝‍🧑 Two Carriers Meet:** The probability of two such carriers meeting is therefore:
->
-><p align="center">
+### The 1 in 64 Million Chance
+
+This isn't a random number; it's grounded in a core concept of population genetics known as the **Hardy-Weinberg principle**. It's the scientific method for estimating how rare a genetic trait is. The principle is expressed with this elegant equation:
+
+$$ p^2 + 2pq + q^2 = 1 $$
+
+This describes how genetic variations are distributed in a population, where `2pq` represents the probability of being a carrier—like my parents. The calculation itself is a straightforward product of these rare probabilities:
+
+*   **🧑 Carrier Frequency:** The estimated chance of one person being a carrier (`2pq`) is **1 in 8,000**.
+*   **🧑‍🤝‍🧑 Two Carriers Meet:** The probability of two such carriers meeting is therefore:
+
+<p align="center">
   <code>(1 / 8,000)   ×   (1 / 8,000)   =   1 / 64,000,000</code>
 </p>
 
