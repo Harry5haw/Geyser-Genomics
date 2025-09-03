@@ -44,9 +44,16 @@ For eighteen years, my life was an odyssey through a fog of medical uncertainty 
 
 A year later, against all odds, I received a result. The project had delivered a link. In the three billion letters of my genetic code, they had found a single, ultra-rare mutation in the **COA3 gene**, causing a mitochondrial defect.
 
-<div align="center">
-  <img src="docs/assets/Mutation_highlight.jpg" alt="A DNA sequence with one letter highlighted in red to show a mutation" width="600"/>
-</div>
+<table align="center" border="0" cellspacing="0" cellpadding="10">
+  <tr>
+    <td align="center">
+      <img src="docs/assets/Mutation_highlight.jpg" alt="A DNA sequence with one letter highlighted in red to show a mutation" width="300"/>
+    </td>
+    <td align="center">
+      <img src="docs/assets/Genome_Family_Tree.jpg" alt="A family tree showing the inheritance of the genetic mutation" width="300"/>
+    </td>
+  </tr>
+</table>
 
 The statistical probability of this discovery is staggering. The odds of both parents carrying the same rare recessive fault and passing it on is approximately **1 in 64 million**.
 
@@ -64,16 +71,16 @@ My donated genome will now serve as a data point to help others, ensuring that a
 <table align="center" border="0" cellspacing="0" cellpadding="10">
   <tr>
     <td align="center" width="32%">
-      <img src="docs/assets/odyssey.jpg" alt="A person climbing a DNA strand, representing the long diagnostic journey."/>
-      <br><em>The Odyssey</em>
+      <img src="docs/assets/helping_hands.jpg" alt="Hands reaching out to form a double helix, representing helping others."/>
+      <br><em>work together</em>
     </td>
     <td align="center" width="32%">
-      <img src="docs/assets/helping_hands.jpg" alt="Hands reaching out to form a double helix, representing helping others."/>
-      <br><em>The Mission</em>
+      <img src="docs/assets/odyssey.jpg" alt="A person climbing a DNA strand, representing the long diagnostic journey."/>
+      <br><em>and look within ourselves</em>
     </td>
     <td align="center" width="32%">
       <img src="docs/assets/future_solutions.jpg" alt="DNA being knitted or repaired, representing future solutions."/>
-      <br><em>The Future</em>
+      <br><em>Build a better future today</em>
     </td>
   </tr>
 </table>
