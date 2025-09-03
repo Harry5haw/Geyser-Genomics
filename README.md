@@ -18,7 +18,7 @@
 
 <!-- This is your banner image. It will be centered automatically. -->
 <div align="center">
-  <img src="docs/assets/banner.jpg" alt="Abstract DNA sequencing visualization" width="100%"/>
+  <img src="docs/assets/100K-Genomes-Project-old-logo.jpg" alt="Abstract DNA sequencing visualization" width="100%"/>
 </div>
 
 ---
