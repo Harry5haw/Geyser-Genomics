@@ -168,3 +168,9 @@ graph TD
     style B fill:#017CEE,stroke:#333,stroke-width:2px,color:#fff
     style C fill:#EC4A24,stroke:#333,stroke-width:2px,color:#fff
     style F fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
+
+```
+| Benefit | How TerraFlow Genomics Delivers |
+| :--- | :--- |
+| **⚡️ Blazing Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in a matter of hours. |
+
