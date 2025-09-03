@@ -170,7 +170,9 @@ graph TD
     style F fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
 
 ```
-| Benefit | How TerraFlow Genomics Delivers |
-| :--- | :--- |
-| **⚡️ Blazing Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in a matter of hours. |
+**In simple terms, here is what the platform is doing:**
 
+*   It takes the raw, jumbled DNA data from the sequencer.
+*   It uses powerful scientific software to **compare** that data against a healthy human reference genome.
+*   It then runs another set of tools to **find every single difference** or potential 'fault'.
+*   Its final output is a simple, readable list of those faults, which a doctor or scientist can then analyze to find the one that matters.
