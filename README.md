@@ -18,7 +18,7 @@
 
 <!-- This is your banner image. It will be centered automatically. -->
 <div align="center">
-  <img src="docs/assets/Genomics England Banner Long.jpg" alt="Abstract DNA sequencing visualization" width="30%"/>
+  <img src="docs/assets/Genomics England Banner Long.jpg" alt="Abstract DNA sequencing visualization" width="70%"/>
 </div>
 
 ---
