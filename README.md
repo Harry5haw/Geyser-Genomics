@@ -106,18 +106,18 @@ Think of TerraFlow Genomics as an **automated, robotic science lab in the cloud.
 
 Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
-*   🌊 **The Data Deluge:** A single human genome can be over 100 gigabytes. Analyzing hundreds requires a staggering amount of storage and power.
-*   🧩 **The Complex Recipe:** The analysis involves dozens of specialized scientific tools, each needing to be run in a specific order. One mistake can invalidate the results.
-*   🚧 **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and often sit idle.
+*    **The Data Deluge:** A single human genome can be over 100 gigabytes. Analyzing hundreds requires a staggering amount of storage and power.
+*    **The Complex Recipe:** The analysis involves dozens of specialized scientific tools, each needing to be run in a specific order. One mistake can invalidate the results.
+*    **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and often sit idle.
 
 ## ✨ The Impact: Key Benefits
 
 | Benefit | How TerraFlow Genomics Delivers |
 | :--- | :--- |
-| **⚡️ Blazing Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in a matter of hours. |
-| **🎯 Unwavering Reliability** | The automated workflow and standardized toolboxes eliminate human error, producing consistent and trustworthy results every time. |
-| **📉 Drastic Cost Reduction** | We only pay for computers when they are actively working. No more paying for expensive, idle hardware. |
-| **🧑‍🔬 Empowered Scientists** | Researchers can run massive analyses without needing to be cloud computing experts, freeing them to focus entirely on the science. |
+| **Blazing Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in a matter of hours. |
+| **Unwavering Reliability** | The automated workflow and standardized toolboxes eliminate human error, producing consistent and trustworthy results every time. |
+| **Drastic Cost Reduction** | We only pay for computers when they are actively working. No more paying for expensive, idle hardware. |
+| **Empowered Scientists** | Researchers can run massive analyses without needing to be cloud computing experts, freeing them to focus entirely on the science. |
 
 ## 🗺️ Project Status & Features
 
