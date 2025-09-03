@@ -32,13 +32,13 @@ This project was born from a profound, life-changing journey through the world o
 For eighteen years, my life was an odyssey through a fog of medical uncertainty with no linking diagnosis. As part of the project, my mother, my father, and I all donated our blood. Our entire genomes would be sequenced and explored, becoming three more data points in a vast ocean of information. We were told it was unlikely we would hear anything back.
 
 <div align="center">
-  <img src="docs/assets/family_samples.jpg" alt="Three test tubes representing family DNA samples" width="600"/>
+  <img src="docs/assets/Family_Samples.jpg" alt="Three test tubes representing family DNA samples" width="600"/>
 </div>
 
 A year later, against all odds, I received a result. The project had delivered a link. In the three billion letters of my genetic code, they had found a single, ultra-rare mutation in the **COA3 gene**, causing a mitochondrial defect.
 
 <div align="center">
-  <img src="docs/assets/mutation_highlight.jpg" alt="A DNA sequence with one letter highlighted in red to show a mutation" width="600"/>
+  <img src="docs/assets/Mutation_highlight.jpg" alt="A DNA sequence with one letter highlighted in red to show a mutation" width="600"/>
 </div>
 
 The statistical probability of this discovery is staggering. The odds of both parents carrying the same rare recessive fault and passing it on is approximately **1 in 64 million**.
