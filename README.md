@@ -169,18 +169,39 @@ graph TD
     style C fill:#EC4A24,stroke:#333,stroke-width:2px,color:#fff
     style F fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
 
+## 🛠️ How It Works: A Visual Guide
 
+This diagram shows the automated workflow. A scientist provides the data and the recipe, and the platform handles everything else.
 
----
+```mermaid
+graph TD
+    subgraph "The Scientist's Workspace"
+        A[Scientist provides raw data & recipe]
+    end
+    
+    subgraph "TerraFlow Genomics Platform on AWS"
+        %% This is the invisible spacer node to add vertical padding
+        spacer[ ]
 
-### 2. Explanation Bullet Points
+        B["The Conductor
+        (Airflow)"] -- "1. Reads the recipe" --> A
+        B -- "2. Sends tasks to..." --> C{"The Workforce
+        (AWS Batch)"}
+        C -- "3. Grabs the right..." --> D["The Universal Toolbox
+        (Docker Containers)"]
+        C -- "4. Reads & Writes..." --> E["The Data Lake
+        (Amazon S3)"]
 
-Paste this block directly after the Mermaid block above, ensuring there is a blank line between them.
+        %% This invisible link forces the layout engine to place B below the spacer
+        spacer ~~~ B
+    end
+    
+    E -- "5. Final results are stored" --> F[Life-Changing Answers]
 
-```markdown
-**In simple terms, here is what the platform is doing:**
+    %% Style the spacer node to be completely invisible
+    style spacer fill:none,stroke:none
 
-*   It takes the raw, jumbled DNA data from the sequencer.
-*   It uses powerful scientific software to **compare** that data against a healthy human reference genome.
-*   It then runs another set of tools to **find every single difference** or potential 'fault'.
-*   Its final output is a simple, readable list of those faults, which a doctor or scientist can then analyze to find the one that matters.
+    style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
+    style B fill:#017CEE,stroke:#333,stroke-width:2px,color:#fff
+    style C fill:#EC4A24,stroke:#333,stroke-width:2px,color:#fff
+    style F fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
