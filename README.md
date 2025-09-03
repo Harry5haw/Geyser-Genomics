@@ -138,6 +138,9 @@ graph TD
     end
     
     subgraph "TerraFlow Genomics Platform on AWS"
+        %% This is the invisible spacer node to add vertical padding
+        spacer[ ]
+
         B["The Conductor
         (Airflow)"] -- "1. Reads the recipe" --> A
         B -- "2. Sends tasks to..." --> C{"The Workforce
@@ -146,9 +149,15 @@ graph TD
         (Docker Containers)"]
         C -- "4. Reads & Writes..." --> E["The Data Lake
         (Amazon S3)"]
+
+        %% This invisible link forces the layout engine to place B below the spacer
+        spacer ~~~ B
     end
     
     E -- "5. Final results are stored" --> F[Life-Changing Answers]
+
+    %% Style the spacer node to be completely invisible
+    style spacer fill:none,stroke:none
 
     style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
     style B fill:#017CEE,stroke:#333,stroke-width:2px,color:#fff
