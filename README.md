@@ -63,26 +63,12 @@ The statistical probability of this discovery is staggering. The odds of both pa
 >
 >$$ p^2 + 2pq + q^2 = 1 $$
 >
->This describes how genetic variations are distributed in a population, where:
->*   `p` = The frequency of the healthy version of the gene (✅)
->*   `q` = The frequency of the faulty, recessive version (🧬)
->*   **`2pq` = The probability of being a carrier** (one healthy, one faulty copy), like my parents.
+>This describes how genetic variations are distributed in a population, where `2pq` represents the probability of being a carrier—like my parents. The calculation itself is a straightforward product of these rare probabilities:
 >
->Here’s how this powerful formula applies to the 1-in-64-million calculation:
+>*   **🧑 Carrier Frequency:** The estimated chance of one person being a carrier (`2pq`) is **1 in 8,000**.
+>*   **🧑‍🤝‍🧑 Two Carriers Meet:** The probability of two such carriers meeting is therefore:
 >
->```bash
-># Step 1: Start with the estimated Carrier Frequency (the '2pq' value) for the COA3 mutation.
-># This is the probability that one random person has the faulty gene.
->Carrier Frequency ≈ 1 in 8,000
->
-># Step 2: Calculate the probability of two random carriers meeting.
-># P(Parent 1 is Carrier) × P(Parent 2 is Carrier)
->(1 / 8,000)             × (1 / 8,000)
->
-># Step 3: The Result. This is the statistical chance of the event.
->= 1 / 64,000,000
->```
->This is how we can scientifically illustrate the profound rarity of the genetic circumstances that led to my diagnosis.
+>    `(1 / 8,000)   ×   (1 / 8,000)   =   1 / 64,000,000`
 
 My donated genome will now serve as a data point to help others, ensuring that a single-letter fault doesn't define another patient's life. My odyssey of discovery took two decades, but it doesn't need to be that way for others. With technologies like TerraFlow Genomics, we can accelerate these discoveries and build solutions that may one day repair the very code of life itself.
 
