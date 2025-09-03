@@ -72,15 +72,15 @@ My donated genome will now serve as a data point to help others, ensuring that a
   <tr>
     <td align="center" width="32%">
       <img src="docs/assets/helping_hands.jpg" alt="Hands reaching out to form a double helix, representing helping others."/>
-      <br><em>work together</em>
+      <br><em>We can help eachother</em>
     </td>
     <td align="center" width="32%">
       <img src="docs/assets/odyssey.jpg" alt="A person climbing a DNA strand, representing the long diagnostic journey."/>
-      <br><em>and look within ourselves</em>
+      <br><em>By looking within ourselves</em>
     </td>
     <td align="center" width="32%">
       <img src="docs/assets/future_solutions.jpg" alt="DNA being knitted or repaired, representing future solutions."/>
-      <br><em>Build a better future today</em>
+      <br><em>To build a better future for tommorrow</em>
     </td>
   </tr>
 </table>
