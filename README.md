@@ -80,7 +80,7 @@ My donated genome will now serve as a data point to help others, ensuring that a
     </td>
     <td align="center" width="32%">
       <img src="docs/assets/future_solutions.jpg" alt="DNA being knitted or repaired, representing future solutions."/>
-      <br><em>To build a better future for tommorrow</em>
+      <br><em>To build a better future</em>
     </td>
   </tr>
 </table>
