@@ -168,3 +168,19 @@ graph TD
     style B fill:#017CEE,stroke:#333,stroke-width:2px,color:#fff
     style C fill:#EC4A24,stroke:#333,stroke-width:2px,color:#fff
     style F fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
+
+
+
+---
+
+### 2. Explanation Bullet Points
+
+Paste this block directly after the Mermaid block above, ensuring there is a blank line between them.
+
+```markdown
+**In simple terms, here is what the platform is doing:**
+
+*   It takes the raw, jumbled DNA data from the sequencer.
+*   It uses powerful scientific software to **compare** that data against a healthy human reference genome.
+*   It then runs another set of tools to **find every single difference** or potential 'fault'.
+*   Its final output is a simple, readable list of those faults, which a doctor or scientist can then analyze to find the one that matters.
