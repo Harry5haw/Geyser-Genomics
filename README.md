@@ -18,7 +18,7 @@
 
 <!-- This is your banner image. It will be centered automatically. -->
 <div align="center">
-  <img src="docs/assets/Github social media banner v4.png" alt="Technologies for DNA sequencing visualization" width="70%"/>
+  <img src="docs/assets/Github social media banner v5.png" alt="Technologies for DNA sequencing visualization" width="70%"/>
 </div>
 
 ---
