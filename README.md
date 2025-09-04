@@ -229,7 +229,7 @@ The platform is designed around modern DevOps and Data Engineering principles:
 | **Docker** | **The Reproducible Toolbox.** Packages all bioinformatics tools (`FastQC`, `BWA`, `Samtools`, `GATK`, etc.) and their specific dependencies into a single, portable container image. This guarantees scientific reproducibility. |
 | **Python** | The language used to write Airflow DAGs and any custom logic for interacting with AWS services via the `boto3` SDK. |
 
-### Deployment Guide ⬇️
+### Deployment Guide
 
 To deploy the entire TerraFlow Genomics platform to your own AWS account, follow these steps.
 
