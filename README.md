@@ -23,6 +23,21 @@
 
 ---
 
+### 📋 Table of Contents
+
+1.  [The Odyssey: Why This Project Exists](#-the-odyssey-why-this-project-exists)
+2.  [What is TerraFlow Genomics?](#-what-is-terraflow-genomics)
+3.  [The Challenge: From a DNA Sample to an Answer](#-the-challenge-from-a-dna-sample-to-an-answer)
+4.  [The Impact: Key Benefits](#-the-impact-key-benefits)
+5.  [Project Status & Features](#️-project-status--features)
+6.  [How It Works: A Visual Guide](#️-how-it-works-a-visual-guide)
+7.  [For Developers: A Technical Deep Dive](#️-for-developers-a-technical-deep-dive)
+    *   [Deployment Guide](#deployment-guide)
+
+---
+
+---
+
 ## 🧭 The Odyssey: Why This Project Exists
 
 This project was born from a profound, life-changing journey through the world of genomic medicine. It is a tribute to the pioneering work of NHS England and its **100,000 Genomes Project**.
@@ -186,3 +201,45 @@ graph TD
 *   It uses powerful scientific software to **compare** that data against a healthy human reference genome.
 *   It then runs another set of tools to **find every single difference** or potential 'fault'.
 *   Its final output is a simple, readable list of those faults, which a doctor or scientist can then analyze to find the one that matters.
+*   
+
+---
+
+## 🛠️ For Developers: A Technical Deep Dive
+
+This section provides a detailed technical overview of the project's architecture, components, and deployment process for those interested in running or contributing to the platform.
+
+### Core Architecture Philosophy
+
+The platform is designed around modern DevOps and Data Engineering principles:
+*   **Infrastructure as Code (IaC):** The entire cloud environment is declarative, version-controlled, and reproducible, managed by Terraform. There is zero manual "click-ops" configuration.
+*   **Decoupled Orchestration:** Apache Airflow acts as a pure workflow orchestrator. It manages the logic, dependencies, and retries of the pipeline but does **not** perform the heavy computation itself.
+*   **Serverless Compute:** All bioinformatics tasks are executed as containerized jobs on AWS Batch, which provisions and scales the underlying compute resources (using AWS Fargate or EC2 Spot Instances) on demand. This is highly scalable and cost-effective.
+*   **Centralized Data Lake:** All data—raw, intermediate, and final results—is stored in a versioned and access-controlled Amazon S3 bucket, serving as the single source of truth.
+
+### Technology Stack & Rationale
+
+| Technology | Role & Rationale |
+| :--- | :--- |
+| **Terraform** | **The Cloud Architect.** Defines all AWS resources (VPC, S3, IAM, ECR, Batch) as code. This ensures a consistent, repeatable, and secure deployment every time. |
+| **AWS Batch** | **The Serverless Compute Engine.** Manages a fleet of on-demand compute resources to run our jobs. It handles job queuing, scheduling, and scaling, eliminating the need to manage a cluster. |
+| **Amazon S3** | **The Data Lake.** Provides durable, scalable, and cost-effective storage for massive genomic datasets. Versioning is enabled to prevent accidental data loss. |
+| **Amazon ECR**| **The Container Registry.** A private, secure Docker registry to store and version the custom bioinformatics container images used by AWS Batch. |
+| **Apache Airflow** | **The Workflow Conductor.** Deployed on ECS/Fargate for a lightweight, serverless setup. It translates the scientific pipeline into a Directed Acyclic Graph (DAG), submitting jobs to AWS Batch in the correct sequence. |
+| **Docker** | **The Reproducible Toolbox.** Packages all bioinformatics tools (`FastQC`, `BWA`, `Samtools`, `GATK`, etc.) and their specific dependencies into a single, portable container image. This guarantees scientific reproducibility. |
+| **Python** | The language used to write Airflow DAGs and any custom logic for interacting with AWS services via the `boto3` SDK. |
+
+### Deployment Guide
+
+To deploy the entire TerraFlow Genomics platform to your own AWS account, follow these steps.
+
+**Prerequisites:**
+*   An active **AWS Account** with an IAM user and programmatic access keys.
+*   [**Terraform CLI**](https://developer.hashicorp.com/terraform/downloads) (v1.0+) installed locally.
+*   [**AWS CLI**](https://aws.amazon.com/cli/) installed and configured (`aws configure`).
+*   [**Docker Desktop**](https://www.docker.com/products/docker-desktop/) installed and running.
+
+#### Step 1: Clone the Repository
+```bash
+git clone https://github.com/Harry5haw/genomeflow-cloud-platform.git
+cd genomeflow-cloud-platform
