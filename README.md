@@ -95,7 +95,17 @@ My donated genome will now serve as a data point to help others, ensuring that a
 
 ## 💡 What is TerraFlow Genomics?
 
-Think of TerraFlow Genomics as an **automated, robotic science lab in the cloud.** It takes the complex, manual, and expensive process of genome analysis and transforms it into an efficient, scalable assembly line.
+TerraFlow Genomics is an **automated data processing pipeline**. Its specific job is to execute the complex scientific workflow that transforms raw, unreadable DNA data from a sequencing machine into a final, human-readable list of genetic variants (mutations).
+
+It essentially functions as a **robotic science lab in the cloud**. Instead of a scientist manually setting up servers and running dozens of software tools in sequence, this platform automates the entire process from start to finish.
+
+**The Transformation: From Raw Data to Actionable Insight**
+
+| Input | The Platform's Process (Automation) | Output |
+| :--- | :--- | :--- |
+| 🧬 **Raw Data File** <br> *(Millions of jumbled DNA fragments)* | 1. **Quality Control** on the raw data. <br> 2. **Alignment:** Compares data to a reference genome. <br> 3. **Variant Calling:** Identifies all differences. | 📄 **VCF File** <br> *(A clean list of genetic mutations)* |
+
+The platform provides four key advantages:
 
 *   ⚙️ **Fully Automated:** Scientists can launch complex analyses with a single click, eliminating manual setup and human error.
 *   🚀 **Infinitely Scalable:** The platform can summon the power of hundreds of computers to process massive datasets in parallel, then vanish when the work is done.
