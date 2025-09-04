@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>TerraFlow Genomics</h1>
+  <h1>Geyser Genomics</h1>
   <p>
     <strong>An automated, cloud-based platform designed to accelerate the discovery of life-changing genetic insights.</strong>
   </p>
@@ -18,7 +18,7 @@
 
 <!-- This is your banner image. It will be centered automatically. -->
 <div align="center">
-  <img src="docs/assets/Github social media banner transparent.png" alt="Abstract DNA sequencing visualization" width="70%"/>
+  <img src="docs/assets/Github social media banner transparent.png" alt="Technologies for DNA sequencing visualization" width="70%"/>
 </div>
 
 ---
