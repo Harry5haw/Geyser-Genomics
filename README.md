@@ -229,7 +229,7 @@ The platform is designed around modern DevOps and Data Engineering principles:
 | **Docker** | **The Reproducible Toolbox.** Packages all bioinformatics tools (`FastQC`, `BWA`, `Samtools`, `GATK`, etc.) and their specific dependencies into a single, portable container image. This guarantees scientific reproducibility. |
 | **Python** | The language used to write Airflow DAGs and any custom logic for interacting with AWS services via the `boto3` SDK. |
 
-### Deployment Guide
+### ⬇️ Deployment Guide
 
 To deploy the entire TerraFlow Genomics platform to your own AWS account, follow these steps.
 
@@ -243,3 +243,39 @@ To deploy the entire TerraFlow Genomics platform to your own AWS account, follow
 ```bash
 git clone https://github.com/Harry5haw/genomeflow-cloud-platform.git
 cd genomeflow-cloud-platform
+```
+
+#### Step 2: Configure Your Deployment
+All infrastructure is defined in the `infrastructure/` directory. Create a configuration file to specify your deployment details.
+```bash
+cd infrastructure
+
+# Create a variables file from the example
+cp terraform.tfvars.example terraform.tfvars
+```
+Now, open `terraform.tfvars` in a text editor and fill in your desired AWS region and a unique name for your project resources.
+
+#### Step 3: Deploy the Infrastructure
+Use Terraform to provision all the necessary AWS resources.
+```bash
+# Initialize Terraform to download necessary providers
+terraform init
+
+# Plan the deployment to see what will be created
+terraform plan
+
+# Apply the plan to build the infrastructure
+terraform apply
+```
+*Review the plan and type `yes` when prompted. This will take several minutes to complete.*
+
+#### Step 4: Build and Push the Docker Image
+*This step builds the container with the bioinformatics tools and pushes it to the ECR repository created by Terraform.*
+```bash
+# (Instructions for building and pushing the Docker image will be here)
+# This will typically involve an AWS ECR login command followed by 'docker build' and 'docker push'.
+```
+
+#### Step 5: Access Airflow and Trigger a Run
+Once deployed, the Terraform output will provide the URL for your Apache Airflow UI. You can log in, enable the `genomics_pipeline` DAG, and trigger a new run.
+```
