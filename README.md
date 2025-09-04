@@ -1,5 +1,5 @@
 <div align="center">
-  <h1>Geyser Genomics</h1>
+  <h1>🌋Geyser Genomics🌋</h1>
   <p>
     <strong>An automated, cloud-based platform designed to accelerate the discovery of life-changing genetic insights.</strong>
   </p>
