@@ -200,9 +200,8 @@ graph TD
 *   It uses powerful scientific software to **compare** that data against a healthy human reference genome.
 *   It then runs another set of tools to **find every single difference** or potential 'fault'.
 *   Its final output is a simple, readable list of those faults, which a doctor or scientist can then analyze to find the one that matters.
-*   
 
----
+  ---
 
 ## 🛠️ For Developers: A Technical Deep Dive
 
