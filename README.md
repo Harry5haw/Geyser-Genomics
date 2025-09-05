@@ -38,7 +38,7 @@
 
 ---
 
-## 💡 What is Geyser Genomics? 🧬
+## 💡 What is Geyser Genomics?
 
 Geyser Genomics is an **automated data processing pipeline**. Its specific job is to execute the complex scientific workflow that transforms raw, unreadable DNA data from a sequencing machine into a final, human-readable list of genetic variants (mutations).
 
