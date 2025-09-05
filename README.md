@@ -93,7 +93,7 @@ The statistical probability of this discovery is staggering. The odds of both pa
 
 ### The 1 in 64 Million Chance
 
-This isn't a random number; it's grounded in a core concept of population genetics known as the **Hardy-Weinberg principle**. It's the scientific method for estimating how rare a genetic trait is. The principle is expressed with this elegant equation:
+This isn't a random number; it's grounded in a core concept of population genetics known as the **Hardy-Weinberg principle**. It's the scientific method for estimating how rare a genetic trait is. The principle is expressed with the equation:
 
 $$ p^2 + 2pq + q^2 = 1 $$
 
