@@ -25,8 +25,8 @@
 
 ### 📋 Table of Contents
 
-1.  [The Odyssey: Why This Project Exists](#-the-odyssey-why-this-project-exists)
-2.  [What is TerraFlow Genomics?](#-what-is-terraflow-genomics)
+1.  [What is TerraFlow Genomics?](#-what-is-terraflow-genomics) 
+2.  [The Odyssey: Why This Project Exists](#-the-odyssey-why-this-project-exists)
 3.  [The Challenge: From a DNA Sample to an Answer](#-the-challenge-from-a-dna-sample-to-an-answer)
 4.  [The Impact: Key Benefits](#-the-impact-key-benefits)
 5.  [Project Status & Features](#️-project-status--features)
@@ -37,6 +37,25 @@
 ---
 
 ---
+
+## 💡 What is TerraFlow Genomics?
+
+TerraFlow Genomics is an **automated data processing pipeline**. Its specific job is to execute the complex scientific workflow that transforms raw, unreadable DNA data from a sequencing machine into a final, human-readable list of genetic variants (mutations).
+
+It essentially functions as a **robotic science lab in the cloud**. Instead of a scientist manually setting up servers and running dozens of software tools in sequence, this platform automates the entire process from start to finish.
+
+**The Transformation: From Raw Data to Actionable Insight**
+
+| Input | The Platform's Process (Automation) | Output |
+| :--- | :--- | :--- |
+| 🧬 **Raw Data File** <br> *(Millions of jumbled DNA fragments)* | 1. **Quality Control** on the raw data. <br> 2. **Alignment:** Compares data to a reference genome. <br> 3. **Variant Calling:** Identifies all differences. | 📄 **VCF File** <br> *(A clean list of genetic mutations)* |
+
+The platform provides four key advantages:
+
+*   ⚙️ **Fully Automated:** Scientists can launch complex analyses with a single click, eliminating manual setup and human error.
+*   🚀 **Infinitely Scalable:** The platform can summon the power of hundreds of computers to process massive datasets in parallel, then vanish when the work is done.
+*   💰 **Cost-Effective:** By using cloud resources on-demand, we only pay for the exact compute time used, drastically reducing the cost compared to owning physical servers.
+*   🔬 **Scientifically Rigorous:** Every step is standardized and reproducible, ensuring the results are reliable and trustworthy.
 
 ## 🧭 The Odyssey: Why This Project Exists
 
@@ -107,26 +126,6 @@ My donated genome will now serve as a data point to help others, ensuring that a
 </table>
 
 ---
-
-## 💡 What is TerraFlow Genomics?
-
-TerraFlow Genomics is an **automated data processing pipeline**. Its specific job is to execute the complex scientific workflow that transforms raw, unreadable DNA data from a sequencing machine into a final, human-readable list of genetic variants (mutations).
-
-It essentially functions as a **robotic science lab in the cloud**. Instead of a scientist manually setting up servers and running dozens of software tools in sequence, this platform automates the entire process from start to finish.
-
-**The Transformation: From Raw Data to Actionable Insight**
-
-| Input | The Platform's Process (Automation) | Output |
-| :--- | :--- | :--- |
-| 🧬 **Raw Data File** <br> *(Millions of jumbled DNA fragments)* | 1. **Quality Control** on the raw data. <br> 2. **Alignment:** Compares data to a reference genome. <br> 3. **Variant Calling:** Identifies all differences. | 📄 **VCF File** <br> *(A clean list of genetic mutations)* |
-
-The platform provides four key advantages:
-
-*   ⚙️ **Fully Automated:** Scientists can launch complex analyses with a single click, eliminating manual setup and human error.
-*   🚀 **Infinitely Scalable:** The platform can summon the power of hundreds of computers to process massive datasets in parallel, then vanish when the work is done.
-*   💰 **Cost-Effective:** By using cloud resources on-demand, we only pay for the exact compute time used, drastically reducing the cost compared to owning physical servers.
-*   🔬 **Scientifically Rigorous:** Every step is standardized and reproducible, ensuring the results are reliable and trustworthy.
-
 ## 🤔 The Challenge: From a DNA Sample to an Answer
 
 Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
