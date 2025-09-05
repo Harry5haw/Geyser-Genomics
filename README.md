@@ -25,7 +25,7 @@
 
 ### 📋 Table of Contents
 
-1.  [What is TerraFlow Genomics?](#-what-is-terraflow-genomics) 
+1.  [What is Geyser Genomics?](#-what-is-Geyser-genomics) 
 2.  [The Odyssey: Why This Project Exists](#-the-odyssey-why-this-project-exists)
 3.  [The Challenge: From a DNA Sample to an Answer](#-the-challenge-from-a-dna-sample-to-an-answer)
 4.  [The Impact: Key Benefits](#-the-impact-key-benefits)
@@ -38,9 +38,9 @@
 
 ---
 
-## 💡 What is TerraFlow Genomics?
+## 💡 What is Geyser Genomics?
 
-TerraFlow Genomics is an **automated data processing pipeline**. Its specific job is to execute the complex scientific workflow that transforms raw, unreadable DNA data from a sequencing machine into a final, human-readable list of genetic variants (mutations).
+Geyser Genomics is an **automated data processing pipeline**. Its specific job is to execute the complex scientific workflow that transforms raw, unreadable DNA data from a sequencing machine into a final, human-readable list of genetic variants (mutations).
 
 It essentially functions as a **robotic science lab in the cloud**. Instead of a scientist manually setting up servers and running dozens of software tools in sequence, this platform automates the entire process from start to finish.
 
@@ -106,7 +106,7 @@ This describes how genetic variations are distributed in a population, where `2p
   <code>(1 / 8,000)   ×   (1 / 8,000)   =   1 / 64,000,000</code>
 </p>
 
-My donated genome will now serve as a data point to help others, ensuring that a single-letter fault doesn't define another patient's life. My odyssey of discovery took two decades, but it doesn't need to be that way for others. With technologies like TerraFlow Genomics, we can accelerate these discoveries and build solutions that may one day repair the very code of life itself.
+My donated genome will now serve as a data point to help others, ensuring that a single-letter fault doesn't define another patient's life. My odyssey of discovery took two decades, but it doesn't need to be that way for others. With technologies like Geyser Genomics, we can accelerate these discoveries and build solutions that may one day repair the very code of life itself.
 
 <table align="center" border="0" cellspacing="0" cellpadding="10">
   <tr>
@@ -136,7 +136,7 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
 ## ✨ The Impact: Key Benefits
 
-| Benefit | How TerraFlow Genomics Delivers |
+| Benefit | How Geyser Genomics Delivers |
 | :--- | :--- |
 | **Blazing Speed** | By using hundreds of computers in parallel, analyses that took weeks can now be completed in a matter of hours. |
 | **Unwavering Reliability** | The automated workflow and standardized toolboxes eliminate human error, producing consistent and trustworthy results every time. |
@@ -166,7 +166,7 @@ graph TD
         A[Scientist provides raw data & recipe]
     end
     
-    subgraph "TerraFlow Genomics Platform on AWS"
+    subgraph "Geyser Genomics Platform on AWS"
         %% This is the invisible spacer node to add vertical padding
         spacer[ ]
 
@@ -230,7 +230,7 @@ The platform is designed around modern DevOps and Data Engineering principles:
 
 ### Deployment Guide
 
-To deploy the entire TerraFlow Genomics platform to your own AWS account, follow these steps.
+To deploy the entire Geyser Genomics platform to your own AWS account, follow these steps.
 
 **Prerequisites:**
 *   An active **AWS Account** with an IAM user and programmatic access keys.
