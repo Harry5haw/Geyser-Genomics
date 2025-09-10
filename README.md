@@ -203,7 +203,7 @@ graph TD
 
   ---
 
-## 🛠️ For Developers: A Technical Deep Dive
+## 🤖 For Developers: A Technical Deep Dive
 
 This section provides a detailed technical overview of the project's architecture, components, and deployment process for those interested in running or contributing to the platform.
 
