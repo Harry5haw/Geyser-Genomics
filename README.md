@@ -215,7 +215,7 @@ The platform is designed around modern DevOps and Data Engineering principles:
 *   **Serverless Compute:** All bioinformatics tasks are executed as containerized jobs on AWS Batch, which provisions and scales the underlying compute resources (using AWS Fargate or EC2 Spot Instances) on demand. This is highly scalable and cost-effective.
 *   **Centralized Data Lake:** All data—raw, intermediate, and final results—is stored in a versioned and access-controlled Amazon S3 bucket, serving as the single source of truth.
 
-### Technology Stack & Rationale
+### 📚 Technology Stack & Rationale
 
 | Technology | Role & Rationale |
 | :--- | :--- |
