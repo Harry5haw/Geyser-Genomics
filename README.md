@@ -32,7 +32,7 @@
 5.  [Project Status & Features](#️-project-status--features)
 6.  [How It Works: A Visual Guide](#️-how-it-works-a-visual-guide)
 7.  [For Developers: A Technical Deep Dive](#️-for-developers-a-technical-deep-dive)
-    *   [Deployment Guide](#deployment-guide)
+    *   [Deployment Guide](#⬇️deployment-guide⬇️)
 
 ---
 
