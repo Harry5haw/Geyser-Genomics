@@ -23,10 +23,20 @@ jobs:
     environment: ${{ inputs.environment_name }}
 
     steps:
-      - name: Attempt to Assume Role and Dump Token
+      - name: Decode OIDC Token Payload
+        id: decode_token
+        run: |
+          # The GitHub runner provides the URL and a temporary token to get the real OIDC JWT
+          OIDC_JWT=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          
+          echo "DECODED OIDC TOKEN PAYLOAD:"
+          echo "--------------------------------"
+          # Split the JWT, get the payload (the middle part), decode from base64, and pretty-print with jq
+          echo "$OIDC_JWT" | cut -d '.' -f 2 | base64 --decode | jq .
+          echo "--------------------------------"
+
+      - name: Attempt to Assume Role
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ inputs.role_to_test }}
           aws-region: eu-west-2
-          # This is the crucial part that will dump the token payload
-          log-level: debug
