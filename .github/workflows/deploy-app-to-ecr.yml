@@ -1,5 +1,6 @@
 # .github/workflows/deploy-app-to-ecr.yml (Restored to original state)
 
+# Workflow to build and push the application container to ECR
 name: Build and Push App to ECR
 
 on:

@@ -1,5 +1,6 @@
 # .github/workflows/deploy-infra.yml
 
+# Workflow to deploy infrastructure changes using Terraform
 name: Deploy Infrastructure to AWS
 
 on:
