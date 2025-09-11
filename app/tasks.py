@@ -1,4 +1,4 @@
-# This is the complete, correct version of app/tasks.py
+# This is the complete, final, parameterized version of app/tasks.py
 
 import argparse
 import boto3
@@ -7,10 +7,8 @@ import os
 import threading
 
 # Read the bucket name from an environment variable set by AWS Batch.
-# This decouples the application from the infrastructure.
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
 
-# Add a check to ensure the environment variable is set.
 if not BUCKET_NAME:
     print("FATAL: BUCKET_NAME environment variable is not set.")
     exit(1)
@@ -20,22 +18,16 @@ def decompress_task(srr_id):
     """
     Downloads a compressed FASTQ from S3, decompresses it in-memory,
     and streams the uncompressed output back up to S3.
-    This is a memory-efficient streaming operation.
     """
     s3_client = boto3.client('s3')
     input_key = f"raw_reads/{srr_id}.fastq.gz"
     output_key = f"decompressed/{srr_id}.fastq"
 
     print(f"Starting decompression stream for s3://{BUCKET_NAME}/{input_key}")
-
-    # Get the boto3 streaming object
     s3_object = s3_client.get_object(Bucket=BUCKET_NAME, Key=input_key)
     streaming_body = s3_object['Body']
-
-    # Set up the piped subprocess, telling it to expect input from a pipe we control.
     gunzip_process = subprocess.Popen(["gunzip"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    # --- Threading to prevent deadlock ---
     def upload_stream():
         try:
             s3_client.upload_fileobj(gunzip_process.stdout, BUCKET_NAME, output_key)
@@ -45,39 +37,32 @@ def decompress_task(srr_id):
 
     upload_thread = threading.Thread(target=upload_stream)
     upload_thread.start()
-    # -------------------------------------
     
     try:
-        # Read from the S3 stream and write to the gunzip process's stdin pipe.
         for chunk in streaming_body.iter_chunks():
             gunzip_process.stdin.write(chunk)
-        # Signal that we are done writing so the gunzip process can finish.
         gunzip_process.stdin.close()
     except Exception as e:
         print(f"Error writing to gunzip process: {e}")
     
-    # Wait for the upload thread to complete its work
     upload_thread.join()
-
-    # Wait for the subprocess to finish and check for errors
     return_code = gunzip_process.wait()
     if return_code != 0:
         error_output = gunzip_process.stderr.read().decode('utf-8')
         print(f"Gunzip process failed with return code {return_code}. Error: {error_output}")
         raise subprocess.CalledProcessError(return_code, gunzip_process.args, stderr=error_output)
 
-def align_task(srr_id):
+def align_task(srr_id, reference_name):
     """
-    Downloads the FASTQ file and reference genome, aligns them with BWA,
+    Downloads the FASTQ file and a specified reference genome, aligns them with BWA,
     and uploads the resulting BAM file to S3.
     """
     s3_client = boto3.client('s3')
-
     fastq_key = f"decompressed/{srr_id}.fastq"
     output_bam_key = f"alignments/{srr_id}.bam"
     local_fastq_path = f"/tmp/{srr_id}.fastq"
     local_ref_dir = "/tmp/reference/"
-    local_ref_path = f"{local_ref_dir}reference.fa"
+    local_ref_path = f"{local_ref_dir}{reference_name}" # Use the parameter
     local_bam_path = f"/tmp/{srr_id}.bam"
 
     print(f"Downloading FASTQ file: {fastq_key}")
@@ -138,9 +123,9 @@ def qc_task(srr_id):
     subprocess.run(["rm", "-rf", local_fastq, local_qc_dir], check=True)
     print("QC task complete.")
 
-def variants_task(srr_id):
+def variants_task(srr_id, reference_name):
     """
-    Downloads the BAM file and reference genome, calls variants with bcftools,
+    Downloads the BAM file and a specified reference genome, calls variants with bcftools,
     and uploads the resulting VCF file to S3.
     """
     s3_client = boto3.client('s3')
@@ -148,7 +133,7 @@ def variants_task(srr_id):
     output_vcf_key = f"variants/{srr_id}.vcf.gz"
     local_bam_path = f"/tmp/{srr_id}.bam"
     local_ref_dir = "/tmp/reference/"
-    local_ref_path = f"{local_ref_dir}reference.fa"
+    local_ref_path = f"{local_ref_dir}{reference_name}" # Use the parameter
 
     print(f"Downloading BAM file: {bam_key}")
     s3_client.download_file(BUCKET_NAME, bam_key, local_bam_path)
@@ -173,13 +158,14 @@ def variants_task(srr_id):
     print("Upload complete.")
     print("Cleaning up temporary local files...")
     subprocess.run(["rm", "-rf", local_bam_path, local_ref_dir, local_vcf_path], check=True)
-    print("Variant calling task complete.")
+    print(f"s3://{BUCKET_NAME}/{output_vcf_key}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Runs a bioinformatics pipeline task.")
     parser.add_argument("task_name", help="The name of the task to run: decompress, qc, align, variants")
     parser.add_argument("srr_id", help="The sample ID to process, e.g., SRR062634")
+    parser.add_argument("reference_name", nargs="?", default=None, help="The reference genome filename (e.g., chr20.fa). Required for align and variants.")
     args = parser.parse_args()
 
     if args.task_name == "decompress":
@@ -187,12 +173,17 @@ if __name__ == "__main__":
     elif args.task_name == "qc":
         qc_task(args.srr_id)
     elif args.task_name == "align":
-        align_task(args.srr_id)
+        if not args.reference_name:
+            print("Error: 'align' task requires a reference_name argument.")
+            exit(1)
+        align_task(args.srr_id, args.reference_name)
     elif args.task_name == "variants":
-        variants_task(args.srr_id)
+        if not args.reference_name:
+            print("Error: 'variants' task requires a reference_name argument.")
+            exit(1)
+        variants_task(args.srr_id, args.reference_name)
     else:
         print(f"Error: Unknown task '{args.task_name}'")
         exit(1)
 
     print(f"Task '{args.task_name}' completed successfully for sample '{args.srr_id}'.")
-
