@@ -38,7 +38,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           # IMPORTANT: You will need to create this new IAM role for Terraform actions
-          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-ECR-TerraFlow-Role
+          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role 
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
