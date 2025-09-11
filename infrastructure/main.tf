@@ -173,7 +173,7 @@ resource "aws_batch_job_definition" "genomeflow_app_job_def" {
   type                  = "container"
   platform_capabilities = ["FARGATE"]
   container_properties = jsonencode({
-    image            = aws_ecr_repository.genomeflow_app.repository_url
+    image            ="${aws_ecr_repository.genomeflow_app.repository_url}:v1.3"
     executionRoleArn = aws_iam_role.ecs_task_execution_role.arn
     jobRoleArn       = aws_iam_role.ecs_task_execution_role.arn
     fargatePlatformConfiguration = {
