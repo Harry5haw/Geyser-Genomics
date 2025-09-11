@@ -12,10 +12,15 @@ RUN apt-get update && \
     bwa \
     samtools \
     bcftools \
-    perl && \
+    perl  \
+    sra-toolkit && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Pre-create the NCBI configuration directory to prevent the interactive first-run wizard.
+# The container runs as the 'root' user, so we create it in /root.
+RUN mkdir -p /root/.ncbi && chmod -R 777 /root/.ncbi
+# ---------------------
 # Manually install FastQC.
 RUN wget -q https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.12.1.zip -O /tmp/fastqc.zip && \
     unzip /tmp/fastqc.zip -d /opt/ && \
