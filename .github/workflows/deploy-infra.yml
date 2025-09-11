@@ -1,6 +1,5 @@
 # .github/workflows/deploy-infra.yml
 
-# Workflow to deploy infrastructure changes using Terraform
 name: Deploy Infrastructure to AWS
 
 on:
@@ -33,7 +32,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role
+          role-to-assume: arn:aws:iam::488543428961:role/TerraformDeployerRole # Using the NEW, clean role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
@@ -70,7 +69,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role
+          role-to-assume: arn:aws:iam::488543428961:role/TerraformDeployerRole # Using the NEW, clean role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
