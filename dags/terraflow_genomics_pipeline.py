@@ -10,7 +10,7 @@ SRR_ID = "SRR062634"
 # --- DAG Definition ---
 with DAG(
     dag_id="terraflow_genomics_pipeline",
-    start_date=pendulum.datetime(2025, 6, 17, tz="UTC"),
+    start_date=pendulum.datetime(2025, 9, 11, tz="UTC"), # Updated to today
     catchup=False,
     schedule=None,
     doc_md="""
@@ -18,57 +18,59 @@ with DAG(
     Orchestrates a bioinformatics workflow using AWS Batch. Each task is a stateless
     job that reads from and writes to S3, executed by a container from ECR.
     """,
-    tags=["bioinformatics", "aws", "batch", "terratflow"],
+    tags=["bioinformatics", "aws", "batch", "terraflow"],
 ) as dag:
 
     # --- Task 1: Decompress Sample ---
-    # This task submits a job to AWS Batch that will run our tasks.py script
-    # with the 'decompress' argument.
     task_decompress = BatchOperator(
         task_id="decompress_job",
         job_name=f"decompress-{SRR_ID}",
-        job_queue="genomeflow-job-queue",      # The queue we created with Terraform
-        job_definition="genomeflow-job-definition", # The definition we created with Terraform
+        job_queue="teraflow-job-queue",          # CORRECTED: Matches Terraform output
+        job_definition="teraflow-app-job",       # CORRECTED: Matches Terraform output
         overrides={
-            "command": ["python", "tasks.py", "decompress", SRR_ID],
+            "command": ["decompress", SRR_ID],   # CORRECTED: Command is now arguments only
         },
         aws_conn_id="aws_default", # Tells Airflow to use the default AWS connection
+        region_name="eu-west-2",   # Best practice: specify region
     )
 
     # --- Task 2: Quality Control ---
     task_qc = BatchOperator(
         task_id="quality_control_job",
         job_name=f"qc-{SRR_ID}",
-        job_queue="genomeflow-job-queue",
-        job_definition="genomeflow-job-definition",
+        job_queue="teraflow-job-queue",          # CORRECTED
+        job_definition="teraflow-app-job",       # CORRECTED
         overrides={
-            "command": ["python", "tasks.py", "qc", SRR_ID],
+            "command": ["qc", SRR_ID],           # CORRECTED
         },
         aws_conn_id="aws_default",
+        region_name="eu-west-2",
     )
 
     # --- Task 3: Align Genome ---
     task_align = BatchOperator(
         task_id="align_genome_job",
         job_name=f"align-{SRR_ID}",
-        job_queue="genomeflow-job-queue",
-        job_definition="genomeflow-job-definition",
+        job_queue="teraflow-job-queue",          # CORRECTED
+        job_definition="teraflow-app-job",       # CORRECTED
         overrides={
-            "command": ["python", "tasks.py", "align", SRR_ID],
+            "command": ["align", SRR_ID],        # CORRECTED
         },
         aws_conn_id="aws_default",
+        region_name="eu-west-2",
     )
 
     # --- Task 4: Call Variants ---
     task_variants = BatchOperator(
         task_id="call_variants_job",
         job_name=f"variants-{SRR_ID}",
-        job_queue="genomeflow-job-queue",
-        job_definition="genomeflow-job-definition",
+        job_queue="teraflow-job-queue",          # CORRECTED
+        job_definition="teraflow-app-job",       # CORRECTED
         overrides={
-            "command": ["python", "tasks.py", "variants", SRR_ID],
+            "command": ["variants", SRR_ID],     # CORRECTED
         },
         aws_conn_id="aws_default",
+        region_name="eu-west-2",
     )
 
     # --- Define Dependencies ---
