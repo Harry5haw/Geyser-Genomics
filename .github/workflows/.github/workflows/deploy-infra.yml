@@ -7,38 +7,32 @@ on:
     branches:
       - main
     paths:
-      - 'infrastructure/**' # Only run this workflow if files inside the 'infrastructure' directory change
-  workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
+      - 'infrastructure/**'
+  workflow_dispatch:
 
 env:
   TF_WORKING_DIR: ./infrastructure
-  AWS_REGION: eu-west-2 # Must match your Terraform provider region
+  AWS_REGION: eu-west-2
 
 permissions:
-  id-token: write # Required for federated identity (OIDC)
-  contents: read  # Required to checkout the repository
-  pull-requests: write # Required to post the plan back to a PR (optional but good practice)
+  id-token: write
+  contents: read
+  pull-requests: write
 
 jobs:
   terraform-plan:
     name: 'Terraform Plan'
     runs-on: ubuntu-latest
-    environment: development # A placeholder environment, does not require protection rules
+    environment: development
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-  # --- ADD THIS NEW DEBUGGING STEP ---
-      - name: Dump GitHub context
-        env:
-          GITHUB_CONTEXT: ${{ toJson(github) }}
-        run: echo "$GITHUB_CONTEXT"
-      # ------------------------------------
+
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # IMPORTANT: You will need to create this new IAM role for Terraform actions
-          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role 
+          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
@@ -53,7 +47,6 @@ jobs:
         id: plan
         run: terraform plan -no-color -out=tfplan
         working-directory: ${{ env.TF_WORKING_DIR }}
-        continue-on-error: true # Allow plan to fail without failing the whole workflow initially
 
       - name: Upload Terraform Plan as Artifact
         uses: actions/upload-artifact@v4
@@ -64,10 +57,10 @@ jobs:
   terraform-apply:
     name: 'Terraform Apply'
     runs-on: ubuntu-latest
-    needs: terraform-plan # This job only runs if terraform-plan succeeds
+    needs: terraform-plan
     environment:
       name: production
-      url: https://eu-west-2.console.aws.amazon.com/console/home?region=eu-west-2 # Example URL for your environment
+      url: https://eu-west-2.console.aws.amazon.com/console/home?region=eu-west-2
     
     steps:
       - name: Checkout Repository
