@@ -1,0 +1,44 @@
+# .github/workflows/deploy-app-to-ecr.yml
+
+name: Build and Push App to ECR
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  ECR_REPOSITORY: genomeflow-app
+  AWS_REGION: eu-west-2 # Change to your AWS region
+
+permissions:
+  id-token: write # Required for federated identity
+  contents: read # Required to checkout the repository
+
+jobs:
+  build-and-push-image:
+    name: Build and Push to ECR
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-ECR-TerraFlow-Role # ARN role
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Docker Image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f app/Dockerfile ./app
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "Pushed image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
