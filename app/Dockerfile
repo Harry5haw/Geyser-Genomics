@@ -33,11 +33,13 @@ RUN wget -q https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.
 # -----------------------------------------------------------------------------
 WORKDIR /app
 
-COPY app/requirements.txt .
+# FIX: Changed 'app/requirements.txt' to 'requirements.txt'
+COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/tasks.py .
+# FIX: Changed 'app/tasks.py' to 'tasks.py'
+COPY tasks.py .
 
 # -----------------------------------------------------------------------------
 # Entrypoint Configuration
