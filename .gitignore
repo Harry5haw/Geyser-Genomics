@@ -176,6 +176,7 @@ terraform.tfstate.d/
 # -----------------------------------
 
 # Ignore local test data and final results
+real_data/
 tmp/
 results/
 dummy_sample.fastq.gz

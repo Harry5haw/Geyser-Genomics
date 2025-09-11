@@ -193,21 +193,6 @@ resource "aws_batch_job_definition" "genomeflow_app_job_def" {
 }
 ################################################################################
 # OUTPUTS
+###############################################################################
+#Gone in rebuild
 ################################################################################
-
-output "data_lake_bucket_name" {
-  description = "The name of the S3 bucket data lake"
-  value       = aws_s3_bucket.data_lake.bucket
-}
-output "ecr_repository_url" {
-  description = "The URL of the ECR repository"
-  value       = aws_ecr_repository.genomeflow_app.repository_url
-}
-output "job_queue_arn" {
-  description = "The ARN of the Batch Job Queue"
-  value       = aws_batch_job_queue.genomeflow_queue.arn
-}
-output "genomeflow_app_job_def_arn" {
-  description = "The ARN of the main application Batch Job Definition"
-  value       = aws_batch_job_definition.genomeflow_app_job_def.arn
-}
