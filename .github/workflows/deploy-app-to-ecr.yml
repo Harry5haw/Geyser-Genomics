@@ -1,24 +1,25 @@
-# .github/workflows/deploy-app-to-ecr.yml (TEMPORARILY MODIFIED FOR DEBUGGING)
+# .github/workflows/deploy-app-to-ecr.yml (Restored to original state)
 
-name: Build and Push App to ECR # Name doesn't matter for the test
+name: Build and Push App to ECR
 
 on:
   push:
     branches:
       - main
+    paths:
+      - 'app/**' # Only run when application code changes
 
 env:
-  TF_WORKING_DIR: ./infrastructure
+  ECR_REPOSITORY: genomeflow-app
   AWS_REGION: eu-west-2
 
 permissions:
-  id-token: write # This is the known-good permissions block
+  id-token: write
   contents: read
 
 jobs:
-  # We will reuse this existing job structure
   build-and-push-image:
-    name: 'DEBUGGING - Terraform Plan' # Renamed for clarity
+    name: Build and Push to ECR
     runs-on: ubuntu-latest
     
     steps:
@@ -28,20 +29,19 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # Point this known-good workflow at the Terraform Role
-          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role
+          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-ECR-TerraFlow-Role
           aws-region: ${{ env.AWS_REGION }}
 
-      # --- ADD THE TERRAFORM STEPS ---
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Terraform Init
-        id: init
-        run: terraform init
-        working-directory: ${{ env.TF_WORKING_DIR }}
-
-      - name: Terraform Plan
-        id: plan
-        run: terraform plan -no-color
-        working-directory: ${{ env.TF_WORKING_DIR }}
+      - name: Build, Tag, and Push Docker Image
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f app/Dockerfile ./app
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "Pushed image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
