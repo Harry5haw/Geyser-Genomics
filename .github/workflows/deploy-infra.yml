@@ -1,0 +1,94 @@
+# .github/workflows/deploy-infra.yml
+
+name: Deploy Infrastructure to AWS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'infrastructure/**' # Only run this workflow if files inside the 'infrastructure' directory change
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions UI
+
+env:
+  TF_WORKING_DIR: ./infrastructure
+  AWS_REGION: eu-west-2 # Must match your Terraform provider region
+
+permissions:
+  id-token: write # Required for federated identity (OIDC)
+  contents: read  # Required to checkout the repository
+  pull-requests: write # Required to post the plan back to a PR (optional but good practice)
+
+jobs:
+  terraform-plan:
+    name: 'Terraform Plan'
+    runs-on: ubuntu-latest
+    environment: development # A placeholder environment, does not require protection rules
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # IMPORTANT: You will need to create this new IAM role for Terraform actions
+          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Plan
+        id: plan
+        run: terraform plan -no-color -out=tfplan
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        continue-on-error: true # Allow plan to fail without failing the whole workflow initially
+
+      - name: Upload Terraform Plan as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}/tfplan
+
+  terraform-apply:
+    name: 'Terraform Apply'
+    runs-on: ubuntu-latest
+    needs: terraform-plan # This job only runs if terraform-plan succeeds
+    environment:
+      name: production
+      url: https://eu-west-2.console.aws.amazon.com/console/home?region=eu-west-2 # Example URL for your environment
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::488543428961:role/GitHubAction-Terraform-TerraFlow-Role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Download Terraform Plan Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+        working-directory: ${{ env.TF_WORKING_DIR }}
+
+      - name: Terraform Apply
+        id: apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: ${{ env.TF_WORKING_DIR }}
