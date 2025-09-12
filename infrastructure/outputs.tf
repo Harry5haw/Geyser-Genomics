@@ -29,3 +29,13 @@ output "pipeline_status_sns_topic_arn" {
   description = "The ARN of the SNS topic for pipeline status notifications (e.g., failures)."
   value       = aws_sns_topic.pipeline_status_topic.arn
 }
+
+output "github_ecr_role_arn" {
+  description = "The ARN of the IAM role for the ECR push CI/CD workflow."
+  value       = aws_iam_role.github_ecr_role.arn
+}
+
+output "github_terraform_role_arn" {
+  description = "The ARN of the IAM role for the Terraform CI/CD workflow."
+  value       = aws_iam_role.github_terraform_role.arn
+}
