@@ -1,25 +1,106 @@
-# This is the complete, final, parameterized version of app/tasks.py
+# app/tasks.py
 
 import argparse
 import boto3
 import subprocess
 import os
 import threading
+import time
+from functools import wraps
 
-# Read the bucket name from an environment variable set by AWS Batch.
+# --- Configuration ---
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
-
 if not BUCKET_NAME:
     print("FATAL: BUCKET_NAME environment variable is not set.")
     exit(1)
 
+# Initialize AWS clients
+s3_client = boto3.client('s3')
+cloudwatch_client = boto3.client('cloudwatch')
+METRIC_NAMESPACE = "TerraFlowGenomics"
 
+# --- Decorator for Timing and Metrics ---
+def time_task_and_emit_metric(task_name):
+    """
+    A decorator that times the execution of a function, prints the duration,
+    and emits a 'Duration' metric to AWS CloudWatch.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            srr_id = args[0] if args else "UnknownSample"
+            print(f"--- Starting task '{task_name}' for sample '{srr_id}' ---")
+            start_time = time.time()
+            
+            try:
+                result = func(*args, **kwargs)
+                end_time = time.time()
+                duration_seconds = end_time - start_time
+                
+                print(f"--- Task '{task_name}' for sample '{srr_id}' completed in {duration_seconds:.2f} seconds. ---")
+                
+                # Emit metric to CloudWatch
+                cloudwatch_client.put_metric_data(
+                    Namespace=METRIC_NAMESPACE,
+                    MetricData=[
+                        {
+                            'MetricName': 'Duration',
+                            'Dimensions': [
+                                {'Name': 'TaskName', 'Value': task_name},
+                                {'Name': 'SampleId', 'Value': srr_id},
+                                {'Name': 'Status', 'Value': 'Success'}
+                            ],
+                            'Value': duration_seconds,
+                            'Unit': 'Seconds'
+                        },
+                    ]
+                )
+                return result
+            except Exception as e:
+                end_time = time.time()
+                duration_seconds = end_time - start_time
+                print(f"--- Task '{task_name}' for sample '{srr_id}' FAILED after {duration_seconds:.2f} seconds. Error: {e} ---")
+
+                # Emit failure metric to CloudWatch
+                cloudwatch_client.put_metric_data(
+                    Namespace=METRIC_NAMESPACE,
+                    MetricData=[
+                        {
+                            'MetricName': 'Duration',
+                            'Dimensions': [
+                                {'Name': 'TaskName', 'Value': task_name},
+                                {'Name': 'SampleId', 'Value': srr_id},
+                                {'Name': 'Status', 'Value': 'Failure'}
+                            ],
+                            'Value': duration_seconds,
+                            'Unit': 'Seconds'
+                        },
+                        {
+                            'MetricName': 'FailureCount',
+                            'Dimensions': [
+                                {'Name': 'TaskName', 'Value': task_name},
+                                {'Name': 'SampleId', 'Value': srr_id}
+                            ],
+                            'Value': 1,
+                            'Unit': 'Count'
+                        }
+                    ]
+                )
+                # Re-raise the exception to ensure the Batch job is marked as failed
+                raise
+
+        return wrapper
+    return decorator
+
+
+# --- Bioinformatics Tasks (now decorated) ---
+
+@time_task_and_emit_metric("Decompress")
 def decompress_task(srr_id):
     """
     Downloads a compressed FASTQ from S3, decompresses it in-memory,
     and streams the uncompressed output back up to S3.
     """
-    s3_client = boto3.client('s3')
     input_key = f"raw_reads/{srr_id}.fastq.gz"
     output_key = f"decompressed/{srr_id}.fastq"
 
@@ -52,17 +133,17 @@ def decompress_task(srr_id):
         print(f"Gunzip process failed with return code {return_code}. Error: {error_output}")
         raise subprocess.CalledProcessError(return_code, gunzip_process.args, stderr=error_output)
 
+@time_task_and_emit_metric("Align")
 def align_task(srr_id, reference_name):
     """
     Downloads the FASTQ file and a specified reference genome, aligns them with BWA,
     and uploads the resulting BAM file to S3.
     """
-    s3_client = boto3.client('s3')
     fastq_key = f"decompressed/{srr_id}.fastq"
     output_bam_key = f"alignments/{srr_id}.bam"
     local_fastq_path = f"/tmp/{srr_id}.fastq"
     local_ref_dir = "/tmp/reference/"
-    local_ref_path = f"{local_ref_dir}{reference_name}" # Use the parameter
+    local_ref_path = f"{local_ref_dir}{reference_name}"
     local_bam_path = f"/tmp/{srr_id}.bam"
 
     print(f"Downloading FASTQ file: {fastq_key}")
@@ -88,20 +169,18 @@ def align_task(srr_id, reference_name):
     s3_client.upload_file(local_bam_path, BUCKET_NAME, output_bam_key)
     print("Upload complete.")
     print("Cleaning up temporary local files...")
-    subprocess.run(["rm", "-rf", local_fastq_path, local_ref_dir, local_bam_path], check=True)       
-    print("Alignment task complete.")
+    subprocess.run(["rm", "-rf", local_fastq_path, local_ref_dir, local_bam_path], check=True)
 
+@time_task_and_emit_metric("QualityControl")
 def qc_task(srr_id):
     """
     Downloads the decompressed FASTQ from S3, runs FastQC on it locally,
     and uploads the resulting reports back to S3.
     """
-    s3_client = boto3.client('s3')
     input_key = f"decompressed/{srr_id}.fastq"
     local_fastq = f"/tmp/{srr_id}.fastq"
     local_qc_dir = "/tmp/qc_results/"
 
-    print(f"Starting QC task for {srr_id}")
     print(f"Downloading s3://{BUCKET_NAME}/{input_key} to {local_fastq}")
     s3_client.download_file(BUCKET_NAME, input_key, local_fastq)
     print("Download complete.")
@@ -121,19 +200,18 @@ def qc_task(srr_id):
     print("Report uploads complete.")
     print("Cleaning up temporary files...")
     subprocess.run(["rm", "-rf", local_fastq, local_qc_dir], check=True)
-    print("QC task complete.")
 
+@time_task_and_emit_metric("CallVariants")
 def variants_task(srr_id, reference_name):
     """
     Downloads the BAM file and a specified reference genome, calls variants with bcftools,
     and uploads the resulting VCF file to S3.
     """
-    s3_client = boto3.client('s3')
     bam_key = f"alignments/{srr_id}.bam"
     output_vcf_key = f"variants/{srr_id}.vcf.gz"
     local_bam_path = f"/tmp/{srr_id}.bam"
     local_ref_dir = "/tmp/reference/"
-    local_ref_path = f"{local_ref_dir}{reference_name}" # Use the parameter
+    local_ref_path = f"{local_ref_dir}{reference_name}"
 
     print(f"Downloading BAM file: {bam_key}")
     s3_client.download_file(BUCKET_NAME, bam_key, local_bam_path)
@@ -158,32 +236,33 @@ def variants_task(srr_id, reference_name):
     print("Upload complete.")
     print("Cleaning up temporary local files...")
     subprocess.run(["rm", "-rf", local_bam_path, local_ref_dir, local_vcf_path], check=True)
-    print(f"s3://{BUCKET_NAME}/{output_vcf_key}")
 
 
+# --- Main execution block ---
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Runs a bioinformatics pipeline task.")
     parser.add_argument("task_name", help="The name of the task to run: decompress, qc, align, variants")
     parser.add_argument("srr_id", help="The sample ID to process, e.g., SRR062634")
-    parser.add_argument("reference_name", nargs="?", default=None, help="The reference genome filename (e.g., chr20.fa). Required for align and variants.")
+    parser.add_argument("reference_name", nargs="?", default=None, help="The reference genome filename. Required for align and variants.")
     args = parser.parse_args()
 
-    if args.task_name == "decompress":
-        decompress_task(args.srr_id)
-    elif args.task_name == "qc":
-        qc_task(args.srr_id)
-    elif args.task_name == "align":
-        if not args.reference_name:
-            print("Error: 'align' task requires a reference_name argument.")
-            exit(1)
-        align_task(args.srr_id, args.reference_name)
-    elif args.task_name == "variants":
-        if not args.reference_name:
-            print("Error: 'variants' task requires a reference_name argument.")
-            exit(1)
-        variants_task(args.srr_id, args.reference_name)
+    task_map = {
+        "decompress": decompress_task,
+        "qc": qc_task,
+        "align": align_task,
+        "variants": variants_task
+    }
+
+    if args.task_name in task_map:
+        if args.task_name in ["align", "variants"]:
+            if not args.reference_name:
+                print(f"Error: '{args.task_name}' task requires a reference_name argument.")
+                exit(1)
+            task_map[args.task_name](args.srr_id, args.reference_name)
+        else:
+            task_map[args.task_name](args.srr_id)
     else:
         print(f"Error: Unknown task '{args.task_name}'")
         exit(1)
 
-    print(f"Task '{args.task_name}' completed successfully for sample '{args.srr_id}'.")
+    print(f"\nTask '{args.task_name}' driver script completed successfully for sample '{args.srr_id}'.")
