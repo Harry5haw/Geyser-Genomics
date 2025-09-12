@@ -14,7 +14,6 @@ env:
   TF_WORKING_DIR: ./infrastructure
   AWS_REGION: eu-west-2
 
-# Use the proven, minimal permissions block for successful OIDC
 permissions:
   id-token: write
   contents: read
@@ -23,7 +22,6 @@ jobs:
   terraform-plan:
     name: 'Terraform Plan'
     runs-on: ubuntu-latest
-    # NO environment key. This is critical.
 
     steps:
       - name: Checkout Repository
@@ -32,7 +30,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::488543428961:role/teraflow-github-ecr-role-dev # <-- NEW NAME
+          role-to-assume: arn:aws:iam::488543428961:role/TerraformDeployerRole
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Setup Terraform
