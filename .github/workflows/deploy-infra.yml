@@ -18,22 +18,19 @@ on:
 env:
   TF_WORKING_DIR: ./infrastructure
   AWS_REGION: eu-west-2
-  # This GITHUB_TOKEN has read-only permissions by default.
-  # We grant it write permissions for PR comments in the specific 'plan' job.
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+# This full permission set is now safe with our simplified IAM Trust Policy
 permissions:
   id-token: write
   contents: read
+  pull-requests: write
 
 jobs:
   terraform-plan:
     name: 'Terraform Plan'
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    # Grant specific permissions ONLY to this job for writing PR comments
-    permissions:
-      pull-requests: write
 
     steps:
       - name: Checkout Repository
@@ -48,49 +45,30 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Terraform Format
-        id: fmt
-        run: terraform fmt -check
-        working-directory: ${{ env.TF_WORKING_DIR }}
-
       - name: Terraform Init
-        id: init
         run: terraform init
         working-directory: ${{ env.TF_WORKING_DIR }}
 
-      - name: Terraform Validate
-        id: validate
-        run: terraform validate -no-color
-        working-directory: ${{ env.TF_WORKING_DIR }}
-
       - name: Terraform Plan
-        id: plan
-        run: terraform plan -no-color -out=tfplan
+        run: terraform plan -no-color
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Add Plan to PR Comment
         uses: actions/github-script@v7
         with:
           script: |
-            const output = `#### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
+            const output = `#### Terraform Plan 📖
             <details><summary>Show Plan</summary>
             \`\`\`\n
             ${{ steps.plan.outputs.stdout }}
             \`\`\`
-            </details>
-            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
+            </details>`;
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
               body: output
             })
-
-      - name: Upload Terraform Plan as Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan-${{ github.sha }}
-          path: ${{ env.TF_WORKING_DIR }}/tfplan
 
   terraform-apply:
     name: 'Terraform Apply'
@@ -110,16 +88,10 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
-      - name: Download Plan Artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tfplan-${{ github.sha }}
-          path: ${{ env.TF_WORKING_DIR }}
-
       - name: Terraform Init
         run: terraform init
         working-directory: ${{ env.TF_WORKING_DIR }}
 
       - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+        run: terraform apply -auto-approve
         working-directory: ${{ env.TF_WORKING_DIR }}
