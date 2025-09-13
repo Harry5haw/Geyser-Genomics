@@ -1,0 +1,8 @@
+# infrastructure/data.tf
+
+# This file consolidates all common data sources to ensure they are available
+# to all other .tf files in this module.
+
+data "aws_caller_identity" "current" {}
+
+data "aws_region" "current" {}
