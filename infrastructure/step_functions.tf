@@ -114,6 +114,8 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
         Parameters = {
           "JobName.$" = "States.Format('DecompressSRA-{}-{}', $.srr_id, $$.Execution.Name)"
           "ContainerOverrides" = {
+            # --- TEMPORARILY MODIFIED FOR DIAGNOSTICS ---
+            "Command.$" = "States.Array('python', 'debug_network.py')"
             "Command.$" = "States.Array('decompress', $.srr_id)"
           }
         }

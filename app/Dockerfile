@@ -1,3 +1,5 @@
+# app/Dockerfile
+
 # Stage 1: Base Image
 FROM python:3.11-slim-bullseye
 
@@ -6,6 +8,7 @@ FROM python:3.11-slim-bullseye
 # -----------------------------------------------------------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+    # Existing bioinformatics tools (unchanged)
     openjdk-11-jre-headless \
     wget \
     unzip \
@@ -13,15 +16,24 @@ RUN apt-get update && \
     samtools \
     bcftools \
     perl  \
-    sra-toolkit && \
-    apt-get clean && \
+    sra-toolkit \
+    # --- ADDED FOR DIAGNOSTICS ---
+    curl \
+    openssl \
+    # ---------------------------
+    && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Pre-create the NCBI configuration directory to prevent the interactive first-run wizard.
-# The container runs as the 'root' user, so we create it in /root.
+# --- ADDED FOR DIAGNOSTICS: Install the AWS CLI v2 ---
+RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
+    unzip awscliv2.zip && \
+    ./aws/install && \
+    rm -rf awscliv2.zip ./aws
+
+# Pre-create the NCBI configuration directory (unchanged)
 RUN mkdir -p /root/.ncbi && chmod -R 777 /root/.ncbi
-# ---------------------
-# Manually install FastQC.
+
+# Manually install FastQC (unchanged)
 RUN wget -q https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.12.1.zip -O /tmp/fastqc.zip && \
     unzip /tmp/fastqc.zip -d /opt/ && \
     rm /tmp/fastqc.zip && \
@@ -33,16 +45,13 @@ RUN wget -q https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.
 # -----------------------------------------------------------------------------
 WORKDIR /app
 
-# FIX: Changed 'app/requirements.txt' to 'requirements.txt'
+# Copy the Python requirements file and install dependencies (unchanged)
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-# FIX: Changed 'app/tasks.py' to 'tasks.py'
+# --- MODIFIED: Copy both the application and the new debug script ---
 COPY tasks.py .
+COPY debug_network.py .
 
-# -----------------------------------------------------------------------------
-# Entrypoint Configuration
-# -----------------------------------------------------------------------------
-ENTRYPOINT ["python", "tasks.py"]
-CMD ["--help"]
+# The command to run is provided by the AWS Batch job definition override,
+# so no ENTRYPOINT or CMD is needed here.
