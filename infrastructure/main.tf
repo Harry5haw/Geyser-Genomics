@@ -1,8 +1,8 @@
+# infrastructure/main.tf
 
 ################################################################################
 # NETWORKING
 ################################################################################
-# ... (all the networking resources from before - no changes here)
 resource "aws_vpc" "main" {
   cidr_block = "10.0.0.0/16"
   tags       = { Name = "genomeflow-vpc" }
@@ -71,7 +71,7 @@ resource "aws_s3_bucket" "data_lake" {
 
 resource "aws_ecr_repository" "genomeflow_app" {
   name         = "genomeflow-app"
-  force_delete = true
+  force_delete = true # Note: In production, consider removing this for safety.
   tags         = { Name = "genomeflow-ecr-repo" }
 }
 ################################################################################
@@ -108,7 +108,7 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
 
 # IAM Policy that grants our jobs access to the S3 bucket
 resource "aws_iam_policy" "s3_access_policy" {
-  name = "TerraFlowS3AccessPolicy"
+  name   = "TerraFlowS3AccessPolicy"
   policy = jsonencode({
     Version   = "2012-10-17",
     Statement = [{
@@ -157,7 +157,8 @@ resource "aws_batch_job_definition" "genomeflow_app_job_def" {
   type                  = "container"
   platform_capabilities = ["FARGATE"]
   container_properties = jsonencode({
-    image            ="${aws_ecr_repository.genomeflow_app.repository_url}:v1.3"
+    # MODIFIED: Pointing to the :latest tag which is managed by our CI/CD pipeline
+    image            = "${aws_ecr_repository.genomeflow_app.repository_url}:latest"
     executionRoleArn = aws_iam_role.ecs_task_execution_role.arn
     jobRoleArn       = aws_iam_role.ecs_task_execution_role.arn
     fargatePlatformConfiguration = {
@@ -167,16 +168,13 @@ resource "aws_batch_job_definition" "genomeflow_app_job_def" {
       { type = "VCPU", value = "2" },
       { type = "MEMORY", value = "4096" }
     ]
-    # THIS IS THE CRITICAL ADDITION:
-    # Inject the S3 bucket name as an environment variable.
+    # MODIFIED: Appended the APP_VERSION variable to force new revisions on each deploy.
+    # The existing BUCKET_NAME variable is preserved.
     environment = [
-      { name = "BUCKET_NAME", value = aws_s3_bucket.data_lake.bucket }
+      { name = "BUCKET_NAME", value = aws_s3_bucket.data_lake.bucket },
+      { name = "APP_VERSION", value = var.image_version }
     ]
   })
   tags = { Name = "TerraFlow-AppJobDef" }
 }
-################################################################################
-# OUTPUTS
-###############################################################################
-#Gone in rebuild
-################################################################################
+

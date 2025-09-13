@@ -11,3 +11,9 @@ variable "environment" {
   type        = string
   default     = "dev"
 }
+
+variable "image_version" {
+  description = "A unique identifier for the application version, e.g., a git commit SHA."
+  type        = string
+  default     = "latest" # A sensible default for local runs
+}
