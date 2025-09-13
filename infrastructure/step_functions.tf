@@ -130,7 +130,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
           "Timeout" = { "AttemptDurationSeconds" = 3600 }
         }
-        ResultPath = null
+        ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
@@ -159,7 +159,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
           "Timeout" = { "AttemptDurationSeconds" = 1800 }
         }
-        ResultPath = null
+        ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
@@ -188,7 +188,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
           "Timeout" = { "AttemptDurationSeconds" = 14400 }
         }
-        ResultPath = null
+        ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
@@ -217,7 +217,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
           "Timeout" = { "AttemptDurationSeconds" = 7200 }
         }
-        ResultPath = null
+        ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
@@ -265,4 +265,6 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
     aws_iam_role_policy_attachment.step_functions_policy_attach,
   ]
 }
+
+
 
