@@ -11,11 +11,11 @@ resource "aws_iam_role" "step_functions_execution_role" {
   name = "${var.project_name}-sfn-execution-role-${var.environment}"
 
   assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
-        Action    = "sts:AssumeRole",
-        Effect    = "Allow",
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
         Principal = {
           Service = "states.amazonaws.com"
         }
@@ -35,12 +35,12 @@ resource "aws_iam_policy" "step_functions_execution_policy" {
   description = "IAM policy for Step Functions to submit jobs to AWS Batch, log to CloudWatch, and manage events."
 
   policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
-        Sid      = "AWSBatchPermissions",
-        Effect   = "Allow",
-        Action   = [
+        Sid    = "AWSBatchPermissions",
+        Effect = "Allow",
+        Action = [
           "batch:SubmitJob",
           "batch:DescribeJobs",
           "batch:TerminateJob"
@@ -67,9 +67,9 @@ resource "aws_iam_policy" "step_functions_execution_policy" {
         Resource = aws_sns_topic.pipeline_status_topic.arn
       },
       {
-        Sid      = "EventsPermissions",
-        Effect   = "Allow",
-        Action   = [
+        Sid    = "EventsPermissions",
+        Effect = "Allow",
+        Action = [
           "events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets"
         ],
         Resource = "*"
@@ -124,11 +124,11 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
         Parameters = {
-          "JobName.$"              = "$.batch_params.JobName"
-          "JobDefinition"          = aws_batch_job_definition.genomeflow_app_job_def.name
-          "JobQueue"               = aws_batch_job_queue.genomeflow_queue.name
-          "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
-          "Timeout" = { "AttemptDurationSeconds" = 3600 }
+          "JobName.$"            = "$.batch_params.JobName"
+          "JobDefinition"        = aws_batch_job_definition.genomeflow_app_job_def.name
+          "JobQueue"             = aws_batch_job_queue.genomeflow_queue.name
+          "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
+          "Timeout"              = { "AttemptDurationSeconds" = 3600 }
         }
         ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
@@ -153,11 +153,11 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
         Parameters = {
-          "JobName.$"              = "$.batch_params.JobName"
-          "JobDefinition"          = aws_batch_job_definition.genomeflow_app_job_def.name
-          "JobQueue"               = aws_batch_job_queue.genomeflow_queue.name
-          "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
-          "Timeout" = { "AttemptDurationSeconds" = 1800 }
+          "JobName.$"            = "$.batch_params.JobName"
+          "JobDefinition"        = aws_batch_job_definition.genomeflow_app_job_def.name
+          "JobQueue"             = aws_batch_job_queue.genomeflow_queue.name
+          "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
+          "Timeout"              = { "AttemptDurationSeconds" = 1800 }
         }
         ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
@@ -182,11 +182,11 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
         Parameters = {
-          "JobName.$"              = "$.batch_params.JobName"
-          "JobDefinition"          = aws_batch_job_definition.genomeflow_app_job_def.name
-          "JobQueue"               = aws_batch_job_queue.genomeflow_queue.name
-          "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
-          "Timeout" = { "AttemptDurationSeconds" = 14400 }
+          "JobName.$"            = "$.batch_params.JobName"
+          "JobDefinition"        = aws_batch_job_definition.genomeflow_app_job_def.name
+          "JobQueue"             = aws_batch_job_queue.genomeflow_queue.name
+          "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
+          "Timeout"              = { "AttemptDurationSeconds" = 14400 }
         }
         ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
@@ -211,11 +211,11 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
         Parameters = {
-          "JobName.$"              = "$.batch_params.JobName"
-          "JobDefinition"          = aws_batch_job_definition.genomeflow_app_job_def.name
-          "JobQueue"               = aws_batch_job_queue.genomeflow_queue.name
-          "ContainerOverrides.$"   = "$.batch_params.ContainerOverrides"
-          "Timeout" = { "AttemptDurationSeconds" = 7200 }
+          "JobName.$"            = "$.batch_params.JobName"
+          "JobDefinition"        = aws_batch_job_definition.genomeflow_app_job_def.name
+          "JobQueue"             = aws_batch_job_queue.genomeflow_queue.name
+          "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
+          "Timeout"              = { "AttemptDurationSeconds" = 7200 }
         }
         ResultPath = "$.batch_output" # CORRECTED: Store the job output
         Catch = [{
@@ -239,7 +239,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
             "StartTime"      = "$$.Execution.StartTime"
           }
           "MessageAttributes" = {
-            "Status" = { "DataType" = "String", "StringValue" = "FAILED" }
+            "Status"   = { "DataType" = "String", "StringValue" = "FAILED" }
             "Pipeline" = { "DataType" = "String", "StringValue" = "TerraFlow Genomics" }
           }
         }

@@ -10,7 +10,7 @@ resource "aws_iam_policy" "batch_job_cloudwatch_metrics_policy" {
   description = "Allows Batch jobs to put custom metrics into CloudWatch"
 
   policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
         Sid      = "AllowCloudWatchPutMetricData",

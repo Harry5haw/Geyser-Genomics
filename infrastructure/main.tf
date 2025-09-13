@@ -79,7 +79,7 @@ resource "aws_ecr_repository" "genomeflow_app" {
 ################################################################################
 
 resource "aws_iam_role" "aws_batch_service_role" {
-  name               = "TerraFlow-AWSBatchServiceRole"
+  name = "TerraFlow-AWSBatchServiceRole"
   assume_role_policy = jsonencode({
     Version   = "2012-10-17",
     Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "batch.amazonaws.com" } }]
@@ -93,7 +93,7 @@ resource "aws_iam_role_policy_attachment" "aws_batch_service_role_policy" {
 }
 
 resource "aws_iam_role" "ecs_task_execution_role" {
-  name               = "TerraFlow-BatchJobExecutionRole"
+  name = "TerraFlow-BatchJobExecutionRole"
   assume_role_policy = jsonencode({
     Version   = "2012-10-17",
     Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ecs-tasks.amazonaws.com" } }]
@@ -108,9 +108,9 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
 
 # IAM Policy that grants our jobs access to the S3 bucket
 resource "aws_iam_policy" "s3_access_policy" {
-  name   = "TerraFlowS3AccessPolicy"
+  name = "TerraFlowS3AccessPolicy"
   policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [{
       Action   = ["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
       Effect   = "Allow",

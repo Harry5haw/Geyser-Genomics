@@ -36,9 +36,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "terraform_state_e
 
 # DynamoDB Table for Terraform state locking
 resource "aws_dynamodb_table" "terraform_state_lock" {
-  name           = "${var.project_name}-tf-lock"
-  billing_mode   = "PAY_PER_REQUEST"
-  hash_key       = "LockID" # This attribute name is required by Terraform
+  name         = "${var.project_name}-tf-lock"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "LockID" # This attribute name is required by Terraform
 
   attribute {
     name = "LockID"

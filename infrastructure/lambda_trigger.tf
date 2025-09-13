@@ -15,11 +15,11 @@ resource "aws_iam_role" "sfn_trigger_lambda_role" {
   name = "${var.project_name}-sfn-trigger-lambda-role"
 
   assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
-        Action    = "sts:AssumeRole",
-        Effect    = "Allow",
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
         Principal = {
           Service = "lambda.amazonaws.com"
         }
@@ -45,7 +45,7 @@ resource "aws_iam_policy" "sfn_trigger_lambda_start_execution_policy" {
   description = "Allows Lambda to start the main Step Function execution"
 
   policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
         Action   = "states:StartExecution",

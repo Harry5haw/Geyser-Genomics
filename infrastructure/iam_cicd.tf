@@ -20,14 +20,14 @@ resource "aws_iam_openid_connect_provider" "github" {
 resource "aws_iam_role" "github_ecr_role" {
   name = "${var.project_name}-github-ecr-role-${var.environment}"
   assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
-        Effect    = "Allow",
+        Effect = "Allow",
         Principal = {
           Federated = aws_iam_openid_connect_provider.github.arn
         },
-        Action    = "sts:AssumeRoleWithWebIdentity",
+        Action = "sts:AssumeRoleWithWebIdentity",
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
@@ -47,9 +47,9 @@ resource "aws_iam_role" "github_ecr_role" {
 }
 
 resource "aws_iam_policy" "github_ecr_policy" {
-  name   = "${var.project_name}-github-ecr-policy-${var.environment}"
+  name = "${var.project_name}-github-ecr-policy-${var.environment}"
   policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
         Sid      = "ECRLogin",
@@ -84,14 +84,14 @@ resource "aws_iam_role_policy_attachment" "github_ecr_attach" {
 resource "aws_iam_role" "github_terraform_role" {
   name = "${var.project_name}-github-terraform-role-${var.environment}"
   assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
-        Effect    = "Allow",
+        Effect = "Allow",
         Principal = {
           Federated = aws_iam_openid_connect_provider.github.arn
         },
-        Action    = "sts:AssumeRoleWithWebIdentity",
+        Action = "sts:AssumeRoleWithWebIdentity",
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
