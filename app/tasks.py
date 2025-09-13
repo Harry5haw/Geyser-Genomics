@@ -1,4 +1,4 @@
-# app/tasks.py (Definitive Diagnostic Version)
+# app/tasks.py (The definitive, correct, and final version)
 
 import argparse
 import boto3
@@ -10,13 +10,15 @@ from functools import wraps
 
 # --- Configuration ---
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
+AWS_REGION = os.environ.get("AWS_REGION", "eu-west-2") # Read region from env, default to eu-west-2
+
 if not BUCKET_NAME:
     print("FATAL: BUCKET_NAME environment variable is not set.")
     exit(1)
 
-# Initialize AWS clients
-s3_client = boto3.client('s3')
-cloudwatch_client = boto3.client('cloudwatch')
+# Initialize AWS clients with EXPLICIT region
+s3_client = boto3.client('s3', region_name=AWS_REGION)
+cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION)
 METRIC_NAMESPACE = "TerraFlowGenomics"
 
 # --- Decorator for Timing and Metrics ---
@@ -59,7 +61,6 @@ def time_task_and_emit_metric(task_name):
 
 
 # --- Bioinformatics Tasks (now decorated) ---
-
 @time_task_and_emit_metric("Decompress")
 def decompress_task(srr_id):
     input_key = f"raw_reads/{srr_id}.fastq.gz"
@@ -100,7 +101,7 @@ def align_task(srr_id, reference_name):
     print(f"Downloading FASTQ file: {fastq_key}")
     s3_client.download_file(BUCKET_NAME, fastq_key, local_fastq_path)
     print("Downloading reference genome files...")
-    s3_resource = boto3.resource('s3')
+    s3_resource = boto3.resource('s3', region_name=AWS_REGION)
     bucket = s3_resource.Bucket(BUCKET_NAME)
     os.makedirs(local_ref_dir, exist_ok=True)
     for obj in bucket.objects.filter(Prefix="reference/"):
@@ -154,7 +155,7 @@ def variants_task(srr_id, reference_name):
     print(f"Downloading BAM file: {bam_key}")
     s3_client.download_file(BUCKET_NAME, bam_key, local_bam_path)
     print("Downloading reference genome files...")
-    s3_resource = boto3.resource('s3')
+    s3_resource = boto3.resource('s3', region_name=AWS_REGION)
     bucket = s3_resource.Bucket(BUCKET_NAME)
     os.makedirs(local_ref_dir, exist_ok=True)
     for obj in bucket.objects.filter(Prefix="reference/"):
@@ -174,9 +175,6 @@ def variants_task(srr_id, reference_name):
 
 # --- Main execution block ---
 if __name__ == "__main__":
-    # THIS IS THE CANARY. If this line does not appear in the logs, the code is stale.
-    print("--- RUNNING DIAGNOSTIC VERSION 9 ---")
-
     parser = argparse.ArgumentParser(description="Runs a bioinformatics pipeline task.")
     parser.add_argument("task_name", help="The name of the task to run: decompress, qc, align, variants")
     parser.add_argument("srr_id", help="The sample ID to process, e.g., SRR062634")
