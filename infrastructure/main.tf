@@ -157,7 +157,7 @@ resource "aws_batch_job_definition" "genomeflow_app_job_def" {
   type                  = "container"
   platform_capabilities = ["FARGATE"]
   container_properties = jsonencode({
-    image = "${aws_ecr_repository.genomeflow_app.repository_url}:latest"
+    image            = "${aws_ecr_repository.genomeflow_app.repository_url}:${var.image_version}"
     # This role is for pulling the container and basic setup.
     executionRoleArn = aws_iam_role.ecs_task_execution_role.arn
     # MODIFIED: This is the dedicated role for the application code itself.
