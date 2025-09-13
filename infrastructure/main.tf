@@ -157,10 +157,11 @@ resource "aws_batch_job_definition" "genomeflow_app_job_def" {
   type                  = "container"
   platform_capabilities = ["FARGATE"]
   container_properties = jsonencode({
-    # MODIFIED: Pointing to the :latest tag which is managed by our CI/CD pipeline
     image            = "${aws_ecr_repository.genomeflow_app.repository_url}:latest"
+    # This role is for pulling the container and basic setup.
     executionRoleArn = aws_iam_role.ecs_task_execution_role.arn
-    jobRoleArn       = aws_iam_role.ecs_task_execution_role.arn
+    # MODIFIED: This is the dedicated role for the application code itself.
+    jobRoleArn       = aws_iam_role.batch_task_role.arn
     fargatePlatformConfiguration = {
       platformVersion = "LATEST"
     }
@@ -168,8 +169,6 @@ resource "aws_batch_job_definition" "genomeflow_app_job_def" {
       { type = "VCPU", value = "2" },
       { type = "MEMORY", value = "4096" }
     ]
-    # MODIFIED: Appended the APP_VERSION variable to force new revisions on each deploy.
-    # The existing BUCKET_NAME variable is preserved.
     environment = [
       { name = "BUCKET_NAME", value = aws_s3_bucket.data_lake.bucket },
       { name = "APP_VERSION", value = var.image_version }
