@@ -58,17 +58,10 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
     Comment = "TerraFlow Genomics Pipeline orchestrated by AWS Step Functions"
     StartAt = "Prepare_Decompress_Command"
     States = {
-      # REVERTED: This state is now back to its correct, final, explicit command.
       Prepare_Decompress_Command = {
-        Type = "Pass"
-        Parameters = {
-          "JobName.$" = "States.Format('DecompressSRA-{}-{}', $.srr_id, $$.Execution.Name)"
-          "ContainerOverrides" = {
-            "Command.$" = "States.Array('python', 'tasks.py', 'decompress', $.srr_id)"
-          }
-        }
-        ResultPath = "$.batch_params"
-        Next       = "Decompress_SRA"
+        Type = "Pass",
+        Parameters = { "JobName.$" = "States.Format('DecompressSRA-{}-{}', $.srr_id, $$.Execution.Name)", "ContainerOverrides" = { "Command.$" = "States.Array('python', 'tasks.py', 'decompress', $.srr_id)" } },
+        ResultPath = "$.batch_params", Next = "Decompress_SRA"
       },
       Decompress_SRA = {
         Type     = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
@@ -112,7 +105,21 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
       }
     }
   })
-  logging_configuration { log_destination = "${aws_cloudwatch_log_group.sfn_log_group.arn}:*", include_execution_data = true, level = "ALL" }
-  tags                  = { Name = "${var.project_name}-pipeline-sfn", Environment = var.environment, ManagedBy = "Terraform" }
-  depends_on            = [aws_iam_role_policy_attachment.step_functions_policy_attach]
+
+  # CORRECTED: This block is now in the correct multi-line format.
+  logging_configuration {
+    log_destination        = "${aws_cloudwatch_log_group.sfn_log_group.arn}:*"
+    include_execution_data = true
+    level                  = "ALL"
+  }
+
+  tags = {
+    Name        = "${var.project_name}-pipeline-sfn"
+    Environment = var.environment
+    ManagedBy   = "Terraform"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.step_functions_policy_attach,
+  ]
 }
