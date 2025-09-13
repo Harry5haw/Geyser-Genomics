@@ -1,17 +1,14 @@
-# .github/workflows/deploy-infra.yml
-
 name: Deploy Infrastructure to AWS
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'infrastructure/**'
   pull_request:
-    paths:
-      - 'infrastructure/**'
+    branches: [main]
+    paths: ['infrastructure/**']
+  push:
+    branches: [main]
+    paths: ['infrastructure/**']
 
+# CRITICAL: This block is required for OIDC authentication to AWS.
 permissions:
   id-token: write
   contents: read
@@ -25,12 +22,14 @@ jobs:
     defaults:
       run:
         shell: bash
+        # This ensures all 'run' steps execute in the correct directory.
         working-directory: ./infrastructure
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # This step securely authenticates with AWS using the secrets you created.
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -45,11 +44,13 @@ jobs:
         run: terraform init
 
       - name: Terraform Format
+        id: fmt
         run: terraform fmt -check
         
       - name: Terraform Plan
         id: plan
         run: terraform plan -no-color
+        # This ensures the workflow doesn't stop if the plan has an error on a PR.
         continue-on-error: true
 
       - name: Update Pull Request with Plan
@@ -82,9 +83,9 @@ jobs:
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         run: |
-          # MODIFIED: Get the short Git commit SHA
+          # Get the short Git commit SHA
           GIT_SHA=$(git rev-parse --short HEAD)
           
-          # MODIFIED: Pass the SHA as a variable to terraform apply
+          # Pass the SHA as a variable to terraform apply
           # This forces a new revision of the Batch Job Definition on every push.
           terraform apply -auto-approve -var="image_version=${GIT_SHA}"

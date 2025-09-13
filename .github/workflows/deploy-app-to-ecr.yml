@@ -1,6 +1,3 @@
-# .github/workflows/deploy-app-to-ecr.yml (Restored to original state)
-
-# Workflow to build and push the application container to ECR
 name: Build and Push App to ECR
 
 on:
@@ -8,11 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'app/**' # Only run when application code changes
-
-env:
-  ECR_REPOSITORY: genomeflow-app
-  AWS_REGION: eu-west-2
+      - 'app/**'
 
 permissions:
   id-token: write
@@ -30,8 +23,10 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::488543428961:role/teraflow-github-ecr-role-dev # <-- NEW NAME
-          aws-region: ${{ env.AWS_REGION }}
+          # CORRECTED: Uses a secret for the IAM Role ARN for security and maintainability.
+          role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
+          # CORRECTED: Uses a secret for the AWS Region for consistency.
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -41,8 +36,20 @@ jobs:
         id: build-image
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: genomeflow-app
+          # We use github.sha for a unique, immutable tag.
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f app/Dockerfile ./app
+          # Build and tag the image with the unique commit SHA
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+          
+          # Also tag the same image with 'latest' to be used by the Batch Job Definition
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          # Push the unique SHA-tagged image
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "Pushed image: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          
+          # Push the 'latest' tag, updating the pointer in ECR
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          
+          echo "Pushed image tags: $IMAGE_TAG and latest"
