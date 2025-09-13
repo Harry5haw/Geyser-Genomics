@@ -1,0 +1,96 @@
+name: Deploy Platform to AWS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - 'infrastructure/**'
+  pull_request:
+    paths:
+      - 'infrastructure/**'
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  # --- JOB 1: Build and Push the Application Image ---
+  build-application:
+    name: Build and Push App to ECR
+    runs-on: ubuntu-latest
+    # This job MUST complete before the deploy-infrastructure job can start.
+    outputs:
+      image_tag: ${{ steps.get-sha.outputs.sha }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Get short Git SHA
+        id: get-sha
+        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag, and Push Docker Image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: genomeflow-app
+          IMAGE_TAG: ${{ steps.get-sha.outputs.sha }}
+        run: |
+          docker build --no-cache -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "Successfully pushed image with tag: $IMAGE_TAG"
+
+  # --- JOB 2: Deploy Infrastructure (depends on the build job) ---
+  deploy-infrastructure:
+    name: Deploy Infrastructure
+    runs-on: ubuntu-latest
+    # This 'needs' keyword ensures this job only starts after 'build-application' succeeds.
+    needs: build-application
+    
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./infrastructure
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        # We use the image_tag output from the build job.
+        run: terraform plan -no-color -var="image_version=${{ needs.build-application.outputs.image_tag }}"
+        if: github.event_name == 'pull_request'
+
+      # ... (The PR comment script can be added back here if needed) ...
+
+      - name: Terraform Apply
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        # We use the image_tag output from the build job.
+        run: terraform apply -auto-approve -var="image_version=${{ needs.build-application.outputs.image_tag }}"
+
