@@ -1,5 +1,5 @@
 # app/tasks.py
-
+# This is a trivial comment to trigger the application CI/CD workflow.
 import argparse
 import boto3
 import subprocess
