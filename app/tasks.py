@@ -1,4 +1,4 @@
-# app/tasks.py (The definitive, correct version)
+# app/tasks.py (Definitive Diagnostic Version)
 
 import argparse
 import boto3
@@ -39,21 +39,9 @@ def time_task_and_emit_metric(task_name):
                 
                 print(f"--- Task '{task_name}' for sample '{srr_id}' completed in {duration_seconds:.2f} seconds. ---")
                 
-                # Emit metric to CloudWatch
                 cloudwatch_client.put_metric_data(
                     Namespace=METRIC_NAMESPACE,
-                    MetricData=[
-                        {
-                            'MetricName': 'Duration',
-                            'Dimensions': [
-                                {'Name': 'TaskName', 'Value': task_name},
-                                {'Name': 'SampleId', 'Value': srr_id},
-                                {'Name': 'Status', 'Value': 'Success'}
-                            ],
-                            'Value': duration_seconds,
-                            'Unit': 'Seconds'
-                        },
-                    ]
+                    MetricData=[{'MetricName': 'Duration','Dimensions': [{'Name': 'TaskName', 'Value': task_name},{'Name': 'SampleId', 'Value': srr_id},{'Name': 'Status', 'Value': 'Success'}],'Value': duration_seconds,'Unit': 'Seconds'},]
                 )
                 return result
             except Exception as e:
@@ -61,34 +49,11 @@ def time_task_and_emit_metric(task_name):
                 duration_seconds = end_time - start_time
                 print(f"--- Task '{task_name}' for sample '{srr_id}' FAILED after {duration_seconds:.2f} seconds. Error: {e} ---")
 
-                # Emit failure metric to CloudWatch
                 cloudwatch_client.put_metric_data(
                     Namespace=METRIC_NAMESPACE,
-                    MetricData=[
-                        {
-                            'MetricName': 'Duration',
-                            'Dimensions': [
-                                {'Name': 'TaskName', 'Value': task_name},
-                                {'Name': 'SampleId', 'Value': srr_id},
-                                {'Name': 'Status', 'Value': 'Failure'}
-                            ],
-                            'Value': duration_seconds,
-                            'Unit': 'Seconds'
-                        },
-                        {
-                            'MetricName': 'FailureCount',
-                            'Dimensions': [
-                                {'Name': 'TaskName', 'Value': task_name},
-                                {'Name': 'SampleId', 'Value': srr_id}
-                            ],
-                            'Value': 1,
-                            'Unit': 'Count'
-                        }
-                    ]
+                    MetricData=[{'MetricName': 'Duration','Dimensions': [{'Name': 'TaskName', 'Value': task_name},{'Name': 'SampleId', 'Value': srr_id},{'Name': 'Status', 'Value': 'Failure'}],'Value': duration_seconds,'Unit': 'Seconds'},{'MetricName': 'FailureCount','Dimensions': [{'Name': 'TaskName', 'Value': task_name},{'Name': 'SampleId', 'Value': srr_id}],'Value': 1,'Unit': 'Count'}]
                 )
-                # Re-raise the exception to ensure the Batch job is marked as failed
                 raise
-
         return wrapper
     return decorator
 
@@ -97,35 +62,26 @@ def time_task_and_emit_metric(task_name):
 
 @time_task_and_emit_metric("Decompress")
 def decompress_task(srr_id):
-    """
-    Downloads a compressed FASTQ from S3, decompresses it in-memory,
-    and streams the uncompressed output back up to S3.
-    """
     input_key = f"raw_reads/{srr_id}.fastq.gz"
     output_key = f"decompressed/{srr_id}.fastq"
-
     print(f"Starting decompression stream for s3://{BUCKET_NAME}/{input_key}")
     s3_object = s3_client.get_object(Bucket=BUCKET_NAME, Key=input_key)
     streaming_body = s3_object['Body']
     gunzip_process = subprocess.Popen(["gunzip"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
     def upload_stream():
         try:
             s3_client.upload_fileobj(gunzip_process.stdout, BUCKET_NAME, output_key)
             print(f"Successfully decompressed and uploaded to s3://{BUCKET_NAME}/{output_key}")
         except Exception as e:
             print(f"Error during S3 upload: {e}")
-
     upload_thread = threading.Thread(target=upload_stream)
     upload_thread.start()
-    
     try:
         for chunk in streaming_body.iter_chunks():
             gunzip_process.stdin.write(chunk)
         gunzip_process.stdin.close()
     except Exception as e:
         print(f"Error writing to gunzip process: {e}")
-    
     upload_thread.join()
     return_code = gunzip_process.wait()
     if return_code != 0:
@@ -135,17 +91,12 @@ def decompress_task(srr_id):
 
 @time_task_and_emit_metric("Align")
 def align_task(srr_id, reference_name):
-    """
-    Downloads the FASTQ file and a specified reference genome, aligns them with BWA,
-    and uploads the resulting BAM file to S3.
-    """
     fastq_key = f"decompressed/{srr_id}.fastq"
     output_bam_key = f"alignments/{srr_id}.bam"
     local_fastq_path = f"/tmp/{srr_id}.fastq"
     local_ref_dir = "/tmp/reference/"
     local_ref_path = f"{local_ref_dir}{reference_name}"
     local_bam_path = f"/tmp/{srr_id}.bam"
-
     print(f"Downloading FASTQ file: {fastq_key}")
     s3_client.download_file(BUCKET_NAME, fastq_key, local_fastq_path)
     print("Downloading reference genome files...")
@@ -159,10 +110,7 @@ def align_task(srr_id, reference_name):
         bucket.download_file(obj.key, target)
     print("All downloads complete.")
     print(f"Running BWA-MEM alignment for {srr_id}...")
-    alignment_command = (
-        f"bwa mem {local_ref_path} {local_fastq_path} | "
-        f"samtools view -S -b > {local_bam_path}"
-    )
+    alignment_command = (f"bwa mem {local_ref_path} {local_fastq_path} | " f"samtools view -S -b > {local_bam_path}")
     subprocess.run(alignment_command, shell=True, check=True)
     print("Alignment complete.")
     print(f"Uploading BAM file to s3://{BUCKET_NAME}/{output_bam_key}")
@@ -173,14 +121,9 @@ def align_task(srr_id, reference_name):
 
 @time_task_and_emit_metric("QualityControl")
 def qc_task(srr_id):
-    """
-    Downloads the decompressed FASTQ from S3, runs FastQC on it locally,
-    and uploads the resulting reports back to S3.
-    """
     input_key = f"decompressed/{srr_id}.fastq"
     local_fastq = f"/tmp/{srr_id}.fastq"
     local_qc_dir = "/tmp/qc_results/"
-
     print(f"Downloading s3://{BUCKET_NAME}/{input_key} to {local_fastq}")
     s3_client.download_file(BUCKET_NAME, input_key, local_fastq)
     print("Download complete.")
@@ -203,16 +146,11 @@ def qc_task(srr_id):
 
 @time_task_and_emit_metric("CallVariants")
 def variants_task(srr_id, reference_name):
-    """
-    Downloads the BAM file and a specified reference genome, calls variants with bcftools,
-    and uploads the resulting VCF file to S3.
-    """
     bam_key = f"alignments/{srr_id}.bam"
     output_vcf_key = f"variants/{srr_id}.vcf.gz"
     local_bam_path = f"/tmp/{srr_id}.bam"
     local_ref_dir = "/tmp/reference/"
     local_ref_path = f"{local_ref_dir}{reference_name}"
-
     print(f"Downloading BAM file: {bam_key}")
     s3_client.download_file(BUCKET_NAME, bam_key, local_bam_path)
     print("Downloading reference genome files...")
@@ -224,10 +162,7 @@ def variants_task(srr_id, reference_name):
         bucket.download_file(obj.key, target)
     print("All downloads complete.")
     print(f"Calling variants for {srr_id}...")
-    variant_calling_command = (
-        f"bcftools mpileup -f {local_ref_path} {local_bam_path} | "
-        f"bcftools call -mv -o - -O z > /tmp/{srr_id}.vcf.gz"
-    )
+    variant_calling_command = (f"bcftools mpileup -f {local_ref_path} {local_bam_path} | " f"bcftools call -mv -o - -O z > /tmp/{srr_id}.vcf.gz")
     subprocess.run(variant_calling_command, shell=True, check=True)
     print("Variant calling complete.")
     local_vcf_path = f"/tmp/{srr_id}.vcf.gz"
@@ -237,22 +172,17 @@ def variants_task(srr_id, reference_name):
     print("Cleaning up temporary local files...")
     subprocess.run(["rm", "-rf", local_bam_path, local_ref_dir, local_vcf_path], check=True)
 
-
 # --- Main execution block ---
 if __name__ == "__main__":
+    # THIS IS THE CANARY. If this line does not appear in the logs, the code is stale.
+    print("--- RUNNING DIAGNOSTIC VERSION 9 ---")
+
     parser = argparse.ArgumentParser(description="Runs a bioinformatics pipeline task.")
     parser.add_argument("task_name", help="The name of the task to run: decompress, qc, align, variants")
     parser.add_argument("srr_id", help="The sample ID to process, e.g., SRR062634")
     parser.add_argument("reference_name", nargs="?", default=None, help="The reference genome filename. Required for align and variants.")
     args = parser.parse_args()
-
-    task_map = {
-        "decompress": decompress_task,
-        "qc": qc_task,
-        "align": align_task,
-        "variants": variants_task
-    }
-
+    task_map = {"decompress": decompress_task,"qc": qc_task,"align": align_task,"variants": variants_task}
     if args.task_name in task_map:
         if args.task_name in ["align", "variants"]:
             if not args.reference_name:
@@ -264,6 +194,4 @@ if __name__ == "__main__":
     else:
         print(f"Error: Unknown task '{args.task_name}'")
         exit(1)
-
     print(f"\nTask '{args.task_name}' driver script completed successfully for sample '{args.srr_id}'.")
-
