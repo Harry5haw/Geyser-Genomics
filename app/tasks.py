@@ -26,7 +26,7 @@ if not BUCKET_NAME:
 # Initialize AWS clients with EXPLICIT region
 s3_client = boto3.client('s3', region_name=AWS_REGION)
 cloudwatch_client = boto3.client('cloudwatch', region_name=AWS_REGION)
-METRIC_NAMESPACE = "TerraFlowGenomics"
+METRIC_NAMESPACE = "TerraFlowGenomicsV2"
 
 # --- Decorator for Timing and Metrics ---
 def time_task_and_emit_metric(task_name):
