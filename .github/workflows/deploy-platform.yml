@@ -1,3 +1,5 @@
+# .github/workflows/deploy-platform.yml (The definitive, final version)
+
 name: Deploy Platform to AWS
 
 on:
@@ -7,9 +9,11 @@ on:
     paths:
       - 'app/**'
       - 'infrastructure/**'
+      - 'Dockerfile' # Trigger on Dockerfile changes too
   pull_request:
     paths:
       - 'infrastructure/**'
+      - 'Dockerfile'
 
 permissions:
   id-token: write
@@ -21,7 +25,6 @@ jobs:
   build-application:
     name: Build and Push App to ECR
     runs-on: ubuntu-latest
-    # This job MUST complete before the deploy-infrastructure job can start.
     outputs:
       image_tag: ${{ steps.get-sha.outputs.sha }}
 
@@ -49,7 +52,8 @@ jobs:
           ECR_REPOSITORY: genomeflow-app
           IMAGE_TAG: ${{ steps.get-sha.outputs.sha }}
         run: |
-          docker build --no-cache -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+          # Build from the root context, using the root Dockerfile
+          docker build --no-cache -f Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "Successfully pushed image with tag: $IMAGE_TAG"
 
@@ -57,7 +61,6 @@ jobs:
   deploy-infrastructure:
     name: Deploy Infrastructure
     runs-on: ubuntu-latest
-    # This 'needs' keyword ensures this job only starts after 'build-application' succeeds.
     needs: build-application
     
     defaults:
@@ -83,14 +86,9 @@ jobs:
 
       - name: Terraform Plan
         id: plan
-        # We use the image_tag output from the build job.
         run: terraform plan -no-color -var="image_version=${{ needs.build-application.outputs.image_tag }}"
         if: github.event_name == 'pull_request'
 
-      # ... (The PR comment script can be added back here if needed) ...
-
       - name: Terraform Apply
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        # We use the image_tag output from the build job.
         run: terraform apply -auto-approve -var="image_version=${{ needs.build-application.outputs.image_tag }}"
-
