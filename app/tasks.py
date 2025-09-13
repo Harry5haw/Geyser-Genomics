@@ -1,5 +1,5 @@
-# app/tasks.py
-# This is a trivial comment to trigger the application CI/CD workflow
+# app/tasks.py (The definitive, correct version)
+
 import argparse
 import boto3
 import subprocess
@@ -266,3 +266,4 @@ if __name__ == "__main__":
         exit(1)
 
     print(f"\nTask '{args.task_name}' driver script completed successfully for sample '{args.srr_id}'.")
+
