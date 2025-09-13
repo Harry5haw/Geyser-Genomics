@@ -7,11 +7,11 @@ resource "aws_iam_role" "batch_task_role" {
   name = "${var.project_name}-batch-task-role"
 
   assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
-        Action    = "sts:AssumeRole",
-        Effect    = "Allow",
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
         Principal = {
           Service = "ecs-tasks.amazonaws.com"
         }
@@ -35,7 +35,7 @@ resource "aws_iam_role_policy_attachment" "task_role_s3_access" {
 
 # 2. Attach the existing CloudWatch metrics policy
 resource "aws_iam_role_policy_attachment" "task_role_cloudwatch_metrics_access" {
-  role       = aws_iam_role.batch_task_role.name
+  role = aws_iam_role.batch_task_role.name
   # This references the policy we created earlier in iam_batch.tf
   policy_arn = aws_iam_policy.batch_job_cloudwatch_metrics_policy.arn
 }
