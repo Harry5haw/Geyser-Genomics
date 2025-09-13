@@ -23,9 +23,7 @@ jobs:
       - name: Configure AWS Credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # CORRECTED: Uses a secret for the IAM Role ARN for security and maintainability.
           role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
-          # CORRECTED: Uses a secret for the AWS Region for consistency.
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -37,11 +35,11 @@ jobs:
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: genomeflow-app
-          # We use github.sha for a unique, immutable tag.
           IMAGE_TAG: ${{ github.sha }}
         run: |
+          # MODIFIED: Added --no-cache to ensure the latest code is always used.
           # Build and tag the image with the unique commit SHA
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
+          docker build --no-cache -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG ./app
           
           # Also tag the same image with 'latest' to be used by the Batch Job Definition
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
