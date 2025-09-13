@@ -109,19 +109,19 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
     Comment = "TerraFlow Genomics Pipeline orchestrated by AWS Step Functions"
     StartAt = "Prepare_Decompress_Command"
     States = {
+      # MODIFIED: This state is now configured to run our temporary diagnostic script.
+      # After testing, we will revert this to the final, explicit command.
       Prepare_Decompress_Command = {
         Type = "Pass"
         Parameters = {
-          "JobName.$" = "States.Format('DecompressSRA-{}-{}', $.srr_id, $$.Execution.Name)"
+          "JobName.$" = "States.Format('DebugNetwork-{}-{}', $.srr_id, $$.Execution.Name)"
           "ContainerOverrides" = {
-            # --- TEMPORARILY MODIFIED FOR DIAGNOSTICS ---
-            "Command.$" = "States.Array('python', 'debug_network.py')"
-            "Command.$" = "States.Array('decompress', $.srr_id)"
+            "Command" = ["python", "debug_network.py"]
           }
         }
         ResultPath = "$.batch_params"
         Next       = "Decompress_SRA"
-      }
+      },
       Decompress_SRA = {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
@@ -132,25 +132,26 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
           "Timeout"              = { "AttemptDurationSeconds" = 3600 }
         }
-        ResultPath = "$.batch_output" # CORRECTED: Store the job output
+        ResultPath = "$.batch_output"
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
           ResultPath  = "$.error"
         }]
         Next = "Prepare_QC_Command"
-      }
+      },
+      # MODIFIED: All subsequent 'Prepare' states now use the full, explicit command.
       Prepare_QC_Command = {
         Type = "Pass"
         Parameters = {
           "JobName.$" = "States.Format('QualityControl-{}-{}', $.srr_id, $$.Execution.Name)"
           "ContainerOverrides" = {
-            "Command.$" = "States.Array('qc', $.srr_id)"
+            "Command.$" = "States.Array('python', 'tasks.py', 'qc', $.srr_id)"
           }
         }
         ResultPath = "$.batch_params"
         Next       = "Quality_Control"
-      }
+      },
       Quality_Control = {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
@@ -161,25 +162,25 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
           "Timeout"              = { "AttemptDurationSeconds" = 1800 }
         }
-        ResultPath = "$.batch_output" # CORRECTED: Store the job output
+        ResultPath = "$.batch_output"
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
           ResultPath  = "$.error"
         }]
         Next = "Prepare_Align_Command"
-      }
+      },
       Prepare_Align_Command = {
         Type = "Pass"
         Parameters = {
           "JobName.$" = "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)"
           "ContainerOverrides" = {
-            "Command.$" = "States.Array('align', $.srr_id, $.reference_name)"
+            "Command.$" = "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)"
           }
         }
         ResultPath = "$.batch_params"
         Next       = "Align_Genome"
-      }
+      },
       Align_Genome = {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
@@ -190,25 +191,25 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
           "Timeout"              = { "AttemptDurationSeconds" = 14400 }
         }
-        ResultPath = "$.batch_output" # CORRECTED: Store the job output
+        ResultPath = "$.batch_output"
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
           ResultPath  = "$.error"
         }]
         Next = "Prepare_Variants_Command"
-      }
+      },
       Prepare_Variants_Command = {
         Type = "Pass"
         Parameters = {
           "JobName.$" = "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)"
           "ContainerOverrides" = {
-            "Command.$" = "States.Array('variants', $.srr_id, $.reference_name)"
+            "Command.$" = "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)"
           }
         }
         ResultPath = "$.batch_params"
         Next       = "Call_Variants"
-      }
+      },
       Call_Variants = {
         Type     = "Task"
         Resource = "arn:aws:states:::batch:submitJob.sync"
@@ -219,14 +220,14 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
           "ContainerOverrides.$" = "$.batch_params.ContainerOverrides"
           "Timeout"              = { "AttemptDurationSeconds" = 7200 }
         }
-        ResultPath = "$.batch_output" # CORRECTED: Store the job output
+        ResultPath = "$.batch_output"
         Catch = [{
           ErrorEquals = ["States.ALL"]
           Next        = "Notify_Failure"
           ResultPath  = "$.error"
         }]
         End = true
-      }
+      },
       Notify_Failure = {
         Type     = "Task"
         Resource = "arn:aws:states:::sns:publish"
@@ -267,6 +268,3 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
     aws_iam_role_policy_attachment.step_functions_policy_attach,
   ]
 }
-
-
-
