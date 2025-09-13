@@ -64,9 +64,10 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
     Comment = "TerraFlow Genomics Pipeline orchestrated by AWS Step Functions"
     StartAt = "Prepare_Decompress_Command"
     States = {
+      # MODIFIED: This state is now configured to run our MINIMAL viable metric diagnostic script.
       Prepare_Decompress_Command = {
         Type = "Pass",
-        Parameters = { "JobName.$" = "States.Format('CanaryTest-{}-{}', $.srr_id, $$.Execution.Name)", "ContainerOverrides" = { "Command" = ["python", "debug_canary.py"] } },
+        Parameters = { "JobName.$" = "States.Format('MinimalTest-{}-{}', $.srr_id, $$.Execution.Name)", "ContainerOverrides" = { "Command" = ["python", "debug_minimal.py"] } },
         ResultPath = "$.batch_params", Next = "Decompress_SRA"
       },
       Decompress_SRA = {

@@ -1,4 +1,4 @@
-# ./Dockerfile (The one true Dockerfile for the project)
+# ./Dockerfile
 
 FROM python:3.11-slim-bullseye
 
@@ -23,9 +23,8 @@ RUN wget -q https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.
 
 WORKDIR /app
 
-# CORRECTED: Copy requirements from the app/ directory
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# CORRECTED: Copy all application source code from the app/ directory into the container
+# Copy all application and debug scripts
 COPY app/ .
