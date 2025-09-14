@@ -24,11 +24,15 @@ resource "aws_cloudwatch_dashboard" "main_dashboard" {
           # to render data when complex functions fail.
           # This query finds metrics with the specified dimension, ignoring others (like SampleId).
           metrics = [
-            ["TerraFlowGenomicsV2", "Duration", "TaskName", "Decompress", "Status", "Success"],
-            [".", ".", ".", "QualityControl", ".", "."],
-            [".", ".", ".", "Align", ".", "."],
-            [".", ".", ".", "CallVariants", ".", "."]
-          ]
+        # This format tells CloudWatch: "Find the Duration metric where TaskName is Decompress
+        # AND Status is Success, and aggregate the results across all other dimensions (like SampleId)."
+             metrics = [
+        ["TerraFlowGenomics", "Duration", "TaskName", "Decompress", "Status", "Success"],
+        [".", ".", ".", "QualityControl", ".", "."],
+        [".", ".", ".", "Align", ".", "."],
+        [".", ".", ".", "CallVariants", ".", "."]
+      ]
+
         }
       },
       # WIDGET 2: Total Pipeline Runs (Existing)

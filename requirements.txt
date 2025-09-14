@@ -1,4 +1,0 @@
-apache-airflow
-pendulum
-airflow-stubs
-boto3 
