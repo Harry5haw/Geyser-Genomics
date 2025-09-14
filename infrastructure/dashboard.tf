@@ -23,7 +23,6 @@ resource "aws_cloudwatch_dashboard" "main_dashboard" {
           # It defines each line individually, which is the most reliable way
           # to render data when complex functions fail.
           # This query finds metrics with the specified dimension, ignoring others (like SampleId).
-          metrics = [
         # This format tells CloudWatch: "Find the Duration metric where TaskName is Decompress
         # AND Status is Success, and aggregate the results across all other dimensions (like SampleId)."
              metrics = [
