@@ -126,6 +126,7 @@ My donated genome will now serve as a data point to help others, ensuring that a
 </table>
 
 ---
+
 ## 🤔 The Challenge: From a DNA Sample to an Answer
 
 Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
@@ -133,6 +134,8 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 *    **The Data Deluge:** A single human genome can be over 100 gigabytes. Analyzing hundreds requires a staggering amount of storage and power.
 *    **The Complex Recipe:** The analysis involves dozens of specialized scientific tools, each needing to be run in a specific order with precise parameters. One mistake can invalidate the results.
 *    **The Hardware Hurdle:** This work traditionally requires buying and maintaining powerful, expensive server clusters that are difficult to manage and often sit idle.
+
+---
 
 ## ✨ The Impact: Key Benefits
 
@@ -142,6 +145,8 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 | **Unwavering Reliability** | The automated workflow and version-controlled containers eliminate human error, producing consistent and trustworthy results every time. |
 | **Drastic Cost Reduction** | Built entirely on serverless principles, there are no idle resources. You only pay for computers when they are actively working. |
 | **Empowered Scientists** | Researchers can run massive analyses without needing to be cloud experts, freeing them to focus entirely on the science. |
+
+---
 
 ## 🗺️ Project Status & Features
 
@@ -156,6 +161,8 @@ The platform is a feature-complete backend, providing a robust, automated founda
 | **Event-Driven Workflow** | ✅ Complete | The pipeline is automatically triggered by file uploads to the S3 data lake. |
 | **Custom Monitoring** | ✅ Complete | The application emits custom metrics to CloudWatch, visualized on a dynamic dashboard. |
 | **Web UI Front-End** | 🗓️ Future Work | A Django-based web application to provide a user-friendly interface for the platform. |
+
+---
 
 ## 🛠️ How It Works: The Architecture
 
@@ -197,8 +204,6 @@ graph TD
 
     style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
     style K fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
-
-
 ## 🤖 Technical Deep Dive
 
 The platform's design is guided by modern cloud-native principles:
@@ -212,6 +217,9 @@ The platform's design is guided by modern cloud-native principles:
 | **GitHub Actions**| **The CI/CD Engine.** Automates the entire build and deployment process. A `git push` triggers the workflow to build the Docker image, push it to ECR, and deploy all infrastructure changes with Terraform. |
 | **Amazon S3**| **The Data Lake.** Provides durable, scalable, and cost-effective storage for massive genomic datasets. It serves as the event source for the pipeline and the single source of truth for all data. |
 | **Python**| The primary language for the bioinformatics application logic (`app/tasks.py`) and for interacting with AWS services via the `boto3` SDK. |
+
+---
+
 ## 🚀 Deployment & Usage
 
 ### 1. The Deployment Process (Automated)
