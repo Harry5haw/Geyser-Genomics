@@ -1,4 +1,6 @@
-<div align="center">
+---
+```markdown
+<div align-center">
   <h1>🌋 Geyser Genomics 🌋</h1>
   <p>
     <strong>A fully automated, cloud-native platform on AWS for scalable genomic data analysis.</strong>
@@ -56,6 +58,8 @@ The platform provides four key advantages:
 *   🚀 **Infinitely Scalable:** Built on serverless AWS services like Step Functions and Fargate, the platform scales from zero to thousands of parallel jobs on demand, then scales back to zero.
 *   💰 **Cost-Effective:** By using serverless resources, you only pay for the exact compute time used. There are no idle servers or clusters to manage.
 *   🔬 **Scientifically Rigorous:** Every tool and process is packaged in version-controlled Docker containers and managed by a CI/CD pipeline, ensuring every analysis is 100% reproducible.
+
+---
 
 ## 🧭 The Odyssey: Why This Project Exists
 
@@ -204,8 +208,11 @@ graph TD
 
     style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
     style K fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
+```
 
-## Technical Deep Dive
+---
+
+## 🤖 Technical Deep Dive
 
 The platform's design is guided by modern cloud-native principles:
 
@@ -247,3 +254,5 @@ The custom CloudWatch Dashboard provides real-time performance metrics for the p
 To deploy or update the dashboard, run the following command from the project root:
 ```bash
 python scripts/deploy_dashboard.py
+```
+```
