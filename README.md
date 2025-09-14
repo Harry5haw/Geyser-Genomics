@@ -1,4 +1,4 @@
-<div align-center">
+<div align="center">
   <h1>🌋 Geyser Genomics 🌋</h1>
   <p>
     <strong>A fully automated, cloud-native platform on AWS for scalable genomic data analysis.</strong>
