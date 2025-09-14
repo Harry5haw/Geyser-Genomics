@@ -45,11 +45,11 @@ Geyser Genomics is an **automated, serverless data processing platform**. Its pu
 It functions as a **robotic science lab in the cloud**. A scientist simply uploads their raw data file, and the platform automatically summons the necessary cloud resources, runs a multi-step bioinformatics analysis, and places the final results in a secure data lake, all with zero manual intervention.
 
 **The Transformation: From Raw Data to Actionable Insight**
-<div align="center">
+
 | Input | The Platform's Process (Automation) | Output |
 | :--- | :--- | :--- |
 | 🧬 **Raw Data File** <br> *(Millions of jumbled DNA fragments)* | 1. **Decompress** & **Quality Control**<br> 2. **Align** to a reference genome<br> 3. **Call** genetic variants | 📄 **VCF File** <br> *(A clean list of genetic mutations)* |
-</div>
+
 The platform provides four key advantages:
 
 *   ⚙️ **Fully Automated:** The entire pipeline is event-driven. An upload to S3 triggers the workflow, eliminating manual setup and human error.
