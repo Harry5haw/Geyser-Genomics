@@ -163,6 +163,7 @@ The platform is a feature-complete backend, providing a robust, automated founda
 | **Scalable Compute Engine** | ✅ Complete | AWS Batch with Fargate provides containerized, on-demand compute resources that scale to zero. |
 | **Event-Driven Workflow** | ✅ Complete | The pipeline is automatically triggered by file uploads to the S3 data lake. |
 | **Custom Monitoring** | 🚧Under Construction🚧 | The application emits custom metrics to CloudWatch, visualized on a dynamic dashboard. |
+| **Google Deepvariant** | 🗓️ Future Work | Call variant stage handled by cutting-edge ML neural network tool |
 | **Web UI Front-End** | 🗓️ Future Work | A Django-based web application to provide a user-friendly interface for the platform. |
 
 ---
