@@ -198,6 +198,7 @@ graph TD
     style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
     style K fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
 
+|
 ## 🤖 Technical Deep Dive
 
 The platform's design is guided by modern cloud-native principles:
