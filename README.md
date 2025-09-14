@@ -1,5 +1,3 @@
----
-```markdown
 <div align-center">
   <h1>🌋 Geyser Genomics 🌋</h1>
   <p>
