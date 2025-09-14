@@ -47,69 +47,9 @@ It functions as a **robotic science lab in the cloud**. A scientist simply uploa
 
 **The Transformation: From Raw Data to Actionable Insight**
 
-|
- Input 
-|
- The Platform's Process (Automation) 
-|
- Output 
-|
-|
-:---
-|
-:---
-|
-:---
-|
-|
- 🧬 
-**
-Raw Data File
-**
-<
-br
->
-*
-(Millions of jumbled DNA fragments)
-*
-|
-1.
-**
-Decompress
-**
- & 
-**
-Quality Control
-**
-<
-br
->
- 2. 
-**
-Align
-**
- to a reference genome
-<
-br
->
- 3. 
-**
-Call
-**
- genetic variants 
-|
- 📄 
-**
-VCF File
-**
-<
-br
->
-*
-(A clean list of genetic mutations)
-*
-|
-
+| Input | The Platform's Process (Automation) | Output |
+| :--- | :--- | :--- |
+| 🧬 **Raw Data File** <br> *(Millions of jumbled DNA fragments)* | 1. **Decompress** & **Quality Control**<br> 2. **Align** to a reference genome<br> 3. **Call** genetic variants | 📄 **VCF File** <br> *(A clean list of genetic mutations)* |
 
 The platform provides four key advantages:
 
