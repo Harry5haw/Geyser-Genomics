@@ -1,0 +1,97 @@
+[
+  {
+    "title": "Set up Terraform S3 bucket and data lake",
+    "body": "Provision S3 bucket for genomic data lake, including input/output folder structure. Ensure versioning and bucket policies are configured.",
+    "labels": ["infrastructure"]
+  },
+  {
+    "title": "Establish VPC and NAT Gateway",
+    "body": "Define secure networking for the platform: VPC, subnets, NAT Gateway. Required for AWS Batch and secure access to resources.",
+    "labels": ["infrastructure"]
+  },
+  {
+    "title": "Define AWS Batch compute environment and job queue",
+    "body": "Create AWS Batch compute environment using Fargate, plus job queue configuration for scalable execution of pipeline tasks.",
+    "labels": ["infrastructure"]
+  },
+  {
+    "title": "Implement decompress, QC, align, and call variants pipeline",
+    "body": "Develop tasks.py to run genomic analysis workflow: Decompress FASTQ, QC, Alignment (BWA), Variant calling (Samtools). Output results in VCF format.",
+    "labels": ["workflow"]
+  },
+  {
+    "title": "Containerize bioinformatics tools with Docker",
+    "body": "Build Docker image containing FastQC, BWA, Samtools, and pipeline application code. Push to Amazon ECR for use by AWS Batch.",
+    "labels": ["workflow", "docker"]
+  },
+  {
+    "title": "Orchestration with AWS Step Functions",
+    "body": "Migrate pipeline orchestration from Airflow to AWS Step Functions for fully serverless management of genomic workflow.",
+    "labels": ["workflow", "decision"]
+  },
+  {
+    "title": "Set up GitHub Actions CI/CD for Docker + Terraform",
+    "body": "Configure workflows to: Build and push Docker image to ECR; Apply Terraform infrastructure changes. Use OIDC-based IAM roles for secure GitHub → AWS access.",
+    "labels": ["ci-cd"]
+  },
+  {
+    "title": "Fix OIDC authentication for Terraform deploys",
+    "body": "Resolve OIDC-based auth errors between GitHub Actions and AWS Terraform role. Validate with automated workflow runs.",
+    "labels": ["ci-cd", "bug"]
+  },
+  {
+    "title": "Implement unified deployment workflow",
+    "body": "Refactor GitHub Actions into a single unified workflow handling build, deploy, and infrastructure updates.",
+    "labels": ["ci-cd"]
+  },
+  {
+    "title": "Instrument application with CloudWatch custom metrics",
+    "body": "Emit custom CloudWatch metrics from AWS Batch jobs (e.g., job success/failure, runtime, resource usage).",
+    "labels": ["monitoring"]
+  },
+  {
+    "title": "Implement dynamic CloudWatch dashboard",
+    "body": "Use Terraform + Python script to generate CloudWatch dashboard visualizing key metrics.",
+    "labels": ["monitoring"]
+  },
+  {
+    "title": "Write deployment guide",
+    "body": "Document setup and deployment process: prerequisites, secrets, GitHub Actions, Terraform apply, and usage.",
+    "labels": ["docs"]
+  },
+  {
+    "title": "Add project branding and architecture diagrams",
+    "body": "Update README with images, banners, and Mermaid architecture diagram for clarity.",
+    "labels": ["docs"]
+  },
+  {
+    "title": "Add Google DeepVariant variant caller",
+    "body": "Integrate DeepVariant ML-based variant caller as an optional stage in the workflow.",
+    "labels": ["future-work", "workflow"]
+  },
+  {
+    "title": "Build Django web UI for scientist-friendly interaction",
+    "body": "Develop Django front-end for uploading samples, triggering workflows, and viewing results.",
+    "labels": ["future-work", "ui"]
+  },
+  {
+    "title": "Add reproducibility & validation testing suite",
+    "body": "Create automated tests for pipeline reproducibility, including unit tests for tasks and integration tests across the full workflow.",
+    "labels": ["future-work", "testing"]
+  },
+  {
+    "title": "Improve cost monitoring & IAM hardening",
+    "body": "Add AWS Budgets/Cost Explorer alerts and refine IAM policies to follow least-privilege principle.",
+    "labels": ["future-work", "security"]
+  },
+  {
+    "title": "Infrastructure as Code via Terraform + GitHub Actions",
+    "body": "Chose Terraform + CI/CD over manual AWS Console management for reproducibility, automation, and professional standards.",
+    "labels": ["decision"]
+  },
+  {
+    "title": "Chose serverless compute (Batch/Fargate) over EC2/EKS clusters",
+    "body": "Evaluated alternatives (EC2 Auto Scaling, EKS cluster) but selected AWS Batch with Fargate due to cost efficiency (scale to zero) and reduced ops burden.",
+    "labels": ["decision"]
+  }
+]
