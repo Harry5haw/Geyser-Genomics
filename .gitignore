@@ -74,6 +74,8 @@ dags/
 plugins/
 results/
 tmp/
+prototypes/
+
 
 # Ignore large genomic data files
 # These should live in S3, not the Git repository.
