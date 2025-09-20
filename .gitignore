@@ -6,11 +6,11 @@
 Thumbs.db
 
 # IDE / Editor configuration
-# .idea/
-# .vscode/
-# .spyderproject
-# .spyproject
-# .ropeproject
+.idea/
+.vscode/
+.spyderproject
+.spyproject
+.ropeproject
 
 # -----------------------------------------------------------------------------
 # Python
@@ -20,6 +20,8 @@ Thumbs.db
 .venv
 env/
 venv/
+.conda/
+*.envrc
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -83,3 +85,22 @@ tmp/
 
 # Ignore temporary data exports (e.g., from CloudWatch)
 *.csv
+
+# -----------------------------------------------------------------------------
+# Local utility scripts / prototypes (not tracked in Git)
+# -----------------------------------------------------------------------------
+import.sh
+origninal_claude logic.py   # dashboard prototype, keep local only
+scripts/migrations/*.json   # migration input/mapping files
+
+# -----------------------------------------------------------------------------
+# Output / artifacts
+# -----------------------------------------------------------------------------
+*.log
+*.out
+*.tmp
+
+# -----------------------------------------------------------------------------
+# Infra scratch files
+# -----------------------------------------------------------------------------
+infrastructure/query.json
