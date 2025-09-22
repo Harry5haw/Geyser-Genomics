@@ -65,7 +65,7 @@ htmlcov/
 *.tfplan
 
 # -----------------------------------------------------------------------------
-# TerraFlow Genomics Project Specific
+# Geyser Genomics Project Specific
 # -----------------------------------------------------------------------------
 # Local data, logs, and other transient directories from testing
 data/

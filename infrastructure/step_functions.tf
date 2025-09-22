@@ -47,7 +47,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
   name     = "${var.project_name}-pipeline-sfn-${var.environment}"
   role_arn = aws_iam_role.step_functions_execution_role.arn
   definition = jsonencode({
-    Comment = "TerraFlow Genomics Pipeline orchestrated by AWS Step Functions"
+    Comment = "Geyser Genomics Pipeline orchestrated by AWS Step Functions"
     StartAt = "Prepare_Decompress_Command"
     States = {
       Prepare_Decompress_Command = {
@@ -92,7 +92,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
       },
       Notify_Failure = {
         Type     = "Task", Resource = "arn:aws:states:::sns:publish",
-        Parameters = { "TopicArn" = aws_sns_topic.pipeline_status_topic.arn, "Message" = { "PipelineName" = "TerraFlow Genomics Pipeline", "ExecutionId" = "$$.Execution.Id", "Status" = "FAILED", "ErrorDetails.$" = "$.error", "Input.$" = "$$", "StartTime" = "$$.Execution.StartTime" }, "MessageAttributes" = { "Status" = { "DataType" = "String", "StringValue" = "FAILED" }, "Pipeline" = { "DataType" = "String", "StringValue" = "TerraFlow Genomics" } } },
+        Parameters = { "TopicArn" = aws_sns_topic.pipeline_status_topic.arn, "Message" = { "PipelineName" = "Geyser Genomics Pipeline", "ExecutionId" = "$$.Execution.Id", "Status" = "FAILED", "ErrorDetails.$" = "$.error", "Input.$" = "$$", "StartTime" = "$$.Execution.StartTime" }, "MessageAttributes" = { "Status" = { "DataType" = "String", "StringValue" = "FAILED" }, "Pipeline" = { "DataType" = "String", "StringValue" = "Geyser Genomics" } } },
         ResultPath = null, End = true
       }
     }

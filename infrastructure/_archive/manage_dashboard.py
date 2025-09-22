@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Manages the TerraFlow Genomics CloudWatch dashboard.
+Manages the Geyser Genomics CloudWatch dashboard.
 This script is called by Terraform to create, update, or destroy the dashboard.
 Its logic is based on the proven 'create_aggregated_dashboard' function.
 """
@@ -41,10 +41,10 @@ def main():
                         "view": "timeSeries", "stacked": False, "region": region,
                         "title": "Average Task Duration (All Pipeline Runs)", "period": 300, "stat": "Average",
                         "metrics": [
-                            [{"expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"Decompress\"', 'Average'))", "id": "decompress_avg", "label": "Decompress (Average)"}],
-                            [{"expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"QualityControl\"', 'Average'))", "id": "qc_avg", "label": "QualityControl (Average)"}],
-                            [{"expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"Align\"', 'Average'))", "id": "align_avg", "label": "Align (Average)"}],
-                            [{"expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"CallVariants\"', 'Average'))", "id": "variants_avg", "label": "CallVariants (Average)"}]
+                            [{"expression": "AVG(SEARCH('{GeyserGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"Decompress\"', 'Average'))", "id": "decompress_avg", "label": "Decompress (Average)"}],
+                            [{"expression": "AVG(SEARCH('{GeyserGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"QualityControl\"', 'Average'))", "id": "qc_avg", "label": "QualityControl (Average)"}],
+                            [{"expression": "AVG(SEARCH('{GeyserGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"Align\"', 'Average'))", "id": "align_avg", "label": "Align (Average)"}],
+                            [{"expression": "AVG(SEARCH('{GeyserGenomics,SampleId,TaskName} MetricName=\"Duration\" TaskName=\"CallVariants\"', 'Average'))", "id": "variants_avg", "label": "CallVariants (Average)"}]
                         ],
                         "yAxis": {"left": {"min": 0, "label": "Duration (seconds)"}}
                     }
