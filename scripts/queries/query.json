@@ -1,0 +1,22 @@
+[
+  {
+    "Id": "decompressAvg",
+    "Expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,Status,TaskName} MetricName=\"Duration\" TaskName=\"Decompress\"','Average',300))",
+    "ReturnData": true
+  },
+  {
+    "Id": "qcAvg",
+    "Expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,Status,TaskName} MetricName=\"Duration\" TaskName=\"QualityControl\"','Average',300))",
+    "ReturnData": true
+  },
+  {
+    "Id": "alignAvg",
+    "Expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,Status,TaskName} MetricName=\"Duration\" TaskName=\"Align\"','Average',300))",
+    "ReturnData": true
+  },
+  {
+    "Id": "variantsAvg",
+    "Expression": "AVG(SEARCH('{TerraFlowGenomics,SampleId,Status,TaskName} MetricName=\"Duration\" TaskName=\"CallVariants\"','Average',300))",
+    "ReturnData": true
+  }
+]
