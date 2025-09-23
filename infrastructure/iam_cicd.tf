@@ -25,16 +25,14 @@ resource "aws_iam_role" "geyser_github_ecr_role" {
     Version = "2012-10-17",
     Statement = [{
       Effect = "Allow",
-      Principal = {
-        Federated = data.aws_iam_openid_connect_provider.github.arn
-      },
-      Action = "sts:AssumeRoleWithWebIdentity",
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Action   = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         },
+        # Allow GH Environment-based runs (dev/prod) and main branch refs
         StringLike = {
-          # Allow GH Environment-based runs (dev/prod) and main branch refs
           "token.actions.githubusercontent.com:sub" = [
             "repo:${local.gh_owner}/${local.gh_repo}:environment:dev",
             "repo:${local.gh_owner}/${local.gh_repo}:environment:prod",
@@ -93,18 +91,14 @@ resource "aws_iam_role" "geyser_github_terraform_role" {
     Version = "2012-10-17",
     Statement = [{
       Effect = "Allow",
-      Principal = {
-        Federated = data.aws_iam_openid_connect_provider.github.arn
-      },
-      Action = "sts:AssumeRoleWithWebIdentity",
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Action   = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         },
+        # Allow Terraform runs from envs + main
         StringLike = {
-          # Allow Terraform runs from the same repo via GH Environments + main branch.
-          # (If you want to temporarily allow ANY ref in this repo, swap this array
-          #  for "repo:${local.gh_owner}/${local.gh_repo}:*")
           "token.actions.githubusercontent.com:sub" = [
             "repo:${local.gh_owner}/${local.gh_repo}:environment:dev",
             "repo:${local.gh_owner}/${local.gh_repo}:environment:prod",
