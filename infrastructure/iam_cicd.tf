@@ -1,9 +1,16 @@
 # infrastructure/iam_cicd.tf
 
-# -----------------------------------------------------------------------------
-# GitHub OIDC Provider (singleton) — read the existing provider instead of
-# creating a new one.
-# -----------------------------------------------------------------------------
+# -----------------------------
+# GitHub repo identity (adjust if the repo moves)
+# -----------------------------
+locals {
+  gh_owner = "Harry5haw"
+  gh_repo  = "Geyser-Genomics"
+}
+
+# -----------------------------
+# Use existing GitHub OIDC provider (do NOT create a new one)
+# -----------------------------
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
@@ -27,8 +34,12 @@ resource "aws_iam_role" "geyser_github_ecr_role" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         },
         StringLike = {
-          # Restrict to your repo + main branch for image pushes
-          "token.actions.githubusercontent.com:sub" = "repo:Harry5haw/geyser-cloud-platform:ref:refs/heads/main"
+          # Allow GH Environment-based runs (dev/prod) and main branch refs
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${local.gh_owner}/${local.gh_repo}:environment:dev",
+            "repo:${local.gh_owner}/${local.gh_repo}:environment:prod",
+            "repo:${local.gh_owner}/${local.gh_repo}:ref:refs/heads/main"
+          ]
         }
       }
     }]
@@ -91,8 +102,14 @@ resource "aws_iam_role" "geyser_github_terraform_role" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         },
         StringLike = {
-          # Allow all branches/PRs for infra
-          "token.actions.githubusercontent.com:sub" = "repo:Harry5haw/geyser-cloud-platform:*"
+          # Allow Terraform runs from the same repo via GH Environments + main branch.
+          # (If you want to temporarily allow ANY ref in this repo, swap this array
+          #  for "repo:${local.gh_owner}/${local.gh_repo}:*")
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:${local.gh_owner}/${local.gh_repo}:environment:dev",
+            "repo:${local.gh_owner}/${local.gh_repo}:environment:prod",
+            "repo:${local.gh_owner}/${local.gh_repo}:ref:refs/heads/main"
+          ]
         }
       }
     }]

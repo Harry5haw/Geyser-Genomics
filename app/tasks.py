@@ -1,4 +1,4 @@
-# app/tasks.py (The definitive, final debug version)
+# app/tasks.py (cloud-safe reference handling + debug)
 
 import argparse
 import boto3
@@ -7,17 +7,23 @@ import os
 import threading
 import time
 from functools import wraps
-import logging # <-- ADDED FOR DEBUGGING
+import logging  # <-- ADDED FOR DEBUGGING
+# --- CHANGE START: new import for S3 error handling ---
+from botocore.exceptions import ClientError
+# --- CHANGE END ---
 
 # --- BOTO3 DEBUG LOGGING ---
 # This is the most important change. It will show us the raw HTTP requests.
-print("--- ENABLING BOTO3 DEBUG LOGGING ---")
-boto3.set_stream_logger('botocore', level=logging.DEBUG)
+#print("--- ENABLING BOTO3 DEBUG LOGGING ---")
+#boto3.set_stream_logger('botocore', level=logging.DEBUG)
 # ------------------------------------
 
 # --- Configuration ---
 BUCKET_NAME = os.environ.get("BUCKET_NAME")
-AWS_REGION = os.environ.get("AWS_REGION", "eu-west-2") # Read region from env, default to eu-west-2
+AWS_REGION = os.environ.get("AWS_REGION", "eu-west-2")  # Read region from env, default to eu-west-2
+# --- CHANGE START: reference prefix constant (clarity) ---
+REFERENCE_PREFIX = "reference/"
+# --- CHANGE END ---
 
 if not BUCKET_NAME:
     print("FATAL: BUCKET_NAME environment variable is not set.")
@@ -40,14 +46,13 @@ def time_task_and_emit_metric(task_name):
             srr_id = args[0] if args else "UnknownSample"
             print(f"--- Starting task '{task_name}' for sample '{srr_id}' ---")
             start_time = time.time()
-            
             try:
                 result = func(*args, **kwargs)
                 end_time = time.time()
                 duration_seconds = end_time - start_time
-                
+
                 print(f"--- Task '{task_name}' for sample '{srr_id}' completed in {duration_seconds:.2f} seconds. ---")
-                
+
                 print("--- ATTEMPTING TO SEND CLOUDWATCH METRIC ---")
                 cloudwatch_client.put_metric_data(
                     Namespace=METRIC_NAMESPACE,
@@ -103,6 +108,60 @@ def time_task_and_emit_metric(task_name):
         return wrapper
     return decorator
 
+# --- CHANGE START: helper to safely fetch reference + indexes from S3 ---
+def ensure_reference_local(reference_name: str) -> str:
+    """
+    Ensure the target reference FASTA and its indexes exist locally under /tmp/reference/.
+    - Downloads specific keys from S3 (no bulk prefix iteration).
+    - Skips missing index keys (they will be created if needed).
+    - Generates bwa + faidx indexes if absent.
+
+    Returns the local path to the FASTA file.
+    """
+    local_ref_dir = "/tmp/reference/"
+    os.makedirs(local_ref_dir, exist_ok=True)
+
+    # Keys we care about in S3
+    fasta_key = f"{REFERENCE_PREFIX}{reference_name}"
+    index_candidates = [
+        f"{fasta_key}.fai",               # samtools faidx
+        f"{fasta_key}.amb", f"{fasta_key}.ann", f"{fasta_key}.bwt",
+        f"{fasta_key}.pac", f"{fasta_key}.sa"   # bwa index set
+    ]
+
+    # Local paths
+    local_ref_path = os.path.join(local_ref_dir, reference_name)
+
+    # 1) Download the FASTA (required)
+    try:
+        print(f"Downloading FASTA: s3://{BUCKET_NAME}/{fasta_key} -> {local_ref_path}")
+        s3_client.download_file(BUCKET_NAME, fasta_key, local_ref_path)
+    except ClientError as e:
+        print(f"ERROR: Required FASTA not found in S3 at {fasta_key}: {e}")
+        raise FileNotFoundError(f"Reference FASTA missing: s3://{BUCKET_NAME}/{fasta_key}") from e
+
+    # 2) Try to download known index files (optional)
+    for key in index_candidates:
+        local_path = os.path.join(local_ref_dir, os.path.basename(key))
+        try:
+            print(f"Attempting index fetch: s3://{BUCKET_NAME}/{key}")
+            s3_client.download_file(BUCKET_NAME, key, local_path)
+        except ClientError as e:
+            # Most likely a 404; we’ll generate it later if needed.
+            print(f"Index not present (ok): s3://{BUCKET_NAME}/{key} -> {e}")
+
+    # 3) Generate any missing indexes
+    bwa_exts = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+    if any(not os.path.exists(local_ref_path + ext) for ext in bwa_exts):
+        print("BWA indexes missing; running `bwa index` ...")
+        subprocess.run(["bwa", "index", local_ref_path], check=True)
+
+    if not os.path.exists(local_ref_path + ".fai"):
+        print("FASTA index missing; running `samtools faidx` ...")
+        subprocess.run(["samtools", "faidx", local_ref_path], check=True)
+
+    return local_ref_path
+# --- CHANGE END ---
 
 # --- Bioinformatics Tasks (now decorated) ---
 
@@ -129,14 +188,14 @@ def decompress_task(srr_id):
 
     upload_thread = threading.Thread(target=upload_stream)
     upload_thread.start()
-    
+
     try:
         for chunk in streaming_body.iter_chunks():
             gunzip_process.stdin.write(chunk)
         gunzip_process.stdin.close()
     except Exception as e:
         print(f"Error writing to gunzip process: {e}")
-    
+
     upload_thread.join()
     return_code = gunzip_process.wait()
     if return_code != 0:
@@ -153,22 +212,15 @@ def align_task(srr_id, reference_name):
     fastq_key = f"decompressed/{srr_id}.fastq"
     output_bam_key = f"alignments/{srr_id}.bam"
     local_fastq_path = f"/tmp/{srr_id}.fastq"
-    local_ref_dir = "/tmp/reference/"
-    local_ref_path = f"{local_ref_dir}{reference_name}"
     local_bam_path = f"/tmp/{srr_id}.bam"
 
     print(f"Downloading FASTQ file: {fastq_key}")
     s3_client.download_file(BUCKET_NAME, fastq_key, local_fastq_path)
-    print("Downloading reference genome files...")
-    s3_resource = boto3.resource('s3', region_name=AWS_REGION)
-    bucket = s3_resource.Bucket(BUCKET_NAME)
-    os.makedirs(local_ref_dir, exist_ok=True)
-    for obj in bucket.objects.filter(Prefix="reference/"):
-        target = os.path.join(local_ref_dir, os.path.basename(obj.key))
-        if not os.path.exists(os.path.dirname(target)):
-            os.makedirs(os.path.dirname(target))
-        bucket.download_file(obj.key, target)
-    print("All downloads complete.")
+
+    # --- CHANGE START: selective, safe reference fetching ---
+    local_ref_path = ensure_reference_local(reference_name)
+    # --- CHANGE END ---
+
     print(f"Running BWA-MEM alignment for {srr_id}...")
     alignment_command = (
         f"bwa mem {local_ref_path} {local_fastq_path} | "
@@ -180,7 +232,7 @@ def align_task(srr_id, reference_name):
     s3_client.upload_file(local_bam_path, BUCKET_NAME, output_bam_key)
     print("Upload complete.")
     print("Cleaning up temporary local files...")
-    subprocess.run(["rm", "-rf", local_fastq_path, local_ref_dir, local_bam_path], check=True)
+    subprocess.run(["rm", "-rf", local_fastq_path, os.path.dirname(local_ref_path), local_bam_path], check=True)
 
 @time_task_and_emit_metric("QualityControl")
 def qc_task(srr_id):
@@ -221,19 +273,14 @@ def variants_task(srr_id, reference_name):
     bam_key = f"alignments/{srr_id}.bam"
     output_vcf_key = f"variants/{srr_id}.vcf.gz"
     local_bam_path = f"/tmp/{srr_id}.bam"
-    local_ref_dir = "/tmp/reference/"
-    local_ref_path = f"{local_ref_dir}{reference_name}"
 
     print(f"Downloading BAM file: {bam_key}")
     s3_client.download_file(BUCKET_NAME, bam_key, local_bam_path)
-    print("Downloading reference genome files...")
-    s3_resource = boto3.resource('s3', region_name=AWS_REGION)
-    bucket = s3_resource.Bucket(BUCKET_NAME)
-    os.makedirs(local_ref_dir, exist_ok=True)
-    for obj in bucket.objects.filter(Prefix="reference/"):
-        target = os.path.join(local_ref_dir, os.path.basename(obj.key))
-        bucket.download_file(obj.key, target)
-    print("All downloads complete.")
+
+    # --- CHANGE START: selective, safe reference fetching ---
+    local_ref_path = ensure_reference_local(reference_name)
+    # --- CHANGE END ---
+
     print(f"Calling variants for {srr_id}...")
     variant_calling_command = (
         f"bcftools mpileup -f {local_ref_path} {local_bam_path} | "
@@ -246,8 +293,7 @@ def variants_task(srr_id, reference_name):
     s3_client.upload_file(local_vcf_path, BUCKET_NAME, output_vcf_key)
     print("Upload complete.")
     print("Cleaning up temporary local files...")
-    subprocess.run(["rm", "-rf", local_bam_path, local_ref_dir, local_vcf_path], check=True)
-
+    subprocess.run(["rm", "-rf", local_bam_path, os.path.dirname(local_ref_path), local_vcf_path], check=True)
 
 # --- Main execution block ---
 if __name__ == "__main__":
