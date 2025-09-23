@@ -6,8 +6,8 @@ output "data_lake_bucket_name" {
 }
 
 output "ecr_repository_url" {
-  description = "The URL of the ECR repository for the genomeflow-app Docker image."
-  value       = aws_ecr_repository.genomeflow_app.repository_url
+  description = "The URL of the ECR repository for the geyser-app Docker image."
+  value       = aws_ecr_repository.geyser_app.repository_url
 }
 
 output "job_queue_arn" {
@@ -16,7 +16,7 @@ output "job_queue_arn" {
 }
 
 output "geyser_app_job_def_arn" {
-  description = "The ARN of the AWS Batch Job Definition for the genomeflow-app."
+  description = "The ARN of the AWS Batch Job Definition for the geyser-app."
   value       = aws_batch_job_definition.geyser_app_job_def.arn
 }
 

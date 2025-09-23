@@ -16,8 +16,21 @@ jobs:
   dump-and-test-token:
     name: Dump OIDC Token and Test Role Assumption
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }} #dev envrionment for non-main branches
+
+          # Helper env so we can print which environment was selected
+    env:
+      SELECTED_ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
 
     steps:
+      - name: Show selected environment
+        run: |
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_REF_NAME=$GITHUB_REF_NAME"
+          echo "Selected environment=$SELECTED_ENV"
+
+      
       - name: Decode OIDC Token Payload
         id: decode_token
         run: |
