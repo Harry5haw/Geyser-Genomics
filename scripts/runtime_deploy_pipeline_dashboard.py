@@ -12,7 +12,7 @@ Defaults:
 Usage:
   python scripts/runtime_deploy_pipeline_dashboard.py --dry-run | jq .
   python scripts/runtime_deploy_pipeline_dashboard.py
-  python scripts/runtime_deploy_pipeline_dashboard.py --dashboard-name teraflow-dashboard-dev
+  python scripts/runtime_deploy_pipeline_dashboard.py --dashboard-name geyser-dashboard-dev
 """
 
 import os
@@ -53,8 +53,8 @@ def build_dashboard_body(region: str, state_machine_arn: str, lookback: str = "-
 
 def main():
     parser = argparse.ArgumentParser(description="Deploy CloudWatch dashboard for pipeline runtime (Step Functions ExecutionTime).")
-    parser.add_argument("--dashboard-name", default=os.environ.get("PIPELINE_DASHBOARD_NAME", "teraflow-pipeline-runtime"),
-                        help="CloudWatch dashboard name to create/update (default: teraflow-pipeline-runtime).")
+    parser.add_argument("--dashboard-name", default=os.environ.get("PIPELINE_DASHBOARD_NAME", "geyser-pipeline-runtime"),
+                        help="CloudWatch dashboard name to create/update (default: geyser-pipeline-runtime).")
     parser.add_argument("--region", default=os.environ.get("AWS_REGION", "eu-west-2"),
                         help="AWS region (default: eu-west-2 or $AWS_REGION).")
     parser.add_argument("--state-machine-arn", default=os.environ.get("SFN_ARN"),

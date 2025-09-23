@@ -2,7 +2,7 @@
 """
 Deploy the official CloudWatch dashboard for Geyser Genomics.
 
-This script overwrites (or creates) the `teraflow-dashboard-dev` dashboard with the
+This script overwrites (or creates) the `geyser-dashboard-dev` dashboard with the
 proven aggregation widget that shows average durations for each pipeline stage.
 
 - Uses the working JSON from `teraflow-aggregated-python`
@@ -18,9 +18,9 @@ import json
 import sys
 import argparse
 
-DEFAULT_DASHBOARD_NAME = "teraflow-dashboard-dev"
+DEFAULT_DASHBOARD_NAME = "geyser-dashboard-dev"
 DEFAULT_REGION = "eu-west-2"
-DEFAULT_NAMESPACE = "TerraFlowGenomics"
+DEFAULT_NAMESPACE = "GeyserGenomics"
 
 def build_dashboard_body(region: str, namespace: str) -> str:
     """
@@ -113,7 +113,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Deploy CloudWatch dashboard for Geyser Genomics.")
     p.add_argument("--dashboard-name", default=DEFAULT_DASHBOARD_NAME, help="Name of the dashboard to create/update")
     p.add_argument("--region", default=DEFAULT_REGION, help="AWS region")
-    p.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="Metric namespace (default: TerraFlowGenomics)")
+    p.add_argument("--namespace", default=DEFAULT_NAMESPACE, help="Metric namespace (default: GeyserGenomics)")
     p.add_argument("--dry-run", action="store_true", help="Print JSON without deploying")
     return p.parse_args()
 

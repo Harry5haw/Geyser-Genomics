@@ -308,13 +308,13 @@
 - feat(app): Finalize metrics and restore production configuration (commit: a9b4090)
 
 ## 2025-09-13
-- feat(metrics): Migrate to TerraFlowGenomicsV2 namespace and add dashboard (commit: 69664c0)
+- feat(metrics): Migrate to GeyserGenomicsV2 namespace and add dashboard (commit: 69664c0)
 
 ## 2025-09-14
-- chore(metrics): Revert namespace back to original TerraFlowGenomics (commit: 4ff73b9)
+- chore(metrics): Revert namespace back to original GeyserGenomics (commit: 4ff73b9)
 
 ## 2025-09-14
-- chore(metrics): Revert namespace back to original TerraFlowGenomics (commit: 063ec81)
+- chore(metrics): Revert namespace back to original GeyserGenomics (commit: 063ec81)
 
 ## 2025-09-14
 - fix(dashboard) (commit: 3f80e97)

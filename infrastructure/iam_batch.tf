@@ -5,7 +5,7 @@
 # --- IAM Policy to allow Batch Jobs to publish CloudWatch Metrics ---
 # This policy grants the least privilege required for the instrumented
 # Python application to send custom metrics.
-resource "aws_iam_policy" "batch_job_cloudwatch_metrics_policy" {
+resource "aws_iam_policy" "geyser_batch_metrics_policy" {
   name        = "${var.project_name}-batch-job-cloudwatch-metrics-policy"
   description = "Allows Batch jobs to put custom metrics into CloudWatch"
 
@@ -25,6 +25,6 @@ resource "aws_iam_policy" "batch_job_cloudwatch_metrics_policy" {
 # --- Attach the new CloudWatch policy to the existing Batch Job Role ---
 resource "aws_iam_role_policy_attachment" "batch_job_cloudwatch_metrics_attach" {
   # This references the existing role defined in main.tf
-  role       = aws_iam_role.ecs_task_execution_role.name
-  policy_arn = aws_iam_policy.batch_job_cloudwatch_metrics_policy.arn
+  role       = aws_iam_role.geyser_batch_execution_role.name
+  policy_arn = aws_iam_policy.geyser_batch_metrics_policy.arn
 }
