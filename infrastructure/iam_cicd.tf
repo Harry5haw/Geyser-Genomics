@@ -17,7 +17,7 @@ resource "aws_iam_openid_connect_provider" "github" {
 # -----------------------------------------------------------------------------
 # IAM Role and Policy for the Application (ECR Push) CI/CD Workflow
 # -----------------------------------------------------------------------------
-resource "aws_iam_role" "github_ecr_role" {
+resource "aws_iam_role" "geyser_github_ecr_role" {
   name = "${var.project_name}-github-ecr-role-${var.environment}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -46,7 +46,7 @@ resource "aws_iam_role" "github_ecr_role" {
   }
 }
 
-resource "aws_iam_policy" "github_ecr_policy" {
+resource "aws_iam_policy" "geyser_github_ecr_policy" {
   name = "${var.project_name}-github-ecr-policy-${var.environment}"
   policy = jsonencode({
     Version = "2012-10-17",
@@ -74,14 +74,14 @@ resource "aws_iam_policy" "github_ecr_policy" {
 }
 
 resource "aws_iam_role_policy_attachment" "github_ecr_attach" {
-  role       = aws_iam_role.github_ecr_role.name
-  policy_arn = aws_iam_policy.github_ecr_policy.arn
+  role       = aws_iam_role.geyser_github_ecr_role.name
+  policy_arn = aws_iam_policy.geyser_github_ecr_policy.arn
 }
 
 # -----------------------------------------------------------------------------
 # IAM Role for the Infrastructure (Terraform) CI/CD Workflow
 # -----------------------------------------------------------------------------
-resource "aws_iam_role" "github_terraform_role" {
+resource "aws_iam_role" "geyser_github_terraform_role" {
   name = "${var.project_name}-github-terraform-role-${var.environment}"
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -111,6 +111,6 @@ resource "aws_iam_role" "github_terraform_role" {
 }
 
 resource "aws_iam_role_policy_attachment" "github_terraform_admin_attach" {
-  role       = aws_iam_role.github_terraform_role.name
+  role       = aws_iam_role.geyser_github_terraform_role.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess" # Using the managed policy for simplicity
 }

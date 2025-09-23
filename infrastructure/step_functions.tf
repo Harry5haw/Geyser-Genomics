@@ -1,6 +1,6 @@
 # infrastructure/step_functions.tf (Final Production Version)
 
-resource "aws_iam_role" "step_functions_execution_role" {
+resource "aws_iam_role" "geyser_sfn_execution_role" {
   name = "${var.project_name}-sfn-execution-role-${var.environment}"
   assume_role_policy = jsonencode({
     Version   = "2012-10-17",
@@ -9,7 +9,7 @@ resource "aws_iam_role" "step_functions_execution_role" {
   tags = { Name = "${var.project_name}-sfn-execution-role", Environment = var.environment, ManagedBy = "Terraform" }
 }
 
-resource "aws_iam_policy" "step_functions_execution_policy" {
+resource "aws_iam_policy" "geyser_sfn_execution_policy" {
   name        = "${var.project_name}-sfn-execution-policy-${var.environment}"
   description = "IAM policy for Step Functions to submit jobs to AWS Batch, log to CloudWatch, and manage events."
   policy = jsonencode({
@@ -18,34 +18,34 @@ resource "aws_iam_policy" "step_functions_execution_policy" {
       {
         Sid      = "AWSBatchPermissions", Effect = "Allow", Action   = ["batch:SubmitJob", "batch:DescribeJobs", "batch:TerminateJob"],
         Resource = [
-          aws_batch_job_queue.genomeflow_queue.arn,
-          "arn:aws:batch:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.genomeflow_app_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.genomeflow_app_job_def.name}:*"
+          aws_batch_job_queue.geyser_queue.arn,
+          "arn:aws:batch:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*"
         ]
       },
       {
         Sid      = "CloudWatchLogsPermissions", Effect = "Allow", Action   = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"], Resource = "*"
       },
-      { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.pipeline_status_topic.arn },
+      { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
       { Sid = "EventsPermissions", Effect = "Allow", Action = ["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets"], Resource = "*" }
     ]
   })
 }
 
 resource "aws_iam_role_policy_attachment" "step_functions_policy_attach" {
-  role       = aws_iam_role.step_functions_execution_role.name
-  policy_arn = aws_iam_policy.step_functions_execution_policy.arn
+  role       = aws_iam_role.geyser_sfn_execution_role.name
+  policy_arn = aws_iam_policy.geyser_sfn_execution_policy.arn
 }
 
-resource "aws_cloudwatch_log_group" "sfn_log_group" {
+resource "aws_cloudwatch_log_group" "geyser_sfn_log_group" {
   name              = "/aws/vendedlogs/states/${var.project_name}-sfn-${var.environment}"
   retention_in_days = 30
   tags              = { Name = "${var.project_name}-sfn-log-group", Environment = var.environment, ManagedBy = "Terraform" }
 }
 
-resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
+resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   name     = "${var.project_name}-pipeline-sfn-${var.environment}"
-  role_arn = aws_iam_role.step_functions_execution_role.arn
+  role_arn = aws_iam_role.geyser_sfn_execution_role.arn
   definition = jsonencode({
     Comment = "Geyser Genomics Pipeline orchestrated by AWS Step Functions"
     StartAt = "Prepare_Decompress_Command"
@@ -57,7 +57,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
       },
       Decompress_SRA = {
         Type     = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.genomeflow_app_job_def.name, "JobQueue" = aws_batch_job_queue.genomeflow_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 3600 } },
+        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 3600 } },
         ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], Next = "Prepare_QC_Command"
       },
       Prepare_QC_Command = {
@@ -67,7 +67,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
       },
       Quality_Control = {
         Type     = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.genomeflow_app_job_def.name, "JobQueue" = aws_batch_job_queue.genomeflow_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 1800 } },
+        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 1800 } },
         ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], Next = "Prepare_Align_Command"
       },
       Prepare_Align_Command = {
@@ -77,7 +77,7 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
       },
       Align_Genome = {
         Type     = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.genomeflow_app_job_def.name, "JobQueue" = aws_batch_job_queue.genomeflow_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 14400 } },
+        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 14400 } },
         ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], Next = "Prepare_Variants_Command"
       },
       Prepare_Variants_Command = {
@@ -87,18 +87,18 @@ resource "aws_sfn_state_machine" "genomics_pipeline_state_machine" {
       },
       Call_Variants = {
         Type     = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.genomeflow_app_job_def.name, "JobQueue" = aws_batch_job_queue.genomeflow_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 7200 } },
+        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 7200 } },
         ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], End = true
       },
       Notify_Failure = {
         Type     = "Task", Resource = "arn:aws:states:::sns:publish",
-        Parameters = { "TopicArn" = aws_sns_topic.pipeline_status_topic.arn, "Message" = { "PipelineName" = "Geyser Genomics Pipeline", "ExecutionId" = "$$.Execution.Id", "Status" = "FAILED", "ErrorDetails.$" = "$.error", "Input.$" = "$$", "StartTime" = "$$.Execution.StartTime" }, "MessageAttributes" = { "Status" = { "DataType" = "String", "StringValue" = "FAILED" }, "Pipeline" = { "DataType" = "String", "StringValue" = "Geyser Genomics" } } },
+        Parameters = { "TopicArn" = aws_sns_topic.geyser_pipeline_status_topic.arn, "Message" = { "PipelineName" = "Geyser Genomics Pipeline", "ExecutionId" = "$$.Execution.Id", "Status" = "FAILED", "ErrorDetails.$" = "$.error", "Input.$" = "$$", "StartTime" = "$$.Execution.StartTime" }, "MessageAttributes" = { "Status" = { "DataType" = "String", "StringValue" = "FAILED" }, "Pipeline" = { "DataType" = "String", "StringValue" = "Geyser Genomics" } } },
         ResultPath = null, End = true
       }
     }
   })
   logging_configuration {
-    log_destination        = "${aws_cloudwatch_log_group.sfn_log_group.arn}:*"
+    log_destination        = "${aws_cloudwatch_log_group.geyser_sfn_log_group.arn}:*"
     include_execution_data = true
     level                  = "ALL"
   }

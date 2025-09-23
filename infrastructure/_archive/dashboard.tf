@@ -4,7 +4,7 @@ resource "null_resource" "cloudwatch_dashboard_manager" {
     script_content    = filebase64sha256("${path.module}/manage_dashboard.py")
     requirements_hash = filebase64sha256("${path.module}/requirements.txt") # Trigger rebuild if requirements change
     dashboard_name    = "${var.project_name}-dashboard-${var.environment}"
-    state_machine_arn = aws_sfn_state_machine.genomics_pipeline_state_machine.id
+    state_machine_arn = aws_sfn_state_machine.geyser_pipeline_state_machine.id
     aws_region        = data.aws_region.current.name
   }
 

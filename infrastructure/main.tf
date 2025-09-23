@@ -78,7 +78,7 @@ resource "aws_ecr_repository" "genomeflow_app" {
 # IAM ROLES AND POLICIES
 ################################################################################
 
-resource "aws_iam_role" "aws_batch_service_role" {
+resource "aws_iam_role" "geyser_batch_service_role" {
   name = "TerraFlow-AWSBatchServiceRole"
   assume_role_policy = jsonencode({
     Version   = "2012-10-17",
@@ -87,12 +87,12 @@ resource "aws_iam_role" "aws_batch_service_role" {
   tags = { Name = "TerraFlow-BatchServiceRole" }
 }
 
-resource "aws_iam_role_policy_attachment" "aws_batch_service_role_policy" {
-  role       = aws_iam_role.aws_batch_service_role.name
+resource "aws_iam_role_policy_attachment" "geyser_batch_service_role_policy" {
+  role       = aws_iam_role.geyser_batch_service_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"
 }
 
-resource "aws_iam_role" "ecs_task_execution_role" {
+resource "aws_iam_role" "geyser_batch_execution_role" {
   name = "TerraFlow-BatchJobExecutionRole"
   assume_role_policy = jsonencode({
     Version   = "2012-10-17",
@@ -101,13 +101,13 @@ resource "aws_iam_role" "ecs_task_execution_role" {
   tags = { Name = "TerraFlow-JobExecutionRole" }
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
-  role       = aws_iam_role.ecs_task_execution_role.name
+resource "aws_iam_role_policy_attachment" "geyser_batch_execution_role_policy" {
+  role       = aws_iam_role.geyser_batch_execution_role.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
 # IAM Policy that grants our jobs access to the S3 bucket
-resource "aws_iam_policy" "s3_access_policy" {
+resource "aws_iam_policy" "geyser_s3_access_policy" {
   name = "TerraFlowS3AccessPolicy"
   policy = jsonencode({
     Version = "2012-10-17",
@@ -121,17 +121,17 @@ resource "aws_iam_policy" "s3_access_policy" {
 
 # Attach the S3 access policy to our job execution role
 resource "aws_iam_role_policy_attachment" "s3_access" {
-  role       = aws_iam_role.ecs_task_execution_role.name
-  policy_arn = aws_iam_policy.s3_access_policy.arn
+  role       = aws_iam_role.geyser_batch_execution_role.name
+  policy_arn = aws_iam_policy.geyser_s3_access_policy.arn
 }
 ################################################################################
 # AWS BATCH INFRASTRUCTURE
 ################################################################################
 
-resource "aws_batch_compute_environment" "genomeflow_fargate" {
+resource "aws_batch_compute_environment" "geyser_fargate" {
   compute_environment_name = "teraflow-fargate-env"
   type                     = "MANAGED"
-  service_role             = aws_iam_role.aws_batch_service_role.arn
+  service_role             = aws_iam_role.geyser_batch_service_role.arn
   compute_resources {
     type               = "FARGATE"
     max_vcpus          = 16
@@ -141,27 +141,27 @@ resource "aws_batch_compute_environment" "genomeflow_fargate" {
   tags = { Name = "TerraFlow-ComputeEnv" }
 }
 
-resource "aws_batch_job_queue" "genomeflow_queue" {
+resource "aws_batch_job_queue" "geyser_queue" {
   name     = "teraflow-job-queue"
   priority = 1
   state    = "ENABLED"
   compute_environment_order {
     order               = 1
-    compute_environment = aws_batch_compute_environment.genomeflow_fargate.arn
+    compute_environment = aws_batch_compute_environment.geyser_fargate.arn
   }
   tags = { Name = "TerraFlow-JobQueue" }
 }
 
-resource "aws_batch_job_definition" "genomeflow_app_job_def" {
+resource "aws_batch_job_definition" "geyser_app_job_def" {
   name                  = "teraflow-app-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
   container_properties = jsonencode({
     image = "${aws_ecr_repository.genomeflow_app.repository_url}:${var.image_version}"
     # This role is for pulling the container and basic setup.
-    executionRoleArn = aws_iam_role.ecs_task_execution_role.arn
+    executionRoleArn = aws_iam_role.geyser_batch_execution_role.arn
     # MODIFIED: This is the dedicated role for the application code itself.
-    jobRoleArn = aws_iam_role.batch_task_role.arn
+    jobRoleArn = aws_iam_role.geyser_batch_task_role.arn
     fargatePlatformConfiguration = {
       platformVersion = "LATEST"
     }
