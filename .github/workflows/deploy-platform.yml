@@ -1,45 +1,69 @@
-# .github/workflows/deploy-platform.yml
 name: Deploy Platform to AWS
 
 on:
   push:
     branches: [ main ]
-    paths: [ 'app/**', 'infrastructure/**', 'Dockerfile' ]
+    paths:
+      - 'app/**'
+      - 'infrastructure/**'
+      - 'Dockerfile'
   pull_request:
-    paths: [ 'infrastructure/**', 'Dockerfile' ]
-  workflow_dispatch:
+    paths:
+      - 'infrastructure/**'
+      - 'Dockerfile'
+  workflow_dispatch: {} # allow manual runs on any branch
 
 permissions:
   id-token: write
   contents: read
   pull-requests: write
 
+# Prevent overlapping Terraform runs per ref
 concurrency:
   group: terraform-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # --- JOB 1: Build & push image (main only) ---
+  # --- JOB 1: Build and Push the Application Image ---
   build-application:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     name: Build and Push App to ECR
     runs-on: ubuntu-latest
+    # Select environment based on branch
     environment:
       name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+    env:
+      SELECTED_ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     outputs:
       image_tag: ${{ steps.get-sha.outputs.sha }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Show selected environment
+        run: |
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "Selected environment=$SELECTED_ENV"
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Get short Git SHA
         id: get-sha
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-      - uses: aws-actions/configure-aws-credentials@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
-      - id: login-ecr
+
+      - name: Login to Amazon ECR
+        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
+
+      # Push image when:
+      #  - push to main (prod), OR
+      #  - manual run (workflow_dispatch) on any branch (dev/prod)
       - name: Build, Tag, and Push Docker Image
+        if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && github.event_name == 'push')
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: geyser-app
@@ -47,12 +71,14 @@ jobs:
         run: |
           docker build --no-cache -f Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          echo "Successfully pushed image with tag: $IMAGE_TAG"
 
-  # --- JOB 2: Terraform PLAN for PRs (no image push needed) ---
-  terraform-plan:
-    if: github.event_name == 'pull_request'
+  # --- JOB 2: Plan on PRs ---
+  plan-pr:
     name: Terraform Plan (PR)
     runs-on: ubuntu-latest
+    needs: build-application
+    if: github.event_name == 'pull_request'
     environment:
       name: dev
     defaults:
@@ -61,9 +87,6 @@ jobs:
         working-directory: ./infrastructure
     steps:
       - uses: actions/checkout@v4
-      - name: Get short Git SHA
-        id: get-sha
-        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
@@ -77,11 +100,13 @@ jobs:
           cat > terraform.tfvars << 'EOF'
           ${{ secrets.TERRAFORM_TFVARS }}
           EOF
-      - run: terraform init -input=false -lock-timeout=5m
-      - run: terraform validate -no-color
+      - name: Terraform Init
+        run: terraform init -input=false -lock-timeout=5m
+      - name: Terraform Validate
+        run: terraform validate -no-color
       - name: Terraform Plan
         env:
-          IMAGE_TAG: ${{ steps.get-sha.outputs.sha }}
+          IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
         run: |
           terraform plan \
             -no-color \
@@ -90,12 +115,12 @@ jobs:
             -var-file=terraform.tfvars \
             -var="image_version=${IMAGE_TAG}"
 
-  # --- JOB 3: Terraform APPLY for main (depends on image push) ---
-  terraform-apply:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  # --- JOB 3: Auto-apply on push to main (prod) ---
+  apply-main:
     name: Terraform Apply (main)
     runs-on: ubuntu-latest
-    needs: build-application     # ensure image is pushed before apply
+    needs: build-application
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment:
       name: prod
     defaults:
@@ -117,8 +142,49 @@ jobs:
           cat > terraform.tfvars << 'EOF'
           ${{ secrets.TERRAFORM_TFVARS }}
           EOF
-      - run: terraform init -input=false -lock-timeout=5m
+      - name: Terraform Init
+        run: terraform init -input=false -lock-timeout=5m
       - name: Terraform Apply
+        env:
+          IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
+        run: |
+          terraform apply \
+            -auto-approve \
+            -input=false \
+            -lock-timeout=5m \
+            -var-file=terraform.tfvars \
+            -var="image_version=${IMAGE_TAG}"
+
+  # --- JOB 4: Manual dev apply when you "Run workflow" on a branch ---
+  apply-dev-manual:
+    name: Terraform Apply (manual - dev)
+    runs-on: ubuntu-latest
+    needs: build-application
+    if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+    environment:
+      name: dev
+    defaults:
+      run:
+        shell: bash
+        working-directory: ./infrastructure
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.6.6
+      - name: Write terraform.tfvars from secret
+        run: |
+          umask 077
+          cat > terraform.tfvars << 'EOF'
+          ${{ secrets.TERRAFORM_TFVARS }}
+          EOF
+      - name: Terraform Init
+        run: terraform init -input=false -lock-timeout=5m
+      - name: Terraform Apply (dev)
         env:
           IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
         run: |
