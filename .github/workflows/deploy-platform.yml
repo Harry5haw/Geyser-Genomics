@@ -35,6 +35,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug GitHub context
+        run: |
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_SHA=$GITHUB_SHA"
+          echo "GITHUB_ACTOR=$GITHUB_ACTOR"
+          echo "GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
+
       - name: Get short Git SHA
         id: get-sha
         run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
@@ -49,9 +56,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Build & push image only when:
-      # - push to main (prod), OR
-      # - manual run on any branch
       - name: Build, Tag, and Push Docker Image
         if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && github.event_name == 'push')
         env:
@@ -59,9 +63,17 @@ jobs:
           ECR_REPOSITORY: geyser-app
           IMAGE_TAG: ${{ steps.get-sha.outputs.sha }}
         run: |
+          echo "Building Docker image for $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
           docker build --no-cache -f Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "Successfully pushed image with tag: $IMAGE_TAG"
+          echo "✅ Successfully pushed image with tag: $IMAGE_TAG"
+
+      - name: Post image info to GitHub summary
+        run: |
+          echo "### Image Built and Pushed ✅" >> $GITHUB_STEP_SUMMARY
+          echo "- Registry: $ECR_REGISTRY" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository: geyser-app" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: ${{ steps.get-sha.outputs.sha }}" >> $GITHUB_STEP_SUMMARY
 
   # --- JOB 2: Terraform Plan on PRs ---
   plan-pr:
@@ -98,6 +110,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
         run: |
+          echo "Using IMAGE_TAG=${IMAGE_TAG}"
           terraform plan \
             -no-color \
             -input=false \
@@ -138,12 +151,28 @@ jobs:
         env:
           IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
         run: |
+          echo "Applying with IMAGE_TAG=${IMAGE_TAG}"
           terraform apply \
             -auto-approve \
             -input=false \
             -lock-timeout=5m \
             -var-file=terraform.tfvars \
             -var="image_version=${IMAGE_TAG}"
+
+      - name: Verify AWS Batch Job Definition
+        run: |
+          echo "Checking AWS Batch job definition..."
+          aws batch describe-job-definitions \
+            --job-definition-name geyser-app-job \
+            --query "jobDefinitions[*].{image:containerProperties.image, revision:revision}" \
+            --output json | tee batch_job_def.json
+          cat batch_job_def.json | jq .
+          if jq -e '.[] | select(.image | contains(":latest"))' batch_job_def.json > /dev/null; then
+            echo "❌ Batch is still using :latest"
+            exit 1
+          else
+            echo "✅ Batch is pinned to a SHA"
+          fi
 
   # --- JOB 4: Manual dev apply ---
   apply-dev-manual:
@@ -178,6 +207,7 @@ jobs:
         env:
           IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
         run: |
+          echo "Applying with IMAGE_TAG=${IMAGE_TAG}"
           terraform apply \
             -auto-approve \
             -input=false \
