@@ -141,6 +141,8 @@ resource "aws_batch_compute_environment" "geyser_fargate" {
   tags = { Name = "${var.project_name}-ComputeEnv" }
 }
 
+
+
 resource "aws_batch_job_queue" "geyser_queue" {
   name     = "${var.project_name}-job-queue"
   priority = 1

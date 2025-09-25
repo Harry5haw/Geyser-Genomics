@@ -28,22 +28,12 @@ jobs:
   build-application:
     name: Build and Push App to ECR
     runs-on: ubuntu-latest
-    # Select environment based on branch
     environment:
       name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
-    env:
-      SELECTED_ENV: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     outputs:
       image_tag: ${{ steps.get-sha.outputs.sha }}
-
     steps:
-      - name: Show selected environment
-        run: |
-          echo "GITHUB_REF=$GITHUB_REF"
-          echo "Selected environment=$SELECTED_ENV"
-
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Get short Git SHA
         id: get-sha
@@ -59,9 +49,9 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Push image when:
-      #  - push to main (prod), OR
-      #  - manual run (workflow_dispatch) on any branch (dev/prod)
+      # Build & push image only when:
+      # - push to main (prod), OR
+      # - manual run on any branch
       - name: Build, Tag, and Push Docker Image
         if: github.event_name == 'workflow_dispatch' || (github.ref == 'refs/heads/main' && github.event_name == 'push')
         env:
@@ -73,7 +63,7 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "Successfully pushed image with tag: $IMAGE_TAG"
 
-  # --- JOB 2: Plan on PRs ---
+  # --- JOB 2: Terraform Plan on PRs ---
   plan-pr:
     name: Terraform Plan (PR)
     runs-on: ubuntu-latest
@@ -93,7 +83,7 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.6
+          terraform_version: 1.13.3
       - name: Write terraform.tfvars from secret
         run: |
           umask 077
@@ -115,7 +105,7 @@ jobs:
             -var-file=terraform.tfvars \
             -var="image_version=${IMAGE_TAG}"
 
-  # --- JOB 3: Auto-apply on push to main (prod) ---
+  # --- JOB 3: Terraform Apply on push to main (prod) ---
   apply-main:
     name: Terraform Apply (main)
     runs-on: ubuntu-latest
@@ -135,7 +125,7 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.6
+          terraform_version: 1.13.3
       - name: Write terraform.tfvars from secret
         run: |
           umask 077
@@ -155,7 +145,7 @@ jobs:
             -var-file=terraform.tfvars \
             -var="image_version=${IMAGE_TAG}"
 
-  # --- JOB 4: Manual dev apply when you "Run workflow" on a branch ---
+  # --- JOB 4: Manual dev apply ---
   apply-dev-manual:
     name: Terraform Apply (manual - dev)
     runs-on: ubuntu-latest
@@ -175,7 +165,7 @@ jobs:
           aws-region: ${{ secrets.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.6.6
+          terraform_version: 1.13.3
       - name: Write terraform.tfvars from secret
         run: |
           umask 077
