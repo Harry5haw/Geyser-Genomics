@@ -6,3 +6,5 @@
 data "aws_caller_identity" "current" {}
 
 data "aws_region" "current" {}
+
+# DELETE the data blocks for aws_vpc, aws_subnets, and aws_iam_role from here.
