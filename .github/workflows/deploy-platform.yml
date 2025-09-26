@@ -45,6 +45,15 @@ jobs:
           role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Debug Who am I
+        run: aws sts get-caller-identity
+
+      - name: Debug Show OIDC token claims
+        run: |
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+          echo "$TOKEN" | jq '. | {sub: .sub, aud: .aud, iss: .iss}'
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -73,24 +82,39 @@ jobs:
         working-directory: ./infrastructure
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Debug Who am I
+        run: aws sts get-caller-identity
+
+      - name: Debug Show OIDC token claims
+        run: |
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+          echo "$TOKEN" | jq '. | {sub: .sub, aud: .aud, iss: .iss}'
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.3
+
       - name: Write terraform.tfvars from secret
         run: |
           umask 077
           cat > terraform.tfvars << 'EOF'
           ${{ secrets.TERRAFORM_TFVARS }}
           EOF
+
       - name: Terraform Init
         run: terraform init -input=false -lock-timeout=5m
+
       - name: Terraform Validate
         run: terraform validate -no-color
+
       - name: Terraform Plan
         env:
           IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
@@ -116,22 +140,36 @@ jobs:
         working-directory: ./infrastructure
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Debug Who am I
+        run: aws sts get-caller-identity
+
+      - name: Debug Show OIDC token claims
+        run: |
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+          echo "$TOKEN" | jq '. | {sub: .sub, aud: .aud, iss: .iss}'
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.3
+
       - name: Write terraform.tfvars from secret
         run: |
           umask 077
           cat > terraform.tfvars << 'EOF'
           ${{ secrets.TERRAFORM_TFVARS }}
           EOF
+
       - name: Terraform Init
         run: terraform init -input=false -lock-timeout=5m
+
       - name: Terraform Apply (prod)
         env:
           IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
@@ -157,22 +195,36 @@ jobs:
         working-directory: ./infrastructure
     steps:
       - uses: actions/checkout@v4
+
       - name: Configure AWS Credentials (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          
+      - name: Debug Who am I
+        run: aws sts get-caller-identity
+
+      - name: Debug Show OIDC token claims
+        run: |
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
+          echo "$TOKEN" | jq '. | {sub: .sub, aud: .aud, iss: .iss}'
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.3
+
       - name: Write terraform.tfvars from secret
         run: |
           umask 077
           cat > terraform.tfvars << 'EOF'
           ${{ secrets.TERRAFORM_TFVARS }}
           EOF
+
       - name: Terraform Init
         run: terraform init -input=false -lock-timeout=5m
+
       - name: Terraform Apply (dev)
         env:
           IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
