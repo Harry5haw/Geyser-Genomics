@@ -29,7 +29,7 @@ jobs:
     name: Build and Push App to ECR
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}  # ensures OIDC 'sub' includes environment
+      name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     outputs:
       image_tag: ${{ steps.get-sha.outputs.sha }}
     steps:
@@ -42,7 +42,7 @@ jobs:
       - name: Configure AWS Credentials (ECR role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ github.ref == 'refs/heads/main' && secrets.ECR_IAM_ROLE_ARN_PROD || secrets.ECR_IAM_ROLE_ARN_DEV }}
+          role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login to Amazon ECR
@@ -66,7 +66,7 @@ jobs:
     needs: build-application
     if: github.event_name == 'pull_request'
     environment:
-      name: dev  # ensures OIDC 'sub' includes environment
+      name: dev
     defaults:
       run:
         shell: bash
@@ -76,7 +76,7 @@ jobs:
       - name: Configure AWS Credentials (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN_DEV }}
+          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -109,7 +109,7 @@ jobs:
     needs: build-application
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     environment:
-      name: prod  # ensures OIDC 'sub' includes environment
+      name: prod
     defaults:
       run:
         shell: bash
@@ -119,7 +119,7 @@ jobs:
       - name: Configure AWS Credentials (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN_PROD }}
+          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -150,7 +150,7 @@ jobs:
     needs: build-application
     if: github.ref != 'refs/heads/main' && github.event_name == 'push'
     environment:
-      name: dev  # ensures OIDC 'sub' includes environment
+      name: dev
     defaults:
       run:
         shell: bash
@@ -160,7 +160,7 @@ jobs:
       - name: Configure AWS Credentials (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN_DEV }}
+          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
       - uses: hashicorp/setup-terraform@v3
         with:
