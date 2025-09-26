@@ -1,0 +1,45 @@
+name: Test AWS OIDC Roles
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment to test (dev or prod)"
+        required: true
+        default: "dev"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-oidc:
+    name: Test assuming ${{ github.event.inputs.environment }} roles
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (Terraform role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify Terraform role identity
+        run: |
+          echo ">>> Terraform Role Identity"
+          aws sts get-caller-identity
+
+      - name: Configure AWS Credentials (ECR role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify ECR role identity
+        run: |
+          echo ">>> ECR Role Identity"
+          aws sts get-caller-identity
