@@ -38,11 +38,9 @@ jobs:
       - name: Debug OIDC token before creds
         run: |
           echo "Requesting OIDC token..."
-          RAW=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
             -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-          TOKEN=$(echo "$RAW" | jq -r '.value')
-          echo "Decoded token claims:"
-          echo "$TOKEN" | jq -R 'split(".") | .[1] | @base64d | fromjson | {sub, aud, iss}'
+          echo "$TOKEN" | jq -r '{sub: .sub, aud: .aud, iss: .iss}'
 
       - name: Get short Git SHA
         id: get-sha
@@ -53,6 +51,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          audience: sts.amazonaws.com
 
       - name: Debug Who am I
         run: aws sts get-caller-identity
@@ -89,17 +88,16 @@ jobs:
       - name: Debug OIDC token before creds
         run: |
           echo "Requesting OIDC token..."
-          RAW=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
             -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-          TOKEN=$(echo "$RAW" | jq -r '.value')
-          echo "Decoded token claims:"
-          echo "$TOKEN" | jq -R 'split(".") | .[1] | @base64d | fromjson | {sub, aud, iss}'
+          echo "$TOKEN" | jq -r '{sub: .sub, aud: .aud, iss: .iss}'
 
       - name: Configure AWS Credentials Terraform role
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          audience: sts.amazonaws.com
 
       - name: Debug Who am I
         run: aws sts get-caller-identity
@@ -150,17 +148,16 @@ jobs:
       - name: Debug OIDC token before creds
         run: |
           echo "Requesting OIDC token..."
-          RAW=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
             -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-          TOKEN=$(echo "$RAW" | jq -r '.value')
-          echo "Decoded token claims:"
-          echo "$TOKEN" | jq -R 'split(".") | .[1] | @base64d | fromjson | {sub, aud, iss}'
+          echo "$TOKEN" | jq -r '{sub: .sub, aud: .aud, iss: .iss}'
 
       - name: Configure AWS Credentials Terraform role
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          audience: sts.amazonaws.com
 
       - name: Debug Who am I
         run: aws sts get-caller-identity
@@ -208,17 +205,16 @@ jobs:
       - name: Debug OIDC token before creds
         run: |
           echo "Requesting OIDC token..."
-          RAW=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
+          TOKEN=$(curl -sLS "$ACTIONS_ID_TOKEN_REQUEST_URL?aud=sts.amazonaws.com" \
             -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN")
-          TOKEN=$(echo "$RAW" | jq -r '.value')
-          echo "Decoded token claims:"
-          echo "$TOKEN" | jq -R 'split(".") | .[1] | @base64d | fromjson | {sub, aud, iss}'
+          echo "$TOKEN" | jq -r '{sub: .sub, aud: .aud, iss: .iss}'
 
       - name: Configure AWS Credentials Terraform role
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          audience: sts.amazonaws.com
           
       - name: Debug Who am I
         run: aws sts get-caller-identity
