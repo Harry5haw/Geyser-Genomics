@@ -30,12 +30,26 @@ output "pipeline_status_sns_topic_arn" {
   value       = aws_sns_topic.geyser_pipeline_status_topic.arn
 }
 
-output "geyser_github_ecr_role_arn" {
-  description = "The ARN of the IAM role for the ECR push CI/CD workflow."
-  value       = aws_iam_role.geyser_github_ecr_role.arn
+# --- CI/CD IAM Role Outputs ---
+
+# Dev outputs
+output "geyser_github_ecr_role_dev_arn" {
+  description = "The ARN of the IAM role for the ECR push CI/CD workflow (dev)."
+  value       = aws_iam_role.geyser_github_ecr_role_dev.arn
 }
 
-output "geyser_github_terraform_role_arn" {
-  description = "The ARN of the IAM role for the Terraform CI/CD workflow."
-  value       = aws_iam_role.geyser_github_terraform_role.arn
+output "geyser_github_terraform_role_dev_arn" {
+  description = "The ARN of the IAM role for the Terraform CI/CD workflow (dev)."
+  value       = aws_iam_role.geyser_github_terraform_role_dev.arn
+}
+
+# Prod outputs
+output "geyser_github_ecr_role_prod_arn" {
+  description = "The ARN of the IAM role for the ECR push CI/CD workflow (prod)."
+  value       = aws_iam_role.geyser_github_ecr_role_prod.arn
+}
+
+output "geyser_github_terraform_role_prod_arn" {
+  description = "The ARN of the IAM role for the Terraform CI/CD workflow (prod)."
+  value       = aws_iam_role.geyser_github_terraform_role_prod.arn
 }
