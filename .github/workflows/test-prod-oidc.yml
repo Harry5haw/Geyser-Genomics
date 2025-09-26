@@ -1,0 +1,39 @@
+name: Test Prod OIDC Roles
+
+on:
+  workflow_dispatch: {} # run manually from Actions UI
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-prod-oidc:
+    name: Test assuming prod roles
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials (prod Terraform role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN_PROD }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify Terraform role identity
+        run: |
+          echo ">>> Terraform Role Identity"
+          aws sts get-caller-identity
+
+      - name: Configure AWS Credentials (prod ECR role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN_PROD }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Verify ECR role identity
+        run: |
+          echo ">>> ECR Role Identity"
+          aws sts get-caller-identity
