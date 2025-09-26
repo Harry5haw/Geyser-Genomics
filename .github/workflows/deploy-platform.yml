@@ -201,7 +201,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
-          
+
       - name: Debug Who am I
         run: aws sts get-caller-identity
 
