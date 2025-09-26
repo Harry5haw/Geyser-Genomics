@@ -29,6 +29,7 @@ jobs:
   build-application:
     name: Build and Push App to ECR
     runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
     outputs:
       image_tag: ${{ steps.get-sha.outputs.sha }}
     steps:
