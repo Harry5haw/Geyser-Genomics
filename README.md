@@ -98,7 +98,7 @@ What it does today:
 *   🧪 **Tested offline:** every push runs the unit tests and a Docker end-to-end run on synthetic data with known mutations. The run must recover exactly those mutations.
 
 > [!NOTE]
-> **Where it stands:** the pipeline is verified locally in Docker. The AWS infrastructure is defined in Terraform and deployed, but the cloud pipeline has not been run end to end since the cost and security changes of November 2026. That run is the next milestone.
+> **Where it stands:** the pipeline is verified locally in Docker. The AWS infrastructure is defined in Terraform and deployed, but the cloud pipeline has not been run end to end since the cost and security changes of November 2026. The next milestone is pangenome-aware variant calling, built and benchmarked locally first.
 
 ---
 
@@ -329,7 +329,7 @@ Variant callers like DeepVariant find variants by comparing reads with a **refer
 A **pangenome** reference is a graph that combines many people's genomes. The Human Pangenome Reference Consortium's first draft (*Nature*, 2023) combines 47 genomes chosen to better reflect global diversity. Google and UC Santa Cruz built a graph-based variant-calling workflow around DeepVariant and reported improved accuracy across several thousand samples.
 
 > [!NOTE]
-> This project currently aligns reads to the linear reference (BWA-MEM against chromosome 20), and DeepVariant runs in its standard mode. Pangenome-aware calling is on the [Roadmap](#️-roadmap) as something to explore. It is not built yet.
+> This project currently aligns reads to the linear reference (BWA-MEM against chromosome 20), and DeepVariant runs in its standard mode. Pangenome-aware calling is the project's top priority on the [Roadmap](#️-roadmap). It is not built yet.
 
 #### Running it
 
@@ -470,7 +470,7 @@ The GitHub Actions workflow `.github/workflows/deploy-platform.yml` ("Terraform 
 Once deployed, a run is started by uploading a file.
 
 > [!IMPORTANT]
-> This cloud flow has not been re-tested since the November 2026 cost and security changes. The first cloud run is the next item on the [Roadmap](#️-roadmap).
+> This cloud flow has not been re-tested since the November 2026 cost and security changes. The first cloud run is on the [Roadmap](#️-roadmap).
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
@@ -503,9 +503,9 @@ python scripts/deploy_dashboard.py
 | ✅ | **CI hardening** | OIDC with separate dev and prod roles, read-only Terraform roles, prod restricted to `main` |
 | ✅ | **DeepVariant on a local GPU** | Measured on a whole chromosome |
 | ✅ | **Web UI** | Works offline |
-| 🎯 | **First cloud run since the hardening** | One small sample through S3 → Step Functions → Batch, confirming the VCF. **Next up.** |
+| 🎯 | **Pangenome-aware DeepVariant** | Use the HPRC pangenome graph in addition to the linear reference when calling variants, and benchmark it on HG003 chr20 against linear DeepVariant and bcftools. Local first. **Top priority** ([#51](../../issues/51)) |
+| 🔜 | **First cloud run since the hardening** | One small sample through S3 → Step Functions → Batch, confirming the VCF |
 | 🔜 | **Monitoring** | Finish the CloudWatch dashboards for stage durations and failures |
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |
 | 🔜 | **Web UI on S3** | Point the UI at the cloud bucket |
 | 🔜 | **Branch protection** | Required review for `prod`, once the repository is public |
-| 🔭 | **Pangenome-aware calling** | Explore DeepVariant with a pangenome reference instead of the linear one |
