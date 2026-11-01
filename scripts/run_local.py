@@ -27,6 +27,7 @@ truth/<sample>.vcf.gz + truth/<sample>.bed (from fetch_dv_testdata.py) as a coun
 """
 
 import argparse
+import bisect
 import glob
 import gzip
 import importlib.util
@@ -96,10 +97,13 @@ def pipeline_jobs(sample_id, reference_name, caller="bcftools", app_image="geyse
     return jobs
 
 
-def docker_command(cmd, root, image, gpus=False, extra_env=None):
+def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None):
     full = ["docker", "run", "--rm"]
     if gpus:
         full += ["--gpus", "all"]
+    if memory:
+        # Hard cap (also counts the container's page cache): keeps a big run from starving the host.
+        full += ["--memory", memory, "--memory-swap", memory]
     full += ["--mount", f"type=bind,source={os.path.abspath(root)},target=/data"]
     env = {"STORAGE_BACKEND": "local", "METRICS_BACKEND": "local", "LOCAL_STORAGE_DIR": "/data",
            **(extra_env or {})}
@@ -108,13 +112,14 @@ def docker_command(cmd, root, image, gpus=False, extra_env=None):
     return full + [image] + cmd
 
 
-def run_job(job, runner, root):
+def run_job(job, runner, root, dv_memory=None):
     if runner == "docker":
         # DeepVariant tuning knobs are passed through to its container when set on the host.
-        extra = {}
+        extra, memory = {}, None
         if job["name"] == "deepvariant":
             extra = {k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)}
-        return subprocess.run(docker_command(job["cmd"], root, job["image"], job["gpus"], extra)).returncode
+            memory = dv_memory
+        return subprocess.run(docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory)).returncode
     if job["name"] == "deepvariant":
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
@@ -129,8 +134,12 @@ def read_vcf_calls(path, regions=None):
     """Return {(pos, ref, alt)} for the variant calls in a (b)gzipped VCF.
 
     Skips filtered rows (e.g. DeepVariant's RefCall and NoCall) and placeholder ALTs. The contig is
-    ignored: every test dataset here has a single contig. regions: optional BED [(start0, end)].
+    ignored: every test dataset here has a single contig. regions: optional BED [(start0, end)],
+    non-overlapping (GIAB confident-region BEDs are merged).
     """
+    if regions is not None:
+        regions = sorted(regions)
+        starts = [s for s, _ in regions]
     calls = set()
     with gzip.open(path, "rt") as fh:
         for line in fh:
@@ -140,8 +149,12 @@ def read_vcf_calls(path, regions=None):
             if cols[6] not in ("PASS", "."):
                 continue
             pos = int(cols[1])
-            if regions is not None and not any(start < pos <= end for start, end in regions):
-                continue
+            if regions is not None:
+                # BED is 0-based half-open: 1-based pos is inside (start, end]. Binary search, since a
+                # whole-chromosome BED has tens of thousands of intervals.
+                i = bisect.bisect_left(starts, pos) - 1
+                if i < 0 or pos > regions[i][1]:
+                    continue
             for alt in cols[4].split(","):
                 if alt not in NON_VARIANT_ALTS:
                     calls.add((pos, cols[3], alt))
@@ -222,6 +235,9 @@ def main(argv=None):
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
     p.add_argument("--dv-image", default="geyser-deepvariant", help="DeepVariant image (app-deepvariant/)")
     p.add_argument("--no-gpu", action="store_true", help="run DeepVariant without --gpus all (CPU image)")
+    p.add_argument("--dv-memory", metavar="SIZE",
+                   help="memory cap for the DeepVariant container, e.g. 12g. A whole chromosome can "
+                        "otherwise take most of the Docker VM; 16 make_examples shards thrashed under 8g")
     p.add_argument("--skip-to-variants", action="store_true",
                    help="start at variant calling, using an existing alignments/<sample>.bam")
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
@@ -248,7 +264,7 @@ def main(argv=None):
                              gpus=not a.no_gpu, skip_to_variants=a.skip_to_variants)
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
-            if run_job(job, a.runner, a.root) != 0:
+            if run_job(job, a.runner, a.root, a.dv_memory) != 0:
                 print(f"\nFAILED at stage '{job['name']}' for {sample_id} (in the cloud this goes to Notify_Failure)")
                 ok = False
                 break

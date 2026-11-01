@@ -286,6 +286,11 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --cal
 python scripts/fetch_dv_testdata.py
 python scripts/run_local.py --sample NA12878_S1 --reference ucsc.hg19.chr20.unittest.fasta \
     --caller both --skip-to-variants --check
+
+# Whole chromosome: HG003, NovaSeq 35x, all of chr20 on GRCh38, with GIAB v4.2.1 truth (~1.34 GB download)
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20
+python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa \
+    --caller deepvariant --skip-to-variants --check --dv-memory 12g
 ```
 
 **Accuracy:**
@@ -294,10 +299,28 @@ python scripts/run_local.py --sample NA12878_S1 --reference ucsc.hg19.chr20.unit
 | :--- | :--- | :--- |
 | Synthetic | 10/10 planted SNPs, 0 extra calls | 10/10 planted SNPs, 0 extra calls (with or without its small model) |
 | NA12878 slice, GIAB confident regions | 45 TP, 4 FN, 4 FP | 49 TP, 0 FN, 0 FP |
+| HG003 whole chr20, GIAB v4.2.1 confident regions | 70,773 TP, 10,737 FN, 11,077 FP (recall 0.868, precision 0.865) | 81,172 TP, 338 FN, 108 FP (recall 0.996, precision 0.999) |
 
-The real-data comparison is exact (position, ref, alt) matching without variant normalisation, so it is indicative only. It is not a hap.py benchmark.
+The real-data comparisons use exact (position, ref, alt) matching without variant normalisation, so they are indicative only. They are not a hap.py benchmark. This method penalises bcftools' indel representation in particular, so its true gap is probably smaller. DeepVariant's accuracy counts were identical on the GPU and the CPU. With the small model off, they changed by one: 81,173 TP, 337 FN, 107 FP.
 
-**Timing.** Measured on an RTX 3080 (10 GB) under Docker Desktop/WSL2 with 16 CPUs, median of 3 runs. These are times for the DeepVariant stage only:
+**Timing: whole chromosome.** HG003 chr20, 35x, measured on an RTX 3080 (10 GB) under Docker Desktop/WSL2 with 16 CPUs, one run per configuration. These are times for the DeepVariant stage only:
+
+| Device | Small model | Examples sent to the neural network | make_examples (CPU) | call_variants (GPU step) | postprocess (CPU) | Stage total |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| GPU | on (default) | 79,759 | 298.6 s | **128.1 s** | 17.5 s | **466.7 s** (7.8 min) |
+| CPU | on (default) | 79,759 | 306.8 s | **426.5 s** | 21.6 s | **776.4 s** (12.9 min) |
+| GPU | off | 222,978 | 303.5 s | 266.5 s | 20.5 s | 609.9 s (10.2 min) |
+| CPU | off | 222,978 | 336.4 s | 1,200.5 s | 16.9 s | 1,575.4 s (26.3 min) |
+
+**At whole-chromosome scale the GPU pays off.**
+- With default settings, `call_variants` is **3.3× faster** on the GPU and the whole stage is **1.7× faster**. With the small model off, `call_variants` is 4.5× faster: about 840 examples/s on the GPU against about 190 on the CPU.
+- The stage gains less than `call_variants` does, because `make_examples` (about 300 s) runs on the CPU on either image. It is the largest step on the GPU.
+- The small model is itself a CPU speed-up: it makes 64% of the calls before the neural network is involved.
+- bcftools took 409 s for the same chromosome.
+
+The CPU runs used a 12 GB container cap (`--dv-memory 12g`) and `--call_variants_extra_args=batch_size=256`. Without a cap, CPU `call_variants` took most of the 16 GB Docker VM and starved Windows. An 8 GB cap was too small for 16 `make_examples` shards.
+
+**Timing: small inputs.** Same machine, median of 3 runs:
 
 | Data | Device | Small model | Examples sent to the neural network | make_examples (CPU) | call_variants (GPU step) | postprocess (CPU) | Stage total |
 | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -310,12 +333,7 @@ The real-data comparison is exact (position, ref, alt) matching without variant 
 | NA12878 100 kb | GPU | off | 305 | 33.3 s | 20.0 s | 6.6 s | 63.3 s |
 | NA12878 100 kb | CPU | off | 305 | 32.9 s | 14.3 s | 5.7 s | 56.2 s |
 
-**At this size the GPU does not speed anything up. It is 5–6 s slower than the CPU.**
-- `call_variants` is the only step that uses the GPU. With at most a few hundred examples, its time is almost entirely fixed start-up: loading the model and initialising CUDA and cuDNN. The GPU's start-up costs more than TensorFlow's on the CPU.
-- `make_examples` runs on the CPU and is the biggest step.
-- DeepVariant's "small model" calls easy sites on the CPU before the neural network sees them. On the synthetic data it calls all of them.
-
-The GPU should only pay off on whole chromosomes or genomes, which produce hundreds of thousands of examples. That has not been measured here yet. `nvidia-smi` sampling during the runs confirmed the GPU was used: utilisation peaked at 98%, and TensorFlow reserved nearly all free VRAM.
+**On small inputs the GPU is 5–6 s slower than the CPU.** With at most a few hundred examples, `call_variants` time is almost entirely fixed start-up: loading the model and initialising CUDA and cuDNN. The GPU's start-up costs more than TensorFlow's on the CPU. On the synthetic data, the small model makes every call, so the neural network sees nothing. `nvidia-smi` sampling confirmed the GPU was used: utilisation peaked at 98%, and TensorFlow reserved nearly all free VRAM.
 
 **Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. Cloud deployment (AWS Batch GPU queue) is designed but not built yet; see [`app-deepvariant/README.md`](app-deepvariant/README.md).
 
@@ -366,5 +384,5 @@ python scripts/deploy_dashboard.py
 1. **Cost-safe cloud deployment:** make the NAT gateway optional (off by default), run Fargate jobs in public subnets, set a lifecycle policy on ECR and short log retention, and add an AWS Budget alert.
 2. **CI/CD hardening:** finish the OIDC role separation, restrict `prod` to `main` with required review, and make deploys manual rather than automatic on every push.
 3. **Monitoring:** finish the CloudWatch dashboards for stage durations and failures.
-4. **Google DeepVariant in the cloud:** the stage already runs locally on a GPU. Still to do: wire it into Step Functions as a parallel branch on the GPU Batch queue, and measure it on a whole chromosome, where the GPU should start to pay off.
+4. **Google DeepVariant in the cloud:** the stage already runs locally on a GPU and has been measured on a whole chromosome. Still to do: wire it into Step Functions as a parallel branch on the GPU Batch queue.
 5. **Web UI:** a Django front end for uploading samples and browsing results.

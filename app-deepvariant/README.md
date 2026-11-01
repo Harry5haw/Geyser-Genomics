@@ -30,7 +30,17 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --cal
 python scripts/fetch_dv_testdata.py
 python scripts/run_local.py --sample NA12878_S1 --reference ucsc.hg19.chr20.unittest.fasta \
     --caller deepvariant --skip-to-variants --check
+
+# Whole chromosome: HG003 chr20 35x with GIAB v4.2.1 truth (~1.34 GB download, ~1.2 GB on disk)
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20
+python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa \
+    --caller deepvariant --skip-to-variants --check --dv-memory 12g
 ```
+
+**Memory.** For a whole chromosome, pass `--dv-memory` to cap the container.
+- Uncapped, CPU `call_variants` took about 11.6 GB of the 16 GB Docker VM and starved Windows.
+- 8 GB is too small for 16 `make_examples` shards: they thrash and fail.
+- 12 GB works, with `DEEPVARIANT_EXTRA_ARGS=--call_variants_extra_args=batch_size=256` (default batch size: 1024).
 
 Settings you can change. Set these on the host; `run_local.py` passes them into the container.
 
@@ -42,7 +52,16 @@ Settings you can change. Set these on the host; `run_local.py` passes them into 
 
 There is no GPU? Build the CPU variant (`--build-arg DV_TAG=1.10.0 -t geyser-deepvariant-cpu`) and pass `--dv-image geyser-deepvariant-cpu --no-gpu`.
 
-**Where the GPU actually helps.** Of DeepVariant's three steps, only `call_variants` uses the GPU. `make_examples` and `postprocess_variants` run on the CPU. Since 1.8, a "small model" inside `make_examples` also calls the easy sites on the CPU, so `call_variants` only sees the harder ones. The stage records each step separately, so you can see this in the timings.
+**Where the GPU actually helps.** Of DeepVariant's three steps, only `call_variants` uses the GPU. `make_examples` and `postprocess_variants` run on the CPU. Since 1.8, a "small model" inside `make_examples` also calls the easy sites on the CPU, so `call_variants` only sees the harder ones. The stage records each step separately.
+
+Measured results (full tables in the main README):
+
+| Input | `call_variants` | Whole stage |
+|---|---|---|
+| Whole chr20, defaults | 128 s on the GPU vs 427 s on the CPU (3.3×) | 7.8 min vs 12.9 min (1.7×) |
+| 100 kb slices | 5–6 s slower on the GPU (CUDA start-up) | |
+
+`make_examples` takes about 300 s either way.
 
 ## Tests
 
@@ -59,7 +78,7 @@ There is no GPU? Build the CPU variant (`--build-arg DV_TAG=1.10.0 -t geyser-dee
 
 1. **Image.** Use a separate ECR repo, `geyser-deepvariant`, with a lifecycle policy. The image is about 10 GB, so `deploy-platform.yml` either needs a second build/push step on a runner with enough disk, or the image is pushed by hand.
 2. **Batch job definition.** EC2 platform, because Fargate has no GPUs. Settings:
-   - `resourceRequirements`: `GPU=1`, `VCPU=4`, `MEMORY≈15000` (fits `g4dn.xlarge`);
+   - `resourceRequirements`: `GPU=1`, `VCPU=4`, `MEMORY≈15000` (fits `g4dn.xlarge`). Locally, 16 `make_examples` shards needed more than 8 GB. On 4 vCPUs the shard count, and with it memory, is about a quarter of that. `make_examples` will also be about 4× slower than the local 300 s for chr20, so consider a larger instance type;
    - queue: `gpu_queue` (from `batch_gpu.tf`);
    - command: `/opt/geyser-venv/bin/python deepvariant_task.py <srr_id> <reference_name>`;
    - environment: `BUCKET_NAME` (plus `AWS_REGION`).

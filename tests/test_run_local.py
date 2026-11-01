@@ -45,6 +45,20 @@ def test_docker_command_adds_gpus_only_when_asked():
     assert "STORAGE_BACKEND=local" in without and "LOCAL_STORAGE_DIR=/data" in without
 
 
+def test_memory_cap_only_when_given():
+    capped = run_local.docker_command(["x"], "root", "img", memory="8g")
+    assert capped[3:7] == ["--memory", "8g", "--memory-swap", "8g"]
+    assert "--memory" not in run_local.docker_command(["x"], "root", "img")
+
+
+def test_memory_cap_applies_to_deepvariant_only(monkeypatch):
+    seen = []
+    monkeypatch.setattr(run_local.subprocess, "run", lambda cmd: seen.append(cmd) or type("R", (), {"returncode": 0}))
+    for job in run_local.pipeline_jobs("S1", "r", caller="both", skip_to_variants=True):
+        run_local.run_job(job, "docker", "root", dv_memory="8g")
+    assert ["--memory" in cmd for cmd in seen] == [False, True]
+
+
 def test_no_gpu_flag_reaches_the_job():
     jobs = run_local.pipeline_jobs("S1", "r", caller="deepvariant", gpus=False)
     assert not jobs[-1]["gpus"]
@@ -81,6 +95,13 @@ def test_giab_truth_is_counted_inside_bed_only(tmp_path):
     assert (counts["kind"], counts["truth"], counts["tp"]) == ("giab", 2, 1)
     assert len(counts["missed"]) == 1 and len(counts["extra"]) == 1
     assert run_local.check_against_truth(str(tmp_path), "S1", "deepvariant")  # report only
+
+
+def test_bed_boundaries_are_half_open_across_many_intervals(tmp_path):
+    vcf = tmp_path / "a.vcf.gz"
+    # BED (100, 200] and (300, 400], given out of order
+    write_vcf(vcf, [(p, "A", "G", "PASS") for p in (100, 101, 200, 201, 300, 301, 400, 401, 50)])
+    assert {c[0] for c in run_local.read_vcf_calls(vcf, [(300, 400), (100, 200)])} == {101, 200, 301, 400}
 
 
 def test_missing_truth_fails_the_check(tmp_path):
