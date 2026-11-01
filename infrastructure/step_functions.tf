@@ -39,7 +39,7 @@ resource "aws_iam_role_policy_attachment" "step_functions_policy_attach" {
 
 resource "aws_cloudwatch_log_group" "geyser_sfn_log_group" {
   name              = "/aws/vendedlogs/states/${var.project_name}-sfn-${var.environment}"
-  retention_in_days = 30
+  retention_in_days = 7
   tags              = { Name = "${var.project_name}-sfn-log-group", Environment = var.environment, ManagedBy = "Terraform" }
 }
 
@@ -92,15 +92,23 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
       },
       Notify_Failure = {
         Type       = "Task", Resource = "arn:aws:states:::sns:publish",
-        Parameters = { "TopicArn" = aws_sns_topic.geyser_pipeline_status_topic.arn, "Message" = { "PipelineName" = "Geyser Genomics Pipeline", "ExecutionId" = "$$.Execution.Id", "Status" = "FAILED", "ErrorDetails.$" = "$.error", "Input.$" = "$$", "StartTime" = "$$.Execution.StartTime" }, "MessageAttributes" = { "Status" = { "DataType" = "String", "StringValue" = "FAILED" }, "Pipeline" = { "DataType" = "String", "StringValue" = "Geyser Genomics" } } },
-        ResultPath = null, End = true
+        Parameters = { "TopicArn" = aws_sns_topic.geyser_pipeline_status_topic.arn, "Message" = { "PipelineName" = "Geyser Genomics Pipeline", "ExecutionId.$" = "$$.Execution.Id", "Status" = "FAILED", "ErrorDetails.$" = "$.error", "Input.$" = "$$", "StartTime.$" = "$$.Execution.StartTime" }, "MessageAttributes" = { "Status" = { "DataType" = "String", "StringValue" = "FAILED" }, "Pipeline" = { "DataType" = "String", "StringValue" = "Geyser Genomics" } } },
+        # Even if the SNS publish itself fails, the run must still end as Failed.
+        ResultPath = null, Catch = [{ ErrorEquals = ["States.ALL"], Next = "Pipeline_Failed", ResultPath = "$.notify_error" }], Next = "Pipeline_Failed"
+      },
+      # Terminal state for any failed stage, so a failed run ends as FAILED
+      # instead of SUCCEEDED after the notification is sent.
+      Pipeline_Failed = {
+        Type  = "Fail",
+        Error = "PipelineStageFailed",
+        Cause = "A pipeline stage failed. See the SNS failure notification or the execution history for details."
       }
     }
   })
   logging_configuration {
     log_destination        = "${aws_cloudwatch_log_group.geyser_sfn_log_group.arn}:*"
     include_execution_data = true
-    level                  = "ALL"
+    level                  = "ERROR" # errors only, to keep log volume (and cost) low
   }
   tags       = { Name = "${var.project_name}-pipeline-sfn", Environment = var.environment, ManagedBy = "Terraform" }
   depends_on = [aws_iam_role_policy_attachment.step_functions_policy_attach, ]
