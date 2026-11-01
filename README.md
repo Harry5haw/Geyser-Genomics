@@ -494,7 +494,7 @@ Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWat
 | Script | What it creates |
 | :--- | :--- |
 | `scripts/deploy_dashboard.py` | Dashboard `geyser-dashboard-dev`: pipeline runs per day, end-to-end time (p50/p95), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant |
-| `scripts/deploy_alarms.py` | Alarms to the pipeline's SNS topic: Step Functions `ExecutionsFailed`, plus `FailureCount` for each stage |
+| `scripts/deploy_alarms.py` | One alarm to the pipeline's SNS topic: the trigger Lambda failing (see *Failure emails* below) |
 | `scripts/runtime_deploy_pipeline_dashboard.py` | Optional dashboard with only the Step Functions widgets |
 | `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only) |
 
@@ -513,6 +513,16 @@ python scripts/deploy_alarms.py
 ```
 
 Stage durations show the mean and max across samples. CloudWatch can't calculate percentiles across samples because each `SampleId` is a separate metric. If the metrics stop using the `SampleId` dimension, run with `--schema aggregated` to get real p50/p95. To add a stage or a new variant caller, add it to `STAGE_GROUPS` in `scripts/monitoring.py`.
+
+**Failure emails: one email per incident.** Each kind of failure has exactly one sender, so a single failed run doesn't send several emails:
+
+| Failure | Who emails |
+| :--- | :--- |
+| A stage fails | The state machine's `Notify_Failure` step (sample ID, error and execution ID) |
+| The trigger Lambda fails, so the upload never starts a run | The `geyser-dev-trigger-lambda-errors` alarm. Alarms only email when they change to ALARM, so a burst of errors sends one email |
+| `Notify_Failure`'s own email fails, or a run times out or is aborted | Not covered yet. A later infrastructure change will replace the publish step with an EventBridge rule on Step Functions status changes |
+
+There are deliberately no `ExecutionsFailed` or per-stage `FailureCount` alarms, because they would email the same failure again. The dashboard still shows failures by stage. The SNS topic needs an email subscription for any of this to reach you.
 
 ---
 

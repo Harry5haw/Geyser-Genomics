@@ -10,9 +10,14 @@ Metric shapes (see app/metrics.py):
 Two metric schemas are supported:
   per-sample  what app/metrics.py publishes today. Each sample is its own metric, so CloudWatch cannot
               compute percentiles across runs; durations are shown as mean and max of the per-sample
-              series (SEARCH), and failure alarms use Metrics Insights queries.
+              series (SEARCH).
   aggregated  the same metrics without the SampleId dimension (a proposed change, not made yet). One
-              series per stage gives real p50/p95 durations and plain single-metric alarms.
+              series per stage gives real p50/p95 durations.
+
+Failure emails: one email per incident (see FAILURE_NOTIFICATIONS). A failed stage is already emailed
+by the state machine's Notify_Failure step, so there are deliberately no ExecutionsFailed or per-stage
+FailureCount alarms (they would send a second and third email for the same failure). The only alarm
+covers what Notify_Failure cannot see: the trigger Lambda failing, so that no run starts at all.
 
 No account IDs or ARNs live in this file: the state machine and SNS topic ARNs are always arguments.
 """
@@ -221,55 +226,46 @@ def build_pipeline_runtime_dashboard(region: str, state_machine_arn: str, lookba
 
 # ---------------------------------------------------------------------------------------------- alarms
 
+DEFAULT_TRIGGER_FUNCTION = "geyser-sfn-trigger"  # infrastructure/lambda_trigger.tf: "${var.project_name}-sfn-trigger"
 
-def _alarm_base(name, description, topic_arn):
-    return {
-        "AlarmName": name,
-        "AlarmDescription": description,
+# Who emails for each kind of failure. Kept here so the README, the PR and the code agree.
+FAILURE_NOTIFICATIONS = (
+    ("A stage fails (caught by the state machine)", "Notify_Failure step in the state machine (exists)"),
+    ("The trigger Lambda errors, so no run starts", "Alarm <prefix>-trigger-lambda-errors (deploy_alarms.py)"),
+    ("Notify_Failure's own publish fails, or a run times out / is aborted",
+     "Not covered yet: needs an EventBridge rule (future infrastructure branch)"),
+)
+
+
+def build_alarms(sns_topic_arn: str, *, trigger_function_name: str = DEFAULT_TRIGGER_FUNCTION,
+                 prefix: str = "geyser-dev", period: int = 300) -> list:
+    """put_metric_alarm keyword arguments for the alarms that fill gaps Notify_Failure leaves.
+
+    Alarms email only when they change from OK to ALARM, so a burst of failures (S3 retries the
+    Lambda twice) sends one email, not one per error.
+    """
+    if not sns_topic_arn:
+        raise ValueError("sns_topic_arn is required")
+    if not trigger_function_name:
+        raise ValueError("trigger_function_name is required")
+    return [{
+        "AlarmName": f"{prefix}-trigger-lambda-errors",
+        "AlarmDescription": (f"The Geyser trigger Lambda {trigger_function_name} failed, so an upload to "
+                             "raw_reads/ did not start a pipeline run. Check its CloudWatch logs."),
         "ActionsEnabled": True,
-        "AlarmActions": [topic_arn],
+        "AlarmActions": [sns_topic_arn],
+        "Namespace": "AWS/Lambda",
+        "MetricName": "Errors",
+        "Dimensions": [{"Name": "FunctionName", "Value": trigger_function_name}],
+        "Statistic": "Sum",
+        "Period": period,
         "EvaluationPeriods": 1,
         "DatapointsToAlarm": 1,
         "Threshold": 1.0,
         "ComparisonOperator": "GreaterThanOrEqualToThreshold",
-        # FailureCount and ExecutionsFailed are only published when something fails.
+        # Errors has no data while nothing is uploaded; that is healthy, not missing.
         "TreatMissingData": "notBreaching",
-    }
-
-
-def build_alarms(sns_topic_arn: str, state_machine_arn: str = None, *, namespace: str = DEFAULT_NAMESPACE,
-                 schema: str = "per-sample", groups=None, prefix: str = "geyser-dev", period: int = 300) -> list:
-    """put_metric_alarm keyword arguments: one Step Functions alarm plus one per failure-recording stage."""
-    _check_schema(schema)
-    if not sns_topic_arn:
-        raise ValueError("sns_topic_arn is required")
-    alarms = []
-    if state_machine_arn:
-        alarm = _alarm_base(f"{prefix}-pipeline-executions-failed",
-                            "A Geyser pipeline execution failed (Step Functions ExecutionsFailed).", sns_topic_arn)
-        alarm.update({"Namespace": "AWS/States", "MetricName": "ExecutionsFailed",
-                      "Dimensions": [{"Name": "StateMachineArn", "Value": state_machine_arn}],
-                      "Statistic": "Sum", "Period": period})
-        alarms.append(alarm)
-
-    for stages in resolve_groups(groups).values():
-        for stage in stages:
-            if not stage.records_failures:
-                continue
-            alarm = _alarm_base(f"{prefix}-stage-failed-{stage.task_name}",
-                                f"Geyser stage {stage.task_name} recorded a failure (FailureCount).", sns_topic_arn)
-            if schema == "aggregated":
-                alarm.update({"Namespace": namespace, "MetricName": "FailureCount",
-                              "Dimensions": [{"Name": "TaskName", "Value": stage.task_name}],
-                              "Statistic": "Sum", "Period": period})
-            else:
-                # Alarms cannot use SEARCH; a Metrics Insights query sums FailureCount over every SampleId.
-                query = (f'SELECT SUM(FailureCount) FROM SCHEMA("{namespace}", SampleId, TaskName) '
-                         f"WHERE TaskName = '{stage.task_name}'")
-                alarm["Metrics"] = [{"Id": "failures", "Expression": query, "Period": period,
-                                     "ReturnData": True, "Label": f"{stage.task_name} failures"}]
-            alarms.append(alarm)
-    return alarms
+    }]
 
 
 # ---------------------------------------------------------------------------------------------- helpers

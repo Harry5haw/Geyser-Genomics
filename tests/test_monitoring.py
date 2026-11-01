@@ -159,48 +159,48 @@ def test_runtime_dashboard_needs_arn():
         monitoring.build_pipeline_runtime_dashboard("eu-west-2", None)
 
 
-# ------------------------------------------------------------------ alarms
+# ------------------------------------------------------------------ alarms (one email per incident)
 
 
-@pytest.mark.parametrize("schema", monitoring.SCHEMAS)
-def test_alarms_shape(schema):
-    alarms = monitoring.build_alarms(SNS_ARN, SFN_ARN, schema=schema)
-    failing_stages = [s.task_name for g in monitoring.STAGE_GROUPS.values() for s in g if s.records_failures]
-    assert len(alarms) == 1 + len(failing_stages)
-    names = [a["AlarmName"] for a in alarms]
-    assert len(names) == len(set(names))
-    for alarm in alarms:
-        assert alarm["AlarmActions"] == [SNS_ARN]
-        assert alarm["Threshold"] == 1 and alarm["ComparisonOperator"] == "GreaterThanOrEqualToThreshold"
-        assert alarm["TreatMissingData"] == "notBreaching"
-        # put_metric_alarm takes either a single metric or Metrics, never both.
-        assert ("Metrics" in alarm) != ("MetricName" in alarm)
-
-    sfn = alarms[0]
-    assert sfn["Namespace"] == "AWS/States" and sfn["MetricName"] == "ExecutionsFailed"
-    assert sfn["Dimensions"] == [{"Name": "StateMachineArn", "Value": SFN_ARN}]
-    assert [a["AlarmName"] for a in alarms[1:]] == [f"geyser-dev-stage-failed-{n}" for n in failing_stages]
+def read_infra(name):
+    with open(os.path.join(REPO_ROOT, "infrastructure", name), encoding="utf-8") as fh:
+        return fh.read()
 
 
-def test_per_sample_stage_alarm_is_a_metrics_insights_query():
-    alarm = monitoring.build_alarms(SNS_ARN, schema="per-sample", groups=["core"])[2]
-    (query,) = alarm["Metrics"]
-    assert query["Expression"] == ('SELECT SUM(FailureCount) FROM SCHEMA("GeyserGenomics", SampleId, TaskName) '
-                                   "WHERE TaskName = 'Align'")
-    assert query["ReturnData"] is True and query["Period"] == 300
-    assert "SEARCH" not in json.dumps(alarm)  # alarms cannot use SEARCH
+def test_only_alarm_is_trigger_lambda_errors():
+    (alarm,) = monitoring.build_alarms(SNS_ARN)
+    assert alarm["AlarmName"] == "geyser-dev-trigger-lambda-errors"
+    assert alarm["Namespace"] == "AWS/Lambda" and alarm["MetricName"] == "Errors"
+    assert alarm["Dimensions"] == [{"Name": "FunctionName", "Value": "geyser-sfn-trigger"}]
+    assert alarm["AlarmActions"] == [SNS_ARN]
+    assert alarm["Threshold"] == 1 and alarm["ComparisonOperator"] == "GreaterThanOrEqualToThreshold"
+    assert alarm["TreatMissingData"] == "notBreaching"
 
 
-def test_aggregated_stage_alarm_is_a_plain_metric_alarm():
-    alarm = monitoring.build_alarms(SNS_ARN, schema="aggregated", groups=["core"])[0]
-    assert alarm["Namespace"] == "GeyserGenomics" and alarm["MetricName"] == "FailureCount"
-    assert alarm["Dimensions"] == [{"Name": "TaskName", "Value": "Decompress"}]
+def test_no_alarm_duplicates_notify_failure():
+    text = json.dumps(monitoring.build_alarms(SNS_ARN))
+    assert "ExecutionsFailed" not in text and "FailureCount" not in text
 
 
-def test_alarms_need_topic_and_skip_sfn_without_arn():
+def test_notify_failure_still_emails_stage_failures():
+    """The no-duplicate design relies on this. If the SNS publish moves to EventBridge, revisit build_alarms."""
+    sfn = read_infra("step_functions.tf")
+    notify = sfn[sfn.index("Notify_Failure = {"):sfn.index("Pipeline_Failed = {")]
+    assert "arn:aws:states:::sns:publish" in notify
+    assert "aws_sns_topic.geyser_pipeline_status_topic.arn" in notify
+    assert sfn.count('Next = "Notify_Failure"') == 4  # every stage's Catch
+
+
+def test_default_trigger_function_name_matches_terraform():
+    assert 'function_name = "${var.project_name}-sfn-trigger"' in read_infra("lambda_trigger.tf")
+    assert monitoring.DEFAULT_TRIGGER_FUNCTION == "geyser-sfn-trigger"
+
+
+def test_alarm_arguments_validated():
     with pytest.raises(ValueError):
         monitoring.build_alarms(None)
-    assert all(a.get("Namespace") != "AWS/States" for a in monitoring.build_alarms(SNS_ARN))
+    with pytest.raises(ValueError):
+        monitoring.build_alarms(SNS_ARN, trigger_function_name="")
 
 
 # ------------------------------------------------------------------ no hard-coded account IDs or ARNs
@@ -215,7 +215,7 @@ def test_no_account_ids_or_arns_in_monitoring_scripts():
 
 
 def test_generated_json_has_no_account_ids_unless_passed_in(capsys, monkeypatch):
-    for var in ("SNS_TOPIC_ARN", "SFN_ARN"):
+    for var in ("SNS_TOPIC_ARN", "SFN_ARN", "TRIGGER_FUNCTION_NAME"):
         monkeypatch.delenv(var, raising=False)
     deploy_dashboard.main(["--dry-run"])
     deploy_alarms.main(["--dry-run"])
@@ -275,15 +275,14 @@ def test_runtime_dashboard_cli(capsys, monkeypatch):
     assert client.put_dashboard.call_args.kwargs["DashboardName"] == "geyser-pipeline-runtime"
 
 
-def test_alarms_dry_run_uses_placeholders(capsys, monkeypatch):
-    for var in ("SNS_TOPIC_ARN", "SFN_ARN"):
+def test_alarms_dry_run_uses_placeholder(capsys, monkeypatch):
+    for var in ("SNS_TOPIC_ARN", "TRIGGER_FUNCTION_NAME"):
         monkeypatch.delenv(var, raising=False)
     with mock.patch("boto3.client") as client:
         assert deploy_alarms.main(["--dry-run"]) == 0
     client.assert_not_called()
-    alarms = json.loads(capsys.readouterr().out)
-    assert {a["AlarmActions"][0] for a in alarms} == {deploy_alarms.PLACEHOLDER_SNS}
-    assert alarms[0]["Dimensions"][0]["Value"] == deploy_alarms.PLACEHOLDER_SFN
+    (alarm,) = json.loads(capsys.readouterr().out)
+    assert alarm["AlarmActions"] == [deploy_alarms.PLACEHOLDER_SNS]
 
 
 def test_alarms_deploy_requires_topic(monkeypatch):
@@ -292,13 +291,14 @@ def test_alarms_deploy_requires_topic(monkeypatch):
         deploy_alarms.main([], client=mock.Mock())
 
 
-def test_alarms_deploy_puts_each_alarm(monkeypatch):
+def test_alarms_deploy_puts_the_alarm(monkeypatch):
     monkeypatch.setenv("SNS_TOPIC_ARN", SNS_ARN)
-    monkeypatch.setenv("SFN_ARN", SFN_ARN)
+    monkeypatch.setenv("TRIGGER_FUNCTION_NAME", "geyser-prod-sfn-trigger")
     client = mock.Mock()
-    assert deploy_alarms.main(["--groups", "core", "--prefix", "geyser-prod"], client=client) == 0
-    names = [c.kwargs["AlarmName"] for c in client.put_metric_alarm.call_args_list]
-    assert names[0] == "geyser-prod-pipeline-executions-failed" and len(names) == 5
+    assert deploy_alarms.main(["--prefix", "geyser-prod"], client=client) == 0
+    (call,) = client.put_metric_alarm.call_args_list
+    assert call.kwargs["AlarmName"] == "geyser-prod-trigger-lambda-errors"
+    assert call.kwargs["Dimensions"][0]["Value"] == "geyser-prod-sfn-trigger"
 
 
 def test_alarms_deploy_reports_partial_failure():
