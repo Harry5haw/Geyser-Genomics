@@ -96,6 +96,24 @@ resource "aws_ecr_repository" "geyser_app" {
   force_delete = true # Note: In production, consider removing this for safety.
   tags         = { Name = "${var.project_name}-ecr-repo" }
 }
+
+# Keep the 20 most recent images (any tag status) and expire the rest, so
+# storage cost stays bounded as CI/local builds push a tag per commit.
+resource "aws_ecr_lifecycle_policy" "geyser_app" {
+  repository = aws_ecr_repository.geyser_app.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep the 20 most recent images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 20
+      }
+      action = { type = "expire" }
+    }]
+  })
+}
 ################################################################################
 # IAM ROLES AND POLICIES
 ################################################################################
