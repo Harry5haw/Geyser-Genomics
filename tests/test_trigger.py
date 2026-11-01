@@ -46,3 +46,105 @@ def test_handler_rejects_malformed_event(trigger, monkeypatch):
     monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
     with pytest.raises(RuntimeError):
         trigger.handler({"Records": []}, None)
+
+
+# ------------------------------------------------------------------ execution names
+
+
+import os  # noqa: E402
+import re  # noqa: E402
+
+from conftest import REPO_ROOT  # noqa: E402
+
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def s3_event(key, event_time="2026-11-01T12:34:56.789Z", sequencer="0055AED6DCD90281E5"):
+    obj = {"key": key}
+    if sequencer:
+        obj["sequencer"] = sequencer
+    record = {"s3": {"bucket": {"name": "b"}, "object": obj}}
+    if event_time:
+        record["eventTime"] = event_time
+    return {"Records": [record]}
+
+
+class RecordingSfn:
+    def __init__(self, error=None):
+        self.calls, self.error = [], error
+
+    def start_execution(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.error:
+            raise self.error
+        return {"executionArn": f"arn:fake:{kwargs['name']}"}
+
+
+def test_execution_name_is_readable_and_deterministic(trigger):
+    name = trigger.build_execution_name("SRR062634", "2026-11-01T12:34:56.789Z", "b/raw_reads/SRR062634.fastq.gz/0055")
+    assert re.fullmatch(r"SRR062634-20261101T123456Z-[0-9a-f]{8}", name)
+    assert name == trigger.build_execution_name("SRR062634", "2026-11-01T12:34:56.789Z",
+                                                "b/raw_reads/SRR062634.fastq.gz/0055")
+    assert name != trigger.build_execution_name("SRR062634", "2026-11-01T12:34:56.789Z",
+                                                "b/raw_reads/SRR062634.fastq.gz/0056")
+
+
+def test_execution_name_without_event_details_is_random_but_valid(trigger):
+    a, b = trigger.build_execution_name("S1"), trigger.build_execution_name("S1", "not-a-time")
+    assert a != b and NAME_RE.match(a) and NAME_RE.match(b)
+
+
+@pytest.mark.parametrize("sample_id", ["SRR9+x", "my sample/with:odd*chars", "é" * 10, "x" * 200])
+def test_execution_name_is_always_valid(trigger, sample_id):
+    name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
+    assert NAME_RE.match(name)
+    assert len(name) <= trigger.MAX_SAMPLE_PART + len("-20261101T123456Z-12345678")
+
+
+def test_batch_job_names_still_fit(trigger):
+    """step_functions.tf builds job names as '<Prefix>-<srr_id>-<execution name>'; Batch allows 128 chars."""
+    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+        prefixes = re.findall(r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", fh.read())
+    assert len(prefixes) == 4
+    sample_id = "S" * 50
+    name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
+    for prefix in prefixes:
+        job_name = f"{prefix}-{sample_id}-{name}"
+        assert len(job_name) <= 128 and re.fullmatch(r"[A-Za-z0-9_-]+", job_name)
+
+
+def test_handler_names_the_execution_after_the_sample(trigger, monkeypatch):
+    sfn = RecordingSfn()
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.setattr(trigger, "_sfn_client", sfn)
+    result = trigger.handler(s3_event("raw_reads/SRR062634.fastq.gz"), None)
+    name = sfn.calls[0]["name"]
+    assert re.fullmatch(r"SRR062634-20261101T123456Z-[0-9a-f]{8}", name)
+    assert json.loads(result["body"])["executionName"] == name
+    trigger.handler(s3_event("raw_reads/SRR062634.fastq.gz"), None)  # same event delivered again
+    assert sfn.calls[1]["name"] == name
+
+
+def test_handler_treats_existing_execution_as_duplicate(trigger, monkeypatch):
+    class ExecutionAlreadyExists(Exception):
+        pass
+
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.setattr(trigger, "_sfn_client", RecordingSfn(ExecutionAlreadyExists("exists")))
+    result = trigger.handler(s3_event("raw_reads/S1.fastq.gz"), None)
+    assert result["statusCode"] == 200 and json.loads(result["body"])["duplicate"] is True
+
+
+def test_handler_recognises_client_error_code(trigger, monkeypatch):
+    err = Exception("boom")
+    err.response = {"Error": {"Code": "ExecutionAlreadyExists"}}
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.setattr(trigger, "_sfn_client", RecordingSfn(err))
+    assert json.loads(trigger.handler(s3_event("raw_reads/S1.fastq.gz"), None)["body"])["duplicate"] is True
+
+
+def test_handler_reraises_other_errors(trigger, monkeypatch):
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.setattr(trigger, "_sfn_client", RecordingSfn(RuntimeError("AccessDenied")))
+    with pytest.raises(RuntimeError):
+        trigger.handler(s3_event("raw_reads/S1.fastq.gz"), None)

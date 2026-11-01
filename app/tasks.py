@@ -7,8 +7,13 @@ locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> decompressed/{id}.fastq
         -> qc_reports/{id}_fastqc.{html,zip}
-        -> alignments/{id}.bam -> variants/{id}.vcf.gz
+        -> alignments/{id}.bam (sorted, duplicates marked) -> variants/{id}.vcf.gz
     reference/{reference_name} (+ optional .fai / bwa indexes)
+
+Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
+every per-read key before alignment comes in an _R1/_R2 pair (see keys_for). Each stage detects
+the layout from which of its input keys exist (sample_layout), so the CLI and the Step Functions
+input are the same for both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
 METRICS_BACKEND (see metrics.py). If you rename a stage or key, update the Step
@@ -31,6 +36,9 @@ from storage import ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
 BWA_INDEX_EXTS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+# samtools sort RAM budget in the align stage (see align_command).
+SORT_MAX_THREADS = 4
+SORT_MEMORY_PER_THREAD = "512M"
 
 # Backends are created on first use so importing this module never needs AWS credentials.
 _storage = None
@@ -51,16 +59,79 @@ def metrics():
     return _metrics
 
 
-def keys_for(sample_id: str) -> dict:
-    """Single source of truth for every storage key a sample touches."""
-    return {
-        "raw": f"raw_reads/{sample_id}.fastq.gz",
-        "fastq": f"decompressed/{sample_id}.fastq",
-        "qc_html": f"qc_reports/{sample_id}_fastqc.html",
-        "qc_zip": f"qc_reports/{sample_id}_fastqc.zip",
-        "bam": f"alignments/{sample_id}.bam",
-        "vcf": f"variants/{sample_id}.vcf.gz",
-    }
+SINGLE, PAIRED = "single", "paired"
+MATES = ("R1", "R2")
+# Keys that exist once per read file: plain for single-end, <name>_R1/<name>_R2 for paired-end.
+PER_MATE_KEYS = ("raw", "fastq", "qc_html", "qc_zip")
+
+
+class LayoutError(ValueError):
+    """The raw reads in storage don't form one valid sample (e.g. only R1, or both layouts)."""
+
+
+def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
+    """Single source of truth for every storage key a sample touches.
+
+    Paired-end samples get raw_R1/raw_R2, fastq_R1/fastq_R2, ... instead of raw, fastq, ...
+    (FastQC names its reports after the input file, so {id}_R1.fastq -> {id}_R1_fastqc.html).
+    Use keys_of() to get a stage's keys without caring about the layout.
+    """
+    if layout not in (SINGLE, PAIRED):
+        raise ValueError(f"Unknown layout {layout!r}")
+    stems = {None: sample_id} if layout == SINGLE else {m: f"{sample_id}_{m}" for m in MATES}
+    keys = {}
+    for mate, stem in stems.items():
+        suffix = f"_{mate}" if mate else ""
+        keys[f"raw{suffix}"] = f"raw_reads/{stem}.fastq.gz"
+        keys[f"fastq{suffix}"] = f"decompressed/{stem}.fastq"
+        keys[f"qc_html{suffix}"] = f"qc_reports/{stem}_fastqc.html"
+        keys[f"qc_zip{suffix}"] = f"qc_reports/{stem}_fastqc.zip"
+    keys["bam"] = f"alignments/{sample_id}.bam"
+    keys["vcf"] = f"variants/{sample_id}.vcf.gz"
+    return keys
+
+
+def keys_of(keys: dict, name: str) -> list:
+    """['raw_reads/X.fastq.gz'] or ['raw_reads/X_R1.fastq.gz', 'raw_reads/X_R2.fastq.gz'] for name='raw'."""
+    if name in keys:
+        return [keys[name]]
+    return [keys[f"{name}_{m}"] for m in MATES]
+
+
+def all_raw_keys(sample_id: str) -> list:
+    """Every raw key a sample ID could use, in either layout: anything here means the ID is taken."""
+    return keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
+
+
+def layout_from_keys(sample_id: str, exists, name: str = "raw") -> str:
+    """'single' or 'paired', from which of a sample's `name` keys exist ('raw' or 'fastq'). exists(key) -> bool.
+
+    Each stage asks about its own inputs (decompress: raw, qc/align: fastq), so it never depends
+    on an earlier stage's files still being there. Fails loudly rather than guessing: a lone mate
+    (its partner not uploaded yet) or a sample present both ways is an error, not a silent
+    single-end run.
+    """
+    single = exists(keys_for(sample_id, SINGLE)[name])
+    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"{name}_{m}"])]
+    if single and mates:
+        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) {name} files")
+    if single:
+        return SINGLE
+    if len(mates) == len(MATES):
+        return PAIRED
+    if mates:
+        missing = [m for m in MATES if m not in mates][0]
+        raise LayoutError(f"{sample_id}: {name} {mates[0]} exists but {missing} is missing")
+    raise LayoutError(f"{sample_id}: no {name} files ({keys_for(sample_id)[name]} or _R1/_R2)")
+
+
+def layout_from_raw(sample_id: str, exists) -> str:
+    """The layout a sample was uploaded with (what the trigger and the web UI go by)."""
+    return layout_from_keys(sample_id, exists, "raw")
+
+
+def sample_layout(sample_id: str, name: str = "raw") -> str:
+    return layout_from_keys(sample_id, storage().exists, name)
 
 
 def run_shell(command: str) -> None:
@@ -129,51 +200,99 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
 
 @timed_stage("Decompress")
 def decompress_task(sample_id):
-    """Stream-decompress raw_reads/<id>.fastq.gz to decompressed/<id>.fastq without staging on disk."""
-    keys = keys_for(sample_id)
-    print(f"Decompressing {storage().describe(keys['raw'])} -> {storage().describe(keys['fastq'])}")
-    source = storage().open_read(keys["raw"])
-    try:
-        with gzip.GzipFile(fileobj=source, mode="rb") as unzipped:
-            storage().upload_stream(unzipped, keys["fastq"])
-    finally:
-        source.close()
+    """Stream-decompress each raw_reads/ file (one, or R1 and R2) to decompressed/ without staging on disk."""
+    keys = keys_for(sample_id, sample_layout(sample_id))
+    for raw, fastq in zip(keys_of(keys, "raw"), keys_of(keys, "fastq")):
+        print(f"Decompressing {storage().describe(raw)} -> {storage().describe(fastq)}")
+        source = storage().open_read(raw)
+        try:
+            with gzip.GzipFile(fileobj=source, mode="rb") as unzipped:
+                storage().upload_stream(unzipped, fastq)
+        finally:
+            source.close()
 
 
 @timed_stage("QualityControl")
 def qc_task(sample_id):
-    keys = keys_for(sample_id)
+    """FastQC on each read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
+    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
     wd = work_dir(sample_id)
     try:
-        fastq = os.path.join(wd, f"{sample_id}.fastq")
         out_dir = os.path.join(wd, "qc")
         os.makedirs(out_dir)
-        storage().download(keys["fastq"], fastq)
+        fastqs = []
+        for key in keys_of(keys, "fastq"):
+            fastqs.append(os.path.join(wd, os.path.basename(key)))
+            storage().download(key, fastqs[-1])
         # FastQC can hang (not exit) if its report thread crashes, so bound it. Matches the
-        # Step Functions timeout for this stage.
+        # Step Functions timeout for this stage. One thread per file (-t) processes R1 and R2 at
+        # the same time, so a paired sample fits the same timeout as a single-end one
+        # (FastQC reserves ~250 MB per thread; 2 fit the 4 GB job easily).
         timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "1800"))
-        subprocess.run(["fastqc", fastq, "-o", out_dir], check=True, timeout=timeout)
-        storage().upload(os.path.join(out_dir, f"{sample_id}_fastqc.html"), keys["qc_html"])
-        storage().upload(os.path.join(out_dir, f"{sample_id}_fastqc.zip"), keys["qc_zip"])
+        subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
+        for name in ("qc_html", "qc_zip"):
+            for key in keys_of(keys, name):
+                storage().upload(os.path.join(out_dir, os.path.basename(key)), key)
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
 
+def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str) -> str:
+    """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates.
+
+    fastqs is [reads] for single-end or [R1, R2] for paired-end.
+
+    Paired-end: bwa mem gets both files and writes each pair's records together (name-grouped),
+    which is what `samtools fixmate -m` needs. fixmate adds the mate tags (MC, ms) that markdup
+    uses to treat a pair as one fragment: a pair is only a duplicate if BOTH ends match.
+
+    Single-end: there are no mates, so fixmate is left out; markdup finds duplicates from
+    position, strand and orientation alone. That also flags independent reads that merely start
+    at the same place on the same strand: about 5% of reads on the synthetic 30x/150 bp data
+    (which has no real duplicates), rising with depth. Paired-end input avoids this. markdup also
+    warns that it cannot estimate library size without pairs; that warning is harmless.
+
+    Duplicates are flagged (0x400), not removed: bcftools mpileup and DeepVariant (incl. the
+    pangenome-aware model, #51) both skip flagged reads by default.
+
+    The read group (-R) names the sample in the BAM, so callers that read SM report sample_id.
+    fixmate and sort pass uncompressed BAM (-u) down the pipe so nothing is compressed twice; sort
+    and markdup keep their temporary files in tmp_dir (the stage's work dir), and markdup prints
+    its duplicate statistics (-s) to the job log.
+
+    sort buffers about -m per thread in RAM before spilling to tmp_dir, and its default
+    (768 MB/thread) on a 16-thread host is ~12 GB, alongside bwa and markdup in the same pipe.
+    So sort gets at most SORT_MAX_THREADS threads of SORT_MEMORY_PER_THREAD each (~2 GB),
+    which fits the 4 GB Fargate job and a shared local Docker VM.
+    """
+    fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    if len(fastqs) not in (1, 2):
+        raise ValueError(f"align_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
+    sort_threads = max(1, min(threads, SORT_MAX_THREADS))
+    tmp = os.path.join(tmp_dir, "tmp")
+    read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
+    stages = [f"bwa mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+              + " ".join(shlex.quote(f) for f in fastqs)]
+    if len(fastqs) == 2:
+        stages.append("samtools fixmate -m -u - -")
+    stages.append(f"samtools sort -u -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} -")
+    stages.append(f"samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} - {shlex.quote(bam)}")
+    return " | ".join(stages)
+
+
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa mem -> coordinate-sorted BAM (bcftools mpileup requires sorted input)."""
-    keys = keys_for(sample_id)
+    """bwa mem -> coordinate-sorted, duplicate-marked BAM, single- or paired-end (see align_command)."""
+    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
     wd = work_dir(sample_id)
     try:
-        fastq = os.path.join(wd, f"{sample_id}.fastq")
+        fastqs = []
+        for key in keys_of(keys, "fastq"):
+            fastqs.append(os.path.join(wd, os.path.basename(key)))
+            storage().download(key, fastqs[-1])
         bam = os.path.join(wd, f"{sample_id}.bam")
-        storage().download(keys["fastq"], fastq)
         ref = ensure_reference_local(reference_name, wd)
-        threads = str(os.cpu_count() or 1)
-        run_shell(
-            f"bwa mem -t {threads} {shlex.quote(ref)} {shlex.quote(fastq)} "
-            f"| samtools sort -@ {threads} -o {shlex.quote(bam)} -"
-        )
+        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id))
         storage().upload(bam, keys["bam"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
