@@ -18,9 +18,17 @@ Variant caller (--caller):
     bcftools     the 'variants' stage in geyser-app (default; what the cloud runs today)
     deepvariant  DeepVariant in its own image instead, with --gpus all (see app-deepvariant/)
     both         bcftools, then DeepVariant, then a comparison of the two call sets
+    pangenome    pangenome-aware DeepVariant (CPU), using a pangenome graph under pangenome/
+    all          bcftools, DeepVariant and pangenome-aware DeepVariant, then comparisons
 
     docker build -f app-deepvariant/Dockerfile -t geyser-deepvariant .
     python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --caller both --check
+
+    docker build -f app-deepvariant/Dockerfile --build-arg DV_TAG=pangenome_aware_deepvariant-1.9.0 \
+        -t geyser-deepvariant-pangenome .
+    python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome
+    python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa --caller pangenome \
+        --skip-to-variants --check
 
 --check compares each VCF against truth/<sample>.json (from make_test_data.py), or against
 truth/<sample>.vcf.gz + truth/<sample>.bed (from fetch_dv_testdata.py) as a counts-only report.
@@ -47,11 +55,24 @@ STAGES = [
     ("variants", True),
 ]
 
-CALLERS = ("bcftools", "deepvariant", "both")
+CALLERS = ("bcftools", "deepvariant", "both", "pangenome", "all")
+# The call sets each --caller produces, in run order.
+CALLER_SETS = {
+    "bcftools": ["bcftools"],
+    "deepvariant": ["deepvariant"],
+    "both": ["bcftools", "deepvariant"],
+    "pangenome": ["pangenome"],
+    "all": ["bcftools", "deepvariant", "pangenome"],
+}
 VCF_KEYS = {
     "bcftools": "variants/{id}.vcf.gz",
     "deepvariant": "variants_deepvariant/{id}.vcf.gz",
+    "pangenome": "variants_pangenome/{id}.vcf.gz",
 }
+# HPRC v1.1 Minigraph-Cactus graph on GRCh38, as used by Google's pangenome-aware DeepVariant case studies.
+DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.gbz"
+# Google's case studies run the pangenome container with --shm-size 12gb.
+DEFAULT_PANGENOME_SHM = "12g"
 DEEPVARIANT_PYTHON = "/opt/geyser-venv/bin/python"
 DEEPVARIANT_ENV_VARS = ("DEEPVARIANT_EXTRA_ARGS", "DEEPVARIANT_SHARDS", "DEEPVARIANT_MODEL_TYPE")
 # ALTs that are not real variants (gVCF-style placeholders, DeepVariant RefCall rows).
@@ -74,33 +95,43 @@ def stage_command(stage, sample_id, reference_name, needs_reference):
     return cmd
 
 
-def deepvariant_command(sample_id, reference_name):
-    return [DEEPVARIANT_PYTHON, "deepvariant_task.py", sample_id, reference_name]
+def deepvariant_command(sample_id, reference_name, pangenome=None):
+    cmd = [DEEPVARIANT_PYTHON, "deepvariant_task.py", sample_id, reference_name]
+    return cmd + ["--pangenome", pangenome] if pangenome else cmd
 
 
 def pipeline_jobs(sample_id, reference_name, caller="bcftools", app_image="geyser-app",
-                  dv_image="geyser-deepvariant", gpus=True, skip_to_variants=False):
-    """The containers to run, in order, as dicts with name, cmd, image and gpus."""
+                  dv_image="geyser-deepvariant", gpus=True, skip_to_variants=False,
+                  pg_image="geyser-deepvariant-pangenome", pangenome=DEFAULT_PANGENOME,
+                  pg_shm=DEFAULT_PANGENOME_SHM):
+    """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome)."""
     if caller not in CALLERS:
         raise ValueError(f"unknown caller {caller!r}")
+    sets = CALLER_SETS[caller]
     jobs = []
     for stage, needs_ref in STAGES:
         if skip_to_variants and stage != "variants":
             continue
-        if stage == "variants" and caller == "deepvariant":
+        if stage == "variants" and "bcftools" not in sets:
             continue
         jobs.append({"name": stage, "cmd": stage_command(stage, sample_id, reference_name, needs_ref),
                      "image": app_image, "gpus": False})
-    if caller in ("deepvariant", "both"):
+    if "deepvariant" in sets:
         jobs.append({"name": "deepvariant", "cmd": deepvariant_command(sample_id, reference_name),
                      "image": dv_image, "gpus": gpus})
+    if "pangenome" in sets:
+        # Google's pangenome-aware image is CPU only (Parabricks' GPU version needs at least 16 GB of VRAM).
+        jobs.append({"name": "pangenome", "cmd": deepvariant_command(sample_id, reference_name, pangenome),
+                     "image": pg_image, "gpus": False, "shm": pg_shm})
     return jobs
 
 
-def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None):
+def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None):
     full = ["docker", "run", "--rm"]
     if gpus:
         full += ["--gpus", "all"]
+    if shm:
+        full += ["--shm-size", shm]
     if memory:
         # Hard cap (also counts the container's page cache): keeps a big run from starving the host.
         full += ["--memory", memory, "--memory-swap", memory]
@@ -116,11 +147,12 @@ def run_job(job, runner, root, dv_memory=None):
     if runner == "docker":
         # DeepVariant tuning knobs are passed through to its container when set on the host.
         extra, memory = {}, None
-        if job["name"] == "deepvariant":
+        if job["name"] in ("deepvariant", "pangenome"):
             extra = {k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)}
             memory = dv_memory
-        return subprocess.run(docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory)).returncode
-    if job["name"] == "deepvariant":
+        return subprocess.run(docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory,
+                                             job.get("shm"))).returncode
+    if job["name"] in ("deepvariant", "pangenome"):
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
     # host: tools (bwa, samtools, bcftools, fastqc) must be on PATH
@@ -218,11 +250,11 @@ def check_against_truth(root, sample_id, caller="bcftools"):
     return True
 
 
-def compare_callers(root, sample_id):
-    a = read_vcf_calls(vcf_path(root, "bcftools", sample_id))
-    b = read_vcf_calls(vcf_path(root, "deepvariant", sample_id))
+def compare_callers(root, sample_id, first="bcftools", second="deepvariant"):
+    a = read_vcf_calls(vcf_path(root, first, sample_id))
+    b = read_vcf_calls(vcf_path(root, second, sample_id))
     print(f"\nCaller comparison for {sample_id}: shared={len(a & b)} "
-          f"bcftools-only={len(a - b)} deepvariant-only={len(b - a)}")
+          f"{first}-only={len(a - b)} {second}-only={len(b - a)}")
 
 
 def main(argv=None):
@@ -235,8 +267,15 @@ def main(argv=None):
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
     p.add_argument("--dv-image", default="geyser-deepvariant", help="DeepVariant image (app-deepvariant/)")
     p.add_argument("--no-gpu", action="store_true", help="run DeepVariant without --gpus all (CPU image)")
+    p.add_argument("--pg-image", default="geyser-deepvariant-pangenome",
+                   help="pangenome-aware DeepVariant image (app-deepvariant/ built with "
+                        "DV_TAG=pangenome_aware_deepvariant-1.9.0)")
+    p.add_argument("--pangenome", default=DEFAULT_PANGENOME, metavar="GBZ",
+                   help="pangenome graph under pangenome/ (default: %(default)s)")
+    p.add_argument("--pg-shm-size", default=DEFAULT_PANGENOME_SHM, metavar="SIZE",
+                   help="--shm-size for the pangenome container (default: %(default)s, as in Google's case studies)")
     p.add_argument("--dv-memory", metavar="SIZE",
-                   help="memory cap for the DeepVariant container, e.g. 12g. A whole chromosome can "
+                   help="memory cap for the DeepVariant and pangenome containers, e.g. 12g. A whole chromosome can "
                         "otherwise take most of the Docker VM; 16 make_examples shards thrashed under 8g")
     p.add_argument("--skip-to-variants", action="store_true",
                    help="start at variant calling, using an existing alignments/<sample>.bam")
@@ -253,7 +292,7 @@ def main(argv=None):
         print(f"No inputs found under {a.root}/raw_reads/. Run scripts/make_test_data.py first.")
         return 1
 
-    callers = ["bcftools", "deepvariant"] if a.caller == "both" else [a.caller]
+    callers = CALLER_SETS[a.caller]
     ok = True
     for key in keys:
         payload = trigger.build_pipeline_input(key, a.reference)
@@ -261,7 +300,8 @@ def main(argv=None):
         print(f"\n=== Pipeline input: {json.dumps(payload)} ===")
         started = time.time()
         jobs = pipeline_jobs(sample_id, reference, a.caller, a.image, a.dv_image,
-                             gpus=not a.no_gpu, skip_to_variants=a.skip_to_variants)
+                             gpus=not a.no_gpu, skip_to_variants=a.skip_to_variants,
+                             pg_image=a.pg_image, pangenome=a.pangenome, pg_shm=a.pg_shm_size)
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             if run_job(job, a.runner, a.root, a.dv_memory) != 0:
@@ -274,8 +314,8 @@ def main(argv=None):
             if a.check:
                 for caller in callers:
                     ok = check_against_truth(a.root, sample_id, caller) and ok
-            if a.caller == "both":
-                compare_callers(a.root, sample_id)
+            for first, second in zip(callers, callers[1:]):
+                compare_callers(a.root, sample_id, first, second)
     return 0 if ok else 1
 
 

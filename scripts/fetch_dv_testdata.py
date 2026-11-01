@@ -20,6 +20,10 @@ Written with the pipeline's key layout, so the DeepVariant stage runs on it dire
     python scripts/fetch_dv_testdata.py [--dataset hg003-chr20]
     python scripts/run_local.py --sample <sample> --reference <reference> \\
         --caller deepvariant --skip-to-variants --check
+
+--pangenome also fetches the HPRC v1.1 Minigraph-Cactus pangenome graph on GRCh38 (3.29 GB, from the
+Human Pangenome Reference Consortium's public bucket) to <root>/pangenome/hprc-v1.1-mc-grch38.gbz, for
+pangenome-aware DeepVariant (run_local.py --caller pangenome). Only valid with GRCh38 datasets (hg003-chr20).
 """
 
 import argparse
@@ -30,6 +34,16 @@ import urllib.request
 
 BASE_URL = "https://storage.googleapis.com/deepvariant/"
 GRCH38 = "case-study-testdata/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa"
+
+# Pangenome graph for pangenome-aware DeepVariant: (absolute URL, bytes, local key). The same file Google's
+# pangenome-aware case studies use. Remote paths that are full URLs are fetched as-is (not under BASE_URL).
+HPRC_GRCH38_GBZ = (
+    "https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/minigraph-cactus/"
+    "hprc-v1.1-mc-grch38/hprc-v1.1-mc-grch38.gbz",
+    3289083600,
+    "pangenome/hprc-v1.1-mc-grch38.gbz",
+)
+GRCH38_DATASETS = {"hg003-chr20"}
 
 # Each file: (remote path, expected bytes or None, local key, how to store it)
 #   copy        store as downloaded
@@ -132,17 +146,35 @@ def keep_contig(src, dest, contig):
     return kept
 
 
-def fetch_dataset(name, root, force=False):
+def remote_url(remote):
+    """Full URL for a file entry: absolute URLs as-is, anything else under DeepVariant's bucket."""
+    return remote if remote.startswith(("https://", "http://")) else BASE_URL + remote
+
+
+def dataset_files(name, pangenome=False):
+    """The file entries to fetch for a dataset, plus the pangenome graph when asked (GRCh38 datasets only)."""
+    files = list(DATASETS[name]["files"])
+    if pangenome:
+        if name not in GRCH38_DATASETS:
+            raise ValueError(f"--pangenome needs a GRCh38 dataset ({', '.join(sorted(GRCH38_DATASETS))}); "
+                             f"{name} is on another reference")
+        url, size, key = HPRC_GRCH38_GBZ
+        files.append((url, size, key, "copy"))
+    return files
+
+
+def fetch_dataset(name, root, force=False, pangenome=False):
     ds = DATASETS[name]
-    known = sum(f[1] or 0 for f in ds["files"])
-    print(f"Dataset {name}: {len(ds['files'])} files, {known / 1e6:,.1f} MB plus any contig ranges, from {BASE_URL}")
-    for remote, size, key, how in ds["files"]:
+    files = dataset_files(name, pangenome)
+    known = sum(f[1] or 0 for f in files)
+    print(f"Dataset {name}: {len(files)} files, {known / 1e6:,.1f} MB plus any contig ranges")
+    for remote, size, key, how in files:
         dest = os.path.join(root, *key.split("/"))
         if os.path.exists(dest) and not force:
             print(f"  exists   {dest}")
             continue
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        url = BASE_URL + remote
+        url = remote_url(remote)
         print(f"  fetching {remote}", flush=True)
         if how.startswith("fasta:"):
             fetch_fasta_contig(url, how.split(":", 1)[1], dest)
@@ -174,8 +206,13 @@ def main(argv=None):
     p.add_argument("--root", default="local_bucket", help="storage root (LOCAL_STORAGE_DIR)")
     p.add_argument("--dataset", choices=sorted(DATASETS), default="na12878-slice")
     p.add_argument("--force", action="store_true", help="download again even if the files exist")
+    p.add_argument("--pangenome", action="store_true",
+                   help="also fetch the HPRC v1.1 GRCh38 pangenome graph (3.29 GB) for --caller pangenome")
     a = p.parse_args(argv)
-    fetch_dataset(a.dataset, a.root, a.force)
+    try:
+        fetch_dataset(a.dataset, a.root, a.force, a.pangenome)
+    except ValueError as err:
+        p.error(str(err))
 
 
 if __name__ == "__main__":
