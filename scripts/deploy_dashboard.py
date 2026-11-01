@@ -5,7 +5,7 @@ Deploy the official CloudWatch dashboard for Geyser Genomics.
 This script overwrites (or creates) the `geyser-dashboard-dev` dashboard with the
 proven aggregation widget that shows average durations for each pipeline stage.
 
-- Uses the working JSON from `teraflow-aggregated-python`
+- Uses the proven aggregated-durations widget JSON
 - Defaults to 2 weeks view (`-P14D`) so you can see older runs
 - One widget only (the aggregated task durations)
 
