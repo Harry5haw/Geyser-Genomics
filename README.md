@@ -169,7 +169,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 | **Secure CI/CD (OIDC)** | 🚧 Under Construction | GitHub Actions authenticates to AWS with short-lived OIDC credentials (no stored keys), with separate dev and prod roles. Automatic deploys are paused while this is finalised. |
 | **Cost-Safe Networking** | 🚧 Under Construction | Removing the always-on NAT gateway so that an idle platform costs close to nothing. |
 | **Custom Monitoring** | 🚧 Under Construction | Each stage emits duration and failure metrics to CloudWatch, shown on dashboards. |
-| **Google DeepVariant** | 🗓️ Future Work | Deep-learning variant calling on GPU-backed AWS Batch. |
+| **Google DeepVariant** | 🚧 Local GPU working, cloud pending | Deep-learning variant calling as an alternative to bcftools. It runs locally on an NVIDIA GPU in Docker, with accuracy and timings measured honestly (see below). The GPU-backed AWS Batch stage is designed but not deployed. |
 | **Web UI Front-End** | 🗓️ Future Work | A Django web application for uploading samples and browsing results. |
 
 ---
@@ -253,7 +253,7 @@ python scripts/make_test_data.py
 python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --check
 ```
 
-Expected result: `Truth check: 10/10 planted SNPs called, 0 unexpected calls`
+Expected result: `Truth check (bcftools): 10/10 planted SNPs called, 0 unexpected calls`
 
 **Tests:**
 
@@ -272,6 +272,52 @@ The storage and metrics backends are chosen by environment variables, so the sam
 | `STORAGE_BACKEND` | `s3`, `local` | `s3` |
 | `LOCAL_STORAGE_DIR` | path to the local data lake | `local_bucket` |
 | `METRICS_BACKEND` | `cloudwatch`, `local`, `none` | `cloudwatch` for S3, `local` otherwise |
+
+### DeepVariant on a local NVIDIA GPU
+
+[Google DeepVariant](https://github.com/google/deepvariant) `1.10.0` is available as an alternative variant caller, in its own image (`app-deepvariant/`). It reads the same `alignments/<id>.bam` and writes `variants_deepvariant/<id>.vcf.gz`, so its calls can be compared with the bcftools calls.
+
+```bash
+docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi   # GPU visible to Docker?
+docker build -f app-deepvariant/Dockerfile -t geyser-deepvariant .
+python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --caller both --check
+
+# Real data: NA12878, chr20:10.0-10.1 Mb, with the GIAB truth set (~5 MB download)
+python scripts/fetch_dv_testdata.py
+python scripts/run_local.py --sample NA12878_S1 --reference ucsc.hg19.chr20.unittest.fasta \
+    --caller both --skip-to-variants --check
+```
+
+**Accuracy:**
+
+| Data | bcftools | DeepVariant |
+| :--- | :--- | :--- |
+| Synthetic | 10/10 planted SNPs, 0 extra calls | 10/10 planted SNPs, 0 extra calls (with or without its small model) |
+| NA12878 slice, GIAB confident regions | 45 TP, 4 FN, 4 FP | 49 TP, 0 FN, 0 FP |
+
+The real-data comparison is exact (position, ref, alt) matching without variant normalisation, so it is indicative only. It is not a hap.py benchmark.
+
+**Timing.** Measured on an RTX 3080 (10 GB) under Docker Desktop/WSL2 with 16 CPUs, median of 3 runs. These are times for the DeepVariant stage only:
+
+| Data | Device | Small model | Examples sent to the neural network | make_examples (CPU) | call_variants (GPU step) | postprocess (CPU) | Stage total |
+| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| Synthetic 50 kb | GPU | on | 0 | 13.8 s | 4.7 s | 6.1 s | 27.7 s |
+| Synthetic 50 kb | CPU | on | 0 | 15.0 s | 4.0 s | 6.0 s | 27.6 s |
+| Synthetic 50 kb | GPU | off | 10 | 13.2 s | 18.7 s | 5.9 s | 41.1 s |
+| Synthetic 50 kb | CPU | off | 10 | 12.2 s | 12.3 s | 5.7 s | 32.9 s |
+| NA12878 100 kb | GPU | on | 90 | 33.6 s | 18.5 s | 5.7 s | 61.2 s |
+| NA12878 100 kb | CPU | on | 90 | 34.2 s | 13.4 s | 5.6 s | 56.5 s |
+| NA12878 100 kb | GPU | off | 305 | 33.3 s | 20.0 s | 6.6 s | 63.3 s |
+| NA12878 100 kb | CPU | off | 305 | 32.9 s | 14.3 s | 5.7 s | 56.2 s |
+
+**At this size the GPU does not speed anything up. It is 5–6 s slower than the CPU.**
+- `call_variants` is the only step that uses the GPU. With at most a few hundred examples, its time is almost entirely fixed start-up: loading the model and initialising CUDA and cuDNN. The GPU's start-up costs more than TensorFlow's on the CPU.
+- `make_examples` runs on the CPU and is the biggest step.
+- DeepVariant's "small model" calls easy sites on the CPU before the neural network sees them. On the synthetic data it calls all of them.
+
+The GPU should only pay off on whole chromosomes or genomes, which produce hundreds of thousands of examples. That has not been measured here yet. `nvidia-smi` sampling during the runs confirmed the GPU was used: utilisation peaked at 98%, and TensorFlow reserved nearly all free VRAM.
+
+**Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. Cloud deployment (AWS Batch GPU queue) is designed but not built yet; see [`app-deepvariant/README.md`](app-deepvariant/README.md).
 
 ---
 
@@ -320,5 +366,5 @@ python scripts/deploy_dashboard.py
 1. **Cost-safe cloud deployment:** make the NAT gateway optional (off by default), run Fargate jobs in public subnets, set a lifecycle policy on ECR and short log retention, and add an AWS Budget alert.
 2. **CI/CD hardening:** finish the OIDC role separation, restrict `prod` to `main` with required review, and make deploys manual rather than automatic on every push.
 3. **Monitoring:** finish the CloudWatch dashboards for stage durations and failures.
-4. **Google DeepVariant:** an alternative variant-calling stage on GPU-backed AWS Batch.
+4. **Google DeepVariant in the cloud:** the stage already runs locally on a GPU. Still to do: wire it into Step Functions as a parallel branch on the GPU Batch queue, and measure it on a whole chromosome, where the GPU should start to pay off.
 5. **Web UI:** a Django front end for uploading samples and browsing results.
