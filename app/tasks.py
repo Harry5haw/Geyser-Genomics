@@ -7,7 +7,7 @@ locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> decompressed/{id}.fastq
         -> qc_reports/{id}_fastqc.{html,zip}
-        -> alignments/{id}.bam -> variants/{id}.vcf.gz
+        -> alignments/{id}.bam (sorted, duplicates marked) -> variants/{id}.vcf.gz
     reference/{reference_name} (+ optional .fai / bwa indexes)
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
@@ -159,9 +159,35 @@ def qc_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
+def align_command(ref: str, fastq: str, bam: str, threads: int, tmp_dir: str) -> str:
+    """Shell pipeline: bwa mem -> coordinate sort -> mark (not remove) PCR/optical duplicates.
+
+    Every sample arrives as ONE FASTQ (raw_reads/<id>.fastq.gz) and bwa mem runs without -p,
+    so every read is aligned single-end. `samtools fixmate -m` is therefore left out: it only
+    adds mate tags (MC, ms) to name-grouped read PAIRS, and markdup only needs those tags for
+    paired reads. Single-end duplicates are found from coordinate, strand and orientation
+    alone. If paired-end input is ever added (two FASTQs, or interleaved with bwa mem -p),
+    insert `samtools fixmate -m - -` between bwa and sort.
+
+    Duplicates are flagged (0x400), not removed: bcftools mpileup skips flagged reads by
+    default, and DeepVariant (incl. the pangenome-aware model, #51) expects a marked BAM.
+    sort writes uncompressed BAM (-u) into the pipe so it is not compressed twice; both sort
+    and markdup keep their temporary files in tmp_dir (the stage's work dir), and markdup
+    prints its duplicate statistics (-s) to the job log. With single-end reads markdup also
+    warns that it cannot estimate library size (that needs pairs); the warning is harmless.
+    """
+    t = str(threads)
+    tmp = os.path.join(tmp_dir, "tmp")
+    return (
+        f"bwa mem -t {t} {shlex.quote(ref)} {shlex.quote(fastq)} "
+        f"| samtools sort -u -@ {t} -T {shlex.quote(tmp + '.sort')} - "
+        f"| samtools markdup -s -@ {t} -T {shlex.quote(tmp + '.markdup')} - {shlex.quote(bam)}"
+    )
+
+
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa mem -> coordinate-sorted BAM (bcftools mpileup requires sorted input)."""
+    """bwa mem -> coordinate-sorted, duplicate-marked BAM (see align_command)."""
     keys = keys_for(sample_id)
     wd = work_dir(sample_id)
     try:
@@ -169,11 +195,7 @@ def align_task(sample_id, reference_name):
         bam = os.path.join(wd, f"{sample_id}.bam")
         storage().download(keys["fastq"], fastq)
         ref = ensure_reference_local(reference_name, wd)
-        threads = str(os.cpu_count() or 1)
-        run_shell(
-            f"bwa mem -t {threads} {shlex.quote(ref)} {shlex.quote(fastq)} "
-            f"| samtools sort -@ {threads} -o {shlex.quote(bam)} -"
-        )
+        run_shell(align_command(ref, fastq, bam, os.cpu_count() or 1, wd))
         storage().upload(bam, keys["bam"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)

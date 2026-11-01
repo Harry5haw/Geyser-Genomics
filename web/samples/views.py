@@ -27,7 +27,7 @@ FILE_KINDS = {
     "fastq": ("Decompressed reads", "Plain FASTQ"),
     "qc_html": ("FastQC report", "HTML"),
     "qc_zip": ("FastQC data", "ZIP"),
-    "bam": ("Alignments", "Coordinate-sorted BAM"),
+    "bam": ("Alignments", "Coordinate-sorted, duplicate-marked BAM"),
     "vcf": ("Variants", "Gzipped VCF"),
     "truth": ("Planted SNPs", "Truth file for demo samples (JSON)"),
     "log": ("Run log", "Output of the local pipeline run"),

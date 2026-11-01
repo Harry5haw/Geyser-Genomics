@@ -75,7 +75,7 @@ In the cloud design, uploading a file to S3 starts the run. AWS Step Functions t
 flowchart LR
     IN(["🧬 FASTQ.gz<br/>millions of raw reads"]) --> D["📦 Decompress"]
     D --> Q["🔍 Quality control<br/>FastQC"]
-    Q --> A["🧭 Align to reference<br/>BWA-MEM + samtools"]
+    Q --> A["🧭 Align to reference<br/>BWA-MEM + samtools sort + markdup"]
     A --> V["🧪 Call variants<br/>bcftools"]
     V --> OUT(["📄 VCF.gz<br/>list of variants"])
     A -.->|"alternative caller"| DV["🧠 DeepVariant<br/>GPU"]
@@ -200,7 +200,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → BWA-MEM alignment (sorted BAM) → bcftools variant calling. |
+| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → BWA-MEM alignment (sorted, duplicate-marked BAM) → bcftools variant calling. |
 | **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
 | **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
 | **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs the four stages in order on AWS Batch (Fargate), with failure notifications via SNS. |
@@ -481,7 +481,7 @@ Once deployed, a run is started by uploading a file.
 | :--- | :--- |
 | Decompress | `decompressed/<id>.fastq` |
 | Quality control | `qc_reports/<id>_fastqc.html` and `.zip` |
-| Alignment | `alignments/<id>.bam` (coordinate-sorted) |
+| Alignment | `alignments/<id>.bam` (coordinate-sorted, duplicates marked with samtools markdup) |
 | Variant calling | `variants/<id>.vcf.gz` |
 
 ### 3. Dashboard Management
