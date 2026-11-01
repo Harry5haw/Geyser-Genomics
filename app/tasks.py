@@ -7,7 +7,7 @@ locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> decompressed/{id}.fastq
         -> qc_reports/{id}_fastqc.{html,zip}
-        -> alignments/{id}.bam -> variants/{id}.vcf.gz
+        -> alignments/{id}.bam (sorted, duplicates marked) -> variants/{id}.vcf.gz
     reference/{reference_name} (+ optional .fai / bwa indexes)
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
@@ -31,6 +31,9 @@ from storage import ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
 BWA_INDEX_EXTS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+# samtools sort RAM budget in the align stage (see align_command).
+SORT_MAX_THREADS = 4
+SORT_MEMORY_PER_THREAD = "512M"
 
 # Backends are created on first use so importing this module never needs AWS credentials.
 _storage = None
@@ -159,9 +162,44 @@ def qc_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
+def align_command(ref: str, fastq: str, bam: str, threads: int, tmp_dir: str) -> str:
+    """Shell pipeline: bwa mem -> coordinate sort -> mark (not remove) PCR/optical duplicates.
+
+    Every sample arrives as ONE FASTQ (raw_reads/<id>.fastq.gz) and bwa mem runs without -p,
+    so every read is aligned single-end. `samtools fixmate -m` is therefore left out: it only
+    adds mate tags (MC, ms) to name-grouped read PAIRS, and markdup only needs those tags for
+    paired reads. Single-end duplicates are found from coordinate, strand and orientation
+    alone. If paired-end input is ever added (two FASTQs, or interleaved with bwa mem -p),
+    insert `samtools fixmate -m - -` between bwa and sort.
+
+    Without mates, two independent reads that merely start at the same position on the same
+    strand also count as duplicates: on the synthetic 30x/150 bp data (no real duplicates)
+    about 5% of reads are flagged, and the rate rises with depth. Paired-end input avoids this.
+
+    Duplicates are flagged (0x400), not removed: bcftools mpileup and DeepVariant (incl. the
+    pangenome-aware model, #51) both skip flagged reads by default.
+    sort writes uncompressed BAM (-u) into the pipe so it is not compressed twice; both sort
+    and markdup keep their temporary files in tmp_dir (the stage's work dir), and markdup
+    prints its duplicate statistics (-s) to the job log. With single-end reads markdup also
+    warns that it cannot estimate library size (that needs pairs); the warning is harmless.
+
+    sort buffers about -m per thread in RAM before spilling to tmp_dir, and its default
+    (768 MB/thread) on a 16-thread host is ~12 GB, alongside bwa and markdup in the same pipe.
+    So sort gets at most SORT_MAX_THREADS threads of SORT_MEMORY_PER_THREAD each (~2 GB),
+    which fits the 4 GB Fargate job and a shared local Docker VM.
+    """
+    sort_threads = max(1, min(threads, SORT_MAX_THREADS))
+    tmp = os.path.join(tmp_dir, "tmp")
+    return (
+        f"bwa mem -t {threads} {shlex.quote(ref)} {shlex.quote(fastq)} "
+        f"| samtools sort -u -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} - "
+        f"| samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} - {shlex.quote(bam)}"
+    )
+
+
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa mem -> coordinate-sorted BAM (bcftools mpileup requires sorted input)."""
+    """bwa mem -> coordinate-sorted, duplicate-marked BAM (see align_command)."""
     keys = keys_for(sample_id)
     wd = work_dir(sample_id)
     try:
@@ -169,11 +207,7 @@ def align_task(sample_id, reference_name):
         bam = os.path.join(wd, f"{sample_id}.bam")
         storage().download(keys["fastq"], fastq)
         ref = ensure_reference_local(reference_name, wd)
-        threads = str(os.cpu_count() or 1)
-        run_shell(
-            f"bwa mem -t {threads} {shlex.quote(ref)} {shlex.quote(fastq)} "
-            f"| samtools sort -@ {threads} -o {shlex.quote(bam)} -"
-        )
+        run_shell(align_command(ref, fastq, bam, os.cpu_count() or 1, wd))
         storage().upload(bam, keys["bam"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)

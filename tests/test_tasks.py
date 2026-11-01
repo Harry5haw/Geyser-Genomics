@@ -2,6 +2,8 @@
 import gzip
 import importlib
 import json
+import os
+import shlex
 
 import pytest
 
@@ -69,3 +71,60 @@ def test_importing_tasks_needs_no_aws(monkeypatch):
     # Regression: the old tasks.py exited at import time without BUCKET_NAME.
     monkeypatch.delenv("BUCKET_NAME", raising=False)
     importlib.reload(tasks)
+
+
+def _align_stages(cmd):
+    # Split on unquoted | tokens only, so a quoted path containing "|" stays in its stage.
+    stages = [[]]
+    for token in shlex.split(cmd):
+        if token == "|":
+            stages.append([])
+        else:
+            stages[-1].append(token)
+    return stages
+
+
+def test_align_command_marks_duplicates_after_coordinate_sort():
+    cmd = tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.bam", 4, "/w")
+    bwa, sort, markdup = _align_stages(cmd)
+
+    assert bwa[:4] == ["bwa", "mem", "-t", "4"] and bwa[-2:] == ["/w/ref.fa", "/w/S1.fastq"]
+    assert "-p" not in bwa  # one FASTQ per sample = single-end reads
+    assert sort[:2] == ["samtools", "sort"] and "-u" in sort and sort[-1] == "-"
+    assert sort[sort.index("-@") + 1] == "4"
+    assert sort[sort.index("-m") + 1] == tasks.SORT_MEMORY_PER_THREAD
+    assert markdup[:2] == ["samtools", "markdup"] and markdup[-2:] == ["-", "/w/S1.bam"]
+    assert markdup[markdup.index("-@") + 1] == "4"
+
+
+def test_align_command_marks_but_never_removes_duplicates():
+    markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w"))[-1]
+    assert "-r" not in markdup and "--remove" not in markdup
+    assert "-s" in markdup  # duplicate stats go to the job log
+
+
+def test_align_command_skips_fixmate_for_single_end_reads():
+    # fixmate needs name-grouped read pairs; the pipeline only ever aligns single-end reads.
+    assert "fixmate" not in tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w")
+
+
+def test_align_command_keeps_temp_files_in_work_dir():
+    sort, markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 2, "/scratch/wd"))[1:]
+    prefix = os.path.join("/scratch/wd", "")
+    sort_tmp, markdup_tmp = sort[sort.index("-T") + 1], markdup[markdup.index("-T") + 1]
+    assert sort_tmp.startswith(prefix) and markdup_tmp.startswith(prefix)
+    assert sort_tmp != markdup_tmp
+
+
+def test_align_command_quotes_paths_with_spaces():
+    cmd = tasks.align_command("/my refs/r.fa", "/w/s.fq", "/out dir/o.bam", 1, "/w")
+    bwa, _, markdup = _align_stages(cmd)
+    assert "/my refs/r.fa" in bwa and markdup[-1] == "/out dir/o.bam"
+
+
+def test_align_command_caps_sort_memory_on_big_hosts():
+    # 16 threads x the 768 MB default would be ~12 GB of sort buffers next to bwa and markdup.
+    bwa, sort, markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 16, "/w"))
+    assert bwa[bwa.index("-t") + 1] == "16"
+    assert sort[sort.index("-@") + 1] == str(tasks.SORT_MAX_THREADS)
+    assert sort[sort.index("-m") + 1] == tasks.SORT_MEMORY_PER_THREAD
