@@ -28,7 +28,7 @@
   <a href="#️-how-it-works-the-architecture"><b>🏗️ Architecture</b></a> &nbsp;·&nbsp;
   <a href="#️-project-status--features"><b>🗺️ Status</b></a> &nbsp;·&nbsp;
   <a href="#deepvariant-on-a-local-nvidia-gpu"><b>🧠 DeepVariant</b></a> &nbsp;·&nbsp;
-  <a href="#-roadmap"><b>🧭 Roadmap</b></a>
+  <a href="#️-roadmap"><b>🛣️ Roadmap</b></a>
 </p>
 
 <table>
@@ -59,7 +59,7 @@
 8.  [Run It Locally in 2 Minutes (No AWS)](#-run-it-locally-in-2-minutes-no-aws)
 9.  [Web UI](#️-web-ui)
 10. [Deployment & Usage](#-deployment--usage)
-11. [Roadmap](#-roadmap)
+11. [Roadmap](#️-roadmap)
 
 ---
 
@@ -329,7 +329,7 @@ Variant callers like DeepVariant find variants by comparing reads with a **refer
 A **pangenome** reference is a graph that combines many people's genomes. The Human Pangenome Reference Consortium's first draft (*Nature*, 2023) combines 47 genomes chosen to better reflect global diversity. Google and UC Santa Cruz built a graph-based variant-calling workflow around DeepVariant and reported improved accuracy across several thousand samples.
 
 > [!NOTE]
-> This project currently aligns reads to the linear reference (BWA-MEM against chromosome 20), and DeepVariant runs in its standard mode. Pangenome-aware calling is on the [Roadmap](#-roadmap) as something to explore. It is not built yet.
+> This project currently aligns reads to the linear reference (BWA-MEM against chromosome 20), and DeepVariant runs in its standard mode. Pangenome-aware calling is on the [Roadmap](#️-roadmap) as something to explore. It is not built yet.
 
 #### Running it
 
@@ -470,7 +470,7 @@ The GitHub Actions workflow `.github/workflows/deploy-platform.yml` ("Terraform 
 Once deployed, a run is started by uploading a file.
 
 > [!IMPORTANT]
-> This cloud flow has not been re-tested since the November 2026 cost and security changes. The first cloud run is the top item on the [Roadmap](#-roadmap).
+> This cloud flow has not been re-tested since the November 2026 cost and security changes. The first cloud run is the next item on the [Roadmap](#️-roadmap).
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
@@ -494,7 +494,7 @@ python scripts/deploy_dashboard.py
 
 ---
 
-## 🧭 Roadmap
+## 🛣️ Roadmap
 
 | | Milestone | |
 | :---: | :--- | :--- |
