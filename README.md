@@ -482,7 +482,7 @@ Once deployed, a run is started by uploading a file.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
     *   **Paired-end:** upload both mates as `raw_reads/<id>_R1.fastq.gz` and `raw_reads/<id>_R2.fastq.gz`, in either order. The run starts once both are there, and only once. Only `_R1`/`_R2` mark mates: rename SRA-style `_1`/`_2` files before uploading. The stages detect the layout from these keys.
     *   The trigger Lambda needs `s3:GetObject` on `raw_reads/*` and `s3:ListBucket` to check for the other mate. That IAM change is not applied yet (see [#57](https://github.com/Harry5haw/Geyser-Genomics/issues/57)). Until it is, paired-end uploads fail in the cloud, while single-end works as before.
-3.  **Monitor the Execution:** The upload automatically starts the Step Functions state machine. You can follow its progress in the AWS Step Functions console.
+3.  **Monitor the Execution:** The upload automatically starts the Step Functions state machine. You can follow its progress in the AWS Step Functions console, where each run is named after its sample and upload time, e.g. `SRR062634-20261101T123456Z-1a2b3c4d`. The same name appears in the Batch job names. If S3 delivers the same upload event twice, it still starts only one run. A paired-end run is named after the later of its two uploads.
 4.  **Retrieve Results:** When the run succeeds, the outputs are in the same bucket:
 
 | Stage | Output |

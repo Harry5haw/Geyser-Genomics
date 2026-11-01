@@ -37,13 +37,28 @@ V1, V2 = ('"abc"', "2026-11-01 20:00:00+00:00"), ('"def"', "2026-11-01 20:00:05+
 
 
 def test_execution_name_is_deterministic_and_valid(trigger):
-    a = trigger.execution_name("S1", [V1, V2])
-    assert a == trigger.execution_name("S1", [("abc", V1[1]), ("def", V2[1])])  # quotes don't matter
-    assert a != trigger.execution_name("S1", [V1, ('"xyz"', V2[1])])  # new content -> new run
-    assert a != trigger.execution_name("S1", [V1, (V2[0], "2026-11-02 09:00:00+00:00")])  # same content re-uploaded
-    long_name = trigger.execution_name("x" * 64 + "+weird id", [V1, V2])
+    a = trigger.paired_execution_name("S1", [V1, V2])
+    assert a == trigger.paired_execution_name("S1", [("abc", V1[1]), ("def", V2[1])])  # quotes don't matter
+    assert a != trigger.paired_execution_name("S1", [V1, ('"xyz"', V2[1])])  # new content -> new run
+    assert a != trigger.paired_execution_name("S1", [V1, (V2[0], "2026-11-02 09:00:00+00:00")])  # same content re-uploaded
+    long_name = trigger.paired_execution_name("x" * 64 + "+weird id", [V1, V2])
     assert len(long_name) <= 80
     assert all(c.isalnum() or c in "-_" for c in long_name)
+
+
+def test_paired_name_uses_the_same_format_as_single_end(trigger):
+    # <sample>-<UTC time of the later upload>-<hash>, like build_execution_name (#65)
+    sample, stamp, digest = trigger.paired_execution_name("S1", [V1, V2]).split("-")
+    assert sample == "S1" and stamp == "20261101T200005Z" and len(digest) == 8
+    # order of arrival doesn't matter: the later LastModified wins whichever mate it belongs to
+    assert trigger.paired_execution_name("S1", [V2, V1]).split("-")[1] == "20261101T200005Z"
+
+
+def test_paired_name_accepts_headobject_datetimes(trigger):
+    from datetime import datetime, timezone
+
+    when = datetime(2026, 11, 1, 20, 0, 5, tzinfo=timezone.utc)
+    assert trigger.paired_execution_name("S1", [('"abc"', when), ('"def"', when)]).split("-")[1] == "20261101T200005Z"
 
 
 def test_paired_upload_uses_the_same_pipeline_input_as_single_end(trigger, monkeypatch):
@@ -126,7 +141,7 @@ def test_second_mate_starts_one_named_run_in_either_order(trigger, aws, second):
     assert json.loads(start["input"]) == {"srr_id": "S1", "reference_name": "chr20.fa"}
     fixed = "2026-11-01 20:00:00+00:00"
     # same name whichever mate came last
-    assert start["name"] == trigger.execution_name("S1", [('"e1"', fixed), ('"e2"', fixed)])
+    assert start["name"] == trigger.paired_execution_name("S1", [('"e1"', fixed), ('"e2"', fixed)])
 
 
 def test_reuploading_an_identical_pair_runs_again(trigger, aws, monkeypatch):
@@ -155,7 +170,7 @@ def test_simultaneous_mates_start_exactly_one_run(trigger, aws):
 
     assert len(sfn.started) == 1
     assert first["statusCode"] == second["statusCode"] == 200
-    assert "already_started" in json.loads(second["body"])
+    assert json.loads(second["body"])["duplicate"] is True
 
 
 def test_permission_error_on_the_mate_is_not_treated_as_waiting(trigger, aws):
@@ -172,7 +187,7 @@ def test_single_end_upload_starts_immediately_without_s3_calls(trigger, aws):
     result = trigger.handler(event("raw_reads/S1.fastq.gz", "e"), None)
     assert result["statusCode"] == 200
     assert s3.heads == []
-    assert "name" not in sfn.started[0]  # unchanged single-end behaviour
+    assert sfn.started[0]["name"].startswith("S1-")  # single-end naming from #65, unchanged
 
 
 def test_other_start_errors_propagate(trigger, aws, monkeypatch):
