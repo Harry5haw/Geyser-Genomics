@@ -40,6 +40,12 @@
         {% if form.reads.errors %}<small id="reads-err">{{ form.reads.errors|join:" " }}</small>{% endif %}
       </label>
       <label>
+        {{ form.reads_r2.label }} <span class="muted">(optional: the R2 file of a pair; the first file is then R1)</span>
+        <input type="file" name="reads_r2" accept=".fastq.gz,.fq.gz" data-max-bytes="{{ max_upload_bytes }}"
+               {% if form.reads_r2.errors %}aria-invalid="true" aria-describedby="reads-r2-err"{% endif %}>
+        {% if form.reads_r2.errors %}<small id="reads-r2-err">{{ form.reads_r2.errors|join:" " }}</small>{% endif %}
+      </label>
+      <label>
         {{ form.sample_id.label }} <span class="muted">(optional)</span>
         <input type="text" name="sample_id" maxlength="64" pattern="[A-Za-z0-9_\-]{1,64}"
                value="{{ form.sample_id.value|default:'' }}" placeholder="from the filename, e.g. SRR062634"

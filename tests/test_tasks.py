@@ -1,6 +1,7 @@
 """Stage logic that runs without bioinformatics tools or AWS."""
 import gzip
 import importlib
+import importlib.util
 import json
 import os
 import shlex
@@ -69,8 +70,11 @@ def test_align_requires_reference_argument():
 
 def test_importing_tasks_needs_no_aws(monkeypatch):
     # Regression: the old tasks.py exited at import time without BUCKET_NAME.
+    # Import a fresh copy rather than reload the shared module: a reload re-creates classes such as
+    # LayoutError, and code that imported the old ones (the web UI) would then stop catching them.
     monkeypatch.delenv("BUCKET_NAME", raising=False)
-    importlib.reload(tasks)
+    spec = importlib.util.spec_from_file_location("tasks_fresh_copy", tasks.__file__)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
 
 def _align_stages(cmd):
