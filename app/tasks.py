@@ -149,7 +149,10 @@ def qc_task(sample_id):
         out_dir = os.path.join(wd, "qc")
         os.makedirs(out_dir)
         storage().download(keys["fastq"], fastq)
-        subprocess.run(["fastqc", fastq, "-o", out_dir], check=True)
+        # FastQC can hang (not exit) if its report thread crashes, so bound it. Matches the
+        # Step Functions timeout for this stage.
+        timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "1800"))
+        subprocess.run(["fastqc", fastq, "-o", out_dir], check=True, timeout=timeout)
         storage().upload(os.path.join(out_dir, f"{sample_id}_fastqc.html"), keys["qc_html"])
         storage().upload(os.path.join(out_dir, f"{sample_id}_fastqc.zip"), keys["qc_zip"])
     finally:
