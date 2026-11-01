@@ -18,17 +18,17 @@ Variant caller (--caller):
     bcftools     the 'variants' stage in geyser-app (default; what the cloud runs today)
     deepvariant  DeepVariant in its own image instead, with --gpus all (see app-deepvariant/)
     both         bcftools, then DeepVariant, then a comparison of the two call sets
-    pangenome    pangenome-aware DeepVariant (CPU), using a pangenome graph under pangenome/
+    pangenome    pangenome-aware DeepVariant, with --gpus all, using a pangenome graph under pangenome/
     all          bcftools, DeepVariant and pangenome-aware DeepVariant, then comparisons
 
     docker build -f app-deepvariant/Dockerfile -t geyser-deepvariant .
     python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --caller both --check
 
-    docker build -f app-deepvariant/Dockerfile --build-arg DV_TAG=pangenome_aware_deepvariant-1.9.0 \
+    docker build -f app-deepvariant/Dockerfile --build-arg DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu \
         -t geyser-deepvariant-pangenome .
-    python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome
+    python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome        # chr20 graph (72 MB)
     python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa --caller pangenome \
-        --skip-to-variants --check
+        --skip-to-variants --check --dv-memory 14g
 
 --check compares each VCF against truth/<sample>.json (from make_test_data.py), or against
 truth/<sample>.vcf.gz + truth/<sample>.bed (from fetch_dv_testdata.py) as a counts-only report.
@@ -69,8 +69,10 @@ VCF_KEYS = {
     "deepvariant": "variants_deepvariant/{id}.vcf.gz",
     "pangenome": "variants_pangenome/{id}.vcf.gz",
 }
-# HPRC v1.1 Minigraph-Cactus graph on GRCh38, as used by Google's pangenome-aware DeepVariant case studies.
-DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.gbz"
+# HPRC v1.1 Minigraph-Cactus graph on GRCh38 (the graph Google's case studies use), cut down to chr20 by
+# fetch_dv_testdata.py --pangenome. The whole-genome graph (hprc-v1.1-mc-grch38.gbz) needs ~10.7 GB of shared
+# memory once loaded, plus ~2 GB per make_examples worker: too much for a 32 GB desktop.
+DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.chr20.gbz"
 # Google's case studies run the pangenome container with --shm-size 12gb.
 DEFAULT_PANGENOME_SHM = "12g"
 DEEPVARIANT_PYTHON = "/opt/geyser-venv/bin/python"
@@ -120,9 +122,10 @@ def pipeline_jobs(sample_id, reference_name, caller="bcftools", app_image="geyse
         jobs.append({"name": "deepvariant", "cmd": deepvariant_command(sample_id, reference_name),
                      "image": dv_image, "gpus": gpus})
     if "pangenome" in sets:
-        # Google's pangenome-aware image is CPU only (Parabricks' GPU version needs at least 16 GB of VRAM).
+        # Google publishes pangenome-aware images with and without GPU support (pangenome_aware_deepvariant-
+        # <version>[-gpu]); like linear DeepVariant, only call_variants uses the GPU. --no-gpu for the CPU image.
         jobs.append({"name": "pangenome", "cmd": deepvariant_command(sample_id, reference_name, pangenome),
-                     "image": pg_image, "gpus": False, "shm": pg_shm})
+                     "image": pg_image, "gpus": gpus, "shm": pg_shm})
     return jobs
 
 
@@ -266,10 +269,11 @@ def main(argv=None):
     p.add_argument("--image", default="geyser-app")
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
     p.add_argument("--dv-image", default="geyser-deepvariant", help="DeepVariant image (app-deepvariant/)")
-    p.add_argument("--no-gpu", action="store_true", help="run DeepVariant without --gpus all (CPU image)")
+    p.add_argument("--no-gpu", action="store_true",
+                   help="run DeepVariant and pangenome-aware DeepVariant without --gpus all (CPU images)")
     p.add_argument("--pg-image", default="geyser-deepvariant-pangenome",
                    help="pangenome-aware DeepVariant image (app-deepvariant/ built with "
-                        "DV_TAG=pangenome_aware_deepvariant-1.9.0)")
+                        "DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu, or without -gpu for CPU)")
     p.add_argument("--pangenome", default=DEFAULT_PANGENOME, metavar="GBZ",
                    help="pangenome graph under pangenome/ (default: %(default)s)")
     p.add_argument("--pg-shm-size", default=DEFAULT_PANGENOME_SHM, metavar="SIZE",

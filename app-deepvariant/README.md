@@ -63,9 +63,43 @@ Measured results (full tables in the main README):
 
 `make_examples` takes about 300 s either way.
 
+## Pangenome-aware mode (`--pangenome`)
+
+The same stage can run Google's [pangenome-aware DeepVariant](https://github.com/google/deepvariant/blob/r1.9/docs/pangenome-aware-wgs-bwa-case-study.md)
+instead (issue #51). It reads the same linear-reference BAM and adds a pangenome graph: at each candidate site it
+builds pileups from the pangenome's haplotypes as well as the sample's reads, which helps most where short reads
+mismap (segmental duplications). Output stays in GRCh38 coordinates.
+
+| | |
+|---|---|
+| Image | `app-deepvariant/Dockerfile` built with `--build-arg DV_TAG=pangenome_aware_deepvariant-1.9.0` (tag it `geyser-deepvariant-pangenome`) |
+| Reads | `alignments/{id}.bam`, `reference/{name}` and `pangenome/{graph}.gbz` |
+| Writes | `variants_pangenome/{id}.vcf.gz` |
+| Command | `/opt/geyser-venv/bin/python deepvariant_task.py <id> <reference_name> --pangenome <graph>` |
+| Metrics | `PangenomeDeepVariant` plus `.MakeExamples`, `.CallVariants`, `.PostprocessVariants` |
+| Hardware | CPU only. NVIDIA Parabricks has a GPU version, but it needs at least 16 GB of VRAM (the RTX 3080 has 10 GB). |
+
+```bash
+docker build -f app-deepvariant/Dockerfile --build-arg DV_TAG=pangenome_aware_deepvariant-1.9.0 \
+    -t geyser-deepvariant-pangenome .
+# HG003 chr20 plus the HPRC v1.1 GRCh38 graph (hprc-v1.1-mc-grch38.gbz, 3.29 GB)
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome
+python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa \
+    --caller pangenome --skip-to-variants --check
+# Score every caller's VCF with hap.py (vcfeval, PASS only, GIAB confident regions)
+python scripts/benchmark_happy.py --sample HG003_chr20 --reference GRCh38_chr20.fa --region chr20
+```
+
+`--caller all` runs bcftools, linear DeepVariant and pangenome-aware DeepVariant in one go. The pangenome container
+gets `--shm-size 12g` by default (`--pg-shm-size`), as in Google's case studies, and the `--dv-memory` cap.
+
+**The BAM must be duplicate-marked.** Google's case-study BAM (`fetch_dv_testdata.py --dataset hg003-chr20`) already
+is. The pipeline's own `align` stage does not mark duplicates yet (branch `feature/markdup`).
+
 ## Tests
 
 - `tests/test_deepvariant_task.py` runs on every push. `run_deepvariant` and `samtools` are faked, so it needs no Docker or GPU.
+- `tests/test_pangenome.py` runs on every push too: the pangenome-aware stage (faked tool), the `pangenome`/`all` callers in `run_local.py`, the graph download entry and the hap.py benchmark helpers.
 - `tests/test_e2e_deepvariant.py` is opt-in:
   - `GEYSER_GPU_E2E=1` uses the GPU image;
   - `GEYSER_DV_E2E=1` uses the CPU image;

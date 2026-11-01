@@ -135,13 +135,23 @@ def names(jobs):
     return [j["name"] for j in jobs]
 
 
-def test_pangenome_caller_replaces_variants_stage_and_runs_on_cpu_with_shm():
+def test_pangenome_caller_replaces_variants_stage_and_uses_gpu_and_shm():
     jobs = run_local.pipeline_jobs("S1", "ref.fa", caller="pangenome")
     assert names(jobs) == ["decompress", "qc", "align", "pangenome"]
     pg = jobs[-1]
-    assert pg["image"] == "geyser-deepvariant-pangenome" and not pg["gpus"] and pg["shm"] == "12g"
+    assert pg["image"] == "geyser-deepvariant-pangenome" and pg["gpus"] and pg["shm"] == "12g"
     assert pg["cmd"] == ["/opt/geyser-venv/bin/python", "deepvariant_task.py", "S1", "ref.fa",
-                         "--pangenome", GRAPH]
+                         "--pangenome", "hprc-v1.1-mc-grch38.chr20.gbz"]
+
+
+def test_no_gpu_also_applies_to_pangenome():
+    jobs = run_local.pipeline_jobs("S1", "r", caller="all", skip_to_variants=True, gpus=False)
+    assert [j["gpus"] for j in jobs] == [False, False, False]
+
+
+def test_pangenome_graph_can_be_overridden():
+    job = run_local.pipeline_jobs("S1", "r", caller="pangenome", skip_to_variants=True, pangenome=GRAPH)[0]
+    assert job["cmd"][-2:] == ["--pangenome", GRAPH]
 
 
 def test_all_caller_runs_three_callers_in_order():
@@ -181,16 +191,35 @@ def test_vcf_path_for_pangenome(tmp_path):
 
 def test_pangenome_graph_added_only_on_request():
     plain = fetch.dataset_files("hg003-chr20")
-    with_graph = fetch.dataset_files("hg003-chr20", pangenome=True)
-    assert len(with_graph) == len(plain) + 1
-    url, size, key, how = with_graph[-1]
-    assert key == f"pangenome/{GRAPH}" and how == "copy" and size == 3289083600
+    chr20 = fetch.dataset_files("hg003-chr20", pangenome="chr20")
+    full = fetch.dataset_files("hg003-chr20", pangenome="full")
+    assert len(chr20) == len(full) == len(plain) + 1
+    url, size, key, how = chr20[-1]
+    assert key == "pangenome/chroms/chr20.vg" and how == "copy" and size == 1279054691
+    assert url.endswith("hprc-v1.1-mc-grch38.chroms/chr20.vg")
+    url, size, key, how = full[-1]
+    assert key == f"pangenome/{GRAPH}" and size == 3289083600
     assert url.startswith("https://s3-us-west-2.amazonaws.com/human-pangenomics/")
+
+
+def test_chr20_graph_builds_to_the_runner_default():
+    assert fetch.PANGENOMES["chr20"]["build"] == f"pangenome/{run_local.DEFAULT_PANGENOME}"
+    assert "build" not in fetch.PANGENOMES["full"]
+
+
+def test_vg_build_command_keeps_references_and_caps_memory(tmp_path):
+    cmd = fetch.vg_build_command(str(tmp_path), "pangenome/chroms/chr20.vg", "pangenome/out.gbz")
+    assert cmd[:5] == ["docker", "run", "--rm", "--memory", "8g"]
+    assert fetch.VG_IMAGE in cmd
+    script = cmd[-1]
+    assert "vg convert -f /data/pangenome/chroms/chr20.vg" in script
+    assert "--gbz-format" in script and "--set-reference GRCh38" in script and "--set-reference CHM13" in script
+    assert script.index("mv /data/pangenome/out.gbz.part /data/pangenome/out.gbz") > script.index("vg gbwt")
 
 
 def test_pangenome_refused_for_non_grch38_dataset():
     with pytest.raises(ValueError, match="GRCh38"):
-        fetch.dataset_files("na12878-slice", pangenome=True)
+        fetch.dataset_files("na12878-slice", pangenome="chr20")
 
 
 def test_remote_url_keeps_absolute_urls():
