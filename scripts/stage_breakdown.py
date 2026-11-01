@@ -3,7 +3,9 @@
 For each Batch task in the execution history this finds the Batch job and splits its time into
   wait  createdAt -> startedAt   (queued: RUNNABLE/STARTING, incl. capacity and image pull)
   run   startedAt -> stoppedAt   (the container running)
-and estimates the Fargate cost of the run from the job's vCPU and memory.
+and estimates the Fargate cost of the run from the job's vCPU and memory. It also reports the number
+of attempts and, for jobs that did not succeed, why (Batch statusReason plus the container's reason and
+exit code, e.g. "OutOfMemoryError: Container killed due to memory usage (exit 137)").
 
 The job description comes from Batch describe_jobs when Batch still has it, otherwise from the copy
 Step Functions keeps in the task's output (success) or cause (failure). Batch only keeps finished jobs
@@ -126,10 +128,28 @@ def _seconds(start_ms, end_ms):
     return (end_ms - start_ms) / 1000 if start_ms and end_ms else None
 
 
+def failure_reason(job: dict):
+    """Why a job did not succeed, from the job and its last attempt; None for successful jobs."""
+    if str(_get(job, "Status", "")).upper() in ("SUCCEEDED", ""):
+        return None
+    attempts = _get(job, "Attempts", []) or []
+    container = _get(attempts[-1], "Container", {}) if attempts else _get(job, "Container", {})
+    parts = []
+    for text in (_get(job, "StatusReason"), _get(container, "Reason")):
+        if text and text not in parts:
+            parts.append(str(text))
+    exit_code = _get(container, "ExitCode")
+    reason = "; ".join(parts) or None
+    if exit_code is not None:
+        reason = f"{reason} (exit {exit_code})" if reason else f"exit {exit_code}"
+    return reason
+
+
 def stage_row(stage: str, job: dict, prices: Prices = Prices()) -> dict:
     created, started, stopped = (_get(job, k) for k in ("CreatedAt", "StartedAt", "StoppedAt"))
     vcpu, memory_gb, gpus = resources(job)
     run = _seconds(started, stopped)
+    attempts = _get(job, "Attempts")
     return {
         "stage": stage,
         "job_id": _get(job, "JobId"),
@@ -140,6 +160,9 @@ def stage_row(stage: str, job: dict, prices: Prices = Prices()) -> dict:
         "memory_gb": memory_gb,
         "gpus": gpus,
         "cost_usd": None if gpus else fargate_cost(run, vcpu, memory_gb, prices),
+        "attempts": len(attempts) if isinstance(attempts, list) else None,
+        "reason": failure_reason(job),
+        "log_stream": _get(_get(job, "Container", {}), "LogStreamName"),
     }
 
 

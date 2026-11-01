@@ -150,3 +150,42 @@ def test_query_cli_without_stages_does_not_touch_batch(capsys):
     batch.describe_jobs.assert_not_called()
     sfn.get_execution_history.assert_not_called()
     assert "Stage breakdown" not in capsys.readouterr().out
+
+
+def test_failure_reason_from_last_attempt():
+    job = {"jobId": "j9", "status": "FAILED", "statusReason": "Essential container in task exited",
+           "attempts": [{"container": {"exitCode": 1}},
+                        {"container": {"exitCode": 137, "reason": "OutOfMemoryError: Container killed due to memory usage",
+                                       "logStreamName": "geyser/default/abc"}}],
+           "container": {"logStreamName": "geyser/default/abc", "resourceRequirements": []}}
+    row = sb.stage_row("Align_Genome", job)
+    assert row["attempts"] == 2
+    assert row["reason"] == ("Essential container in task exited; "
+                             "OutOfMemoryError: Container killed due to memory usage (exit 137)")
+    assert row["log_stream"] == "geyser/default/abc"
+
+
+def test_failure_reason_without_attempts_and_for_success():
+    assert sb.failure_reason({"Status": "FAILED", "StatusReason": "CannotPullContainerError"}) == \
+        "CannotPullContainerError"
+    assert sb.failure_reason({"Status": "FAILED", "Container": {"ExitCode": 2}}) == "exit 2"
+    assert sb.failure_reason({"Status": "SUCCEEDED", "StatusReason": "Essential container in task exited"}) is None
+    assert sb.stage_row("X", {"Status": "SUCCEEDED"})["attempts"] is None
+
+
+def test_query_cli_prints_failure_reason(capsys):
+    events = history()
+    failed = sfn_job("j2", "FAILED", T0 + 700_000, T0 + 1_000_000, T0 + 1_010_000)
+    failed.update({"StatusReason": "Essential container in task exited",
+                   "Attempts": [{"Container": {"ExitCode": 1, "Reason": None}}]})
+    events[8] = task_event("TaskFailed", failed)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    sfn = paged_sfn(events, page_size=100)
+    sfn.list_executions.return_value = {"executions": [{"executionArn": "exec-1", "name": "run-1"}]}
+    sfn.describe_execution.return_value = {"startDate": start, "stopDate": start + timedelta(minutes=17),
+                                           "status": "FAILED", "input": json.dumps({"srr_id": "SRR001"})}
+    batch = mock.Mock()
+    batch.describe_jobs.return_value = {"jobs": []}
+    query_pipeline_duration.main(["--state-machine-arn", SFN_ARN, "--status", "FAILED", "--stages"],
+                                 sfn_client=sfn, batch_client=batch)
+    assert "reason: Essential container in task exited (exit 1)" in capsys.readouterr().out

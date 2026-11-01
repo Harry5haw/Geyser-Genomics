@@ -119,7 +119,7 @@ def fmt_cost(usd):
 
 
 STAGE_CSV_HEADER = ["SampleId", "ExecutionName", "Stage", "Status", "WaitSeconds", "RunSeconds",
-                    "vCPU", "MemoryGB", "GPUs", "EstCostUSD", "JobId"]
+                    "vCPU", "MemoryGB", "GPUs", "EstCostUSD", "JobId", "Attempts", "FailureReason", "LogStream"]
 
 
 def print_stage_breakdown(sfn_client, batch_client, runs, prices):
@@ -129,14 +129,19 @@ def print_stage_breakdown(sfn_client, batch_client, runs, prices):
     for sample_id, exe in runs:
         rows = stage_breakdown.execution_stages(sfn_client, batch_client, exe["executionArn"], prices)
         print(f"\n  {sample_id}  ({exe['name']})")
-        print(f"    {'Stage':<20} {'Status':<10} {'Wait':>9} {'Run':>9} {'vCPU':>5} {'MemGB':>6} {'Cost':>10}")
+        print(f"    {'Stage':<20} {'Status':<10} {'Wait':>9} {'Run':>9} {'vCPU':>5} {'MemGB':>6} {'Cost':>10} "
+              f"{'Att':>3}")
         for r in rows:
             print(f"    {r['stage']:<20} {r['status']:<10} {fmt_secs(r['wait_seconds']):>9} "
                   f"{fmt_secs(r['run_seconds']):>9} {r['vcpu'] if r['vcpu'] is not None else '---':>5} "
                   f"{'---' if r['memory_gb'] is None else round(r['memory_gb'], 2):>6} "
-                  f"{('GPU/EC2' if r['gpus'] else fmt_cost(r['cost_usd'])):>10}")
+                  f"{('GPU/EC2' if r['gpus'] else fmt_cost(r['cost_usd'])):>10} "
+                  f"{r['attempts'] if r['attempts'] is not None else '---':>3}")
+            if r["reason"]:
+                print(f"      reason: {r['reason']}")
             csv_rows.append([sample_id, exe["name"], r["stage"], r["status"], r["wait_seconds"], r["run_seconds"],
-                             r["vcpu"], r["memory_gb"], r["gpus"], r["cost_usd"], r["job_id"]])
+                             r["vcpu"], r["memory_gb"], r["gpus"], r["cost_usd"], r["job_id"],
+                             r["attempts"], r["reason"], r["log_stream"]])
             if r["wait_seconds"] is not None:
                 waits.append(r["wait_seconds"])
         t = stage_breakdown.totals(rows)
