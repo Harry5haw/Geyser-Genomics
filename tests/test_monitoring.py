@@ -159,51 +159,49 @@ def test_runtime_dashboard_needs_arn():
         monitoring.build_pipeline_runtime_dashboard("eu-west-2", None)
 
 
-# ------------------------------------------------------------------ alarms (one email per incident)
+# ------------------------------------------------------------------ alarm and alarm widget
 
 
-def read_infra(name):
-    with open(os.path.join(REPO_ROOT, "infrastructure", name), encoding="utf-8") as fh:
-        return fh.read()
-
-
-def test_only_alarm_is_trigger_lambda_errors():
-    (alarm,) = monitoring.build_alarms(SNS_ARN)
+def test_alarm_is_trigger_lambda_errors_without_email_by_default():
+    (alarm,) = monitoring.build_alarms()
     assert alarm["AlarmName"] == "geyser-dev-trigger-lambda-errors"
     assert alarm["Namespace"] == "AWS/Lambda" and alarm["MetricName"] == "Errors"
     assert alarm["Dimensions"] == [{"Name": "FunctionName", "Value": "geyser-sfn-trigger"}]
-    assert alarm["AlarmActions"] == [SNS_ARN]
+    assert alarm["AlarmActions"] == [] and alarm["ActionsEnabled"] is False
     assert alarm["Threshold"] == 1 and alarm["ComparisonOperator"] == "GreaterThanOrEqualToThreshold"
     assert alarm["TreatMissingData"] == "notBreaching"
 
 
-def test_no_alarm_duplicates_notify_failure():
-    text = json.dumps(monitoring.build_alarms(SNS_ARN))
-    assert "ExecutionsFailed" not in text and "FailureCount" not in text
-
-
-def test_notify_failure_still_emails_stage_failures():
-    """The no-duplicate design relies on this. If the SNS publish moves to EventBridge, revisit build_alarms."""
-    sfn = read_infra("step_functions.tf")
-    notify = sfn[sfn.index("Notify_Failure = {"):sfn.index("Pipeline_Failed = {")]
-    assert "arn:aws:states:::sns:publish" in notify
-    assert "aws_sns_topic.geyser_pipeline_status_topic.arn" in notify
-    assert sfn.count('Next = "Notify_Failure"') == 4  # every stage's Catch
+def test_alarm_emails_only_when_topic_given():
+    (alarm,) = monitoring.build_alarms(SNS_ARN)
+    assert alarm["AlarmActions"] == [SNS_ARN] and alarm["ActionsEnabled"] is True
 
 
 def test_default_trigger_function_name_matches_terraform():
-    assert 'function_name = "${var.project_name}-sfn-trigger"' in read_infra("lambda_trigger.tf")
-    assert monitoring.DEFAULT_TRIGGER_FUNCTION == "geyser-sfn-trigger"
+    with open(os.path.join(REPO_ROOT, "infrastructure", "lambda_trigger.tf"), encoding="utf-8") as fh:
+        assert 'function_name = "${var.project_name}-sfn-trigger"' in fh.read()
+    assert monitoring.DEFAULT_TRIGGER_FUNCTION == "geyser-sfn-trigger"  # project_name = "geyser"
 
 
 def test_alarm_arguments_validated():
     with pytest.raises(ValueError):
-        monitoring.build_alarms(None)
-    with pytest.raises(ValueError):
-        monitoring.build_alarms(SNS_ARN, trigger_function_name="")
+        monitoring.build_alarms(trigger_function_name="")
+
+
+def test_alarm_widget_shows_the_deployed_alarm():
+    arns = [monitoring.alarm_arn("eu-west-2", "000000000000", n) for n in monitoring.alarm_names("geyser-dev")]
+    assert arns == ["arn:aws:cloudwatch:eu-west-2:000000000000:alarm:geyser-dev-trigger-lambda-errors"]
+    assert monitoring.alarm_names() == [a["AlarmName"] for a in monitoring.build_alarms()]
+    body = monitoring.build_dashboard(alarm_arns=arns)
+    (widget,) = [w for w in body["widgets"] if w["type"] == "alarm"]
+    assert widget["properties"]["alarms"] == arns
+    assert body["widgets"][0]["width"] + widget["width"] == monitoring.GRID_WIDTH  # shares the top row
+    assert not [w for w in monitoring.build_dashboard()["widgets"] if w["type"] == "alarm"]
 
 
 # ------------------------------------------------------------------ no hard-coded account IDs or ARNs
+
+FULL_ARN_RE = re.compile(r"arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:\d{12}:")
 
 
 def test_no_account_ids_or_arns_in_monitoring_scripts():
@@ -211,16 +209,17 @@ def test_no_account_ids_or_arns_in_monitoring_scripts():
         with open(os.path.join(REPO_ROOT, "scripts", name), encoding="utf-8") as fh:
             source = fh.read()
         assert not ACCOUNT_ID_RE.search(source), name
-        assert "arn:aws:" not in source, name
+        assert not FULL_ARN_RE.search(source), name
 
 
-def test_generated_json_has_no_account_ids_unless_passed_in(capsys, monkeypatch):
-    for var in ("SNS_TOPIC_ARN", "SFN_ARN", "TRIGGER_FUNCTION_NAME"):
+def test_dry_run_json_has_no_account_ids(capsys, monkeypatch):
+    for var in ("SFN_ARN", "TRIGGER_FUNCTION_NAME", "AWS_ACCOUNT_ID"):
         monkeypatch.delenv(var, raising=False)
     deploy_dashboard.main(["--dry-run"])
     deploy_alarms.main(["--dry-run"])
     out = capsys.readouterr().out
-    assert not ACCOUNT_ID_RE.search(out) and "arn:" not in out
+    assert not ACCOUNT_ID_RE.search(out)
+    assert f":{deploy_dashboard.PLACEHOLDER_ACCOUNT}:alarm:" in out
 
 
 # ------------------------------------------------------------------ CLIs (dry run and mocked deploys)
@@ -247,13 +246,28 @@ def test_dashboard_rejects_bad_arn():
         deploy_dashboard.main(["--dry-run", "--state-machine-arn", "not-an-arn"])
 
 
-def test_dashboard_deploy_calls_put_dashboard(monkeypatch):
-    monkeypatch.delenv("SFN_ARN", raising=False)
-    client = mock.Mock()
+def test_dashboard_deploy_calls_put_dashboard_with_account_from_sts(monkeypatch):
+    for var in ("SFN_ARN", "AWS_ACCOUNT_ID"):
+        monkeypatch.delenv(var, raising=False)
+    client, sts = mock.Mock(), mock.Mock()
     client.put_dashboard.return_value = {"DashboardValidationMessages": []}
-    assert deploy_dashboard.main(["--dashboard-name", "d1"], client=client) == 0
+    sts.get_caller_identity.return_value = {"Account": "000000000000"}
+    assert deploy_dashboard.main(["--dashboard-name", "d1"], client=client, sts_client=sts) == 0
     kwargs = client.put_dashboard.call_args.kwargs
-    assert kwargs["DashboardName"] == "d1" and json.loads(kwargs["DashboardBody"])["widgets"]
+    assert kwargs["DashboardName"] == "d1"
+    assert ":000000000000:alarm:geyser-dev-trigger-lambda-errors" in kwargs["DashboardBody"]
+
+
+def test_dashboard_account_id_option(monkeypatch, capsys):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    with pytest.raises(SystemExit):
+        deploy_dashboard.main(["--dry-run", "--account-id", "12345"])
+    sts = mock.Mock()
+    deploy_dashboard.main(["--dry-run", "--account-id", "000000000000"], sts_client=sts)
+    sts.get_caller_identity.assert_not_called()
+    assert ":000000000000:alarm:" in capsys.readouterr().out
+    deploy_dashboard.main(["--dry-run", "--no-alarm-widget"])
+    assert '"alarm"' not in capsys.readouterr().out
 
 
 def test_dashboard_deploy_reports_errors():
@@ -275,30 +289,28 @@ def test_runtime_dashboard_cli(capsys, monkeypatch):
     assert client.put_dashboard.call_args.kwargs["DashboardName"] == "geyser-pipeline-runtime"
 
 
-def test_alarms_dry_run_uses_placeholder(capsys, monkeypatch):
-    for var in ("SNS_TOPIC_ARN", "TRIGGER_FUNCTION_NAME"):
-        monkeypatch.delenv(var, raising=False)
+def test_alarms_dry_run_makes_no_aws_calls(capsys, monkeypatch):
+    monkeypatch.delenv("TRIGGER_FUNCTION_NAME", raising=False)
     with mock.patch("boto3.client") as client:
         assert deploy_alarms.main(["--dry-run"]) == 0
     client.assert_not_called()
     (alarm,) = json.loads(capsys.readouterr().out)
-    assert alarm["AlarmActions"] == [deploy_alarms.PLACEHOLDER_SNS]
-
-
-def test_alarms_deploy_requires_topic(monkeypatch):
-    monkeypatch.delenv("SNS_TOPIC_ARN", raising=False)
-    with pytest.raises(SystemExit):
-        deploy_alarms.main([], client=mock.Mock())
+    assert alarm["AlarmActions"] == []
 
 
 def test_alarms_deploy_puts_the_alarm(monkeypatch):
-    monkeypatch.setenv("SNS_TOPIC_ARN", SNS_ARN)
     monkeypatch.setenv("TRIGGER_FUNCTION_NAME", "geyser-prod-sfn-trigger")
     client = mock.Mock()
-    assert deploy_alarms.main(["--prefix", "geyser-prod"], client=client) == 0
+    assert deploy_alarms.main(["--prefix", "geyser-prod", "--sns-topic-arn", SNS_ARN], client=client) == 0
     (call,) = client.put_metric_alarm.call_args_list
     assert call.kwargs["AlarmName"] == "geyser-prod-trigger-lambda-errors"
     assert call.kwargs["Dimensions"][0]["Value"] == "geyser-prod-sfn-trigger"
+    assert call.kwargs["AlarmActions"] == [SNS_ARN]
+
+
+def test_alarms_reject_bad_topic_arn():
+    with pytest.raises(SystemExit):
+        deploy_alarms.main(["--dry-run", "--sns-topic-arn", "nope"])
 
 
 def test_alarms_deploy_reports_partial_failure():

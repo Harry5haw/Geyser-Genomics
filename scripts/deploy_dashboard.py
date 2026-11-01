@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Create or update the Geyser Genomics CloudWatch dashboard.
 
-Widgets: pipeline runs per day and end-to-end time (Step Functions, when a state machine ARN is given),
-failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant.
+Widgets: alarm status, pipeline runs per day and end-to-end time (Step Functions, when a state machine
+ARN is given), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome
+DeepVariant. The alarm widget needs the account ID: --account-id, $AWS_ACCOUNT_ID, or looked up with
+STS on deploy (a placeholder is used with --dry-run).
 The JSON is built in scripts/monitoring.py.
 
 Preview (no AWS calls):
@@ -18,6 +20,8 @@ import os
 import sys
 
 import monitoring
+
+PLACEHOLDER_ACCOUNT = "<ACCOUNT_ID>"
 
 
 def deploy(client, dashboard_name: str, body: dict) -> int:
@@ -47,17 +51,41 @@ def parse_args(argv=None):
     p.add_argument("--groups", default=",".join(monitoring.STAGE_GROUPS),
                    help=f"Comma-separated stage groups (default: all of {','.join(monitoring.STAGE_GROUPS)})")
     p.add_argument("--lookback", default="-P14D", help="Default time range, e.g. -P3D or -P14D")
+    p.add_argument("--alarm-prefix", default=monitoring.DEFAULT_ALARM_PREFIX,
+                   help="Prefix used by deploy_alarms.py (default: geyser-dev)")
+    p.add_argument("--account-id", default=os.environ.get("AWS_ACCOUNT_ID"),
+                   help="AWS account ID for the alarm widget (default: $AWS_ACCOUNT_ID, else looked up with STS)")
+    p.add_argument("--no-alarm-widget", action="store_true", help="Leave out the alarm status widget")
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
     return p.parse_args(argv)
 
 
-def main(argv=None, client=None) -> int:
+def resolve_account_id(args, sts_client=None) -> str:
+    if args.account_id:
+        if not (args.account_id.isdigit() and len(args.account_id) == 12):
+            raise SystemExit(f"FATAL: --account-id must be 12 digits: {args.account_id!r}")
+        return args.account_id
+    if args.dry_run:
+        return PLACEHOLDER_ACCOUNT
+    if sts_client is None:
+        import boto3
+        sts_client = boto3.client("sts", region_name=args.region)
+    return sts_client.get_caller_identity()["Account"]
+
+
+def main(argv=None, client=None, sts_client=None) -> int:
     args = parse_args(argv)
     monitoring.check_arn(args.state_machine_arn, "states", "--state-machine-arn")
+    alarm_arns = None
+    if not args.no_alarm_widget:
+        account_id = resolve_account_id(args, sts_client)
+        alarm_arns = [monitoring.alarm_arn(args.region, account_id, name)
+                      for name in monitoring.alarm_names(args.alarm_prefix)]
     try:
         body = monitoring.build_dashboard(
             args.region, args.namespace, state_machine_arn=args.state_machine_arn, schema=args.schema,
-            groups=[g.strip() for g in args.groups.split(",") if g.strip()], lookback=args.lookback)
+            groups=[g.strip() for g in args.groups.split(",") if g.strip()], lookback=args.lookback,
+            alarm_arns=alarm_arns)
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}")
     if not args.state_machine_arn:
