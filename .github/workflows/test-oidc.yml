@@ -6,7 +6,11 @@ on:
       environment:
         description: "Which environment to test (dev or prod)"
         required: true
-        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
 
 permissions:
   id-token: write
