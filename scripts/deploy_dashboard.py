@@ -56,6 +56,14 @@ def parse_args(argv=None):
     p.add_argument("--account-id", default=os.environ.get("AWS_ACCOUNT_ID"),
                    help="AWS account ID for the alarm widget (default: $AWS_ACCOUNT_ID, else looked up with STS)")
     p.add_argument("--no-alarm-widget", action="store_true", help="Leave out the alarm status widget")
+    p.add_argument("--bucket", default=os.environ.get("BUCKET_NAME"),
+                   help="Data lake bucket for the S3 link (default: $BUCKET_NAME; link left out if unset)")
+    p.add_argument("--trigger-function-name",
+                   default=os.environ.get("TRIGGER_FUNCTION_NAME", monitoring.DEFAULT_TRIGGER_FUNCTION),
+                   help="Trigger Lambda name for its console links")
+    p.add_argument("--job-queue", default=monitoring.DEFAULT_JOB_QUEUE, help="Batch job queue name (link label)")
+    p.add_argument("--sfn-log-group", default=monitoring.DEFAULT_SFN_LOG_GROUP,
+                   help="Step Functions log group for its console link")
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
     return p.parse_args(argv)
 
@@ -85,7 +93,11 @@ def main(argv=None, client=None, sts_client=None) -> int:
         body = monitoring.build_dashboard(
             args.region, args.namespace, state_machine_arn=args.state_machine_arn, schema=args.schema,
             groups=[g.strip() for g in args.groups.split(",") if g.strip()], lookback=args.lookback,
-            alarm_arns=alarm_arns)
+            alarm_arns=alarm_arns,
+            links=monitoring.console_links(
+                args.region, state_machine_arn=args.state_machine_arn, bucket=args.bucket,
+                trigger_function_name=args.trigger_function_name, job_queue=args.job_queue,
+                sfn_log_group=args.sfn_log_group))
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}")
     if not args.state_machine_arn:

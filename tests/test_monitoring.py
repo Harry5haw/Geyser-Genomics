@@ -333,3 +333,40 @@ def test_query_pipeline_duration_is_importable_and_uses_given_client(capsys, mon
     assert client.list_executions.call_args.kwargs["stateMachineArn"] == SFN_ARN
     out = capsys.readouterr().out
     assert "SRR001" in out and "2.00m" in out
+
+
+# ------------------------------------------------------------------ console links in the header
+
+
+def test_console_links_without_arns_have_no_account_specific_parts():
+    links = dict(monitoring.console_links("eu-west-2"))
+    assert "Pipeline runs (Step Functions)" not in links and "Data lake (S3)" not in links
+    assert links["Batch job logs"].endswith("#logsV2:log-groups/log-group/$252Faws$252Fbatch$252Fjob")
+    assert links["Trigger Lambda logs"].endswith("log-group/$252Faws$252Flambda$252Fgeyser-sfn-trigger")
+    assert links["Step Functions error logs"].endswith(
+        "log-group/$252Faws$252Fvendedlogs$252Fstates$252Fgeyser-sfn-dev")
+    assert "#/functions/geyser-sfn-trigger?tab=monitoring" in links["Trigger Lambda"]
+    assert all(url.startswith("https://") for url in links.values())
+    assert all("eu-west-2" in url for label, url in links.items() if label != "Budgets")
+
+
+def test_console_links_with_state_machine_and_bucket():
+    links = dict(monitoring.console_links("eu-west-2", state_machine_arn=SFN_ARN, bucket="geyser-data-lake-abc"))
+    assert links["Pipeline runs (Step Functions)"].endswith(
+        "#/statemachines/view/arn%3Aaws%3Astates%3Aeu-west-2%3A000000000000%3AstateMachine%3Ageyser-pipeline-sfn-dev")
+    assert links["Data lake (S3)"] == "https://s3.console.aws.amazon.com/s3/buckets/geyser-data-lake-abc?region=eu-west-2"
+
+
+def test_header_widget_lists_the_links():
+    body = monitoring.build_dashboard(state_machine_arn=SFN_ARN)
+    header = body["widgets"][0]["properties"]["markdown"]
+    for label, url in monitoring.console_links("eu-west-2", state_machine_arn=SFN_ARN):
+        assert f"[{label}]({url})" in header
+
+
+def test_dashboard_cli_link_options(capsys, monkeypatch):
+    for var in ("SFN_ARN", "BUCKET_NAME", "TRIGGER_FUNCTION_NAME"):
+        monkeypatch.delenv(var, raising=False)
+    deploy_dashboard.main(["--dry-run", "--bucket", "my-bucket", "--trigger-function-name", "geyser-sfn-trigger-x"])
+    header = json.loads(capsys.readouterr().out)["widgets"][0]["properties"]["markdown"]
+    assert "s3/buckets/my-bucket" in header and "#/functions/geyser-sfn-trigger-x" in header

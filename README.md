@@ -493,7 +493,7 @@ Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWat
 
 | Script | What it creates |
 | :--- | :--- |
-| `scripts/deploy_dashboard.py` | Dashboard `geyser-dashboard-dev`: alarm status, pipeline runs per day, end-to-end time (p50/p95), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant |
+| `scripts/deploy_dashboard.py` | Dashboard `geyser-dashboard-dev`: links to the console pages for a run (Step Functions runs, Batch jobs, logs, Logs Insights, alarms, S3, budgets), alarm status, pipeline runs per day, end-to-end time (p50/p95), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant |
 | `scripts/deploy_alarms.py` | Alarm `geyser-dev-trigger-lambda-errors`: the trigger Lambda failing, the one failure that leaves no trace in the pipeline's own metrics because no run starts. Its state shows on the dashboard |
 | `scripts/runtime_deploy_pipeline_dashboard.py` | Optional dashboard with only the Step Functions widgets |
 | `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only). With `--stages`: for each stage, how long the Batch job queued vs ran, its vCPU/memory, and an estimated Fargate cost per stage and per run (`--stages-csv` to export) |
@@ -507,6 +507,7 @@ python scripts/deploy_alarms.py --dry-run
 **Deploy** (uses your AWS credentials; region defaults to `eu-west-2`). The state machine ARN is passed in, and the account ID for the alarm widget is looked up at deploy time, so neither is stored in the repo:
 ```bash
 export SFN_ARN=$(terraform -chdir=infrastructure output -raw geyser_pipeline_state_machine_arn)
+export BUCKET_NAME=$(terraform -chdir=infrastructure output -raw data_lake_bucket_name)   # for the S3 link
 python scripts/deploy_alarms.py
 python scripts/deploy_dashboard.py
 ```
