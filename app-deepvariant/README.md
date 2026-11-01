@@ -63,9 +63,57 @@ Measured results (full tables in the main README):
 
 `make_examples` takes about 300 s either way.
 
+## Pangenome-aware mode (`--pangenome`)
+
+The same stage can run Google's [pangenome-aware DeepVariant](https://github.com/google/deepvariant/blob/r1.9/docs/pangenome-aware-wgs-bwa-case-study.md)
+instead (issue #51). It reads the same linear-reference BAM and adds a pangenome graph: at each candidate site it
+builds pileups from the pangenome's haplotypes as well as the sample's reads, which helps most where short reads
+mismap (segmental duplications). Output stays in GRCh38 coordinates.
+
+| | |
+|---|---|
+| Image | `app-deepvariant/Dockerfile` built with `--build-arg DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu` (tag it `geyser-deepvariant-pangenome`). For CPU only, use `pangenome_aware_deepvariant-1.10.0` and `run_local.py --no-gpu`. |
+| Reads | `alignments/{id}.bam`, `reference/{name}` and `pangenome/{graph}.gbz` |
+| Writes | `variants_pangenome/{id}.vcf.gz` |
+| Command | `/opt/geyser-venv/bin/python deepvariant_task.py <id> <reference_name> --pangenome <graph>` |
+| Metrics | `PangenomeDeepVariant` plus `.MakeExamples`, `.CallVariants`, `.PostprocessVariants` |
+| Hardware | `call_variants` on the GPU, like linear DeepVariant. On a 10 GB card it needs `--call_variants_extra_args=batch_size=256`, because the default 1,024 runs out of GPU memory. (NVIDIA Parabricks' separate GPU version needs 16 GB of VRAM. Google's image does not.) |
+
+```bash
+docker build -f app-deepvariant/Dockerfile --build-arg DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu \
+    -t geyser-deepvariant-pangenome .
+# HG003 chr20, plus HPRC's chr20 graph converted to hprc-v1.1-mc-grch38.chr20.gbz (72 MB) with vg in Docker
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome
+DEEPVARIANT_SHARDS=6 DEEPVARIANT_EXTRA_ARGS="--call_variants_extra_args=batch_size=256" \
+python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa \
+    --caller pangenome --skip-to-variants --check --dv-memory 14g
+# Score every caller's VCF with hap.py (vcfeval, PASS only, GIAB confident regions)
+python scripts/benchmark_happy.py --sample HG003_chr20 --reference GRCh38_chr20.fa --region chr20
+```
+
+`--caller all` runs bcftools, linear DeepVariant and pangenome-aware DeepVariant in one go. The pangenome container
+gets `--shm-size 12g` by default (`--pg-shm-size`), as in Google's case studies, and the `--dv-memory` cap.
+
+**Which graph.** `--pangenome` (or `--pangenome chr20`) downloads HPRC's per-chromosome `chr20.vg` and converts it with
+vg v1.55.0 (`vg convert -f`, then `vg gbwt -G --gbz-format --set-reference GRCh38 --set-reference CHM13`). The result
+has the same 46 samples, 90 haplotypes and `GRCh38#0#chr20` path as the whole-genome graph. `--pangenome full` fetches
+the whole-genome graph (3.29 GB). Loaded, it takes about 10.7 GB of shared memory plus about 2 GB per `make_examples` worker,
+which ran out of memory in a 22 GB container on a 32 GB desktop.
+
+**Measured on HG003 chr20** (RTX 3080, 6 workers): 936 s `make_examples`, 257 s `call_variants` (231,085 examples),
+21 s `postprocess_variants`, 20.7 min in all, peak container memory about 8.4 GB. Accuracy and the comparison with linear
+DeepVariant are in the main README.
+
+**Known issue.** When `call_variants` ran out of GPU memory, `run_pangenome_aware_deepvariant` hung instead of
+exiting. Give the cloud job a timeout.
+
+**The BAM must be duplicate-marked.** Google's case-study BAM (`fetch_dv_testdata.py --dataset hg003-chr20`) already
+is, and so are the pipeline's own BAMs: the `align` stage marks duplicates with `samtools markdup`.
+
 ## Tests
 
 - `tests/test_deepvariant_task.py` runs on every push. `run_deepvariant` and `samtools` are faked, so it needs no Docker or GPU.
+- `tests/test_pangenome.py` runs on every push too: the pangenome-aware stage (faked tool), the `pangenome`/`all` callers in `run_local.py`, the graph download entry and the hap.py benchmark helpers.
 - `tests/test_e2e_deepvariant.py` is opt-in:
   - `GEYSER_GPU_E2E=1` uses the GPU image;
   - `GEYSER_DV_E2E=1` uses the CPU image;
