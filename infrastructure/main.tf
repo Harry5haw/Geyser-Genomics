@@ -155,9 +155,12 @@ resource "aws_batch_compute_environment" "geyser_fargate" {
   type                     = "MANAGED"
   service_role             = aws_iam_role.geyser_batch_service_role.arn
   compute_resources {
-    type               = "FARGATE"
-    max_vcpus          = 16
-    subnets            = [aws_subnet.private.id]
+    type      = "FARGATE"
+    max_vcpus = 16
+    # Public subnet + assignPublicIp (job definition) so tasks reach ECR, S3 and
+    # CloudWatch through the internet gateway without a NAT gateway. The VPC
+    # default security group allows no inbound traffic from the internet.
+    subnets            = [aws_subnet.public.id]
     security_group_ids = [aws_vpc.main.default_security_group_id]
   }
   tags = { Name = "${var.project_name}-ComputeEnv" }
@@ -188,6 +191,11 @@ resource "aws_batch_job_definition" "geyser_app_job_def" {
     jobRoleArn = aws_iam_role.geyser_batch_task_role.arn
     fargatePlatformConfiguration = {
       platformVersion = "LATEST"
+    }
+    # Required for Fargate in a public subnet with no NAT: without a public IP
+    # the task cannot pull its image or reach S3.
+    networkConfiguration = {
+      assignPublicIp = "ENABLED"
     }
     resourceRequirements = [
       { type = "VCPU", value = "2" },
