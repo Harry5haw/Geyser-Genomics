@@ -7,11 +7,7 @@
 <p><strong>An event-driven AWS pipeline that turns raw DNA sequencing reads into a list of genetic variants,<br/>built and tested offline first.</strong></p>
 
 <p>
-  <a href="#️-project-status--features"><img src="https://img.shields.io/badge/status-active%20development-orange?style=flat-square" alt="Status: active development"></a>
-  <a href="../../actions/workflows/tests.yml"><img src="https://img.shields.io/badge/tests-unit%20%2B%20Docker%20E2E-brightgreen?style=flat-square" alt="Tests: unit and Docker end-to-end"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT licence"></a>
-  <img src="https://img.shields.io/badge/python-3.11-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.11">
-  <img src="https://img.shields.io/badge/terraform-1.13-7B42BC?style=flat-square&logo=terraform&logoColor=white" alt="Terraform 1.13">
+  <a href="#️-project-status--features"><img src="https://img.shields.io/badge/Project%20Status-In%20Active%20Development-orange?style=for-the-badge" alt="Project status: in active development"></a>
 </p>
 
 <p>
@@ -481,13 +477,15 @@ python scripts/deploy_dashboard.py
 
 ## 🧭 Roadmap
 
-- [x] **Offline pipeline** with an end-to-end truth check on every push
-- [x] **Cost-safe networking:** NAT gateway optional and off, ECR and log retention limits, budget alert
-- [x] **CI hardening:** OIDC with separate dev and prod roles, read-only Terraform roles, prod restricted to `main`
-- [x] **DeepVariant on a local GPU,** measured on a whole chromosome
-- [x] **Web UI** (offline)
-- [ ] **First cloud run since the hardening:** one small sample through S3 → Step Functions → Batch, confirming the VCF ⬅️ *next*
-- [ ] **Monitoring:** finish the CloudWatch dashboards for stage durations and failures
-- [ ] **DeepVariant in the cloud:** GPU environment in the public subnet, larger instances, stage added to Step Functions
-- [ ] **Web UI on S3:** point the UI at the cloud bucket
-- [ ] **Branch protection and required review for `prod`,** once the repository is public
+| | Milestone | |
+| :---: | :--- | :--- |
+| ✅ | **Offline pipeline** | End-to-end truth check on every push |
+| ✅ | **Cost-safe networking** | NAT gateway optional and off, ECR and log retention limits, budget alert |
+| ✅ | **CI hardening** | OIDC with separate dev and prod roles, read-only Terraform roles, prod restricted to `main` |
+| ✅ | **DeepVariant on a local GPU** | Measured on a whole chromosome |
+| ✅ | **Web UI** | Works offline |
+| 🎯 | **First cloud run since the hardening** | One small sample through S3 → Step Functions → Batch, confirming the VCF. **Next up.** |
+| 🔜 | **Monitoring** | Finish the CloudWatch dashboards for stage durations and failures |
+| 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |
+| 🔜 | **Web UI on S3** | Point the UI at the cloud bucket |
+| 🔜 | **Branch protection** | Required review for `prod`, once the repository is public |
