@@ -1,18 +1,18 @@
 {% load geyser %}
 <div id="sample-table"{% if any_active %} hx-get="{% url 'samples:rows' %}" hx-trigger="every {{ poll_seconds }}s" hx-swap="outerHTML"{% endif %}>
 {% if samples %}
-  <div class="overflow-auto">
-  <table class="samples striped">
+  <div class="overflow-auto table-frame">
+  <table class="samples data-table">
     <thead>
-      <tr><th>Sample</th><th>Status</th><th>Stages</th><th>Run time</th><th>Last activity</th></tr>
+      <tr><th>Sample</th><th>Status</th><th>Stages</th><th class="num">Run time</th><th>Last activity</th></tr>
     </thead>
     <tbody>
     {% for s in samples %}
       <tr>
         <td class="id"><a href="{% url 'samples:detail' s.sample_id %}">{{ s.sample_id }}</a></td>
         <td><span class="badge {{ s.state }}">{{ s.state_label }}</span></td>
-        <td><div class="pills">{% for st in s.stages %}<span class="pill {{ st.state }}" title="{{ st.label }}: {{ st.state }}">{{ st.label }}</span>{% endfor %}</div></td>
-        <td>{{ s.duration|duration }}</td>
+        <td><div class="pills">{% for st in s.stages %}<span class="pill s-{{ st.name }} {{ st.state }}" title="{{ st.label }}: {{ st.state }}">{{ st.label }}</span>{% endfor %}</div></td>
+        <td class="num">{{ s.duration|duration }}</td>
         <td class="muted">{% with when=s.updated|from_epoch %}{% if when %}{{ when|timesince }} ago{% else %}–{% endif %}{% endwith %}</td>
       </tr>
     {% endfor %}

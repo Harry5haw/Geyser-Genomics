@@ -18,17 +18,19 @@
 {% endif %}
 
 {% if variants %}
-  <section>
+  <section class="panel">
     <h2>Variants <small class="muted">({{ variants.total }} call{{ variants.total|pluralize }})</small></h2>
     {% if variants.rows %}
-      <div class="overflow-auto">
-      <table class="variants striped">
-        <thead><tr><th>Chrom</th><th>Position</th><th>Ref</th><th>Alt</th><th>Type</th><th>Quality</th><th>Depth</th><th>Genotype</th></tr></thead>
+      <div class="overflow-auto table-frame">
+      <table class="variants data-table">
+        <thead><tr><th>Chrom</th><th class="num">Position</th><th class="base">Ref</th><th class="base">Alt</th><th>Type</th>
+                   <th class="num">Quality</th><th class="num">Depth</th><th>Genotype</th></tr></thead>
         <tbody>
         {% for v in variants.rows %}
           <tr{% if v|call_key in planted %} class="planted"{% endif %}>
-            <td>{{ v.chrom }}</td><td>{{ v.pos }}</td><td>{{ v.ref }}</td><td>{{ v.alt }}</td><td>{{ v.kind }}</td>
-            <td>{{ v.qual|default_if_none:"–" }}</td><td>{{ v.depth|default_if_none:"–" }}</td><td>{{ v.genotype|default:"–" }}</td>
+            <td>{{ v.chrom }}</td><td class="num">{{ v.pos }}</td>
+            <td class="base nt-{{ v.ref }}">{{ v.ref }}</td><td class="base nt-{{ v.alt }}">{{ v.alt }}</td><td>{{ v.kind }}</td>
+            <td class="num">{{ v.qual|default_if_none:"–" }}</td><td class="num">{{ v.depth|default_if_none:"–" }}</td><td>{{ v.genotype|default:"–" }}</td>
           </tr>
         {% endfor %}
         </tbody>
@@ -42,7 +44,7 @@
 {% endif %}
 
 {% if has_qc %}
-  <section>
+  <section class="panel">
     <h2>Quality control</h2>
     <details open>
       <summary>FastQC report</summary>
@@ -53,7 +55,7 @@
 {% endif %}
 
 {% if downloads %}
-  <section>
+  <section class="panel">
     <h2>Files</h2>
     <ul class="downloads">
       {% for d in downloads %}

@@ -1,9 +1,11 @@
 {% load static %}<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#06382a">
+  <link rel="icon" type="image/svg+xml" href="{% static 'samples/logo.svg' %}">
   <title>{% block title %}Geyser Genomics{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'vendor/pico.min.css' %}">
   <link rel="stylesheet" href="{% static 'samples/site.css' %}">
@@ -12,8 +14,10 @@
 <body>
   <header class="site">
     <nav class="container">
-      <ul><li><a class="brand" href="{% url 'samples:list' %}">🌋 Geyser Genomics<span>FASTQ → VCF</span></a></li></ul>
-      <ul><li><a href="{% url 'samples:list' %}">Samples</a></li></ul>
+      <ul><li><a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/logo.svg' %}" alt="">
+        <span class="brand-text"><span class="brand-name">Geyser Genomics</span><span class="brand-tag">FASTQ → VCF pipeline</span></span></a></li></ul>
+      <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span class="bp" style="--i: {{ i }}"><i></i></span>{% endfor %}</div>
+      <ul><li><a class="tube-btn" href="{% url 'samples:list' %}#samples"><span>Samples</span></a></li></ul>
     </nav>
   </header>
   <main class="container">
