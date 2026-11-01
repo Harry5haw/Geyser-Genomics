@@ -61,6 +61,44 @@ resource "aws_iam_role_policy_attachment" "geyser_sfn_trigger_lambda_start_execu
   policy_arn = aws_iam_policy.geyser_geyser_sfn_trigger_policy.arn
 }
 
+# --- Read access to raw_reads/ for paired-end uploads (#57, #68) ---
+# A paired-end sample arrives as two objects, raw_reads/<id>_R1.fastq.gz and _R2.fastq.gz. On
+# each upload the trigger HEADs both mates and only starts a run once both exist.
+#   * HeadObject is authorised by s3:GetObject (limited to raw_reads/*).
+#   * s3:ListBucket makes S3 answer a missing mate with 404 instead of 403, so the Lambda can tell
+#     "not uploaded yet" from a real permission error. It is not prefix-conditioned: HeadObject
+#     carries no s3:prefix, so a conditioned grant would not count and missing mates would be 403s.
+#     ListBucket lists key names only (sample IDs), never object contents.
+# A separate policy, so the existing start-execution policy is left untouched (changing its
+# description would replace it).
+resource "aws_iam_policy" "geyser_sfn_trigger_s3_read" {
+  name        = "${var.project_name}-sfn-trigger-s3-read-policy"
+  description = "Lets the trigger Lambda check that both paired-end mates are in raw_reads/"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid      = "HeadRawReads",
+        Action   = "s3:GetObject",
+        Effect   = "Allow",
+        Resource = "${aws_s3_bucket.data_lake.arn}/raw_reads/*"
+      },
+      {
+        Sid      = "MissingMateIs404",
+        Action   = "s3:ListBucket",
+        Effect   = "Allow",
+        Resource = aws_s3_bucket.data_lake.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "geyser_sfn_trigger_lambda_s3_read" {
+  role       = aws_iam_role.geyser_geyser_sfn_trigger_lambda_role.name
+  policy_arn = aws_iam_policy.geyser_sfn_trigger_s3_read.arn
+}
+
 
 # --- Lambda Function Resource ---
 resource "aws_lambda_function" "geyser_sfn_trigger" {
