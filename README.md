@@ -496,7 +496,7 @@ Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWat
 | `scripts/deploy_dashboard.py` | Dashboard `geyser-dashboard-dev`: alarm status, pipeline runs per day, end-to-end time (p50/p95), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant |
 | `scripts/deploy_alarms.py` | Alarm `geyser-dev-trigger-lambda-errors`: the trigger Lambda failing, the one failure that leaves no trace in the pipeline's own metrics because no run starts. Its state shows on the dashboard |
 | `scripts/runtime_deploy_pipeline_dashboard.py` | Optional dashboard with only the Step Functions widgets |
-| `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only) |
+| `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only). With `--stages`: for each stage, how long the Batch job queued vs ran, its vCPU/memory, and an estimated Fargate cost per stage and per run (`--stages-csv` to export) |
 
 **Preview without AWS:** `--dry-run` prints the JSON and makes no AWS calls. No ARNs are needed.
 ```bash

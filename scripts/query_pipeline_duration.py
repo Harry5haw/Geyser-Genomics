@@ -9,6 +9,8 @@ Query Step Functions executions and calculate total pipeline duration.
 - Prints per-execution rows + overall and per-sample summaries
 - Optional CSV export (--csv filename)
 - Status filter (--status SUCCEEDED|FAILED|RUNNING|...)
+- Per-stage breakdown (--stages): Batch queue wait vs run time, vCPU/memory and estimated Fargate cost
+  per stage and per run (see stage_breakdown.py); --stages-csv to export it
 """
 
 import os
@@ -19,6 +21,8 @@ import shutil
 from collections import defaultdict
 from statistics import mean, median
 from datetime import timezone
+
+import stage_breakdown
 
 DEFAULT_REGION = "eu-west-2"
 
@@ -106,7 +110,49 @@ def compute_layout():
 
 # ---------- main ----------
 
-def main(argv=None, sfn_client=None):
+def fmt_secs(seconds):
+    return '---' if seconds is None else smart_format(seconds)
+
+
+def fmt_cost(usd):
+    return '---' if usd is None else f"${usd:.4f}"
+
+
+STAGE_CSV_HEADER = ["SampleId", "ExecutionName", "Stage", "Status", "WaitSeconds", "RunSeconds",
+                    "vCPU", "MemoryGB", "GPUs", "EstCostUSD", "JobId"]
+
+
+def print_stage_breakdown(sfn_client, batch_client, runs, prices):
+    """Print per-stage wait/run/cost for each (sample_id, execution) and return CSV rows."""
+    csv_rows, run_costs, waits = [], [], []
+    print("\nStage breakdown (wait = queued before the container started; cost = Fargate estimate):")
+    for sample_id, exe in runs:
+        rows = stage_breakdown.execution_stages(sfn_client, batch_client, exe["executionArn"], prices)
+        print(f"\n  {sample_id}  ({exe['name']})")
+        print(f"    {'Stage':<20} {'Status':<10} {'Wait':>9} {'Run':>9} {'vCPU':>5} {'MemGB':>6} {'Cost':>10}")
+        for r in rows:
+            print(f"    {r['stage']:<20} {r['status']:<10} {fmt_secs(r['wait_seconds']):>9} "
+                  f"{fmt_secs(r['run_seconds']):>9} {r['vcpu'] if r['vcpu'] is not None else '---':>5} "
+                  f"{'---' if r['memory_gb'] is None else round(r['memory_gb'], 2):>6} "
+                  f"{('GPU/EC2' if r['gpus'] else fmt_cost(r['cost_usd'])):>10}")
+            csv_rows.append([sample_id, exe["name"], r["stage"], r["status"], r["wait_seconds"], r["run_seconds"],
+                             r["vcpu"], r["memory_gb"], r["gpus"], r["cost_usd"], r["job_id"]])
+            if r["wait_seconds"] is not None:
+                waits.append(r["wait_seconds"])
+        t = stage_breakdown.totals(rows)
+        print(f"    {'Total':<20} {'':<10} {fmt_secs(t['wait_seconds']):>9} {fmt_secs(t['run_seconds']):>9} "
+              f"{'':>5} {'':>6} {fmt_cost(t['cost_usd']):>10}")
+        if t["cost_usd"] is not None:
+            run_costs.append(t["cost_usd"])
+    if run_costs:
+        print(f"\n  Estimated cost per run: mean {fmt_cost(mean(run_costs))}, max {fmt_cost(max(run_costs))} "
+              f"(over {len(run_costs)} runs with full data)")
+    if waits:
+        print(f"  Queue wait per stage: mean {smart_format(mean(waits))}, max {smart_format(max(waits))}")
+    return csv_rows
+
+
+def main(argv=None, sfn_client=None, batch_client=None):
     parser = argparse.ArgumentParser(description="Query Step Functions pipeline durations.")
     parser.add_argument("--csv", help="Export results to a CSV file", default=None)
     parser.add_argument("--status", help="Filter by status (e.g. SUCCEEDED, FAILED, RUNNING)", default="SUCCEEDED")
@@ -114,13 +160,26 @@ def main(argv=None, sfn_client=None):
     parser.add_argument("--state-machine-arn", default=os.environ.get("SFN_ARN"),
                         help="Step Functions state machine ARN (default: $SFN_ARN)")
     parser.add_argument("--max-results", type=int, default=50, help="Most recent executions to fetch (default: 50)")
+    parser.add_argument("--stages", action="store_true",
+                        help="Also show per-stage queue wait, run time and estimated cost (reads execution history "
+                             "and Batch describe_jobs)")
+    parser.add_argument("--stages-csv", default=None, help="Export the per-stage breakdown to a CSV file")
+    parser.add_argument("--vcpu-hour-price", type=float, default=stage_breakdown.DEFAULT_VCPU_HOUR_USD,
+                        help=f"Fargate USD per vCPU-hour (default: {stage_breakdown.DEFAULT_VCPU_HOUR_USD}, eu-west-2)")
+    parser.add_argument("--gb-hour-price", type=float, default=stage_breakdown.DEFAULT_GB_HOUR_USD,
+                        help=f"Fargate USD per GB-hour (default: {stage_breakdown.DEFAULT_GB_HOUR_USD}, eu-west-2)")
     args = parser.parse_args(argv)
+    if args.stages_csv:
+        args.stages = True
 
     if not args.state_machine_arn:
         raise SystemExit("FATAL: provide --state-machine-arn or set SFN_ARN")
     if sfn_client is None:
         import boto3
         sfn_client = boto3.client("stepfunctions", region_name=args.region)
+    if args.stages and batch_client is None:
+        import boto3
+        batch_client = boto3.client("batch", region_name=args.region)
 
     print(f"Fetching recent executions for {args.state_machine_arn} in {args.region} "
           f"with status={args.status}...\n")
@@ -147,6 +206,7 @@ def main(argv=None, sfn_client=None):
     durations = []
     sample_durations = defaultdict(list)
     rows = []
+    executions_seen = []
 
     for exe in executions:
         details = describe_execution(sfn_client, exe["executionArn"])
@@ -156,6 +216,7 @@ def main(argv=None, sfn_client=None):
         duration = (stop - start).total_seconds() if stop else 0.0
         sample_id = extract_sample_id(details)
         runtime_str = smart_format(duration)
+        executions_seen.append((sample_id, exe))
 
         # Collect for summaries
         if status in ("SUCCEEDED", "FAILED"):
@@ -202,6 +263,16 @@ def main(argv=None, sfn_client=None):
         for sample, runs in sorted(sample_durations.items()):
             avg = mean(runs)
             print(f"  {sample:<20} {smart_format(avg)} (avg over {len(runs)} runs)")
+
+    if args.stages:
+        prices = stage_breakdown.Prices(args.vcpu_hour_price, args.gb_hour_price)
+        stage_rows = print_stage_breakdown(sfn_client, batch_client, executions_seen, prices)
+        if args.stages_csv:
+            with open(args.stages_csv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(STAGE_CSV_HEADER)
+                writer.writerows(stage_rows)
+            print(f"\nExported {len(stage_rows)} stage rows to {args.stages_csv}")
 
     # CSV export
     if args.csv:
