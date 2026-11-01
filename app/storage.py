@@ -12,7 +12,7 @@ Select one with ``STORAGE_BACKEND=s3|local``. See ``storage_from_env``.
 
 import os
 import shutil
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 
 
 class ObjectNotFound(Exception):
@@ -44,9 +44,8 @@ class LocalStorage:
         shutil.copyfile(src, local_path)
 
     def upload(self, local_path: str, key: str) -> None:
-        dst = self._path(key)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        shutil.copyfile(local_path, dst)
+        with open(local_path, "rb") as src:
+            self.upload_stream(src, key)
 
     def open_read(self, key: str) -> BinaryIO:
         path = self._path(key)
@@ -55,10 +54,35 @@ class LocalStorage:
         return open(path, "rb")
 
     def upload_stream(self, stream: BinaryIO, key: str) -> None:
+        """Write to a hidden temp file, then rename, so a key only ever appears complete (as in S3).
+
+        Without this, a reader polling the folder (the web UI, the local worker) could see a
+        half-written upload or stage output under its final key.
+        """
         dst = self._path(key)
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        with open(dst, "wb") as out:
-            shutil.copyfileobj(stream, out, length=1024 * 1024)
+        tmp = os.path.join(os.path.dirname(dst), f".{os.path.basename(dst)}.{os.getpid()}.part")
+        try:
+            with open(tmp, "wb") as out:
+                shutil.copyfileobj(stream, out, length=1024 * 1024)
+            os.replace(tmp, dst)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+
+    def list_keys(self, prefix: str = "") -> Iterator[str]:
+        """Yield every key starting with ``prefix``, sorted, like an S3 listing."""
+        # Walk only the deepest directory the prefix names; the rest of the prefix filters filenames.
+        base = self._path(prefix.rsplit("/", 1)[0]) if "/" in prefix else self.root
+        keys = []
+        for dirpath, _, filenames in os.walk(base):
+            for name in filenames:
+                if name.startswith("."):
+                    continue  # in-progress writes (see upload_stream)
+                key = os.path.relpath(os.path.join(dirpath, name), self.root).replace(os.sep, "/")
+                if key.startswith(prefix):
+                    keys.append(key)
+        yield from sorted(keys)
 
 
 class S3Storage:
@@ -114,6 +138,13 @@ class S3Storage:
 
     def upload_stream(self, stream: BinaryIO, key: str) -> None:
         self._client.upload_fileobj(stream, self.bucket, key)
+
+    def list_keys(self, prefix: str = "") -> Iterator[str]:
+        """Yield every key starting with ``prefix`` (S3 returns them in sorted order)."""
+        paginator = self._client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                yield obj["Key"]
 
 
 def storage_from_env(env=None):

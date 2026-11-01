@@ -1,0 +1,58 @@
+{% extends "samples/base.html" %}
+{% block content %}
+<section class="hero">
+  <h1>From raw reads to variants</h1>
+  <p class="lead">
+    Upload a gzipped FASTQ and Geyser Genomics runs it through quality control, alignment and variant calling.
+    No data to hand? Generate a synthetic sample with known mutations and see whether the pipeline finds them all.
+  </p>
+  <div class="flow" aria-label="Pipeline stages">
+    <span class="step">raw_reads/</span><span class="arrow">→</span>
+    {% for st in stages %}<span class="step s-{{ st.name }}">{{ st.label }}</span>{% if not forloop.last %}<span class="arrow">→</span>{% endif %}{% endfor %}
+    <span class="arrow">→</span><span class="step">variants/*.vcf.gz</span>
+  </div>
+</section>
+
+<section class="actions">
+  <article>
+    <h3>Try a demo sample</h3>
+    <p>Creates a 50 kb synthetic genome and 30× reads with 8–14 SNPs planted in them. The run takes about a minute.</p>
+    <ul class="checklist">
+      <li>All four stages run in the same containers as the cloud pipeline</li>
+      <li>FastQC report for the reads</li>
+      <li>Variant table with each call checked against the planted SNPs</li>
+      <li>Every intermediate file (FASTQ, BAM, VCF) to download</li>
+    </ul>
+    <form method="post" action="{% url 'samples:demo' %}">
+      {% csrf_token %}
+      <button type="submit">Generate demo sample</button>
+    </form>
+  </article>
+  <article>
+    <h3>Upload reads</h3>
+    <form method="post" action="{% url 'samples:upload' %}" enctype="multipart/form-data">
+      {% csrf_token %}
+      {% if form.non_field_errors %}<small class="error">{{ form.non_field_errors|join:" " }}</small>{% endif %}
+      <label>
+        {{ form.reads.label }} <span class="muted">(max {{ max_upload_mb }} MB)</span>
+        <input type="file" name="reads" required accept=".fastq.gz,.fq.gz" data-max-bytes="{{ max_upload_bytes }}"
+               {% if form.reads.errors %}aria-invalid="true" aria-describedby="reads-err"{% endif %}>
+        {% if form.reads.errors %}<small id="reads-err">{{ form.reads.errors|join:" " }}</small>{% endif %}
+      </label>
+      <label>
+        {{ form.sample_id.label }} <span class="muted">(optional)</span>
+        <input type="text" name="sample_id" maxlength="64" pattern="[A-Za-z0-9_\-]{1,64}"
+               value="{{ form.sample_id.value|default:'' }}" placeholder="from the filename, e.g. SRR062634"
+               {% if form.sample_id.errors %}aria-invalid="true" aria-describedby="id-err"{% endif %}>
+        <small id="id-err">{% if form.sample_id.errors %}{{ form.sample_id.errors|join:" " }}{% else %}{{ form.sample_id.help_text }}{% endif %}</small>
+      </label>
+      <button type="submit" class="upload-btn">Upload</button>
+    </form>
+  </article>
+</section>
+
+<section class="panel" id="samples">
+  <h2>Samples</h2>
+  {% include "samples/_sample_table.html" %}
+</section>
+{% endblock %}

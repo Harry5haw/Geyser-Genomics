@@ -1,0 +1,68 @@
+{% extends "samples/base.html" %}
+{% load geyser %}
+{% block title %}{{ sample.sample_id }} · Geyser Genomics{% endblock %}
+{% block content %}
+<p><a href="{% url 'samples:list' %}">← All samples</a></p>
+
+{% include "samples/_status.html" %}
+
+{% if truth_result %}
+  <section class="truth{% if not truth_result.perfect %} imperfect{% endif %}">
+    <strong>{{ truth_result.recovered }}/{{ truth_result.total }} planted SNPs recovered</strong>,
+    {{ truth_result.extra|length }} unexpected call{{ truth_result.extra|length|pluralize }}.
+    <br><small class="muted">This is a synthetic demo sample: the mutations were planted on purpose, so the VCF can be checked against the truth (★ in the table).</small>
+    {% if truth_result.missed %}<br><small>Missed: {% for m in truth_result.missed %}{{ m.0 }} {{ m.1 }}&gt;{{ m.2 }}{% if not forloop.last %}, {% endif %}{% endfor %}</small>{% endif %}
+  </section>
+{% elif truth and not variants %}
+  <p class="muted">Demo sample with {{ truth.snps|length }} planted SNPs. The truth check appears here once variants are called.</p>
+{% endif %}
+
+{% if variants %}
+  <section class="panel">
+    <h2>Variants <small class="muted">({{ variants.total }} call{{ variants.total|pluralize }})</small></h2>
+    {% if variants.rows %}
+      <div class="overflow-auto table-frame">
+      <table class="variants data-table">
+        <thead><tr><th>Chrom</th><th class="num">Position</th><th class="base">Ref</th><th class="base">Alt</th><th>Type</th>
+                   <th class="num">Quality</th><th class="num">Depth</th><th>Genotype</th></tr></thead>
+        <tbody>
+        {% for v in variants.rows %}
+          <tr{% if v|call_key in planted %} class="planted"{% endif %}>
+            <td>{{ v.chrom }}</td><td class="num">{{ v.pos }}</td>
+            <td class="base nt-{{ v.ref }}">{{ v.ref }}</td><td class="base nt-{{ v.alt }}">{{ v.alt }}</td><td>{{ v.kind }}</td>
+            <td class="num">{{ v.qual|default_if_none:"–" }}</td><td class="num">{{ v.depth|default_if_none:"–" }}</td><td>{{ v.genotype|default:"–" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% if variants.truncated %}<p class="muted"><small>Showing the first {{ variants.rows|length }} of {{ variants.total }}. Download the VCF for the rest.</small></p>{% endif %}
+    {% else %}
+      <p class="muted">The variant caller found no differences from the reference.</p>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% if has_qc %}
+  <section class="panel">
+    <h2>Quality control</h2>
+    <details open>
+      <summary>FastQC report</summary>
+      <iframe class="fastqc" title="FastQC report for {{ sample.sample_id }}" sandbox
+              src="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1"></iframe>
+    </details>
+  </section>
+{% endif %}
+
+{% if downloads %}
+  <section class="panel">
+    <h2>Files</h2>
+    <ul class="downloads">
+      {% for d in downloads %}
+        <li><a href="{% url 'samples:file' sample.sample_id d.kind %}" download>{{ d.label }}</a>
+          <small>{{ d.filename }} · {{ d.description }}</small></li>
+      {% endfor %}
+    </ul>
+  </section>
+{% endif %}
+{% endblock %}

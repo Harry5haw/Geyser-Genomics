@@ -51,3 +51,67 @@ def test_storage_from_env_s3_requires_bucket():
 def test_storage_from_env_rejects_unknown_backend():
     with pytest.raises(RuntimeError):
         storage_from_env({"STORAGE_BACKEND": "ftp"})
+
+
+def test_list_keys_filters_by_prefix_and_sorts(tmp_path):
+    s = LocalStorage(tmp_path)
+    for key in ["raw_reads/B.fastq.gz", "raw_reads/A.fastq.gz", "raw_reads_old/C.fastq.gz",
+                "variants/A.vcf.gz", "metrics/metrics.jsonl"]:
+        s.upload_stream(io.BytesIO(b"x"), key)
+    assert list(s.list_keys("raw_reads/")) == ["raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz"]
+    assert list(s.list_keys("raw_reads")) == [
+        "raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz", "raw_reads_old/C.fastq.gz"]
+    assert list(s.list_keys("variants/A")) == ["variants/A.vcf.gz"]
+    assert len(list(s.list_keys())) == 5
+
+
+def test_list_keys_missing_prefix_is_empty(tmp_path):
+    assert list(LocalStorage(tmp_path / "nothing-here").list_keys("raw_reads/")) == []
+
+
+def test_list_keys_cannot_escape_root(tmp_path):
+    with pytest.raises(ValueError):
+        list(LocalStorage(tmp_path / "root").list_keys("../"))
+
+
+def test_s3_list_keys_follows_pagination():
+    from botocore.stub import Stubber
+
+    from storage import S3Storage
+
+    s = S3Storage("bucket", "eu-west-2")
+    with Stubber(s._client) as stub:
+        stub.add_response(
+            "list_objects_v2",
+            {"Contents": [{"Key": "raw_reads/A.fastq.gz"}], "IsTruncated": True, "NextContinuationToken": "t"},
+            {"Bucket": "bucket", "Prefix": "raw_reads/"},
+        )
+        stub.add_response(
+            "list_objects_v2",
+            {"Contents": [{"Key": "raw_reads/B.fastq.gz"}], "IsTruncated": False},
+            {"Bucket": "bucket", "Prefix": "raw_reads/", "ContinuationToken": "t"},
+        )
+        assert list(s.list_keys("raw_reads/")) == ["raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz"]
+
+
+class _BrokenStream(io.RawIOBase):
+    def readinto(self, buf):
+        raise IOError("connection dropped")
+
+
+def test_failed_write_leaves_no_key_and_no_temp_file(tmp_path):
+    s = LocalStorage(tmp_path)
+    with pytest.raises(IOError):
+        s.upload_stream(_BrokenStream(), "raw_reads/X.fastq.gz")
+    assert not s.exists("raw_reads/X.fastq.gz")
+    assert list((tmp_path / "raw_reads").iterdir()) == []
+
+
+def test_overwrite_replaces_whole_object_and_hides_temp_files(tmp_path):
+    s = LocalStorage(tmp_path)
+    s.upload_stream(io.BytesIO(b"first version"), "runs/X.json")
+    s.upload_stream(io.BytesIO(b"v2"), "runs/X.json")
+    with s.open_read("runs/X.json") as fh:
+        assert fh.read() == b"v2"
+    (tmp_path / "runs" / ".Y.json.123.part").write_bytes(b"partial")
+    assert list(s.list_keys("runs/")) == ["runs/X.json"]

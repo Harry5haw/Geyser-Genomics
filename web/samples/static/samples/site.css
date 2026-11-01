@@ -1,0 +1,341 @@
+/* Geyser Genomics web UI: a dark green theme on top of Pico.css.
+   All text/background pairs below are at least 4.5:1 (WCAG AA). */
+:root[data-theme="dark"] {
+  /* Palette */
+  --geyser-bg: #06382a;
+  --geyser-bg-deep: #042c20;
+  --geyser-card: #0b5640;
+  --geyser-card-raised: #0e6249;
+  --geyser-line: #1f7a5a;
+  --geyser-text: #e4f5ec;
+  --geyser-muted: #9fcab6;
+  --geyser-mint: #86e5b5;
+
+  /* Stage and run states: distinct hues so "done" doesn't vanish into the green page */
+  --geyser-done: #7ee2a8;
+  --geyser-running: #6cd0f7;
+  --geyser-failed: #ffaa9c;
+  --geyser-pending: #a8c8b9;
+  --geyser-queued: #f2c94c;
+  --geyser-on-state: #042c20;
+
+  /* Pico overrides */
+  --pico-font-size: 100%;
+  --pico-background-color: var(--geyser-bg);
+  --pico-color: var(--geyser-text);
+  --pico-muted-color: var(--geyser-muted);
+  --pico-muted-border-color: var(--geyser-line);
+  --pico-text-selection-color: rgba(134, 229, 181, .25);
+  --pico-h1-color: #f4fbf7;
+  --pico-h2-color: #eef8f2;
+  --pico-h3-color: var(--geyser-text);
+  --pico-h4-color: var(--geyser-text);
+
+  --pico-primary: var(--geyser-mint);
+  --pico-primary-underline: rgba(134, 229, 181, .5);
+  --pico-primary-hover: #b6f2d2;
+  --pico-primary-hover-underline: var(--pico-primary-hover);
+  --pico-primary-background: #0a7d4f;
+  --pico-primary-border: #0a7d4f;
+  --pico-primary-hover-background: #086b43;
+  --pico-primary-hover-border: #086b43;
+  --pico-primary-focus: rgba(134, 229, 181, .4);
+  --pico-primary-inverse: #fff;
+
+  --pico-secondary: var(--geyser-muted);
+  --pico-secondary-background: transparent;
+  --pico-secondary-border: var(--geyser-mint);
+  --pico-secondary-hover-background: rgba(134, 229, 181, .07);
+  --pico-secondary-hover-border: #b6f2d2;
+  --pico-secondary-focus: rgba(134, 229, 181, .3);
+  --pico-secondary-inverse: var(--geyser-mint);
+
+  --pico-card-background-color: var(--geyser-card);
+  --pico-card-border-color: var(--geyser-card);
+  --pico-card-sectioning-background-color: var(--geyser-card-raised);
+  --pico-card-box-shadow: 0 .5rem 1.5rem rgba(0, 20, 12, .35);
+
+  /* Fields: darker than the card with a brighter edge (3:1 against the card, WCAG 1.4.11) */
+  --pico-form-element-background-color: #021f16;
+  --pico-form-element-active-background-color: #021f16;
+  --pico-form-element-selected-background-color: var(--geyser-card-raised);
+  --pico-form-element-border-color: #4fae87;
+  --pico-form-element-active-border-color: var(--geyser-mint);
+  --pico-form-element-focus-color: rgba(134, 229, 181, .4);
+  --pico-form-element-color: var(--geyser-text);
+  --pico-form-element-placeholder-color: #8fb8a5;
+  --pico-form-element-invalid-border-color: var(--geyser-failed);
+  --pico-form-element-invalid-active-border-color: var(--geyser-failed);
+
+  --pico-table-border-color: rgba(159, 202, 182, .18);
+  --pico-table-row-stripped-background-color: rgba(255, 255, 255, .035);
+  --pico-code-background-color: var(--geyser-bg-deep);
+  --pico-code-color: var(--geyser-muted);
+  --pico-accordion-border-color: var(--geyser-line);
+  --pico-accordion-active-summary-color: var(--geyser-mint);
+  --pico-accordion-open-summary-color: var(--geyser-text);
+  --pico-progress-background-color: var(--geyser-bg-deep);
+  --pico-progress-color: var(--geyser-running);
+}
+
+body {
+  background: linear-gradient(165deg, var(--geyser-bg-deep) 0%, var(--geyser-bg) 45%, #074430 100%) fixed;
+  min-height: 100vh;
+}
+
+/* Header and footer */
+/* Banner: deep gradient, a glow behind the logo and a strip in the four stage colours along the bottom */
+body > header.site {
+  position: relative; margin-bottom: 2.25rem;
+  background:
+    radial-gradient(circle at 4% 50%, rgba(63, 201, 138, .25), transparent 26rem),
+    linear-gradient(90deg, #021f16 0%, #04302a 55%, #062f3a 100%);
+  box-shadow: 0 .5rem 2rem rgba(0, 15, 10, .45);
+}
+body > header.site::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px;
+  background: linear-gradient(90deg, #5ad1c3 0 25%, #b9a3f0 25% 50%, #7fb6ff 50% 75%, #f0c75e 75% 100%);
+}
+body > header.site nav { padding-block: 1.1rem; align-items: center; }
+@media (max-width: 576px) { body > header.site nav { flex-wrap: wrap; row-gap: .75rem; } }
+
+.brand { display: inline-flex; align-items: center; gap: 1rem; margin: 0; padding: 0;
+         color: var(--geyser-text); text-decoration: none; }
+.brand:hover { color: #fff; }
+.brand img { width: 4.25rem; height: 4.25rem; filter: drop-shadow(0 0 .6rem rgba(126, 226, 168, .5)); transition: transform .3s ease; }
+.brand:hover img { transform: translateY(-2px) scale(1.05); }
+.brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+/* Solid white (about 16:1 on the banner) so it reads everywhere; always larger than the page heading */
+.brand-name { font-size: clamp(1.8rem, 1.2rem + 2.2vw, 2.75rem); font-weight: 800; letter-spacing: -.015em; color: #ffffff;
+              text-shadow: 0 0 1.25rem rgba(126, 226, 168, .35), 0 2px 0 rgba(0, 0, 0, .35); }
+.brand-tag { margin-top: .35rem; font-size: .78rem; font-weight: 600; letter-spacing: .16em; text-transform: uppercase;
+             color: var(--geyser-mint); }
+@media (max-width: 576px) { .brand img { width: 2.6rem; height: 2.6rem; } }
+
+/* "Samples" button shaped like a test tube lying on its side: rim at the open end (left), glass body,
+   rounded closed end (right) holding liquid in the stage colours. The liquid rises on hover. */
+.tube-btn {
+  position: relative; display: inline-flex; align-items: center; height: 2.9rem; margin: 0 0 0 .75rem;
+  padding: 0 4.9rem 0 1.6rem; border: 2px solid rgba(182, 242, 210, .85); border-radius: .25rem 999px 999px .25rem;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .16), rgba(255, 255, 255, .03) 45%, rgba(255, 255, 255, .08));
+  color: #f4fbf7; font-size: 1.05rem; font-weight: 700; letter-spacing: .02em; text-decoration: none;
+  transition: box-shadow .25s ease, border-color .25s ease;
+}
+.tube-btn::before {
+  content: ""; position: absolute; left: -8px; top: -7px; bottom: -7px; width: 7px; border-radius: 3px; background: #b6f2d2;
+}
+.tube-btn::after {
+  content: ""; position: absolute; top: 3px; bottom: 3px; right: 3px; width: 3.8rem;
+  border-radius: 45% 999px 999px 45% / 50% 999px 999px 50%;
+  background:
+    radial-gradient(circle at 30% 35%, rgba(255, 255, 255, .8) 0 2px, transparent 3px),
+    radial-gradient(circle at 62% 68%, rgba(255, 255, 255, .7) 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 78% 30%, rgba(255, 255, 255, .6) 0 1px, transparent 2px),
+    linear-gradient(90deg, #5ad1c3, #7fb6ff 45%, #b9a3f0 75%, #f0c75e);
+  transition: width .35s ease;
+}
+.tube-btn span { position: relative; z-index: 1; }
+.tube-btn:hover, .tube-btn:focus-visible { color: #fff; border-color: #fff; box-shadow: 0 0 1.25rem rgba(126, 226, 168, .4); }
+.tube-btn:hover::after, .tube-btn:focus-visible::after { width: 4.6rem; }
+@media (prefers-reduced-motion: reduce) { .tube-btn::after, .brand img { transition: none; } }
+
+#samples { scroll-margin-top: 1.5rem; }
+footer.site { color: var(--pico-muted-color); font-size: .85rem; margin-top: 3rem; border-top: 1px solid var(--geyser-line); padding-top: 1rem; }
+
+/* Cards: Pico articles plus the sections we want to stand out */
+article { border-radius: .9rem; }
+.panel { background: var(--geyser-card); border-radius: .9rem; padding: 1.25rem 1.5rem; margin-bottom: 1.5rem;
+         box-shadow: var(--pico-card-box-shadow); }
+.panel > h2:first-child { margin-top: 0; }
+
+.hero h1 { margin-bottom: .35rem; font-size: clamp(1.6rem, 1.2rem + 1.4vw, 2.1rem); }
+.hero p.lead { color: var(--pico-muted-color); max-width: 46rem; }
+
+.flow { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: .75rem 0 1.5rem; font-size: .85rem; }
+.flow .step { background: var(--geyser-card); border: 1px solid var(--geyser-line); border-radius: 999px; padding: .2rem .7rem; }
+.flow .arrow { color: var(--geyser-mint); }
+
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+@media (max-width: 768px) { .actions { grid-template-columns: 1fr; } }
+.actions article { margin: 0; display: flex; flex-direction: column; }
+.actions article form { margin-bottom: 0; }
+.actions h3 { margin-bottom: .5rem; font-size: 1.15rem; }
+.actions p { font-size: .9rem; color: var(--pico-muted-color); }
+.actions article:first-child form { margin-top: auto; }
+
+/* Messages and errors */
+article.message { padding: .75rem 1rem; border-left: 4px solid var(--geyser-mint); }
+article.message.error { border-left-color: var(--geyser-failed); }
+small.error, .error { color: var(--geyser-failed); }
+
+/* Stage pills */
+.pills { display: flex; gap: .3rem; flex-wrap: wrap; }
+.pill { display: inline-flex; align-items: center; gap: .3rem; font-size: .75rem; line-height: 1; padding: .3rem .55rem;
+        border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.pill::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: currentColor; }
+.pill.done { color: var(--geyser-on-state); background: var(--geyser-done); border-color: var(--geyser-done); }
+.pill.done::before { content: "✓"; width: auto; height: auto; background: none; font-weight: 700; }
+.pill.running { color: var(--geyser-running); }
+.pill.running::before { animation: pulse 1.2s ease-in-out infinite; }
+.pill.failed { color: var(--geyser-failed); }
+.pill.failed::before { content: "✕"; width: auto; height: auto; background: none; font-weight: 700; }
+.pill.pending { color: var(--geyser-pending); border-style: dashed; }
+.pill.pending::before { background: transparent; border: 1px solid currentColor; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .pill.running::before { animation: none; } }
+
+.badge { display: inline-block; font-size: .8rem; font-weight: 700; padding: .2rem .65rem; border-radius: 999px;
+         color: var(--geyser-on-state); background: var(--geyser-pending); }
+.badge.succeeded { background: var(--geyser-done); }
+.badge.running { background: var(--geyser-running); }
+.badge.queued { background: var(--geyser-queued); }
+.badge.failed { background: var(--geyser-failed); }
+
+/* Tables sit on cards */
+table { --pico-background-color: transparent; }
+table.samples td, table.samples th { vertical-align: middle; }
+table.samples td.id a { font-weight: 600; font-family: var(--pico-font-family-monospace); }
+thead th { color: var(--geyser-muted); font-size: .85rem; font-weight: 600; }
+.muted { color: var(--pico-muted-color); }
+.empty { text-align: center; padding: 2rem 1rem; color: var(--pico-muted-color); }
+
+/* Sample page */
+.sample-head { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; }
+.sample-head h1 { margin: 0; font-family: var(--pico-font-family-monospace); }
+
+/* Each pipeline stage has its own colour: its panel, its progress segment and its step on the home page.
+   Run state is shown by the pill (icon + colour), so the two don't compete. */
+.s-decompress { --stage: #5ad1c3; }
+.s-qc { --stage: #b9a3f0; }
+.s-align { --stage: #7fb6ff; }
+.s-variants { --stage: #f0c75e; }
+
+.progress-track { display: grid; grid-template-columns: repeat(4, 1fr); gap: .3rem; margin: 1.25rem 0 .4rem; }
+.progress-track .seg { height: .6rem; border-radius: 999px; background: var(--geyser-bg-deep); }
+.progress-track .seg.done { background: var(--stage); }
+.progress-track .seg.running { background: var(--stage); animation: pulse 1.2s ease-in-out infinite; }
+.progress-track .seg.failed { background: var(--geyser-failed); }
+@media (prefers-reduced-motion: reduce) { .progress-track .seg.running { animation: none; } }
+.now-running { font-size: .95rem; margin-bottom: .25rem; }
+.now-running strong { color: var(--stage, var(--geyser-running)); }
+
+.timeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; margin: 1rem 0; }
+@media (max-width: 768px) { .timeline { grid-template-columns: repeat(2, 1fr); } }
+.timeline .stage { background: color-mix(in srgb, var(--stage) 20%, var(--geyser-bg-deep));
+                   border: 1px solid color-mix(in srgb, var(--stage) 35%, transparent); border-top: 4px solid var(--stage);
+                   border-radius: .6rem; padding: .75rem; }
+.timeline .stage.pending { background: var(--geyser-bg-deep); border-color: var(--geyser-line);
+                           border-top-color: color-mix(in srgb, var(--stage) 45%, var(--geyser-bg-deep)); }
+.timeline .stage.failed { border-color: var(--geyser-failed); border-top-color: var(--geyser-failed); }
+.timeline .stage .n { font-size: .75rem; font-weight: 600; color: var(--stage); letter-spacing: .03em; text-transform: uppercase; }
+.timeline .stage .name { font-weight: 600; }
+.timeline .stage .meta { font-size: .85rem; display: flex; justify-content: space-between; align-items: center; margin-top: .35rem; }
+
+/* Home-page flow: stage steps filled like the "done" pills (dark text on the stage colour, >= 6.9:1) */
+.flow .step[class*="s-"] { background: var(--stage); border-color: var(--stage); color: var(--geyser-on-state); font-weight: 600; }
+
+/* Upload button: solid blue, white text (4.8:1; 6.4:1 on hover) */
+button.upload-btn { --pico-background-color: #1f6fe0; --pico-border-color: #1f6fe0; --pico-color: #fff; width: 100%; }
+button.upload-btn:is(:hover, :active, :focus) { --pico-background-color: #1a5bc0; --pico-border-color: #1a5bc0; --pico-color: #fff; }
+button.upload-btn:focus { --pico-box-shadow: 0 0 0 var(--pico-outline-width) rgba(31, 111, 224, .5); }
+
+.truth { border-left: 4px solid var(--geyser-done); padding: .9rem 1.1rem; background: var(--geyser-card); border-radius: .6rem; margin-bottom: 1.5rem; }
+.truth.imperfect { border-left-color: var(--geyser-queued); }
+.truth strong { font-size: 1.1rem; color: var(--geyser-done); }
+.truth.imperfect strong { color: var(--geyser-queued); }
+
+table.variants { font-size: .85rem; }
+table.variants td { font-family: var(--pico-font-family-monospace); }
+tr.planted td:first-child::after { content: " ★"; color: var(--geyser-queued); }
+
+details > summary { color: var(--geyser-text); }
+iframe.fastqc { width: 100%; height: 75vh; border: 1px solid var(--geyser-line); border-radius: .6rem; background: #fff; }
+pre.log { max-height: 28rem; overflow: auto; font-size: .75rem; white-space: pre-wrap; word-break: break-all;
+          background: var(--geyser-bg-deep); color: #cfe9dc; border: 1px solid var(--geyser-line); border-radius: .6rem; padding: .75rem 1rem; }
+
+ul.downloads { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: .6rem; }
+ul.downloads li { list-style: none; background: var(--geyser-bg-deep); border: 1px solid var(--geyser-line); border-radius: .6rem;
+                  padding: .65rem .85rem; margin: 0; }
+ul.downloads li:hover { border-color: var(--geyser-mint); }
+ul.downloads a { font-weight: 600; }
+ul.downloads small { display: block; color: var(--pico-muted-color); }
+
+ul.checklist { padding: 0; margin: 0 0 1.25rem; font-size: .9rem; }
+ul.checklist li { list-style: none; padding-left: 1.5rem; position: relative; margin-bottom: .35rem; }
+ul.checklist li::before { content: "✓"; position: absolute; left: 0; color: var(--geyser-done); font-weight: 700; }
+
+/* Form fields: brighter labels and a framed file picker so the upload form doesn't blend into the card */
+.actions label { font-weight: 600; color: #f4fbf7; }
+.actions label .muted, .actions label small { font-weight: 400; }
+.actions input:not([type="file"]) { margin-top: .35rem; }
+input[type="file"] { display: block; width: 100%; height: auto; margin-top: .35rem; padding: 1rem 1.1rem; border-radius: var(--pico-border-radius);
+                     background: var(--pico-form-element-background-color); border: 1px dashed var(--pico-form-element-border-color);
+                     color: var(--geyser-text); font-weight: 400; }
+input[type="file"]:hover { border-color: var(--geyser-mint); }
+input[type="file"]::file-selector-button { margin: 0 1rem 0 0; }
+input:not([type="file"]):hover { border-color: var(--geyser-mint); }
+
+/* Stage pills follow the stage colours too (the stage class sets --stage); the state comes from the icon and fill */
+.pill.done { color: var(--geyser-on-state); background: var(--stage, var(--geyser-done)); border-color: var(--stage, var(--geyser-done)); }
+.pill.running { color: #f4fbf7; background: color-mix(in srgb, var(--stage, var(--geyser-running)) 25%, var(--geyser-bg-deep));
+                border-color: var(--stage, var(--geyser-running)); }
+.pill.running::before { background: var(--stage, var(--geyser-running)); }
+
+/* Data tables (samples and variants): framed, solid header, strong zebra stripes and column rules so rows and columns are easy to follow.
+   Bases use genome-browser colours (A green, C blue, G gold, T red). All text is >= 5:1 on every row colour. */
+.table-frame { border: 1px solid #2f8a68; border-radius: .6rem; }
+table.data-table { margin: 0; border-collapse: collapse; }
+table.data-table th, table.data-table td { padding: .55rem .9rem; border-bottom: 0; border-right: 1px solid rgba(47, 138, 104, .55); }
+table.data-table th:last-child, table.data-table td:last-child { border-right: 0; }
+table.data-table thead th { background: #021f16; color: var(--geyser-mint); font-size: .75rem; text-transform: uppercase;
+                          letter-spacing: .05em; border-bottom: 2px solid #2f8a68; }
+table.data-table tbody tr:nth-child(odd) td { background: #06382a; }
+table.data-table tbody tr:nth-child(even) td { background: #0d5240; }
+table.data-table tbody tr:hover td { background: #0a4a6a; }
+table.data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+table.variants .base { text-align: center; font-weight: 700; }
+table.variants td.base { font-size: 1rem; }
+table.variants td.nt-A { color: #72e08e; }
+table.variants td.nt-C { color: #9ccfff; }
+table.variants td.nt-G { color: #f5c451; }
+table.variants td.nt-T { color: #ffb4b4; }
+table.variants tr.planted td:first-child { box-shadow: inset 3px 0 0 var(--geyser-queued); }
+
+/* Rotating double helix in the banner. Each base pair is a column: two strand dots (::before mint, ::after blue)
+   that travel top <-> bottom half a turn apart, plus a rung (<i>) whose length follows |cos|. Each column runs
+   a little behind its neighbour, so the twist travels along the helix. Dots grow and brighten in front, shrink behind. */
+.helix { --turn: 2.6s; display: flex; align-items: center; gap: 6px; height: 64px; flex: 0 1 26rem; min-width: 0;
+         margin: 0 2rem; overflow: hidden;
+         mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+         -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent); }
+.helix .bp { --d: calc(var(--i) * -0.13s); position: relative; flex: none; width: 10px; height: 64px; }
+.helix .bp::before, .helix .bp::after {
+  content: ""; position: absolute; left: 0; top: 0; width: 10px; height: 10px; border-radius: 50%;
+  animation: helix-strand var(--turn) infinite; animation-delay: var(--d);
+}
+.helix .bp::before { background: #7ee2a8; box-shadow: 0 0 8px rgba(126, 226, 168, .8); }
+.helix .bp::after { background: #7fb6ff; box-shadow: 0 0 8px rgba(127, 182, 255, .8);
+                    animation-delay: calc(var(--d) - var(--turn) / 2); }
+.helix .bp i { position: absolute; z-index: 1; left: 4px; top: 5px; bottom: 5px; width: 2px; border-radius: 1px;
+               background: var(--rung, #5ad1c3); opacity: .8; animation: helix-rung var(--turn) infinite; animation-delay: var(--d); }
+.helix .bp:nth-child(4n+2) i { --rung: #b9a3f0; }
+.helix .bp:nth-child(4n+3) i { --rung: #7fb6ff; }
+.helix .bp:nth-child(4n) i { --rung: #f0c75e; }
+
+/* Sine-shaped motion: slow at the top and bottom, fast through the middle */
+@keyframes helix-strand {
+  0%   { transform: translateY(0) scale(.8);     opacity: .8;  z-index: 1; animation-timing-function: cubic-bezier(.12, 0, .39, 0); }
+  25%  { transform: translateY(27px) scale(1.2); opacity: 1;   z-index: 2; animation-timing-function: cubic-bezier(.61, 1, .88, 1); }
+  50%  { transform: translateY(54px) scale(.8);  opacity: .8;  z-index: 1; animation-timing-function: cubic-bezier(.12, 0, .39, 0); }
+  75%  { transform: translateY(27px) scale(.45); opacity: .35; z-index: 0; animation-timing-function: cubic-bezier(.61, 1, .88, 1); }
+  100% { transform: translateY(0) scale(.8);     opacity: .8;  z-index: 1; }
+}
+@keyframes helix-rung {
+  0%, 50%  { transform: scaleY(1); animation-timing-function: cubic-bezier(.12, 0, .39, 0); }
+  25%, 75% { transform: scaleY(0); animation-timing-function: cubic-bezier(.61, 1, .88, 1); }
+  100%     { transform: scaleY(1); }
+}
+@media (max-width: 900px) { .helix { display: none; } }
+@media (prefers-reduced-motion: reduce) {
+  .helix .bp::before, .helix .bp::after, .helix .bp i { animation-play-state: paused; }
+}
