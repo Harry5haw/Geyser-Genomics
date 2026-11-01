@@ -115,3 +115,56 @@ def test_overwrite_replaces_whole_object_and_hides_temp_files(tmp_path):
         assert fh.read() == b"v2"
     (tmp_path / "runs" / ".Y.json.123.part").write_bytes(b"partial")
     assert list(s.list_keys("runs/")) == ["runs/X.json"]
+
+
+def _client_error(code):
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code, "Message": code}}, "op")
+
+
+@pytest.mark.parametrize("code", ["404", "NoSuchKey", "NotFound"])
+def test_s3_missing_object_maps_to_object_not_found(code, monkeypatch, tmp_path):
+    from storage import S3Storage
+
+    s = S3Storage("bucket", "eu-west-2")
+
+    def raise_missing(*a, **k):
+        raise _client_error(code)
+
+    for method in ("head_object", "download_file", "get_object"):
+        monkeypatch.setattr(s._client, method, raise_missing)
+
+    assert s.exists("raw_reads/A.fastq.gz") is False
+    with pytest.raises(ObjectNotFound):
+        s.download("raw_reads/A.fastq.gz", str(tmp_path / "a"))
+    with pytest.raises(ObjectNotFound):
+        s.open_read("raw_reads/A.fastq.gz")
+
+
+def test_s3_permission_errors_are_not_mistaken_for_missing_objects(monkeypatch, tmp_path):
+    # A 403 means bad credentials or IAM, not "file absent": it must surface, not become False/ObjectNotFound.
+    from botocore.exceptions import ClientError
+
+    from storage import S3Storage
+
+    s = S3Storage("bucket", "eu-west-2")
+
+    def raise_denied(*a, **k):
+        raise _client_error("403")
+
+    for method in ("head_object", "download_file", "get_object"):
+        monkeypatch.setattr(s._client, method, raise_denied)
+
+    with pytest.raises(ClientError):
+        s.exists("k")
+    with pytest.raises(ClientError):
+        s.download("k", str(tmp_path / "k"))
+    with pytest.raises(ClientError):
+        s.open_read("k")
+
+
+def test_s3_describe_is_an_s3_url():
+    from storage import S3Storage
+
+    assert S3Storage("bucket", "eu-west-2").describe("variants/S1.vcf.gz") == "s3://bucket/variants/S1.vcf.gz"
