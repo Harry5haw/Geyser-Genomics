@@ -182,6 +182,17 @@ def test_pangenome_job_gets_memory_cap_and_shm(monkeypatch):
     assert pangenome[pangenome.index("--shm-size") + 1] == "8g"
 
 
+def test_sample_keys_runs_a_paired_sample_once(tmp_path, trigger):
+    raw = tmp_path / "raw_reads"
+    raw.mkdir()
+    for name in ("PAIR_R1.fastq.gz", "PAIR_R2.fastq.gz", "SINGLE.fastq.gz", "run_1.fastq.gz"):
+        (raw / name).write_bytes(b"")
+    assert run_local.sample_keys(trigger, str(tmp_path)) == [
+        "raw_reads/PAIR.fastq.gz", "raw_reads/SINGLE.fastq.gz", "raw_reads/run_1.fastq.gz"]
+    assert run_local.sample_keys(trigger, str(tmp_path), "PAIR") == ["raw_reads/PAIR.fastq.gz"]
+    assert run_local.sample_keys(trigger, str(tmp_path / "empty")) == []
+
+
 def test_vcf_path_for_pangenome(tmp_path):
     assert run_local.vcf_path(str(tmp_path), "pangenome", "S1").replace("\\", "/").endswith(
         "variants_pangenome/S1.vcf.gz")

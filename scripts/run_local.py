@@ -90,6 +90,20 @@ def load_trigger():
     return module
 
 
+def sample_keys(trigger, root, sample=None):
+    """One raw_reads/<id>.fastq.gz key per sample to run.
+
+    A paired sample has two files (<id>_R1.fastq.gz and <id>_R2.fastq.gz) but is one run, so IDs are
+    deduplicated with the trigger's own parse_sample_id. The stages detect paired vs single-end themselves,
+    so the plain key is enough for build_pipeline_input.
+    """
+    if sample:
+        return [f"raw_reads/{sample}.fastq.gz"]
+    found = sorted(glob.glob(os.path.join(root, "raw_reads", "*.gz")))
+    ids = sorted({trigger.parse_sample_id(os.path.relpath(f, root).replace(os.sep, "/")) for f in found})
+    return [f"raw_reads/{sample_id}.fastq.gz" for sample_id in ids]
+
+
 def stage_command(stage, sample_id, reference_name, needs_reference):
     cmd = ["python", "tasks.py", stage, sample_id]
     if needs_reference:
@@ -287,11 +301,7 @@ def main(argv=None):
     a = p.parse_args(argv)
 
     trigger = load_trigger()
-    if a.sample:
-        keys = [f"raw_reads/{a.sample}.fastq.gz"]
-    else:
-        keys = [os.path.relpath(f, a.root).replace(os.sep, "/")
-                for f in sorted(glob.glob(os.path.join(a.root, "raw_reads", "*.gz")))]
+    keys = sample_keys(trigger, a.root, a.sample)
     if not keys:
         print(f"No inputs found under {a.root}/raw_reads/. Run scripts/make_test_data.py first.")
         return 1
