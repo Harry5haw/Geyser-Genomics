@@ -34,22 +34,44 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
 }
+# NAT is optional (var.enable_nat_gateway, default false) because it bills
+# hourly. With it off, the private subnet has no internet route; Fargate jobs
+# run in the public subnet with a public IP instead.
+locals {
+  # One element when NAT is on, none when off; drives the private default route.
+  nat_route_keys = var.enable_nat_gateway ? ["default"] : []
+}
 resource "aws_eip" "nat" {
+  count      = var.enable_nat_gateway ? 1 : 0
   domain     = "vpc"
   depends_on = [aws_internet_gateway.gw]
 }
 resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
+  count         = var.enable_nat_gateway ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
   subnet_id     = aws_subnet.public.id
   tags          = { Name = "${var.project_name}-nat-gw" }
   depends_on    = [aws_internet_gateway.gw]
 }
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat.id
-  }
+  # Attribute syntax (not a route block) so that an empty list actually removes
+  # the default route when NAT is off, instead of leaving it unmanaged.
+  route = [for _ in local.nat_route_keys : {
+    cidr_block                 = "0.0.0.0/0"
+    nat_gateway_id             = aws_nat_gateway.nat[0].id
+    carrier_gateway_id         = null
+    core_network_arn           = null
+    destination_prefix_list_id = null
+    egress_only_gateway_id     = null
+    gateway_id                 = null
+    ipv6_cidr_block            = null
+    local_gateway_id           = null
+    network_interface_id       = null
+    transit_gateway_id         = null
+    vpc_endpoint_id            = null
+    vpc_peering_connection_id  = null
+  }]
   tags = { Name = "${var.project_name}-private-rt" }
 }
 resource "aws_route_table_association" "private" {
