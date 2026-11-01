@@ -7,7 +7,7 @@ resource "aws_iam_role" "geyser_ec2_instance_role" {
   name = "${var.project_name}-ec2-instance-role-${var.environment}"
 
   assume_role_policy = jsonencode({
-    Version   = "2012-10-17",
+    Version = "2012-10-17",
     Statement = [
       {
         Action = "sts:AssumeRole",
