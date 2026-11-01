@@ -98,6 +98,11 @@ def keys_of(keys: dict, name: str) -> list:
     return [keys[f"{name}_{m}"] for m in MATES]
 
 
+def all_raw_keys(sample_id: str) -> list:
+    """Every raw key a sample ID could use, in either layout: anything here means the ID is taken."""
+    return keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
+
+
 def layout_from_raw(sample_id: str, exists) -> str:
     """'single' or 'paired', from which raw keys exist. exists(key) -> bool.
 
@@ -213,9 +218,11 @@ def qc_task(sample_id):
             fastqs.append(os.path.join(wd, os.path.basename(key)))
             storage().download(key, fastqs[-1])
         # FastQC can hang (not exit) if its report thread crashes, so bound it. Matches the
-        # Step Functions timeout for this stage.
+        # Step Functions timeout for this stage. One thread per file (-t) processes R1 and R2 at
+        # the same time, so a paired sample fits the same timeout as a single-end one
+        # (FastQC reserves ~250 MB per thread; 2 fit the 4 GB job easily).
         timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "1800"))
-        subprocess.run(["fastqc", *fastqs, "-o", out_dir], check=True, timeout=timeout)
+        subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
         for name in ("qc_html", "qc_zip"):
             for key in keys_of(keys, name):
                 storage().upload(os.path.join(out_dir, os.path.basename(key)), key)

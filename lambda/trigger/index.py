@@ -8,8 +8,8 @@ exactly what the cloud trigger uses.
 Single-end: raw_reads/<id>.fastq.gz starts a run straight away.
 Paired-end: raw_reads/<id>_R1.fastq.gz and <id>_R2.fastq.gz arrive as two S3 events. Each event
 checks whether the other mate exists; only once both do is a run started. If both land at once,
-both events see both files: they start the execution under the same name (derived from the two
-ETags), and Step Functions (STANDARD) lets only one exist, so the sample runs exactly once.
+both events see both files: they start the execution under the same name (derived from both
+files' ETag and LastModified), and Step Functions (STANDARD) lets only one exist, so the sample runs exactly once.
 This needs s3:GetObject on raw_reads/* and s3:ListBucket (so a missing mate is a 404, not a 403).
 """
 
@@ -25,6 +25,7 @@ logger.setLevel(logging.INFO)
 
 DEFAULT_REFERENCE_GENOME = "chr20.fa"
 MATES = ("R1", "R2")  # must match app/tasks.py (tests/test_consistency.py checks)
+RAW_SUFFIX = ".fastq.gz"  # the raw key suffix tasks.keys_for reads
 NOT_FOUND_CODES = ("404", "NoSuchKey", "NotFound")
 
 _sfn_client = None
@@ -53,23 +54,34 @@ def parse_sample_id(object_key: str) -> str:
 
 
 def mate_key(object_key: str) -> str:
-    """The other mate's key: raw_reads/X_R1.fastq.gz <-> raw_reads/X_R2.fastq.gz."""
+    """The other mate's key: raw_reads/X_R1.fastq.gz <-> raw_reads/X_R2.fastq.gz.
+
+    Mates must use the exact names the stages read (tasks.keys_for): <id>_R1.fastq.gz, not .fq.gz.
+    Anything else is refused here, loudly, rather than waiting forever for a partner whose name
+    never matches or starting a run that can't find its reads.
+    """
     sample_id, mate = parse_raw_key(object_key)
     if mate is None:
         raise ValueError(f"{object_key!r} is not a paired-end mate (_R1/_R2)")
-    other = MATES[1 - MATES.index(mate)]
     directory, filename = os.path.split(object_key)
-    renamed = f"{sample_id}_{other}" + filename[len(sample_id) + 1 + len(mate):]
+    if filename != f"{sample_id}_{mate}{RAW_SUFFIX}":
+        raise ValueError(f"Paired-end mates must be named <id>_R1{RAW_SUFFIX} / <id>_R2{RAW_SUFFIX}, "
+                         f"got {filename!r}")
+    other = MATES[1 - MATES.index(mate)]
+    renamed = f"{sample_id}_{other}{RAW_SUFFIX}"
     return f"{directory}/{renamed}" if directory else renamed
 
 
-def execution_name(sample_id: str, etags) -> str:
+def execution_name(sample_id: str, versions) -> str:
     """Deterministic Step Functions execution name for one upload of a pair.
 
-    Same files -> same name (so two simultaneous events start one run); re-uploading changed
-    files -> new ETags -> new name -> a new run. Names allow [A-Za-z0-9_-], at most 80 chars.
+    versions: one (ETag, LastModified) per mate, R1 first, as HeadObject reports them. Both mates'
+    events read the same two objects, so they compute the same name and only one run starts.
+    Uploading the pair again, even with identical content, changes LastModified, so it runs again
+    (Step Functions keeps a used name for 90 days). Names allow [A-Za-z0-9_-], at most 80 chars.
     """
-    digest = hashlib.sha256("|".join(e.strip('"') for e in etags).encode()).hexdigest()[:12]
+    text = "|".join(f"{str(etag).strip(chr(34))}@{modified}" for etag, modified in versions)
+    digest = hashlib.sha256(text.encode()).hexdigest()[:12]
     safe_id = re.sub(r"[^A-Za-z0-9_-]", "-", sample_id)[:64]
     return f"{safe_id}-{digest}"
 
@@ -105,14 +117,15 @@ def _error_code(err) -> str:
     return response.get("Error", {}).get("Code", "")
 
 
-def _other_mate_etag(bucket: str, key: str):
-    """The other mate's ETag, or None if it hasn't been uploaded yet. Any other error propagates."""
+def _object_version(bucket: str, key: str):
+    """(ETag, LastModified) of an object, or None if it doesn't exist. Any other error propagates."""
     try:
-        return _s3().head_object(Bucket=bucket, Key=key)["ETag"]
+        head = _s3().head_object(Bucket=bucket, Key=key)
     except Exception as err:  # noqa: BLE001 - botocore ClientError, told apart by its code
         if _error_code(err) in NOT_FOUND_CODES:
             return None
         raise
+    return head["ETag"], str(head["LastModified"])
 
 
 def _response(status: int, **body) -> dict:
@@ -131,7 +144,6 @@ def handler(event, context):
         s3_record = event["Records"][0]["s3"]
         bucket_name = s3_record["bucket"]["name"]
         object_key = urllib.parse.unquote_plus(s3_record["object"]["key"], encoding="utf-8")
-        etag = s3_record["object"].get("eTag", "")
     except (KeyError, IndexError) as e:
         logger.error(f"Failed to parse S3 event record: {e}")
         raise RuntimeError("Could not parse S3 event.") from e
@@ -143,12 +155,16 @@ def handler(event, context):
 
     if mate is not None:
         other_key = mate_key(object_key)
-        other_etag = _other_mate_etag(bucket_name, other_key)
-        if other_etag is None:
-            logger.info(f"'{sample_id}': {mate} arrived, waiting for s3://{bucket_name}/{other_key}")
-            return _response(202, waiting_for=other_key)
-        etags = {mate: etag, parse_raw_key(other_key)[1]: other_etag}
-        start_args["name"] = execution_name(sample_id, [etags[m] for m in MATES])
+        keys = {mate: object_key, parse_raw_key(other_key)[1]: other_key}
+        # HEAD both mates (not just the other one) so that both events derive the name from the
+        # same two (ETag, LastModified) pairs, whichever event runs first.
+        versions = {m: _object_version(bucket_name, keys[m]) for m in MATES}
+        missing = [m for m in MATES if versions[m] is None]
+        if missing:
+            waiting_for = keys[missing[0]]
+            logger.info(f"'{sample_id}': {mate} arrived, waiting for s3://{bucket_name}/{waiting_for}")
+            return _response(202, waiting_for=waiting_for)
+        start_args["name"] = execution_name(sample_id, [versions[m] for m in MATES])
 
     logger.info(f"Triggering pipeline for '{sample_id}' from s3://{bucket_name}/{object_key}")
     try:

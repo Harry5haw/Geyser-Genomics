@@ -1,7 +1,7 @@
 from django import forms
 from django.conf import settings
 
-from geyser_web.pipeline import PAIRED, SINGLE, keys_for, keys_of, parse_sample_id
+from geyser_web.pipeline import MATES, PAIRED, SINGLE, keys_for, parse_sample_id
 
 from .runs import is_valid_sample_id
 
@@ -43,6 +43,16 @@ class UploadForm(forms.Form):
         f = self.cleaned_data.get("reads_r2")
         return self._check_fastq_gz(f) if f else None
 
+    def _taken(self, sample_id, layout):
+        """Any raw key of either layout claims the ID, except that a paired upload may replace a
+        lone mate: that is what a failed earlier paired upload leaves behind, and it never ran."""
+        single = keys_for(sample_id, SINGLE)["raw"]
+        mates = [keys_for(sample_id, PAIRED)[f"raw_{m}"] for m in MATES]
+        if self.storage.exists(single):
+            return True
+        present = [k for k in mates if self.storage.exists(k)]
+        return len(present) == len(mates) if layout == PAIRED else bool(present)
+
     def clean(self):
         cleaned = super().clean()
         f = cleaned.get("reads")
@@ -59,11 +69,13 @@ class UploadForm(forms.Form):
         if not is_valid_sample_id(sample_id):
             self.add_error("sample_id", f"{sample_id!r} isn't a valid sample ID. {ID_HELP}")
             return cleaned
-        if self.storage is not None:
-            existing = keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
-            if any(self.storage.exists(k) for k in existing):
-                self.add_error("sample_id", f"A sample called {sample_id} already exists.")
-                return cleaned
+        if sample_id.endswith(tuple(f"_{m}" for m in MATES)):
+            # raw_reads/X_R1.fastq.gz is read as mate R1 of sample X, so it can't be a sample's own name.
+            self.add_error("sample_id", f"Sample IDs can't end in _R1 or _R2: those mark paired-end mates. {ID_HELP}")
+            return cleaned
+        if self.storage is not None and self._taken(sample_id, layout):
+            self.add_error("sample_id", f"A sample called {sample_id} already exists.")
+            return cleaned
         cleaned["sample_id"] = sample_id
         cleaned["layout"] = layout
         return cleaned

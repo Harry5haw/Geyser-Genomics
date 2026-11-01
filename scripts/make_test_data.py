@@ -51,12 +51,7 @@ def simulate_reads(rng, genome, coverage, read_length, error_rate):
         seq = genome[start:start + read_length]
         if rng.random() < 0.5:
             seq = seq.translate(COMPLEMENT)[::-1]
-        if error_rate:
-            seq = "".join(
-                rng.choice([b for b in BASES if b != base]) if rng.random() < error_rate else base
-                for base in seq
-            )
-        yield f"read{i}", seq, "I" * read_length
+        yield f"read{i}", add_errors(rng, seq, error_rate), "I" * read_length
 
 
 def add_errors(rng, seq, error_rate):

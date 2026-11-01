@@ -212,3 +212,32 @@ def test_decompress_refuses_a_lone_mate(local_env):
         tasks.decompress_task("P1")
     assert last_metric(local_env)["status"] == "Failure"
     assert not (local_env / "decompressed").exists()
+
+
+def test_qc_paired_end_runs_fastqc_once_with_a_thread_per_mate(local_env, monkeypatch):
+    import subprocess
+
+    for mate in ("R1", "R2"):
+        path = local_env / "decompressed" / f"P1_{mate}.fastq"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"@r\nA\n+\nI\n")
+        write_raw(local_env, f"P1_{mate}", gzip.compress(b"@r\nA\n+\nI\n"))
+    calls = []
+
+    def fake_fastqc(cmd, check=False, timeout=None, **kwargs):
+        calls.append(cmd)
+        out_dir = cmd[cmd.index("-o") + 1]
+        for fastq in (a for a in cmd if a.endswith(".fastq")):
+            stem = os.path.basename(fastq)[:-len(".fastq")]
+            for ext in ("html", "zip"):
+                with open(os.path.join(out_dir, f"{stem}_fastqc.{ext}"), "w") as fh:
+                    fh.write(stem)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(tasks.subprocess, "run", fake_fastqc)
+    tasks.qc_task("P1")
+
+    (cmd,) = calls
+    assert cmd[:3] == ["fastqc", "-t", "2"]  # R1 and R2 in parallel: same wall time as one file
+    for mate in ("R1", "R2"):
+        assert (local_env / "qc_reports" / f"P1_{mate}_fastqc.html").read_text() == f"P1_{mate}"

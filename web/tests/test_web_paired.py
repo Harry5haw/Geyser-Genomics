@@ -150,3 +150,28 @@ def test_mate_kinds_are_404_for_single_end_and_vice_versa(client, storage):
     assert client.get("/samples/P1/files/raw/").status_code == 404
     assert client.get("/samples/P1/files/bam_R1/").status_code == 404  # one BAM per sample
     assert client.get("/samples/P1/files/raw_R3/").status_code == 404
+
+
+def test_explicit_ids_ending_in_a_mate_suffix_are_refused(client, storage):
+    # raw_reads/foo_R1.fastq.gz would be read as mate R1 of 'foo' and never run.
+    for sample_id in ("foo_R1", "foo_R2"):
+        resp = client.post("/upload/", {"reads": gz_file("reads.fastq.gz"), "sample_id": sample_id})
+        assert resp.status_code == 400 and b"can&#x27;t end in _R1 or _R2" in resp.content
+    assert list(storage.list_keys("")) == []
+
+
+def test_paired_upload_replaces_a_lone_mate_left_by_a_failed_upload(client, storage):
+    put(storage, R2, b"stale")  # e.g. the R1 write failed after R2 was stored
+    assert upload_pair(client).status_code == 302
+    with storage.open_read(R2) as fh:
+        assert fh.read() == fastq_gz(3)
+    assert storage.exists(R1)
+
+
+def test_demo_ids_skip_ids_taken_in_either_layout(storage):
+    from samples import demo
+
+    put(storage, f"raw_reads/{demo.demo_id(1)}_R1.fastq.gz", fastq_gz())  # DEMO001 taken as a (lone) mate
+    sample_id = demo.create_demo_sample(storage)
+    assert sample_id == demo.demo_id(2)
+    assert not storage.exists(f"raw_reads/{demo.demo_id(1)}.fastq.gz")

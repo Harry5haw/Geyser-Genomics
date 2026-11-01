@@ -26,11 +26,22 @@ def test_mate_key_swaps_only_the_mate_suffix(trigger):
         trigger.mate_key("raw_reads/S1.fastq.gz")
 
 
+@pytest.mark.parametrize("key", ["raw_reads/S1_R1.fq.gz", "raw_reads/S1_R2.fastq.bz2.gz", "raw_reads/S1_R1.FASTQ.gz"])
+def test_mates_must_use_the_name_the_stages_read(trigger, key):
+    # tasks.keys_for only reads <id>_R1.fastq.gz; any other name would never pair or never be found.
+    with pytest.raises(ValueError, match="must be named"):
+        trigger.mate_key(key)
+
+
+V1, V2 = ('"abc"', "2026-11-01 20:00:00+00:00"), ('"def"', "2026-11-01 20:00:05+00:00")
+
+
 def test_execution_name_is_deterministic_and_valid(trigger):
-    a = trigger.execution_name("S1", ['"abc"', '"def"'])
-    assert a == trigger.execution_name("S1", ["abc", "def"])  # event ETags are unquoted, HeadObject's quoted
-    assert a != trigger.execution_name("S1", ["abc", "xyz"])  # re-upload with new content -> new run
-    long_name = trigger.execution_name("x" * 64 + "+weird id", ["a", "b"])
+    a = trigger.execution_name("S1", [V1, V2])
+    assert a == trigger.execution_name("S1", [("abc", V1[1]), ("def", V2[1])])  # quotes don't matter
+    assert a != trigger.execution_name("S1", [V1, ('"xyz"', V2[1])])  # new content -> new run
+    assert a != trigger.execution_name("S1", [V1, (V2[0], "2026-11-02 09:00:00+00:00")])  # same content re-uploaded
+    long_name = trigger.execution_name("x" * 64 + "+weird id", [V1, V2])
     assert len(long_name) <= 80
     assert all(c.isalnum() or c in "-_" for c in long_name)
 
@@ -47,6 +58,8 @@ def _not_found():
 
 
 class FakeS3:
+    """objects: key -> ETag (LastModified is fixed) or key -> (ETag, LastModified)."""
+
     def __init__(self, objects, error=None):
         self.objects, self.error, self.heads = objects, error, []
 
@@ -56,7 +69,9 @@ class FakeS3:
             raise self.error
         if Key not in self.objects:
             raise _not_found()
-        return {"ETag": f'"{self.objects[Key]}"'}
+        value = self.objects[Key]
+        etag, modified = value if isinstance(value, tuple) else (value, "2026-11-01 20:00:00+00:00")
+        return {"ETag": f'"{etag}"', "LastModified": modified}
 
 
 class FakeSfn:
@@ -95,7 +110,7 @@ def test_first_mate_waits_without_starting(trigger, aws):
     result = trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
     assert result["statusCode"] == 202
     assert json.loads(result["body"]) == {"waiting_for": "raw_reads/S1_R2.fastq.gz"}
-    assert s3.heads == ["raw_reads/S1_R2.fastq.gz"]
+    assert "raw_reads/S1_R2.fastq.gz" in s3.heads
     assert sfn.started == []
 
 
@@ -109,7 +124,27 @@ def test_second_mate_starts_one_named_run_in_either_order(trigger, aws, second):
     assert result["statusCode"] == 200
     (start,) = sfn.started
     assert json.loads(start["input"]) == {"srr_id": "S1", "reference_name": "chr20.fa"}
-    assert start["name"] == trigger.execution_name("S1", ["e1", "e2"])  # same name whichever mate came last
+    fixed = "2026-11-01 20:00:00+00:00"
+    # same name whichever mate came last
+    assert start["name"] == trigger.execution_name("S1", [('"e1"', fixed), ('"e2"', fixed)])
+
+
+def test_reuploading_an_identical_pair_runs_again(trigger, aws, monkeypatch):
+    # e.g. after a failed run and a pipeline fix: same bytes (same ETags), new LastModified.
+    s3, sfn = aws({"raw_reads/S1_R1.fastq.gz": "e1", "raw_reads/S1_R2.fastq.gz": "e2"})
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    s3.objects = {"raw_reads/S1_R1.fastq.gz": ("e1", "2026-11-02 08:00:00+00:00"),
+                  "raw_reads/S1_R2.fastq.gz": ("e2", "2026-11-02 08:00:03+00:00")}
+    result = trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    assert "executionArn" in json.loads(result["body"])
+    assert len(sfn.started) == 2 and sfn.started[0]["name"] != sfn.started[1]["name"]
+
+
+def test_wrongly_named_mate_fails_loudly(trigger, aws):
+    s3, sfn = aws({})
+    with pytest.raises(ValueError, match="must be named"):
+        trigger.handler(event("raw_reads/S1_R1.fq.gz", "e1"), None)
+    assert sfn.started == []
 
 
 def test_simultaneous_mates_start_exactly_one_run(trigger, aws):

@@ -200,10 +200,13 @@ def sample_file(request, sample_id, kind):
     if not is_valid_sample_id(sample_id) or split is None:
         raise Http404("No such file")
     storage = get_storage()
-    try:
-        keys = keys_for(sample_id, layout_from_raw(sample_id, storage.exists))
-    except LayoutError:
-        raise Http404("No such sample") from None
+    if split[1] is None and split[0] not in PER_MATE_KEYS:
+        keys = keys_for(sample_id)  # bam, vcf, truth, log: one per sample whatever the layout
+    else:
+        try:
+            keys = keys_for(sample_id, layout_from_raw(sample_id, storage.exists))
+        except LayoutError:
+            raise Http404("No such sample") from None
     key = _file_key(sample_id, kind, keys)
     if key is None:
         raise Http404("No such file")  # e.g. raw_R1 for a single-end sample
