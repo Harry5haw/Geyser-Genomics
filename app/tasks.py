@@ -11,9 +11,9 @@ Stages communicate only through storage keys:
     reference/{reference_name} (+ optional .fai / bwa indexes)
 
 Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
-every per-read key before alignment comes in an _R1/_R2 pair (see keys_for). The layout is
-detected from which raw keys exist (sample_layout), so the CLI and the Step Functions input
-are the same for both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
+every per-read key before alignment comes in an _R1/_R2 pair (see keys_for). Each stage detects
+the layout from which of its input keys exist (sample_layout), so the CLI and the Step Functions
+input are the same for both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
 METRICS_BACKEND (see metrics.py). If you rename a stage or key, update the Step
@@ -103,28 +103,35 @@ def all_raw_keys(sample_id: str) -> list:
     return keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
 
 
-def layout_from_raw(sample_id: str, exists) -> str:
-    """'single' or 'paired', from which raw keys exist. exists(key) -> bool.
+def layout_from_keys(sample_id: str, exists, name: str = "raw") -> str:
+    """'single' or 'paired', from which of a sample's `name` keys exist ('raw' or 'fastq'). exists(key) -> bool.
 
-    Fails loudly rather than guessing: a lone mate (its partner not uploaded yet) or a sample
-    uploaded both ways is an error, not a silent single-end run.
+    Each stage asks about its own inputs (decompress: raw, qc/align: fastq), so it never depends
+    on an earlier stage's files still being there. Fails loudly rather than guessing: a lone mate
+    (its partner not uploaded yet) or a sample present both ways is an error, not a silent
+    single-end run.
     """
-    single = exists(keys_for(sample_id, SINGLE)["raw"])
-    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"raw_{m}"])]
+    single = exists(keys_for(sample_id, SINGLE)[name])
+    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"{name}_{m}"])]
     if single and mates:
-        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) raw reads")
+        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) {name} files")
     if single:
         return SINGLE
     if len(mates) == len(MATES):
         return PAIRED
     if mates:
         missing = [m for m in MATES if m not in mates][0]
-        raise LayoutError(f"{sample_id}: {mates[0]} is uploaded but {missing} is missing")
-    raise LayoutError(f"{sample_id}: no raw reads ({keys_for(sample_id)['raw']} or _R1/_R2)")
+        raise LayoutError(f"{sample_id}: {name} {mates[0]} exists but {missing} is missing")
+    raise LayoutError(f"{sample_id}: no {name} files ({keys_for(sample_id)[name]} or _R1/_R2)")
 
 
-def sample_layout(sample_id: str) -> str:
-    return layout_from_raw(sample_id, storage().exists)
+def layout_from_raw(sample_id: str, exists) -> str:
+    """The layout a sample was uploaded with (what the trigger and the web UI go by)."""
+    return layout_from_keys(sample_id, exists, "raw")
+
+
+def sample_layout(sample_id: str, name: str = "raw") -> str:
+    return layout_from_keys(sample_id, storage().exists, name)
 
 
 def run_shell(command: str) -> None:
@@ -208,7 +215,7 @@ def decompress_task(sample_id):
 @timed_stage("QualityControl")
 def qc_task(sample_id):
     """FastQC on each read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
-    keys = keys_for(sample_id, sample_layout(sample_id))
+    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
     wd = work_dir(sample_id)
     try:
         out_dir = os.path.join(wd, "qc")
@@ -276,7 +283,7 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
     """bwa mem -> coordinate-sorted, duplicate-marked BAM, single- or paired-end (see align_command)."""
-    keys = keys_for(sample_id, sample_layout(sample_id))
+    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
     wd = work_dir(sample_id)
     try:
         fastqs = []

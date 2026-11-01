@@ -187,7 +187,7 @@ def test_layout_from_raw(present, expected):
     ({"raw_reads/S1_R1.fastq.gz"}, "R2 is missing"),
     ({"raw_reads/S1_R2.fastq.gz"}, "R1 is missing"),
     ({"raw_reads/S1.fastq.gz", "raw_reads/S1_R1.fastq.gz"}, "both single-end and paired-end"),
-    (set(), "no raw reads"),
+    (set(), "no raw files"),
 ])
 def test_layout_from_raw_refuses_to_guess(present, message):
     with pytest.raises(tasks.LayoutError, match=message):
@@ -241,3 +241,13 @@ def test_qc_paired_end_runs_fastqc_once_with_a_thread_per_mate(local_env, monkey
     assert cmd[:3] == ["fastqc", "-t", "2"]  # R1 and R2 in parallel: same wall time as one file
     for mate in ("R1", "R2"):
         assert (local_env / "qc_reports" / f"P1_{mate}_fastqc.html").read_text() == f"P1_{mate}"
+
+
+
+def test_later_stages_detect_the_layout_from_their_own_inputs():
+    # qc/align read decompressed/; they must not need the raw upload to still be there.
+    present = {"decompressed/S1_R1.fastq", "decompressed/S1_R2.fastq"}
+    assert tasks.layout_from_keys("S1", present.__contains__, "fastq") == "paired"
+    assert tasks.layout_from_keys("S1", {"decompressed/S1.fastq"}.__contains__, "fastq") == "single"
+    with pytest.raises(tasks.LayoutError, match="fastq R1 exists but R2 is missing"):
+        tasks.layout_from_keys("S1", {"decompressed/S1_R1.fastq"}.__contains__, "fastq")
