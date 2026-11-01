@@ -1,184 +1,110 @@
-name: Deploy Platform to AWS
+# Manual, plan-only Terraform workflow.
+#
+# It never changes infrastructure. The image build/push and the deploy jobs were
+# removed on purpose:
+#   - dev and prod share one Terraform state, and each GitHub environment has its
+#     own TERRAFORM_TFVARS, so deploying from both would rename resources back and
+#     forth. Deploy jobs come back only after state is split per environment.
+#   - the geyser-app ECR repository is being recreated (infra/cost-safe-networking),
+#     and a plan does not need a pushed image.
+# Infrastructure changes are made locally by the repo owner after reviewing a plan.
+
+name: Terraform Plan
 
 on:
-  push:
-    branches:
-      - '**'
-    paths:
-      - 'app/**'
-      - 'infrastructure/**'
-      - 'Dockerfile'
-  pull_request:
-    paths:
-      - 'infrastructure/**'
-      - 'Dockerfile'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub environment whose role and tfvars to use"
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
+      image_version:
+        description: "image_version variable for the plan (blank = short commit SHA)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   id-token: write
   contents: read
-  pull-requests: write
 
 concurrency:
-  group: terraform-${{ github.ref }}
-  cancel-in-progress: true
+  group: terraform-plan-${{ inputs.environment }}
+  cancel-in-progress: false
 
 jobs:
-  # --- JOB 1: Build and Push the Application Image ---
-  build-application:
-    name: Build and Push App to ECR
+  plan:
+    name: Terraform Plan (${{ inputs.environment }})
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
-    outputs:
-      image_tag: ${{ steps.get-sha.outputs.sha }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Get short Git SHA
-        id: get-sha
-        run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-
-      - name: Configure AWS Credentials (ECR role)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, Tag, and Push Docker Image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: geyser-app
-          IMAGE_TAG: ${{ steps.get-sha.outputs.sha }}
-        run: |
-          docker build --no-cache -f Dockerfile -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "Successfully pushed image with tag: $IMAGE_TAG"
-
-  # --- JOB 2: Terraform Plan on PRs ---
-  plan-pr:
-    name: Terraform Plan (PR)
-    runs-on: ubuntu-latest
-    needs: build-application
-    if: github.event_name == 'pull_request'
-    environment:
-      name: dev
+      name: ${{ inputs.environment }}
     defaults:
       run:
         shell: bash
         working-directory: ./infrastructure
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve image version
+        id: image
+        env:
+          INPUT_IMAGE_VERSION: ${{ inputs.image_version }}
+        run: |
+          if [ -n "$INPUT_IMAGE_VERSION" ]; then
+            echo "tag=$INPUT_IMAGE_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      # On GitHub Free with a private repo, environment secrets may not be
+      # available. Fail here with a readable message instead of a credentials error.
+      - name: Check required secrets are present
+        env:
+          ROLE_ARN: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
+          TFVARS: ${{ secrets.TERRAFORM_TFVARS }}
+          REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          missing=0
+          [ -n "$ROLE_ARN" ] || { echo "::error::TERRAFORM_IAM_ROLE_ARN is empty for environment '${{ inputs.environment }}'"; missing=1; }
+          [ -n "$TFVARS" ]   || { echo "::error::TERRAFORM_TFVARS is empty for environment '${{ inputs.environment }}'"; missing=1; }
+          [ -n "$REGION" ]   || { echo "::error::AWS_REGION is empty for environment '${{ inputs.environment }}'"; missing=1; }
+          if [ "$missing" -ne 0 ]; then
+            echo "Environment secrets may be unavailable on this GitHub plan. Run the plan locally instead."
+            exit 1
+          fi
+
       - name: Configure AWS Credentials (Terraform role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.13.3
+
       - name: Write terraform.tfvars from secret
         run: |
           umask 077
           cat > terraform.tfvars << 'EOF'
           ${{ secrets.TERRAFORM_TFVARS }}
           EOF
+
       - name: Terraform Init
         run: terraform init -input=false -lock-timeout=5m
+
       - name: Terraform Validate
         run: terraform validate -no-color
+
       - name: Terraform Plan
         env:
-          IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
         run: |
           terraform plan \
             -no-color \
-            -input=false \
-            -lock-timeout=5m \
-            -var-file=terraform.tfvars \
-            -var="image_version=${IMAGE_TAG}"
-
-  # --- JOB 3: Terraform Apply for prod (main) ---
-  apply-prod:
-    name: Terraform Apply (prod)
-    runs-on: ubuntu-latest
-    needs: build-application
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    environment:
-      name: prod
-    defaults:
-      run:
-        shell: bash
-        working-directory: ./infrastructure
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure AWS Credentials (Terraform role)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.13.3
-      - name: Write terraform.tfvars from secret
-        run: |
-          umask 077
-          cat > terraform.tfvars << 'EOF'
-          ${{ secrets.TERRAFORM_TFVARS }}
-          EOF
-      - name: Terraform Init
-        run: terraform init -input=false -lock-timeout=5m
-      - name: Terraform Apply (prod)
-        env:
-          IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
-        run: |
-          terraform apply \
-            -auto-approve \
-            -input=false \
-            -lock-timeout=5m \
-            -var-file=terraform.tfvars \
-            -var="image_version=${IMAGE_TAG}"
-
-  # --- JOB 4: Terraform Apply for dev (non-main branches) ---
-  apply-dev:
-    name: Terraform Apply (dev)
-    runs-on: ubuntu-latest
-    needs: build-application
-    if: github.ref != 'refs/heads/main' && github.event_name == 'push'
-    environment:
-      name: dev
-    defaults:
-      run:
-        shell: bash
-        working-directory: ./infrastructure
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure AWS Credentials (Terraform role)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.13.3
-      - name: Write terraform.tfvars from secret
-        run: |
-          umask 077
-          cat > terraform.tfvars << 'EOF'
-          ${{ secrets.TERRAFORM_TFVARS }}
-          EOF
-      - name: Terraform Init
-        run: terraform init -input=false -lock-timeout=5m
-      - name: Terraform Apply (dev)
-        env:
-          IMAGE_TAG: ${{ needs.build-application.outputs.image_tag }}
-        run: |
-          terraform apply \
-            -auto-approve \
             -input=false \
             -lock-timeout=5m \
             -var-file=terraform.tfvars \
