@@ -74,7 +74,14 @@ def test_importing_tasks_needs_no_aws(monkeypatch):
 
 
 def _align_stages(cmd):
-    return [shlex.split(stage) for stage in cmd.split("|")]
+    # Split on unquoted | tokens only, so a quoted path containing "|" stays in its stage.
+    stages = [[]]
+    for token in shlex.split(cmd):
+        if token == "|":
+            stages.append([])
+        else:
+            stages[-1].append(token)
+    return stages
 
 
 def test_align_command_marks_duplicates_after_coordinate_sort():
@@ -85,6 +92,7 @@ def test_align_command_marks_duplicates_after_coordinate_sort():
     assert "-p" not in bwa  # one FASTQ per sample = single-end reads
     assert sort[:2] == ["samtools", "sort"] and "-u" in sort and sort[-1] == "-"
     assert sort[sort.index("-@") + 1] == "4"
+    assert sort[sort.index("-m") + 1] == tasks.SORT_MEMORY_PER_THREAD
     assert markdup[:2] == ["samtools", "markdup"] and markdup[-2:] == ["-", "/w/S1.bam"]
     assert markdup[markdup.index("-@") + 1] == "4"
 
@@ -112,3 +120,11 @@ def test_align_command_quotes_paths_with_spaces():
     cmd = tasks.align_command("/my refs/r.fa", "/w/s.fq", "/out dir/o.bam", 1, "/w")
     bwa, _, markdup = _align_stages(cmd)
     assert "/my refs/r.fa" in bwa and markdup[-1] == "/out dir/o.bam"
+
+
+def test_align_command_caps_sort_memory_on_big_hosts():
+    # 16 threads x the 768 MB default would be ~12 GB of sort buffers next to bwa and markdup.
+    bwa, sort, markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 16, "/w"))
+    assert bwa[bwa.index("-t") + 1] == "16"
+    assert sort[sort.index("-@") + 1] == str(tasks.SORT_MAX_THREADS)
+    assert sort[sort.index("-m") + 1] == tasks.SORT_MEMORY_PER_THREAD
