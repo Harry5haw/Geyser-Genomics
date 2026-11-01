@@ -21,3 +21,69 @@ def test_local_storage_defaults_to_local_metrics(tmp_path):
 
 def test_metrics_can_be_disabled():
     assert isinstance(metrics_from_env({"STORAGE_BACKEND": "local", "METRICS_BACKEND": "none"}), NullMetrics)
+
+
+def _stubbed_cloudwatch():
+    from botocore.stub import Stubber
+
+    from metrics import CloudWatchMetrics
+
+    m = CloudWatchMetrics("eu-west-2")
+    return m, Stubber(m._client)
+
+
+def _duration(status, value):
+    return {
+        "MetricName": "Duration",
+        "Dimensions": [
+            {"Name": "TaskName", "Value": "Align"},
+            {"Name": "SampleId", "Value": "S1"},
+            {"Name": "Status", "Value": status},
+        ],
+        "Value": value,
+        "Unit": "Seconds",
+    }
+
+
+def test_cloudwatch_success_sends_duration_only():
+    # The dashboard scripts read exactly this namespace, metric name and dimension set.
+    m, stub = _stubbed_cloudwatch()
+    stub.add_response("put_metric_data", {}, {"Namespace": "GeyserGenomics", "MetricData": [_duration("Success", 1.5)]})
+    with stub:
+        m.record("Align", "S1", "Success", 1.5)
+    stub.assert_no_pending_responses()
+
+
+def test_cloudwatch_failure_also_counts_the_failure():
+    m, stub = _stubbed_cloudwatch()
+    failure = {
+        "MetricName": "FailureCount",
+        "Dimensions": [{"Name": "TaskName", "Value": "Align"}, {"Name": "SampleId", "Value": "S1"}],
+        "Value": 1,
+        "Unit": "Count",
+    }
+    stub.add_response(
+        "put_metric_data", {}, {"Namespace": "GeyserGenomics", "MetricData": [_duration("Failure", 2.0), failure]}
+    )
+    with stub:
+        m.record("Align", "S1", "Failure", 2.0)
+    stub.assert_no_pending_responses()
+
+
+def test_s3_storage_defaults_to_cloudwatch():
+    from metrics import CloudWatchMetrics
+
+    assert isinstance(metrics_from_env({"STORAGE_BACKEND": "s3"}), CloudWatchMetrics)
+
+
+def test_metrics_file_override(tmp_path):
+    path = str(tmp_path / "custom.jsonl")
+    m = metrics_from_env({"STORAGE_BACKEND": "local", "METRICS_FILE": path})
+    assert m.path == path
+
+
+def test_unknown_metrics_backend_is_rejected():
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        metrics_from_env({"METRICS_BACKEND": "prometheus"})
