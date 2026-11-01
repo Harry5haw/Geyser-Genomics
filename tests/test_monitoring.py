@@ -48,8 +48,20 @@ def test_core_stages_match_timed_stage_names_in_tasks():
 def test_deepvariant_stages_match_deepvariant_task():
     names = [s.task_name for s in monitoring.STAGE_GROUPS["deepvariant"]]
     assert names == ["DeepVariant", *deepvariant_task.STEP_METRICS.values()]
-    with open(os.path.join(REPO_ROOT, "app-deepvariant", "deepvariant_task.py"), encoding="utf-8") as fh:
-        assert '@timed_stage("DeepVariant")' in fh.read()
+    stage_names = getattr(deepvariant_task, "STAGE_NAME", None)
+    if stage_names is None:  # before pangenome support (#51) lands
+        with open(os.path.join(REPO_ROOT, "app-deepvariant", "deepvariant_task.py"), encoding="utf-8") as fh:
+            assert '@timed_stage("DeepVariant")' in fh.read()
+    else:
+        assert stage_names[False] == "DeepVariant"
+
+
+def test_pangenome_stages_match_deepvariant_task_once_it_exists():
+    """Pangenome-aware DeepVariant (#51) publishes PangenomeDeepVariant(.Step) metrics; the dashboard expects them."""
+    if not hasattr(deepvariant_task, "PANGENOME_STEP_METRICS"):
+        pytest.skip("pangenome DeepVariant not on this branch yet")
+    names = [s.task_name for s in monitoring.STAGE_GROUPS["pangenome"]]
+    assert names == [deepvariant_task.STAGE_NAME[True], *deepvariant_task.PANGENOME_STEP_METRICS.values()]
 
 
 def test_only_timed_stages_record_failures():
