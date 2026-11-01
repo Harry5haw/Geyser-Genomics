@@ -13,7 +13,8 @@ from django.shortcuts import redirect, render
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_GET, require_POST
 
-from geyser_web.pipeline import ObjectNotFound, get_storage, keys_for
+from geyser_web.pipeline import (MATES, PAIRED, PER_MATE_KEYS, LayoutError, ObjectNotFound, get_storage, keys_for,
+                                 keys_of, layout_from_raw)
 
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
@@ -22,6 +23,7 @@ from .runs import is_valid_sample_id, log_key, read_text
 from .vcf import check_truth, planted_positions, read_truth, read_variants, truth_key
 
 # Downloadable files: kind -> (label, description). Anything not listed here is a 404.
+# Per-read-file kinds (PER_MATE_KEYS) of a paired-end sample are served as <kind>_R1 / <kind>_R2.
 FILE_KINDS = {
     "raw": ("Raw reads", "Gzipped FASTQ as uploaded"),
     "fastq": ("Decompressed reads", "Plain FASTQ"),
@@ -35,12 +37,31 @@ FILE_KINDS = {
 LOG_TAIL_LINES = 300
 
 
-def _file_key(sample_id, kind):
+def _split_kind(kind):
+    """'raw_R1' -> ('raw', 'R1'); 'bam' -> ('bam', None). None for anything not downloadable."""
+    for mate in MATES:
+        base = kind[:-len(mate) - 1]
+        if kind == f"{base}_{mate}" and base in PER_MATE_KEYS:
+            return base, mate
+    return (kind, None) if kind in FILE_KINDS else None
+
+
+def _file_key(sample_id, kind, keys):
     if kind == "truth":
         return truth_key(sample_id)
     if kind == "log":
         return log_key(sample_id)
-    return keys_for(sample_id).get(kind)
+    return keys.get(kind)
+
+
+def _download_kinds(keys):
+    """(kind, label, description) for every file a sample can have, both mates for paired-end."""
+    for kind, (label, description) in FILE_KINDS.items():
+        if kind in keys or kind in ("truth", "log"):
+            yield kind, label, description
+        else:
+            for mate in MATES:
+                yield f"{kind}_{mate}", f"{label} ({mate})", description
 
 
 def _list_context(storage, form):
@@ -76,18 +97,21 @@ def upload(request):
         declared = int(request.META.get("CONTENT_LENGTH") or 0)
     except ValueError:
         declared = 0
-    if declared > UploadForm.max_bytes() + 1024 * 1024:
+    if declared > 2 * UploadForm.max_bytes() + 1024 * 1024:  # up to two files (paired-end)
         messages.error(request, f"That file is larger than the {settings.GEYSER_MAX_UPLOAD_MB} MB limit.")
         return redirect("samples:list")
 
     form = UploadForm(request.POST, request.FILES, storage=storage)
     if not form.is_valid():
         return render(request, "samples/list.html", _list_context(storage, form), status=400)
-    sample_id = form.cleaned_data["sample_id"]
-    reads = form.cleaned_data["reads"]
-    reads.seek(0)
-    storage.upload_stream(reads, keys_for(sample_id)["raw"])
-    messages.success(request, f"Uploaded {sample_id}. The pipeline starts as soon as the trigger sees it.")
+    sample_id, layout = form.cleaned_data["sample_id"], form.cleaned_data["layout"]
+    files = [form.cleaned_data["reads"]] + ([form.cleaned_data["reads_r2"]] if layout == PAIRED else [])
+    # R2 first: the trigger starts a paired-end sample once both mates exist, whichever lands last.
+    for f, key in reversed(list(zip(files, keys_of(keys_for(sample_id, layout), "raw")))):
+        f.seek(0)
+        storage.upload_stream(f, key)
+    kind = "paired-end reads" if layout == PAIRED else "reads"
+    messages.success(request, f"Uploaded {sample_id} ({kind}). The pipeline starts as soon as the trigger sees it.")
     return redirect("samples:detail", sample_id=sample_id)
 
 
@@ -125,6 +149,10 @@ def _status_context(storage, sample):
     }
 
 
+def _qc_kinds(keys):
+    return ["qc_html"] if "qc_html" in keys else [f"qc_html_{m}" for m in MATES]
+
+
 @require_GET
 def sample_detail(request, sample_id):
     storage = get_storage()
@@ -133,8 +161,8 @@ def sample_detail(request, sample_id):
     variants = read_variants(storage, sample.keys["vcf"], settings.GEYSER_VARIANT_ROWS)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     downloads = []
-    for kind, (label, description) in FILE_KINDS.items():
-        key = _file_key(sample_id, kind)
+    for kind, label, description in _download_kinds(sample.keys):
+        key = _file_key(sample_id, kind, sample.keys)
         if storage.exists(key):
             downloads.append({"kind": kind, "label": label, "description": description,
                               "filename": os.path.basename(key)})
@@ -144,7 +172,10 @@ def sample_detail(request, sample_id):
         "truth_result": truth_result,
         "planted": planted_positions(truth),
         "variants": variants,
-        "has_qc": storage.exists(sample.keys["qc_html"]),
+        "qc_reports": [
+            {"kind": kind, "label": f"FastQC report ({kind.rsplit('_', 1)[1]})" if kind != "qc_html" else "FastQC report"}
+            for kind, key in zip(_qc_kinds(sample.keys), keys_of(sample.keys, "qc_html")) if storage.exists(key)
+        ],
         "downloads": downloads,
     }
     return render(request, "samples/detail.html", context)
@@ -165,15 +196,26 @@ def sample_status(request, sample_id):
 @require_GET
 @xframe_options_sameorigin
 def sample_file(request, sample_id, kind):
-    if not is_valid_sample_id(sample_id) or kind not in FILE_KINDS:
+    split = _split_kind(kind)
+    if not is_valid_sample_id(sample_id) or split is None:
         raise Http404("No such file")
-    key = _file_key(sample_id, kind)
+    storage = get_storage()
+    if split[1] is None and split[0] not in PER_MATE_KEYS:
+        keys = keys_for(sample_id)  # bam, vcf, truth, log: one per sample whatever the layout
+    else:
+        try:
+            keys = keys_for(sample_id, layout_from_raw(sample_id, storage.exists))
+        except LayoutError:
+            raise Http404("No such sample") from None
+    key = _file_key(sample_id, kind, keys)
+    if key is None:
+        raise Http404("No such file")  # e.g. raw_R1 for a single-end sample
     try:
-        stream = get_storage().open_read(key)
+        stream = storage.open_read(key)
     except ObjectNotFound:
         raise Http404("No such file") from None
     filename = os.path.basename(key)
-    if kind == "qc_html" and request.GET.get("inline"):
+    if split[0] == "qc_html" and request.GET.get("inline"):
         # FastQC's report is generated HTML: show it in a sandbox (no scripts, opaque origin).
         response = FileResponse(stream, content_type="text/html; charset=utf-8")
         response["Content-Security-Policy"] = "sandbox"

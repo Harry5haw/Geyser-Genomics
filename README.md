@@ -287,10 +287,16 @@ python scripts/make_test_data.py
 
 # 3. Run all four stages in order, just as Step Functions would, then check the VCF against the truth
 python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --check
+
+# Paired-end instead: writes PAIRED001_R1.fastq.gz and PAIRED001_R2.fastq.gz
+python scripts/make_test_data.py --sample PAIRED001 --paired
+python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --check
 ```
 
 > [!TIP]
 > Expected result: `Truth check (bcftools): 10/10 planted SNPs called, 0 unexpected calls`
+>
+> `--duplicate-rate 0.1` plants exact read (or pair) copies, like PCR duplicates. The align stage's `samtools markdup` flags them, and the SNP calls stay the same.
 
 **Tests:**
 
@@ -420,7 +426,7 @@ pip install -r requirements-dev.txt                 # includes web/requirements.
 python web/dev.py                                   # UI + local worker on http://127.0.0.1:8000
 ```
 
-**How it fits the architecture.** The UI only reads and writes storage keys, through `app/storage.py`, and never runs the pipeline itself. An upload is stored at `raw_reads/<id>.fastq.gz`, and that key is the trigger:
+**How it fits the architecture.** The UI only reads and writes storage keys, through `app/storage.py`, and never runs the pipeline itself. An upload is stored at `raw_reads/<id>.fastq.gz`, or at `raw_reads/<id>_R1.fastq.gz` and `_R2.fastq.gz` when a second (R2) file is given. That key is the trigger, and a paired-end sample only starts once both mates exist:
 
 | | Cloud | Offline |
 | :--- | :--- | :--- |
@@ -474,14 +480,16 @@ Once deployed, a run is started by uploading a file.
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
-3.  **Monitor the Execution:** The upload automatically starts the Step Functions state machine. You can follow its progress in the AWS Step Functions console, where each run is named after its sample and upload time, e.g. `SRR062634-20261101T123456Z-1a2b3c4d`. The same name appears in the Batch job names. If S3 delivers the same upload event twice, it still starts only one run.
+    *   **Paired-end:** upload both mates as `raw_reads/<id>_R1.fastq.gz` and `raw_reads/<id>_R2.fastq.gz`, in either order. The run starts once both are there, and only once. Only `_R1`/`_R2` mark mates: rename SRA-style `_1`/`_2` files before uploading. The stages detect the layout from these keys.
+    *   The trigger Lambda needs `s3:GetObject` on `raw_reads/*` and `s3:ListBucket` to check for the other mate. That IAM change is not applied yet (see [#57](https://github.com/Harry5haw/Geyser-Genomics/issues/57)). Until it is, paired-end uploads fail in the cloud, while single-end works as before.
+3.  **Monitor the Execution:** The upload automatically starts the Step Functions state machine. You can follow its progress in the AWS Step Functions console, where each run is named after its sample and upload time, e.g. `SRR062634-20261101T123456Z-1a2b3c4d`. The same name appears in the Batch job names. If S3 delivers the same upload event twice, it still starts only one run. A paired-end run is named after the later of its two uploads.
 4.  **Retrieve Results:** When the run succeeds, the outputs are in the same bucket:
 
 | Stage | Output |
 | :--- | :--- |
-| Decompress | `decompressed/<id>.fastq` |
-| Quality control | `qc_reports/<id>_fastqc.html` and `.zip` |
-| Alignment | `alignments/<id>.bam` (coordinate-sorted, duplicates marked with samtools markdup) |
+| Decompress | `decompressed/<id>.fastq` (paired-end: `<id>_R1.fastq` and `<id>_R2.fastq`) |
+| Quality control | `qc_reports/<id>_fastqc.html` and `.zip` (paired-end: one report per mate, `<id>_R1_fastqc.html` ...) |
+| Alignment | `alignments/<id>.bam`, one per sample (coordinate-sorted, duplicates marked with samtools markdup; paired-end runs `samtools fixmate -m` first) |
 | Variant calling | `variants/<id>.vcf.gz` |
 
 ### 3. Dashboard Management

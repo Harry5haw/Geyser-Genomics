@@ -13,7 +13,7 @@ import os
 import re
 import tempfile
 
-from geyser_web.pipeline import keys_for, make_test_data
+from geyser_web.pipeline import all_raw_keys, keys_for, make_test_data
 
 from .runs import put_bytes
 from .vcf import truth_key
@@ -43,7 +43,8 @@ def snp_count(number: int) -> int:
 def create_demo_sample(storage) -> str:
     """Generate the next DEMO### sample and return its ID."""
     number = next_demo_number(storage)
-    while storage.exists(keys_for(demo_id(number))["raw"]):  # someone else just took it
+    # someone else just took it, in either layout
+    while any(storage.exists(k) for k in all_raw_keys(demo_id(number))):
         number += 1
     sample_id = demo_id(number)
 

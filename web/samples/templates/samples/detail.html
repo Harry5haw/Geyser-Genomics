@@ -43,14 +43,16 @@
   </section>
 {% endif %}
 
-{% if has_qc %}
+{% if qc_reports %}
   <section class="panel">
     <h2>Quality control</h2>
-    <details open>
-      <summary>FastQC report</summary>
-      <iframe class="fastqc" title="FastQC report for {{ sample.sample_id }}" sandbox
-              src="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1"></iframe>
+    {% for qc in qc_reports %}
+    <details{% if forloop.first %} open{% endif %}>
+      <summary>{{ qc.label }}</summary>
+      <iframe class="fastqc" title="{{ qc.label }} for {{ sample.sample_id }}" sandbox
+              src="{% url 'samples:file' sample.sample_id qc.kind %}?inline=1"></iframe>
     </details>
+    {% endfor %}
   </section>
 {% endif %}
 

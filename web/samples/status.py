@@ -1,6 +1,8 @@
 """Work out each sample's progress from storage alone.
 
-* A stage is done when its output key exists (keys_for in app/tasks.py).
+* A stage is done when all its output keys exist (keys_for/keys_of in app/tasks.py: one per
+  read file before alignment, so two for a paired-end sample).
+* A paired-end sample only appears once both mates are uploaded, as the trigger only starts it then.
 * A stage failed when its latest metric (metrics/metrics.jsonl, written by app/metrics.py
   LocalMetrics) says Failure and its output is missing. Durations come from the same file.
 * A run record (runs/<id>.json, written by the local worker) adds queued vs running and
@@ -13,7 +15,8 @@ import json
 from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
-from geyser_web.pipeline import ObjectNotFound, keys_for, parse_sample_id
+from geyser_web.pipeline import (SINGLE, LayoutError, ObjectNotFound, keys_for, keys_of, layout_from_raw,
+                                 parse_raw_key)
 
 from .runs import is_valid_sample_id, read_all_runs, read_run
 
@@ -27,7 +30,7 @@ class Stage(NamedTuple):
     name: str      # CLI name, as in run_local.STAGES and the state machine
     metric: str    # TaskName recorded by @timed_stage in app/tasks.py
     label: str
-    output: str    # keys_for() entry whose existence means the stage finished
+    output: str    # keys_for() name (via keys_of) whose keys all existing means the stage finished
 
 
 STAGES = (
@@ -63,6 +66,7 @@ class SampleView:
     updated: Optional[float] = None
     duration: Optional[float] = None
     keys: dict = field(default_factory=dict)
+    layout: str = SINGLE
 
     @property
     def active(self) -> bool:
@@ -79,22 +83,33 @@ class SampleView:
         return sum(1 for s in self.stages if s.state == "done")
 
 
-def sample_id_from_raw_key(key: str):
-    """'raw_reads/X.fastq.gz' -> 'X' using the trigger's own parsing; None if the key isn't a pipeline input."""
-    if not key.startswith(RAW_PREFIX):
-        return None
-    try:
-        sample_id = parse_sample_id(key)
-    except ValueError:
-        return None
-    if not is_valid_sample_id(sample_id) or keys_for(sample_id)["raw"] != key:
-        return None
-    return sample_id
+def sample_layouts(raw_keys) -> dict:
+    """{sample_id: 'single'|'paired'} for every complete pipeline input among raw_reads/ keys.
+
+    Uses the trigger's own parsing. Keys that aren't pipeline inputs (wrong name or suffix) are
+    ignored, as are samples the pipeline would refuse: a lone mate whose partner hasn't arrived
+    yet, or a sample uploaded both single- and paired-end.
+    """
+    raw_keys = {k for k in raw_keys if k.startswith(RAW_PREFIX)}
+    candidates = set()
+    for key in raw_keys:
+        try:
+            sample_id = parse_raw_key(key)[0]
+        except ValueError:
+            continue
+        if is_valid_sample_id(sample_id):
+            candidates.add(sample_id)
+    layouts = {}
+    for sample_id in candidates:
+        try:
+            layouts[sample_id] = layout_from_raw(sample_id, raw_keys.__contains__)
+        except LayoutError:
+            continue
+    return layouts
 
 
 def list_sample_ids(storage) -> list:
-    ids = (sample_id_from_raw_key(k) for k in storage.list_keys(RAW_PREFIX))
-    return sorted({i for i in ids if i})
+    return sorted(sample_layouts(storage.list_keys(RAW_PREFIX)))
 
 
 def read_metrics(storage) -> list:
@@ -115,8 +130,8 @@ def read_metrics(storage) -> list:
     return records
 
 
-def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict]) -> SampleView:
-    keys = keys_for(sample_id)
+def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict], layout: str = SINGLE) -> SampleView:
+    keys = keys_for(sample_id, layout)
     since = None
     if run and run.get("started"):
         since = run["started"] - CLOCK_SLACK_SECONDS
@@ -136,7 +151,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
     for st in STAGES:
         rec = latest.get(st.metric)
         duration = rec.get("duration_seconds") if rec else None
-        if keys[st.output] in present:
+        if all(k in present for k in keys_of(keys, st.output)):
             state = "done"
             if rec and rec.get("status") != "Success":
                 duration = None
@@ -174,6 +189,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
         updated=max(times) if any(times) else None,
         duration=sum(durations) if durations else None,
         keys=keys,
+        layout=layout,
     )
 
 
@@ -186,11 +202,11 @@ def _present_keys(storage) -> set:
 
 def load_all(storage) -> list:
     """Every sample, most recently active first."""
-    ids = list_sample_ids(storage)
-    if not ids:
+    layouts = sample_layouts(storage.list_keys(RAW_PREFIX))
+    if not layouts:
         return []
     present, metrics, runs = _present_keys(storage), read_metrics(storage), read_all_runs(storage)
-    samples = [build_sample(i, present, metrics, runs.get(i)) for i in ids]
+    samples = [build_sample(i, present, metrics, runs.get(i), layout) for i, layout in layouts.items()]
     samples.sort(key=lambda s: (s.updated or 0, s.sample_id), reverse=True)
     return samples
 
@@ -199,8 +215,10 @@ def load_one(storage, sample_id: str):
     """One sample, or None if it was never uploaded."""
     if not is_valid_sample_id(sample_id):
         return None
-    keys = keys_for(sample_id)
-    if not storage.exists(keys["raw"]):
-        return None
-    present = {keys[st.output] for st in STAGES if storage.exists(keys[st.output])}
-    return build_sample(sample_id, present, read_metrics(storage), read_run(storage, sample_id))
+    try:
+        layout = layout_from_raw(sample_id, storage.exists)
+    except LayoutError:
+        return None  # never uploaded, or not a complete sample yet
+    keys = keys_for(sample_id, layout)
+    present = {k for st in STAGES for k in keys_of(keys, st.output) if storage.exists(k)}
+    return build_sample(sample_id, present, read_metrics(storage), read_run(storage, sample_id), layout)
