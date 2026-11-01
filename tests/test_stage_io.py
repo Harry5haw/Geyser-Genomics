@@ -34,11 +34,13 @@ def tool_calls(monkeypatch):
         elif tool == "samtools" and cmd[1] == "faidx":
             open(cmd[2] + ".fai", "wb").close()
         elif tool == "fastqc":
-            fastq, out_dir = cmd[1], cmd[cmd.index("-o") + 1]
-            stem = os.path.basename(fastq).rsplit(".", 1)[0]
-            for ext in ("html", "zip"):
-                with open(os.path.join(out_dir, f"{stem}_fastqc.{ext}"), "w") as fh:
-                    fh.write(ext)
+            # Inputs are the .fastq arguments, wherever they sit among the flags (-t, -o ...).
+            out_dir = cmd[cmd.index("-o") + 1]
+            for fastq in (arg for arg in cmd if arg.endswith(".fastq")):
+                stem = os.path.basename(fastq).rsplit(".", 1)[0]
+                for ext in ("html", "zip"):
+                    with open(os.path.join(out_dir, f"{stem}_fastqc.{ext}"), "w") as fh:
+                        fh.write(ext)
         else:
             raise AssertionError(f"unexpected command {cmd}")
         return subprocess.CompletedProcess(cmd, 0)
