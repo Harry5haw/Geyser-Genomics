@@ -1,74 +1,85 @@
 # infrastructure/iam_cicd.tf
+# IAM roles for GitHub Actions OIDC (dev + prod side-by-side)
 
-# -----------------------------
-# GitHub repo identity (adjust if the repo moves)
-# -----------------------------
 locals {
-  gh_owner = "Harry5haw"
-  gh_repo  = "Geyser-Genomics"
+  gh_owner      = "Harry5haw"
+  gh_repo       = "Geyser-Genomics"
+  gh_sub_prefix = "repo:${local.gh_owner}/${local.gh_repo}"
+
+  # OIDC subjects allowed to assume each environment's roles.
+  # The repo's sub claim is customised to include_claim_keys = [repo, context, ref],
+  # so a token from an environment job looks like
+  #   repo:<owner>/<repo>:environment:prod:ref:refs/heads/main
+  # Dev accepts any branch; prod accepts only main.
+  # The sub customisation is a GitHub repo setting, not Terraform. Check it with:
+  #   gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+  # If it is ever reset to the default, these subjects stop matching and CI
+  # cannot assume the roles until it is set back.
+  oidc_subs_dev = [
+    "${local.gh_sub_prefix}:environment:dev:ref:refs/heads/*",
+  ]
+  oidc_subs_prod = [
+    "${local.gh_sub_prefix}:environment:prod:ref:refs/heads/main",
+  ]
+
+  # Terraform backend (must match backend.tf, which cannot use variables).
+  tf_state_bucket = "geyser-tfstate-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
+  tf_state_key    = "feature/rebrand-refactor/terraform.tfstate"
+  tf_lock_table   = "geyser-tf-lock"
 }
 
-# -----------------------------
-# Use existing GitHub OIDC provider (do NOT create a new one)
-# -----------------------------
+# Existing GitHub OIDC provider
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
 }
 
-# -----------------------------------------------------------------------------
-# IAM Role and Policy for the Application (ECR Push) CI/CD Workflow
-# -----------------------------------------------------------------------------
-resource "aws_iam_role" "geyser_github_ecr_role" {
-  name = "${var.project_name}-github-ecr-role-${var.environment}"
+# ---------------------------
+# ECR roles & policies
+# ---------------------------
+
+# DEV ECR role
+resource "aws_iam_role" "geyser_github_ecr_role_dev" {
+  name = "geyser-github-ecr-role-dev"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Effect = "Allow",
+      Effect    = "Allow",
       Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
-      Action   = "sts:AssumeRoleWithWebIdentity",
+      Action    = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         },
-        # Allow GH Environment-based runs (dev/prod) and main branch refs
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = [
-            "repo:${local.gh_owner}/${local.gh_repo}:environment:dev",
-            "repo:${local.gh_owner}/${local.gh_repo}:environment:prod",
-            "repo:${local.gh_owner}/${local.gh_repo}:ref:refs/heads/main"
-          ]
+          "token.actions.githubusercontent.com:sub" = local.oidc_subs_dev
         }
       }
     }]
   })
-
-  tags = {
-    Name = "${var.project_name}-github-ecr-role"
-  }
 }
 
-resource "aws_iam_policy" "geyser_github_ecr_policy" {
-  name = "${var.project_name}-github-ecr-policy-${var.environment}"
+resource "aws_iam_policy" "geyser_github_ecr_policy_dev" {
+  name = "geyser-github-ecr-policy-dev"
 
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
       {
-        Sid      = "ECRLogin",
         Effect   = "Allow",
-        Action   = "ecr:GetAuthorizationToken",
+        Action   = ["ecr:GetAuthorizationToken"],
         Resource = "*"
       },
       {
-        Sid    = "ECRImagePush",
         Effect = "Allow",
         Action = [
           "ecr:BatchCheckLayerAvailability",
           "ecr:CompleteLayerUpload",
           "ecr:InitiateLayerUpload",
           "ecr:PutImage",
-          "ecr:UploadLayerPart"
+          "ecr:UploadLayerPart",
+          "ecr:BatchGetImage",
+          "ecr:DescribeRepositories"
         ],
         Resource = aws_ecr_repository.geyser_app.arn
       }
@@ -76,45 +87,174 @@ resource "aws_iam_policy" "geyser_github_ecr_policy" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "github_ecr_attach" {
-  role       = aws_iam_role.geyser_github_ecr_role.name
-  policy_arn = aws_iam_policy.geyser_github_ecr_policy.arn
+resource "aws_iam_role_policy_attachment" "github_ecr_attach_dev" {
+  role       = aws_iam_role.geyser_github_ecr_role_dev.name
+  policy_arn = aws_iam_policy.geyser_github_ecr_policy_dev.arn
 }
 
-# -----------------------------------------------------------------------------
-# IAM Role for the Infrastructure (Terraform) CI/CD Workflow
-# -----------------------------------------------------------------------------
-resource "aws_iam_role" "geyser_github_terraform_role" {
-  name = "${var.project_name}-github-terraform-role-${var.environment}"
+# PROD ECR role
+resource "aws_iam_role" "geyser_github_ecr_role_prod" {
+  name = "geyser-github-ecr-role-prod"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
     Statement = [{
-      Effect = "Allow",
+      Effect    = "Allow",
       Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
-      Action   = "sts:AssumeRoleWithWebIdentity",
+      Action    = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        },
-        # Allow Terraform runs from envs + main
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = [
-            "repo:${local.gh_owner}/${local.gh_repo}:environment:dev",
-            "repo:${local.gh_owner}/${local.gh_repo}:environment:prod",
-            "repo:${local.gh_owner}/${local.gh_repo}:ref:refs/heads/main"
-          ]
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub" = local.oidc_subs_prod
         }
       }
     }]
   })
-
-  tags = {
-    Name = "${var.project_name}-github-terraform-role"
-  }
 }
 
-resource "aws_iam_role_policy_attachment" "github_terraform_admin_attach" {
-  role       = aws_iam_role.geyser_github_terraform_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+resource "aws_iam_policy" "geyser_github_ecr_policy_prod" {
+  name = "geyser-github-ecr-policy-prod"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect   = "Allow",
+        Action   = ["ecr:GetAuthorizationToken"],
+        Resource = "*"
+      },
+      {
+        Effect = "Allow",
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:CompleteLayerUpload",
+          "ecr:InitiateLayerUpload",
+          "ecr:PutImage",
+          "ecr:UploadLayerPart",
+          "ecr:BatchGetImage",
+          "ecr:DescribeRepositories"
+        ],
+        Resource = aws_ecr_repository.geyser_app.arn
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_ecr_attach_prod" {
+  role       = aws_iam_role.geyser_github_ecr_role_prod.name
+  policy_arn = aws_iam_policy.geyser_github_ecr_policy_prod.arn
+}
+
+# ---------------------------
+# Terraform roles
+# ---------------------------
+
+# DEV Terraform role
+resource "aws_iam_role" "geyser_github_terraform_role_dev" {
+  name = "geyser-github-terraform-role-dev"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Action    = "sts:AssumeRoleWithWebIdentity",
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        },
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = local.oidc_subs_dev
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_terraform_readonly_attach_dev" {
+  role       = aws_iam_role.geyser_github_terraform_role_dev.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "github_terraform_plan_attach_dev" {
+  role       = aws_iam_role.geyser_github_terraform_role_dev.name
+  policy_arn = aws_iam_policy.geyser_github_terraform_plan_policy.arn
+}
+
+# PROD Terraform role
+resource "aws_iam_role" "geyser_github_terraform_role_prod" {
+  name = "geyser-github-terraform-role-prod"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [{
+      Effect    = "Allow",
+      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Action    = "sts:AssumeRoleWithWebIdentity",
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub" = local.oidc_subs_prod
+        }
+      }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_terraform_readonly_attach_prod" {
+  role       = aws_iam_role.geyser_github_terraform_role_prod.name
+  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "github_terraform_plan_attach_prod" {
+  role       = aws_iam_role.geyser_github_terraform_role_prod.name
+  policy_arn = aws_iam_policy.geyser_github_terraform_plan_policy.arn
+}
+
+# ---------------------------
+# Terraform plan policy (shared by the dev and prod terraform roles)
+# ---------------------------
+# The CI terraform roles only ever run `terraform plan`. ReadOnlyAccess covers
+# refreshing resources; this adds what the S3 backend needs to read state and
+# take the DynamoDB lock, and blocks reading genomic data from the data lake.
+# No s3:PutObject: plan never writes state. State and lock table use AWS-managed
+# encryption (AES256 / AWS-owned key), so no kms:Decrypt is needed.
+resource "aws_iam_policy" "geyser_github_terraform_plan_policy" {
+  name        = "geyser-github-terraform-plan-policy"
+  description = "Read Terraform state and take the plan lock; deny reading data-lake objects."
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid      = "StateBucketList",
+        Effect   = "Allow",
+        Action   = "s3:ListBucket",
+        Resource = "arn:aws:s3:::${local.tf_state_bucket}"
+      },
+      {
+        Sid      = "StateObjectRead",
+        Effect   = "Allow",
+        Action   = "s3:GetObject",
+        Resource = "arn:aws:s3:::${local.tf_state_bucket}/${local.tf_state_key}"
+      },
+      {
+        Sid    = "StateLock",
+        Effect = "Allow",
+        Action = [
+          "dynamodb:DescribeTable",
+          "dynamodb:GetItem",
+          "dynamodb:PutItem",
+          "dynamodb:DeleteItem"
+        ],
+        Resource = "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/${local.tf_lock_table}"
+      },
+      {
+        Sid      = "DenyDataLakeObjectRead",
+        Effect   = "Deny",
+        Action   = "s3:GetObject*",
+        Resource = "${aws_s3_bucket.data_lake.arn}/*"
+      }
+    ]
+  })
 }

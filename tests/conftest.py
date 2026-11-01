@@ -7,6 +7,7 @@ import pytest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "app"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "app-deepvariant"))
 
 
 def load_module(name, *path_parts):
