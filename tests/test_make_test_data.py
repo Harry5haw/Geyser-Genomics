@@ -56,3 +56,47 @@ def test_planted_duplicates_are_exact_copies_of_their_original(tmp_path):
     assert 0.1 * n_original < len(dups) < 0.3 * n_original
     for name, seq in dups:
         assert by_name[name[:-len("_dup")]] == seq  # same sequence AND strand: a true duplicate
+
+
+def revcomp(seq):
+    return seq.translate(str.maketrans("ACGT", "TGCA"))[::-1]
+
+
+def test_paired_writes_matching_mates_from_one_fragment(tmp_path):
+    make_test_data.main(["--root", str(tmp_path), "--length", "5000", "--snps", "2", "--paired",
+                         "--error-rate", "0", "--sample", "P1"])
+    r1 = read_fastq(tmp_path / "raw_reads" / "P1_R1.fastq.gz")
+    r2 = read_fastq(tmp_path / "raw_reads" / "P1_R2.fastq.gz")
+    assert not (tmp_path / "raw_reads" / "P1.fastq.gz").exists()
+
+    assert len(r1) == len(r2) == 5000 * 30 // (2 * 150)  # same total coverage as single-end
+    assert [n for n, _ in r1] == [n for n, _ in r2]  # bwa mem pairs records by position and name
+    # Mates face each other across the fragment (Illumina FR orientation). On the forward strand
+    # the reference has R1 at the left end and revcomp(R2) at the right; for a reverse-strand
+    # fragment, R2 on the left and revcomp(R1) on the right. With no sequencing errors only a
+    # planted SNP inside a read stops it matching the reference exactly.
+    genome = read_fasta(tmp_path / "reference" / "synthetic_ref.fa")
+    strands, inserts = [], []
+    for (_, a), (_, b) in zip(r1, r2):
+        for strand, left, right in (("+", a, revcomp(b)), ("-", b, revcomp(a))):
+            p_left, p_right = genome.find(left), genome.find(right)
+            if p_left >= 0 and p_right >= 0:
+                strands.append(strand)
+                inserts.append(p_right + 150 - p_left)
+                break
+    assert len(inserts) > 0.8 * len(r1)
+    assert all(150 <= size <= 700 for size in inserts)
+    assert 350 < sum(inserts) / len(inserts) < 450  # --insert-size default 400
+    assert 0.35 < strands.count("+") / len(strands) < 0.65
+
+
+def test_paired_duplicates_copy_both_mates(tmp_path):
+    make_test_data.main(["--root", str(tmp_path), "--length", "5000", "--snps", "2", "--paired",
+                         "--duplicate-rate", "0.2", "--sample", "P1"])
+    r1 = dict(read_fastq(tmp_path / "raw_reads" / "P1_R1.fastq.gz"))
+    r2 = dict(read_fastq(tmp_path / "raw_reads" / "P1_R2.fastq.gz"))
+    dups = [n for n in r1 if n.endswith("_dup")]
+    assert json.loads((tmp_path / "truth" / "P1.json").read_text())["planted_duplicates"] == len(dups) > 0
+    for name in dups:
+        original = name[:-len("_dup")]
+        assert r1[name] == r1[original] and r2[name] == r2[original]
