@@ -207,7 +207,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 | **CI Authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
 | **Automated Deployment** | ⏸️ Not yet | CI runs tests only. The Terraform workflow can only plan, is manual, and is currently disabled. Deploys are done locally. |
 | **Cost Safety** | ✅ Applied | NAT gateway optional and off, Fargate jobs in a public subnet, ECR and log retention limits, $10 monthly budget alert. |
-| **Custom Monitoring** | 🚧 In progress | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). The dashboards are scripted but not finished. |
+| **Custom Monitoring** | 🚧 In progress | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). The dashboard and failure alarms are scripted and tested offline, not yet deployed (see [Monitoring](#3-monitoring)). |
 | **Google DeepVariant** | 🚧 Local GPU working, cloud pending | Deep-learning variant calling as an alternative to bcftools. It runs locally on an NVIDIA GPU in Docker, with accuracy and timings measured (see below). A GPU Batch environment exists in AWS, but the stage is not wired into Step Functions and needs larger instances. |
 | **Web UI Front-End** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (FastQC, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
 
@@ -484,13 +484,35 @@ Once deployed, a run is started by uploading a file.
 | Alignment | `alignments/<id>.bam` (coordinate-sorted) |
 | Variant calling | `variants/<id>.vcf.gz` |
 
-### 3. Dashboard Management
-Each stage records its duration and failures as CloudWatch metrics. A dashboard for them is managed by a Python script instead of Terraform, because the dashboard JSON was hard to manage there. The dashboards are still being finished.
+### 3. Monitoring
 
-To deploy or update the dashboard, run the following command from the project root:
+> [!NOTE]
+> The dashboard and alarms below are written and unit-tested but **not yet deployed**. They will be deployed and checked against real data after the first cloud run.
+
+Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWatch namespace `GeyserGenomics`. The dashboard and alarm definitions are built in `scripts/monitoring.py` and deployed by small Python scripts rather than Terraform, because the dashboard JSON was hard to manage there.
+
+| Script | What it creates |
+| :--- | :--- |
+| `scripts/deploy_dashboard.py` | Dashboard `geyser-dashboard-dev`: pipeline runs per day, end-to-end time (p50/p95), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant |
+| `scripts/deploy_alarms.py` | Alarms to the pipeline's SNS topic: Step Functions `ExecutionsFailed`, plus `FailureCount` for each stage |
+| `scripts/runtime_deploy_pipeline_dashboard.py` | Optional dashboard with only the Step Functions widgets |
+| `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only) |
+
+**Preview without AWS:** `--dry-run` prints the JSON and makes no AWS calls. No ARNs are needed.
 ```bash
-python scripts/deploy_dashboard.py
+python scripts/deploy_dashboard.py --dry-run
+python scripts/deploy_alarms.py --dry-run
 ```
+
+**Deploy** (uses your AWS credentials; region defaults to `eu-west-2`). The ARNs are passed in, never stored in the repo:
+```bash
+export SFN_ARN=$(terraform -chdir=infrastructure output -raw geyser_pipeline_state_machine_arn)
+export SNS_TOPIC_ARN=$(terraform -chdir=infrastructure output -raw pipeline_status_sns_topic_arn)
+python scripts/deploy_dashboard.py
+python scripts/deploy_alarms.py
+```
+
+Stage durations show the mean and max across samples. CloudWatch can't calculate percentiles across samples because each `SampleId` is a separate metric. If the metrics stop using the `SampleId` dimension, run with `--schema aggregated` to get real p50/p95. To add a stage or a new variant caller, add it to `STAGE_GROUPS` in `scripts/monitoring.py`.
 
 ---
 
@@ -505,7 +527,7 @@ python scripts/deploy_dashboard.py
 | ✅ | **Web UI** | Works offline |
 | 🎯 | **Pangenome-aware DeepVariant** | Use the HPRC pangenome graph in addition to the linear reference when calling variants, and benchmark it on HG003 chr20 against linear DeepVariant and bcftools. Local first. **Top priority** ([#51](../../issues/51)) |
 | 🔜 | **First cloud run since the hardening** | One small sample through S3 → Step Functions → Batch, confirming the VCF |
-| 🔜 | **Monitoring** | Finish the CloudWatch dashboards for stage durations and failures |
+| 🔜 | **Monitoring** | Dashboard and failure alarms are scripted and tested offline; deploy them after the first cloud run |
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |
 | 🔜 | **Web UI on S3** | Point the UI at the cloud bucket |
 | 🔜 | **Branch protection** | Required review for `prod`, once the repository is public |

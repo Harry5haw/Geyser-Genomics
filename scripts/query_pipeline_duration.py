@@ -20,26 +20,17 @@ from collections import defaultdict
 from statistics import mean, median
 from datetime import timezone
 
-import boto3
-
-AWS_REGION = os.environ.get("AWS_REGION", "eu-west-2")
-STATE_MACHINE_ARN = os.environ.get("SFN_ARN")  # must be set in your env
-
-if not STATE_MACHINE_ARN:
-    print("FATAL: SFN_ARN environment variable is not set.")
-    exit(1)
-
-sfn_client = boto3.client("stepfunctions", region_name=AWS_REGION)
+DEFAULT_REGION = "eu-west-2"
 
 # ---------- helpers ----------
 
-def list_executions(state_machine_arn, status=None, max_results=50):
+def list_executions(sfn_client, state_machine_arn, status=None, max_results=50):
     kwargs = {"stateMachineArn": state_machine_arn, "maxResults": max_results}
     if status:
         kwargs["statusFilter"] = status
     return sfn_client.list_executions(**kwargs).get("executions", [])
 
-def describe_execution(execution_arn):
+def describe_execution(sfn_client, execution_arn):
     return sfn_client.describe_execution(executionArn=execution_arn)
 
 def extract_sample_id(execution_details: dict) -> str:
@@ -115,15 +106,27 @@ def compute_layout():
 
 # ---------- main ----------
 
-def main():
+def main(argv=None, sfn_client=None):
     parser = argparse.ArgumentParser(description="Query Step Functions pipeline durations.")
     parser.add_argument("--csv", help="Export results to a CSV file", default=None)
     parser.add_argument("--status", help="Filter by status (e.g. SUCCEEDED, FAILED, RUNNING)", default="SUCCEEDED")
-    args = parser.parse_args()
+    parser.add_argument("--region", default=DEFAULT_REGION, help="AWS region (default: eu-west-2)")
+    parser.add_argument("--state-machine-arn", default=os.environ.get("SFN_ARN"),
+                        help="Step Functions state machine ARN (default: $SFN_ARN)")
+    parser.add_argument("--max-results", type=int, default=50, help="Most recent executions to fetch (default: 50)")
+    args = parser.parse_args(argv)
 
-    print(f"Fetching recent executions for {STATE_MACHINE_ARN} in {AWS_REGION} with status={args.status}...\n")
+    if not args.state_machine_arn:
+        raise SystemExit("FATAL: provide --state-machine-arn or set SFN_ARN")
+    if sfn_client is None:
+        import boto3
+        sfn_client = boto3.client("stepfunctions", region_name=args.region)
 
-    executions = list_executions(STATE_MACHINE_ARN, status=args.status, max_results=50)
+    print(f"Fetching recent executions for {args.state_machine_arn} in {args.region} "
+          f"with status={args.status}...\n")
+
+    executions = list_executions(sfn_client, args.state_machine_arn, status=args.status,
+                                 max_results=args.max_results)
     if not executions:
         print("No executions found.")
         return
@@ -146,7 +149,7 @@ def main():
     rows = []
 
     for exe in executions:
-        details = describe_execution(exe["executionArn"])
+        details = describe_execution(sfn_client, exe["executionArn"])
         start = details["startDate"]
         stop = details.get("stopDate")
         status = details["status"]
