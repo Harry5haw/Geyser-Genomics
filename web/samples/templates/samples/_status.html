@@ -1,0 +1,30 @@
+{% load geyser %}
+<section id="run-status"{% if sample.active %} hx-get="{% url 'samples:status' sample.sample_id %}?was_active=1" hx-trigger="every {{ poll_seconds }}s" hx-swap="outerHTML"{% endif %}>
+  <div class="sample-head">
+    <h1>{{ sample.sample_id }}</h1>
+    <span class="badge {{ sample.state }}">{{ sample.state_label }}</span>
+    {% if sample.duration %}<span class="muted">{{ sample.done_count }}/4 stages · {{ sample.duration|duration }}</span>{% endif %}
+  </div>
+
+  <div class="timeline">
+    {% for st in sample.stages %}
+      <div class="stage {{ st.state }}">
+        <div class="n">Stage {{ forloop.counter }}</div>
+        <div class="name">{{ st.label }}</div>
+        <div class="meta"><span class="pill {{ st.state }}">{{ st.state }}</span><span>{{ st.duration|duration }}</span></div>
+      </div>
+    {% endfor %}
+  </div>
+
+  {% if sample.state == "failed" and sample.run.note %}<p><small>{{ sample.run.note }}</small></p>{% endif %}
+  {% if sample.state == "running" and not sample.run %}
+    <p class="muted"><small>Waiting for the pipeline. Locally, make sure the worker is running (<code>python web/dev.py</code> starts it).</small></p>
+  {% endif %}
+
+  {% if log %}
+    <details{% if sample.state == "failed" or sample.active %} open{% endif %}>
+      <summary>Run log{% if sample.active %} (live){% endif %}</summary>
+      <pre class="log">{{ log }}</pre>
+    </details>
+  {% endif %}
+</section>

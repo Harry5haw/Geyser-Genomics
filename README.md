@@ -170,7 +170,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 | **Cost-Safe Networking** | 🚧 Under Construction | Removing the always-on NAT gateway so that an idle platform costs close to nothing. |
 | **Custom Monitoring** | 🚧 Under Construction | Each stage emits duration and failure metrics to CloudWatch, shown on dashboards. |
 | **Google DeepVariant** | 🗓️ Future Work | Deep-learning variant calling on GPU-backed AWS Batch. |
-| **Web UI Front-End** | 🗓️ Future Work | A Django web application for uploading samples and browsing results. |
+| **Web UI Front-End** | ✅ Complete | A Django app for uploading samples, generating demo data and browsing results (FastQC, variants, downloads). Works offline. See [Web UI](#-web-ui). |
 
 ---
 
@@ -272,6 +272,34 @@ The storage and metrics backends are chosen by environment variables, so the sam
 | `STORAGE_BACKEND` | `s3`, `local` | `s3` |
 | `LOCAL_STORAGE_DIR` | path to the local data lake | `local_bucket` |
 | `METRICS_BACKEND` | `cloudwatch`, `local`, `none` | `cloudwatch` for S3, `local` otherwise |
+
+---
+
+## 🖥️ Web UI
+
+A small Django front end in `web/`. You can upload a gzipped FASTQ, or click **Generate demo sample** to create synthetic reads with known SNPs. Each stage turns green as it finishes. You then get the FastQC report, a table of called variants (with a "10/10 planted SNPs recovered" check for demo samples) and download links for every intermediate file.
+
+```bash
+docker build -f Dockerfile -t geyser-app .          # once: the pipeline image
+pip install -r requirements-dev.txt                 # includes web/requirements.txt
+python web/dev.py                                   # UI + local worker on http://127.0.0.1:8000
+```
+
+**How it fits the architecture.** The UI only reads and writes storage keys, through `app/storage.py`, and never runs the pipeline itself. An upload is stored at `raw_reads/<id>.fastq.gz`, and that key is the trigger:
+
+| | Cloud | Offline |
+| :--- | :--- | :--- |
+| Storage | S3 (`STORAGE_BACKEND=s3`) | `local_bucket/` folder |
+| Trigger | S3 event → Lambda → Step Functions | `manage.py runworker` polls `raw_reads/` → `scripts/run_local.py` |
+| Stage status | from the output keys | from the output keys + `metrics/metrics.jsonl` + `runs/<id>.json` |
+
+There is no database. Status is worked out from which outputs exist, the local metrics file and the worker's run records (`runs/<id>.json` and `.log`). The same UI could therefore run against the S3 bucket with no worker.
+
+**Settings** (environment variables): `DJANGO_DEBUG` (default **off**), `DJANGO_SECRET_KEY` (required when DEBUG is off), `DJANGO_ALLOWED_HOSTS`, `DJANGO_HTTPS=1` behind TLS (secure cookies, HSTS, redirect), `GEYSER_MAX_UPLOAD_MB` (default 200), `REFERENCE_NAME` for the worker (default `synthetic_ref.fa`), and `GEYSER_RUNNER=docker|host`. The storage variables are the same as the pipeline's, except that the UI defaults to `local`.
+
+**Safety.** CSRF protection is on. Sample IDs are restricted to `[A-Za-z0-9_-]` because they become storage keys. Uploads must be gzip and within the size limit, and a sample can't be overwritten. Downloads are limited to a fixed list of file types. The FastQC report is shown in a sandboxed iframe.
+
+**Tests:** `pytest` runs the web tests too (`web/tests/`, Django test client, temporary storage folder, no Docker).
 
 ---
 
