@@ -314,6 +314,25 @@ The storage and metrics backends are chosen by environment variables, so the sam
 
 [Google DeepVariant](https://github.com/google/deepvariant) `1.10.0` is available as an alternative variant caller, in its own image (`app-deepvariant/`). It reads the same `alignments/<id>.bam` and writes `variants_deepvariant/<id>.vcf.gz`, so its calls can be compared with the bcftools calls.
 
+#### Why the reference genome matters: pangenomes
+
+<div align="center">
+  <img src="docs/assets/pangenome.gif" alt="Animation: a single linear reference genome built from a few people, compared with a pangenome reference that combines many diverse genomes" width="85%"/>
+  <br/>
+  <sub>Animation: Google Research, from <a href="https://research.google/blog/building-better-pangenomes-to-improve-the-equity-of-genomics/"><i>Building better pangenomes to improve the equity of genomics</i></a> (Andrew Carroll and Kishwar Shafin, May 2023).</sub>
+</div>
+
+<br/>
+
+Variant callers like DeepVariant find variants by comparing reads with a **reference genome**. The standard reference is a single linear sequence, so variation it doesn't contain is easy to miss or to call wrongly. A study of 910 African individuals found about 300 million base pairs, roughly 10% of the reference, that were present in at least one person but absent from the linear reference.
+
+A **pangenome** reference is a graph that combines many people's genomes. The Human Pangenome Reference Consortium's first draft (*Nature*, 2023) combines 47 genomes chosen to better reflect global diversity. Google and UC Santa Cruz built a graph-based variant-calling workflow around DeepVariant and reported improved accuracy across several thousand samples.
+
+> [!NOTE]
+> This project currently aligns reads to the linear reference (BWA-MEM against chromosome 20), and DeepVariant runs in its standard mode. Pangenome-aware calling is on the [Roadmap](#-roadmap) as something to explore. It is not built yet.
+
+#### Running it
+
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi   # GPU visible to Docker?
 docker build -f app-deepvariant/Dockerfile -t geyser-deepvariant .
@@ -489,3 +508,4 @@ python scripts/deploy_dashboard.py
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |
 | 🔜 | **Web UI on S3** | Point the UI at the cloud bucket |
 | 🔜 | **Branch protection** | Required review for `prod`, once the repository is public |
+| 🔭 | **Pangenome-aware calling** | Explore DeepVariant with a pangenome reference instead of the linear one |
