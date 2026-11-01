@@ -1,28 +1,48 @@
 <div align="center">
-  <h1>🌋 Geyser Genomics 🌋</h1>
-  <p>
-    <strong>A fully automated, cloud-native platform on AWS for scalable genomic data analysis.</strong>
-  </p>
-  
-  <p>
-    <a href="#️-project-status--features"><img src="https://img.shields.io/badge/Project%20Status-In%20Active%20Development-orange?style=for-the-badge" alt="Project Status"></a>
-    <a href="../../actions/workflows/tests.yml"><img src="https://img.shields.io/badge/Tests-Offline%20%2B%20Docker%20E2E-brightgreen?style=for-the-badge" alt="Tests"></a>
-  </p>
 
-  <p>
-    <a href="https://aws.amazon.com/"><img src="https://img.shields.io/badge/AWS-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white" alt="AWS"></a>
-    <a href="https://www.terraform.io/"><img src="https://img.shields.io/badge/Terraform-7B42BC?style=for-the-badge&logo=terraform&logoColor=white" alt="Terraform"></a>
-    <a href="https://github.com/features/actions"><img src="https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=github-actions&logoColor=white" alt="GitHub Actions"></a>
-    <a href="https://aws.amazon.com/step-functions/"><img src="https://img.shields.io/badge/Step%20Functions-D45404?style=for-the-badge&logo=amazon-aws&logoColor=white" alt="AWS Step Functions"></a>
-    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
-    <a href="https://www.docker.com/"><img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker"></a>
- 
-  </p>
-</div>
+<img src="docs/assets/Github social media banner v9.png" alt="Geyser Genomics banner: technologies for DNA sequencing" width="85%"/>
 
-<!-- This is your banner image. It will be centered automatically. -->
-<div align="center">
-  <img src="docs/assets/Github social media banner v9.png" alt="Technologies for DNA sequencing visualization" width="70%"/>
+<h1>🌋 Geyser Genomics</h1>
+
+<p><strong>An event-driven AWS pipeline that turns raw DNA sequencing reads into a list of genetic variants,<br/>built and tested offline first.</strong></p>
+
+<p>
+  <a href="#️-project-status--features"><img src="https://img.shields.io/badge/Project%20Status-In%20Active%20Development-orange?style=for-the-badge" alt="Project status: in active development"></a>
+</p>
+
+<p>
+  <img src="https://img.shields.io/badge/AWS-232F3E?style=for-the-badge&logo=amazon-aws&logoColor=white" alt="AWS">
+  <img src="https://img.shields.io/badge/Step%20Functions-D45404?style=for-the-badge&logo=amazon-aws&logoColor=white" alt="AWS Step Functions">
+  <img src="https://img.shields.io/badge/Batch%20%2B%20Fargate-FF9900?style=for-the-badge&logo=amazon-aws&logoColor=white" alt="AWS Batch and Fargate">
+  <img src="https://img.shields.io/badge/Terraform-7B42BC?style=for-the-badge&logo=terraform&logoColor=white" alt="Terraform">
+  <br/>
+  <img src="https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker">
+  <img src="https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python">
+  <img src="https://img.shields.io/badge/Django-092E20?style=for-the-badge&logo=django&logoColor=white" alt="Django">
+  <img src="https://img.shields.io/badge/CUDA%20GPU-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA CUDA">
+  <img src="https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=github-actions&logoColor=white" alt="GitHub Actions">
+</p>
+
+<p>
+  <a href="#-run-it-locally-in-2-minutes-no-aws"><b>🚀 Quickstart</b></a> &nbsp;·&nbsp;
+  <a href="#️-how-it-works-the-architecture"><b>🏗️ Architecture</b></a> &nbsp;·&nbsp;
+  <a href="#️-project-status--features"><b>🗺️ Status</b></a> &nbsp;·&nbsp;
+  <a href="#deepvariant-on-a-local-nvidia-gpu"><b>🧠 DeepVariant</b></a> &nbsp;·&nbsp;
+  <a href="#️-roadmap"><b>🛣️ Roadmap</b></a>
+</p>
+
+<table>
+  <tr>
+    <td align="center" width="20%"><h3>4</h3>containerised<br/>pipeline stages</td>
+    <td align="center" width="20%"><h3>10 / 10</h3>planted SNPs recovered<br/>on every push</td>
+    <td align="center" width="20%"><h3>0.996</h3>DeepVariant recall<br/>on HG003 chr20*</td>
+    <td align="center" width="20%"><h3>3.3×</h3>faster neural-network step<br/>on an RTX 3080 GPU</td>
+    <td align="center" width="20%"><h3>0</h3>stored AWS keys<br/>in CI (OIDC)</td>
+  </tr>
+</table>
+
+<sub>* Indicative: exact-match comparison against GIAB v4.2.1, not a hap.py benchmark. See <a href="#deepvariant-on-a-local-nvidia-gpu">DeepVariant</a>.</sub>
+
 </div>
 
 ---
@@ -32,34 +52,53 @@
 1.  [What is Geyser Genomics?](#-what-is-geyser-genomics) 
 2.  [The Odyssey: Why This Project Exists](#-the-odyssey-why-this-project-exists)
 3.  [The Challenge: From a DNA Sample to an Answer](#-the-challenge-from-a-dna-sample-to-an-answer)
-4.  [The Impact: Key Benefits](#-the-impact-key-benefits)
+4.  [Design Goals and Where They Stand](#-design-goals-and-where-they-stand)
 5.  [Project Status & Features](#️-project-status--features)
 6.  [How It Works: The Architecture](#️-how-it-works-the-architecture)
 7.  [Technical Deep Dive](#-technical-deep-dive)
 8.  [Run It Locally in 2 Minutes (No AWS)](#-run-it-locally-in-2-minutes-no-aws)
-9.  [Deployment & Usage](#-deployment--usage)
-10. [Roadmap](#-roadmap)
+9.  [Web UI](#️-web-ui)
+10. [Deployment & Usage](#-deployment--usage)
+11. [Roadmap](#️-roadmap)
 
 ---
 
 ## 💡 What is Geyser Genomics?
 
-Geyser Genomics is an **automated, serverless data processing platform**. Its purpose is to execute the complex scientific workflow that transforms raw, unreadable DNA data from a sequencing machine into a final, human-readable list of genetic variants.
+Geyser Genomics is an **event-driven bioinformatics pipeline**. It takes raw DNA data from a sequencing machine (a gzipped FASTQ file) and turns it into a list of genetic variants (a VCF file).
 
-It functions as a **robotic science lab in the cloud**. A scientist simply uploads their raw data file, and the platform automatically summons the necessary cloud resources, runs a multi-step bioinformatics analysis, and places the final results in a secure data lake, all with zero manual intervention.
+In the cloud design, uploading a file to S3 starts the run. AWS Step Functions then runs each stage as a container on AWS Batch, and the results are written back to the same bucket. The same containers also run on a laptop against a local folder, which is how the project is developed and tested.
 
-**The Transformation: From Raw Data to Actionable Insight**
+**From raw reads to variants**
 
-| Input | The Platform's Process (Automation) | Output |
-| :--- | :--- | :--- |
-| 🧬 **Raw Data File** <br> *(Millions of jumbled DNA fragments)* | 1. **Quality Control** on the raw data. <br> 2. **Alignment:** Compares data to a reference genome. <br> 3. **Variant Calling:** Identifies all differences. | 📄 **VCF File** <br> *(A clean list of genetic mutations)* |
+```mermaid
+flowchart LR
+    IN(["🧬 FASTQ.gz<br/>millions of raw reads"]) --> D["📦 Decompress"]
+    D --> Q["🔍 Quality control<br/>FastQC"]
+    Q --> A["🧭 Align to reference<br/>BWA-MEM + samtools"]
+    A --> V["🧪 Call variants<br/>bcftools"]
+    V --> OUT(["📄 VCF.gz<br/>list of variants"])
+    A -.->|"alternative caller"| DV["🧠 DeepVariant<br/>GPU"]
+    DV -.-> OUT2(["📄 VCF.gz"])
+    Q -.-> R(["📊 QC report"])
 
-The platform provides four key advantages:
+    classDef io fill:#6A1B9A,stroke:#4A148C,color:#fff
+    classDef stage fill:#E65100,stroke:#BF360C,color:#fff
+    classDef alt fill:#2E7D32,stroke:#1B5E20,color:#fff
+    class IN,OUT,OUT2,R io
+    class D,Q,A,V stage
+    class DV alt
+```
 
-*   ⚙️ **Fully Automated:** The entire pipeline is event-driven. An upload to S3 triggers the workflow, eliminating manual setup and human error.
-*   🚀 **Infinitely Scalable:** Built on serverless AWS services like Step Functions and Fargate, the platform scales from zero to thousands of parallel jobs on demand, then scales back to zero.
-*   💰 **Cost-Aware:** Compute is Fargate, which scales to zero, so analysis capacity costs nothing when idle. Supporting network infrastructure is being reworked so the platform's idle cost is close to zero too (see [Roadmap](#-roadmap)).
-*   🔬 **Scientifically Rigorous:** Every tool is packaged in a version-controlled Docker container, and every change is tested against synthetic data with known mutations, so results are reproducible and verified.
+What it does today:
+
+*   ⚙️ **Event-driven:** an upload to the `raw_reads/` prefix starts the workflow. No one has to launch the stages by hand.
+*   📦 **Containerised and on demand:** every stage runs in the same Docker image on AWS Batch (Fargate). Compute only runs while a job is running. The Fargate environment is capped at 16 vCPUs, which is up to 8 jobs at once.
+*   💰 **Cost-conscious:** there is no always-on NAT gateway (it is optional and off by default). ECR images and logs are pruned automatically, and an AWS Budget alert fires at $10 a month. Idle cost is mostly storage.
+*   🧪 **Tested offline:** every push runs the unit tests and a Docker end-to-end run on synthetic data with known mutations. The run must recover exactly those mutations.
+
+> [!NOTE]
+> **Where it stands:** the pipeline is verified locally in Docker. The AWS infrastructure is defined in Terraform and deployed, but the cloud pipeline has not been run end to end since the cost and security changes of November 2026. That run is the next milestone.
 
 ---
 
@@ -143,78 +182,75 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
 ---
 
-## ✨ The Impact: Key Benefits
+## ✨ Design Goals and Where They Stand
 
-| Benefit | How Geyser Genomics Delivers |
-| :--- | :--- |
-| **Blazing Speed** | By using thousands of on-demand cloud CPUs in parallel, analyses that took weeks can now be completed in a matter of hours. |
-| **Unwavering Reliability** | The automated workflow and version-controlled containers eliminate human error, producing consistent and trustworthy results every time. |
-| **Drastic Cost Reduction** | Compute is serverless and scales to zero, so you pay for processing power only while an analysis is running. |
-| **Empowered Scientists** | Researchers can run massive analyses without needing to be cloud experts, freeing them to focus entirely on the science. |
+| Goal | Approach | Where it is today |
+| :--- | :--- | :--- |
+| **Reproducible results** | All tools pinned in one Docker image; synthetic data with planted mutations as a truth check | Done. The end-to-end test runs on every push. |
+| **No manual steps** | An S3 upload triggers Lambda, which starts Step Functions | Built in Terraform. Not yet re-tested in the cloud. |
+| **Pay only while running** | Batch on Fargate, no NAT gateway, budget alert | Applied. Storage is the remaining idle cost. |
+| **Scale out across samples** | Each upload is its own Step Functions execution | Limited by design: one sample per run, stages in sequence, up to 8 Fargate jobs at once. |
+| **Accessible to non-cloud users** | A web UI for uploading samples and browsing results | Works offline against the local folder. Not yet connected to S3 or deployed. |
 
 ---
 
 ## 🗺️ Project Status & Features
 
-The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end to end. The platform is in active development: the cloud deployment is being hardened for cost and security before new features are added.
+The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end to end **locally in Docker**. The AWS side is defined and deployed, and has just been hardened for cost and security. It has not been run end to end since then.
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Bioinformatics Pipeline** | ✅ Complete | Decompress → FastQC → BWA-MEM alignment (sorted BAM) → bcftools variant calling. |
+| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → BWA-MEM alignment (sorted BAM) → bcftools variant calling. |
 | **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
-| **Infrastructure as Code** | ✅ Complete | The entire AWS environment is defined in Terraform. |
-| **Serverless Orchestration** | ✅ Complete | AWS Step Functions runs the four stages in order, with failure notifications via SNS. |
-| **Scalable Compute Engine** | ✅ Complete | AWS Batch on Fargate provides containerized, on-demand compute that scales to zero. |
-| **Event-Driven Workflow** | ✅ Complete | Uploading a file to the S3 data lake starts the pipeline automatically. |
-| **Secure CI/CD (OIDC)** | 🚧 Under Construction | GitHub Actions authenticates to AWS with short-lived OIDC credentials (no stored keys), with separate dev and prod roles. Automatic deploys are paused while this is finalised. |
-| **Cost-Safe Networking** | 🚧 Under Construction | Removing the always-on NAT gateway so that an idle platform costs close to nothing. |
-| **Custom Monitoring** | 🚧 Under Construction | Each stage emits duration and failure metrics to CloudWatch, shown on dashboards. |
-| **Google DeepVariant** | 🚧 Local GPU working, cloud pending | Deep-learning variant calling as an alternative to bcftools. It runs locally on an NVIDIA GPU in Docker, with accuracy and timings measured honestly (see below). The GPU-backed AWS Batch stage is designed but not deployed. |
-| **Web UI Front-End** | ✅ Complete | A Django app for uploading samples, generating demo data and browsing results (FastQC, variants, downloads). Works offline. See [Web UI](#-web-ui). |
+| **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
+| **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs the four stages in order on AWS Batch (Fargate), with failure notifications via SNS. |
+| **CI Authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
+| **Automated Deployment** | ⏸️ Not yet | CI runs tests only. The Terraform workflow can only plan, is manual, and is currently disabled. Deploys are done locally. |
+| **Cost Safety** | ✅ Applied | NAT gateway optional and off, Fargate jobs in a public subnet, ECR and log retention limits, $10 monthly budget alert. |
+| **Custom Monitoring** | 🚧 In progress | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). The dashboards are scripted but not finished. |
+| **Google DeepVariant** | 🚧 Local GPU working, cloud pending | Deep-learning variant calling as an alternative to bcftools. It runs locally on an NVIDIA GPU in Docker, with accuracy and timings measured (see below). A GPU Batch environment exists in AWS, but the stage is not wired into Step Functions and needs larger instances. |
+| **Web UI Front-End** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (FastQC, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
 
 ---
 
 ## 🛠️ How It Works: The Architecture
 
-This platform is built on a modern, event-driven, serverless architecture. There are no virtual machines or servers to manage.
+The design is event-driven and uses managed AWS services, so there are no servers to look after for the main pipeline. (The planned DeepVariant stage uses GPU instances that AWS Batch starts and stops.)
 
 ```mermaid
-graph TD
-    A[1. User uploads FASTQ file] --> B[Amazon S3 Data Lake];
-    B -- S3 Event --> C[AWS Lambda Trigger];
-    C -- Starts Execution --> D[AWS Step Functions State Machine];
+flowchart TB
+    U(["📤 Upload<br/>raw_reads/ID.fastq.gz"]) --> S3[("🪣 Amazon S3<br/>data lake")]
+    S3 -->|"S3 event<br/>prefix raw_reads/, suffix .gz"| L["λ Lambda trigger"]
+    L -->|"StartExecution"| SF1
 
-    subgraph "Bioinformatics Workflow (Orchestrated by Step Functions)"
-        D -- "Run Decompress" --> E[AWS Batch Job on Fargate];
-        E -- "Reads/Writes Data" --> B;
-        E -- "Success" --> F[AWS Batch Job on Fargate];
-        F -- "Run Quality Control" --> G[AWS Batch Job on Fargate];
-        G -- "Reads/Writes Data" --> B;
-        G -- "Success" --> H[AWS Batch Job on Fargate];
-        H -- "Run Align" --> I[AWS Batch Job on Fargate];
-        I -- "Reads/Writes Data" --> B;
-        I -- "Success" --> J[AWS Batch Job on Fargate];
-        J -- "Run Call Variants" --> K[Final VCF Result];
-        K --> B;
-    end
-    
-    subgraph "CI/CD Pipeline (GitHub Actions)"
-        L[git push] --> T[Offline tests: unit + Docker end-to-end];
-        T --> M{Build, Push & Deploy via OIDC};
-        M --> N[Amazon ECR];
-        M --> D;
-    end
-    
-    subgraph "Observability"
-        E -- "Emit Custom Metrics" --> O[Amazon CloudWatch];
-        G -- "Emit Custom Metrics" --> O;
-        I -- "Emit Custom Metrics" --> O;
-        J -- "Emit Custom Metrics" --> O;
-        O --> P[CloudWatch Dashboard];
+    subgraph SFN ["⚙️ AWS Step Functions: one execution per sample"]
+        direction LR
+        SF1["Decompress"] --> SF2["Quality control"] --> SF3["Align"] --> SF4["Call variants"]
     end
 
-    style A fill:#4CAF50,stroke:#333,stroke-width:2px,color:#fff
-    style K fill:#9C27B0,stroke:#333,stroke-width:2px,color:#fff
+    SFN ==>|"submitJob.sync<br/>one job per stage"| BATCH["🐳 AWS Batch on Fargate<br/>geyser-app image · 2 vCPU / 4 GB"]
+    ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
+    BATCH <-->|"read inputs<br/>write outputs"| S3
+    SFN -.->|"any failure"| SNS["📣 SNS alert"]
+    BATCH -.->|"Duration, FailureCount"| CW["📈 CloudWatch metrics"]
+    CW -.-> DASH["Dashboards<br/>in progress"]
+
+    subgraph GHA ["🔧 GitHub Actions"]
+        direction LR
+        PUSH["push / pull request"] --> TESTS["✅ Unit + Docker E2E tests"]
+        MAN["manual run"] -.-> PLAN["📝 terraform plan<br/>OIDC · read-only role"]
+    end
+
+    classDef user fill:#2E7D32,stroke:#1B5E20,color:#fff
+    classDef store fill:#6A1B9A,stroke:#4A148C,color:#fff
+    classDef aws fill:#E65100,stroke:#BF360C,color:#fff
+    classDef obs fill:#1565C0,stroke:#0D47A1,color:#fff
+    classDef pending fill:#9E9E9E,stroke:#616161,color:#fff,stroke-dasharray: 4 3
+    class U user
+    class S3,ECR store
+    class L,SF1,SF2,SF3,SF4,BATCH,SNS aws
+    class CW,TESTS,PLAN obs
+    class DASH pending
 ```
 
 ---
@@ -225,13 +261,13 @@ The platform's design is guided by modern cloud-native principles:
 
 | Technology | Role & Rationale |
 | :--- | :--- |
-| **Terraform** | **The Cloud Architect.** Defines all AWS resources (VPC, S3, IAM, ECR, Batch) as code. This ensures a consistent, repeatable, and secure deployment every time. |
-| **AWS Step Functions** | **The Serverless Conductor.** Replaces the operational burden of self-hosting an orchestrator like Airflow. It translates the scientific pipeline into a resilient, managed state machine, handling state, error handling, and parallelism. |
-| **AWS Batch + Fargate** | **The Serverless Compute Engine.** Manages a fleet of on-demand, containerized compute resources. It handles job queuing, scheduling, and scaling from zero to thousands of CPUs, eliminating the need to manage a cluster. |
+| **Terraform** | **The Cloud Architect.** Defines the AWS resources (VPC, S3, IAM, ECR, Batch, Step Functions, Lambda) as code, so the environment can be reviewed in a plan before anything changes. |
+| **AWS Step Functions** | **The Conductor.** Replaced a self-hosted Airflow setup from earlier in the project. A managed state machine runs the stages in order and routes any failure to an SNS notification. |
+| **AWS Batch + Fargate** | **The Compute Engine.** Runs each stage as a container job (2 vCPU / 4 GB) with queuing and scheduling handled by AWS. The compute environment is capped at 16 vCPUs, which keeps costs bounded. |
 | **Docker** | **The Reproducible Toolbox.** Packages all bioinformatics tools (`FastQC`, `BWA`, `Samtools`, etc.) and their specific dependencies into a single, portable container image. This guarantees scientific reproducibility. |
-| **GitHub Actions**| **The CI/CD Engine.** Every push runs the offline test suite. The deploy workflow builds the Docker image, pushes it to ECR and applies Terraform, authenticating with short-lived OIDC credentials instead of stored AWS keys. |
+| **GitHub Actions**| **The CI Engine.** Every push and pull request runs the offline test suite. A manual workflow can run `terraform plan` with short-lived OIDC credentials and a read-only role. It cannot apply changes. |
 | **pytest + synthetic data**| **The Safety Net.** A generator creates a small reference genome and simulated reads with known mutations. The end-to-end test runs every stage in Docker and requires the final VCF to contain exactly those mutations. |
-| **Amazon S3**| **The Data Lake.** Provides durable, scalable, and cost-effective storage for massive genomic datasets. It serves as the event source for the pipeline and the single source of truth for all data. |
+| **Amazon S3**| **The Data Lake.** Holds the inputs, every intermediate file and the results, under fixed key prefixes. An upload to `raw_reads/` is the event that starts the pipeline. |
 | **Python**| The primary language for the bioinformatics application logic (`app/tasks.py`) and for interacting with AWS services via the `boto3` SDK. |
 
 ---
@@ -253,7 +289,8 @@ python scripts/make_test_data.py
 python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --check
 ```
 
-Expected result: `Truth check (bcftools): 10/10 planted SNPs called, 0 unexpected calls`
+> [!TIP]
+> Expected result: `Truth check (bcftools): 10/10 planted SNPs called, 0 unexpected calls`
 
 **Tests:**
 
@@ -276,6 +313,25 @@ The storage and metrics backends are chosen by environment variables, so the sam
 ### DeepVariant on a local NVIDIA GPU
 
 [Google DeepVariant](https://github.com/google/deepvariant) `1.10.0` is available as an alternative variant caller, in its own image (`app-deepvariant/`). It reads the same `alignments/<id>.bam` and writes `variants_deepvariant/<id>.vcf.gz`, so its calls can be compared with the bcftools calls.
+
+#### Why the reference genome matters: pangenomes
+
+<div align="center">
+  <img src="docs/assets/pangenome.gif" alt="Animation: a single linear reference genome built from a few people, compared with a pangenome reference that combines many diverse genomes" width="85%"/>
+  <br/>
+  <sub>Animation: Google Research, from <a href="https://research.google/blog/building-better-pangenomes-to-improve-the-equity-of-genomics/"><i>Building better pangenomes to improve the equity of genomics</i></a> (Andrew Carroll and Kishwar Shafin, May 2023).</sub>
+</div>
+
+<br/>
+
+Variant callers like DeepVariant find variants by comparing reads with a **reference genome**. The standard reference is a single linear sequence, so variation it doesn't contain is easy to miss or to call wrongly. A study of 910 African individuals found about 300 million base pairs, roughly 10% of the reference, that were present in at least one person but absent from the linear reference.
+
+A **pangenome** reference is a graph that combines many people's genomes. The Human Pangenome Reference Consortium's first draft (*Nature*, 2023) combines 47 genomes chosen to better reflect global diversity. Google and UC Santa Cruz built a graph-based variant-calling workflow around DeepVariant and reported improved accuracy across several thousand samples.
+
+> [!NOTE]
+> This project currently aligns reads to the linear reference (BWA-MEM against chromosome 20), and DeepVariant runs in its standard mode. Pangenome-aware calling is on the [Roadmap](#️-roadmap) as something to explore. It is not built yet.
+
+#### Running it
 
 ```bash
 docker run --rm --gpus all nvidia/cuda:12.3.2-base-ubuntu22.04 nvidia-smi   # GPU visible to Docker?
@@ -312,6 +368,14 @@ The real-data comparisons use exact (position, ref, alt) matching without varian
 | GPU | off | 222,978 | 303.5 s | 266.5 s | 20.5 s | 609.9 s (10.2 min) |
 | CPU | off | 222,978 | 336.4 s | 1,200.5 s | 16.9 s | 1,575.4 s (26.3 min) |
 
+```mermaid
+xychart-beta
+    title "DeepVariant stage time on HG003 chr20 (minutes, lower is better)"
+    x-axis ["GPU", "CPU", "GPU, no small model", "CPU, no small model"]
+    y-axis "Minutes" 0 --> 30
+    bar [7.8, 12.9, 10.2, 26.3]
+```
+
 **At whole-chromosome scale the GPU pays off.**
 - With default settings, `call_variants` is **3.3× faster** on the GPU and the whole stage is **1.7× faster**. With the small model off, `call_variants` is 4.5× faster: about 840 examples/s on the GPU against about 190 on the CPU.
 - The stage gains less than `call_variants` does, because `make_examples` (about 300 s) runs on the CPU on either image. It is the largest step on the GPU.
@@ -320,7 +384,12 @@ The real-data comparisons use exact (position, ref, alt) matching without varian
 
 The CPU runs used a 12 GB container cap (`--dv-memory 12g`) and `--call_variants_extra_args=batch_size=256`. Without a cap, CPU `call_variants` took most of the 16 GB Docker VM and starved Windows. An 8 GB cap was too small for 16 `make_examples` shards.
 
-**Timing: small inputs.** Same machine, median of 3 runs:
+<details>
+<summary><b>Timing on small inputs (where the GPU is slower)</b></summary>
+
+<br/>
+
+Same machine, median of 3 runs:
 
 | Data | Device | Small model | Examples sent to the neural network | make_examples (CPU) | call_variants (GPU step) | postprocess (CPU) | Stage total |
 | :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -335,7 +404,9 @@ The CPU runs used a 12 GB container cap (`--dv-memory 12g`) and `--call_variants
 
 **On small inputs the GPU is 5–6 s slower than the CPU.** With at most a few hundred examples, `call_variants` time is almost entirely fixed start-up: loading the model and initialising CUDA and cuDNN. The GPU's start-up costs more than TensorFlow's on the CPU. On the synthetic data, the small model makes every call, so the neural network sees nothing. `nvidia-smi` sampling confirmed the GPU was used: utilisation peaked at 98%, and TensorFlow reserved nearly all free VRAM.
 
-**Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. Cloud deployment (AWS Batch GPU queue) is designed but not built yet; see [`app-deepvariant/README.md`](app-deepvariant/README.md).
+</details>
+
+**Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. In the cloud, a GPU Batch environment exists, but the stage is not wired into Step Functions yet, and its instances are too small for a whole chromosome. See the sizing notes in [`app-deepvariant/README.md`](app-deepvariant/README.md).
 
 ---
 
@@ -359,31 +430,47 @@ python web/dev.py                                   # UI + local worker on http:
 
 There is no database. Status is worked out from which outputs exist, the local metrics file and the worker's run records (`runs/<id>.json` and `.log`). The same UI could therefore run against the S3 bucket with no worker.
 
+<details>
+<summary><b>Settings, safety and tests</b></summary>
+
+<br/>
+
 **Settings** (environment variables): `DJANGO_DEBUG` (default **off**), `DJANGO_SECRET_KEY` (required when DEBUG is off), `DJANGO_ALLOWED_HOSTS`, `DJANGO_HTTPS=1` behind TLS (secure cookies, HSTS, redirect), `GEYSER_MAX_UPLOAD_MB` (default 200), `REFERENCE_NAME` for the worker (default `synthetic_ref.fa`), and `GEYSER_RUNNER=docker|host`. The storage variables are the same as the pipeline's, except that the UI defaults to `local`.
 
 **Safety.** CSRF protection is on. Sample IDs are restricted to `[A-Za-z0-9_-]` because they become storage keys. Uploads must be gzip and within the size limit, and a sample can't be overwritten. Downloads are limited to a fixed list of file types. The FastQC report is shown in a sandboxed iframe.
 
 **Tests:** `pytest` runs the web tests too (`web/tests/`, Django test client, temporary storage folder, no Docker).
 
+</details>
+
 ---
 
 ## 🚀 Deployment & Usage
 
 ### 1. The Deployment Process
-The infrastructure is deployed by the GitHub Actions workflow `.github/workflows/deploy-platform.yml`, which builds the image, pushes it to ECR and runs Terraform. It authenticates to AWS with GitHub OIDC (short-lived credentials, no stored keys), and separate IAM roles are scoped to the `dev` and `prod` GitHub environments.
+Deployment is manual. Terraform is run locally from `infrastructure/`: run `terraform plan`, review it, then `terraform apply`. The container image is built locally and pushed to ECR. There is no automatic deploy.
 
-> **Note:** automatic deployment is currently paused while the networking is reworked for cost. All development and testing happens offline (see above).
+The GitHub Actions workflow `.github/workflows/deploy-platform.yml` ("Terraform Plan") can run a plan for the `dev` or `prod` environment. It authenticates with GitHub OIDC (short-lived credentials, no stored keys) using a read-only role, so it cannot change anything. It is manual and currently disabled.
 
-**Prerequisites for CI/CD:**
+<details>
+<summary><b>Prerequisites for the CI plan workflow</b></summary>
+
+<br/>
+
 *   An AWS Account, with the GitHub OIDC identity provider configured.
 *   GitHub environments `dev` and `prod`.
 *   The following secrets configured in the GitHub repository settings:
     *   `AWS_REGION`: The target AWS region (e.g., `eu-west-2`).
-    *   `ECR_IAM_ROLE_ARN`: The ARN of the IAM role for building and pushing to ECR.
-    *   `TERRAFORM_IAM_ROLE_ARN`: The ARN of the IAM role for running Terraform.
+    *   `ECR_IAM_ROLE_ARN`: The ARN of the IAM role for pushing to ECR.
+    *   `TERRAFORM_IAM_ROLE_ARN`: The ARN of the read-only IAM role for `terraform plan`.
+
+</details>
 
 ### 2. How to Use the Platform (Event-Driven)
-Once deployed, using the platform is as simple as uploading a file.
+Once deployed, a run is started by uploading a file.
+
+> [!IMPORTANT]
+> This cloud flow has not been re-tested since the November 2026 cost and security changes. The first cloud run is the next item on the [Roadmap](#️-roadmap).
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
@@ -398,7 +485,7 @@ Once deployed, using the platform is as simple as uploading a file.
 | Variant calling | `variants/<id>.vcf.gz` |
 
 ### 3. Dashboard Management
-The custom CloudWatch Dashboard provides real-time performance metrics for the pipeline. Due to the complexity of its JSON definition and the unreliability of managing it via Terraform, this resource is managed by a dedicated Python script.
+Each stage records its duration and failures as CloudWatch metrics. A dashboard for them is managed by a Python script instead of Terraform, because the dashboard JSON was hard to manage there. The dashboards are still being finished.
 
 To deploy or update the dashboard, run the following command from the project root:
 ```bash
@@ -407,10 +494,18 @@ python scripts/deploy_dashboard.py
 
 ---
 
-## 🧭 Roadmap
+## 🛣️ Roadmap
 
-1. **Cost-safe cloud deployment:** make the NAT gateway optional (off by default), run Fargate jobs in public subnets, set a lifecycle policy on ECR and short log retention, and add an AWS Budget alert.
-2. **CI/CD hardening:** finish the OIDC role separation, restrict `prod` to `main` with required review, and make deploys manual rather than automatic on every push.
-3. **Monitoring:** finish the CloudWatch dashboards for stage durations and failures.
-4. **Google DeepVariant in the cloud:** the stage already runs locally on a GPU and has been measured on a whole chromosome. Still to do: wire it into Step Functions as a parallel branch on the GPU Batch queue.
-5. **Web UI:** a Django front end for uploading samples and browsing results.
+| | Milestone | |
+| :---: | :--- | :--- |
+| ✅ | **Offline pipeline** | End-to-end truth check on every push |
+| ✅ | **Cost-safe networking** | NAT gateway optional and off, ECR and log retention limits, budget alert |
+| ✅ | **CI hardening** | OIDC with separate dev and prod roles, read-only Terraform roles, prod restricted to `main` |
+| ✅ | **DeepVariant on a local GPU** | Measured on a whole chromosome |
+| ✅ | **Web UI** | Works offline |
+| 🎯 | **First cloud run since the hardening** | One small sample through S3 → Step Functions → Batch, confirming the VCF. **Next up.** |
+| 🔜 | **Monitoring** | Finish the CloudWatch dashboards for stage durations and failures |
+| 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |
+| 🔜 | **Web UI on S3** | Point the UI at the cloud bucket |
+| 🔜 | **Branch protection** | Required review for `prod`, once the repository is public |
+| 🔭 | **Pangenome-aware calling** | Explore DeepVariant with a pangenome reference instead of the linear one |
