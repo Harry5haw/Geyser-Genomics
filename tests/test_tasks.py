@@ -85,11 +85,12 @@ def _align_stages(cmd):
 
 
 def test_align_command_marks_duplicates_after_coordinate_sort():
-    cmd = tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.bam", 4, "/w")
+    cmd = tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.bam", 4, "/w", "S1")
     bwa, sort, markdup = _align_stages(cmd)
 
     assert bwa[:4] == ["bwa", "mem", "-t", "4"] and bwa[-2:] == ["/w/ref.fa", "/w/S1.fastq"]
-    assert "-p" not in bwa  # one FASTQ per sample = single-end reads
+    assert bwa[bwa.index("-R") + 1] == "@RG\\tID:S1\\tSM:S1"  # literal backslash-t, as bwa expects
+    assert "-p" not in bwa  # one FASTQ = single-end reads, never interleaved
     assert sort[:2] == ["samtools", "sort"] and "-u" in sort and sort[-1] == "-"
     assert sort[sort.index("-@") + 1] == "4"
     assert sort[sort.index("-m") + 1] == tasks.SORT_MEMORY_PER_THREAD
@@ -98,18 +99,18 @@ def test_align_command_marks_duplicates_after_coordinate_sort():
 
 
 def test_align_command_marks_but_never_removes_duplicates():
-    markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w"))[-1]
+    markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1"))[-1]
     assert "-r" not in markdup and "--remove" not in markdup
     assert "-s" in markdup  # duplicate stats go to the job log
 
 
 def test_align_command_skips_fixmate_for_single_end_reads():
-    # fixmate needs name-grouped read pairs; the pipeline only ever aligns single-end reads.
-    assert "fixmate" not in tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w")
+    # fixmate needs name-grouped read pairs; a single FASTQ is aligned single-end.
+    assert "fixmate" not in tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1")
 
 
 def test_align_command_keeps_temp_files_in_work_dir():
-    sort, markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 2, "/scratch/wd"))[1:]
+    sort, markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 2, "/scratch/wd", "S1"))[1:]
     prefix = os.path.join("/scratch/wd", "")
     sort_tmp, markdup_tmp = sort[sort.index("-T") + 1], markdup[markdup.index("-T") + 1]
     assert sort_tmp.startswith(prefix) and markdup_tmp.startswith(prefix)
@@ -117,14 +118,93 @@ def test_align_command_keeps_temp_files_in_work_dir():
 
 
 def test_align_command_quotes_paths_with_spaces():
-    cmd = tasks.align_command("/my refs/r.fa", "/w/s.fq", "/out dir/o.bam", 1, "/w")
+    cmd = tasks.align_command("/my refs/r.fa", "/w/s.fq", "/out dir/o.bam", 1, "/w", "S1")
     bwa, _, markdup = _align_stages(cmd)
     assert "/my refs/r.fa" in bwa and markdup[-1] == "/out dir/o.bam"
 
 
 def test_align_command_caps_sort_memory_on_big_hosts():
     # 16 threads x the 768 MB default would be ~12 GB of sort buffers next to bwa and markdup.
-    bwa, sort, markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 16, "/w"))
+    bwa, sort, markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 16, "/w", "S1"))
     assert bwa[bwa.index("-t") + 1] == "16"
     assert sort[sort.index("-@") + 1] == str(tasks.SORT_MAX_THREADS)
     assert sort[sort.index("-m") + 1] == tasks.SORT_MEMORY_PER_THREAD
+
+
+
+def test_align_command_paired_end_runs_fixmate_between_bwa_and_sort():
+    cmd = tasks.align_command("/w/ref.fa", ["/w/S1_R1.fastq", "/w/S1_R2.fastq"], "/w/S1.bam", 4, "/w", "S1")
+    bwa, fixmate, sort, markdup = _align_stages(cmd)
+
+    assert bwa[-3:] == ["/w/ref.fa", "/w/S1_R1.fastq", "/w/S1_R2.fastq"]  # R1 then R2
+    assert fixmate == ["samtools", "fixmate", "-m", "-u", "-", "-"]  # -m adds the ms/MC tags markdup needs
+    assert sort[:2] == ["samtools", "sort"] and markdup[:2] == ["samtools", "markdup"]
+
+
+def test_align_command_rejects_wrong_number_of_fastqs():
+    with pytest.raises(ValueError):
+        tasks.align_command("r.fa", [], "o.bam", 1, "/w", "S1")
+    with pytest.raises(ValueError):
+        tasks.align_command("r.fa", ["a", "b", "c"], "o.bam", 1, "/w", "S1")
+
+
+# --- layouts and keys ------------------------------------------------------------
+
+def test_single_end_keys_are_unchanged():
+    # Step Functions, the web UI and the DeepVariant task all depend on these exact keys.
+    assert tasks.keys_for("S1") == {
+        "raw": "raw_reads/S1.fastq.gz",
+        "fastq": "decompressed/S1.fastq",
+        "qc_html": "qc_reports/S1_fastqc.html",
+        "qc_zip": "qc_reports/S1_fastqc.zip",
+        "bam": "alignments/S1.bam",
+        "vcf": "variants/S1.vcf.gz",
+    }
+
+
+def test_paired_end_keys_have_one_per_mate_and_one_bam():
+    keys = tasks.keys_for("S1", "paired")
+    assert tasks.keys_of(keys, "raw") == ["raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz"]
+    assert tasks.keys_of(keys, "fastq") == ["decompressed/S1_R1.fastq", "decompressed/S1_R2.fastq"]
+    assert tasks.keys_of(keys, "qc_html") == ["qc_reports/S1_R1_fastqc.html", "qc_reports/S1_R2_fastqc.html"]
+    assert tasks.keys_of(keys, "bam") == ["alignments/S1.bam"]
+    assert keys["vcf"] == "variants/S1.vcf.gz"
+
+
+@pytest.mark.parametrize("present,expected", [
+    ({"raw_reads/S1.fastq.gz"}, "single"),
+    ({"raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz"}, "paired"),
+])
+def test_layout_from_raw(present, expected):
+    assert tasks.layout_from_raw("S1", present.__contains__) == expected
+
+
+@pytest.mark.parametrize("present,message", [
+    ({"raw_reads/S1_R1.fastq.gz"}, "R2 is missing"),
+    ({"raw_reads/S1_R2.fastq.gz"}, "R1 is missing"),
+    ({"raw_reads/S1.fastq.gz", "raw_reads/S1_R1.fastq.gz"}, "both single-end and paired-end"),
+    (set(), "no raw reads"),
+])
+def test_layout_from_raw_refuses_to_guess(present, message):
+    with pytest.raises(tasks.LayoutError, match=message):
+        tasks.layout_from_raw("S1", present.__contains__)
+
+
+def test_decompress_paired_end_writes_both_mates(local_env):
+    r1, r2 = b"@a/1\nACGT\n+\nIIII\n" * 50, b"@a/2\nTTGC\n+\nIIII\n" * 50
+    write_raw(local_env, "P1_R1", gzip.compress(r1))
+    write_raw(local_env, "P1_R2", gzip.compress(r2))
+
+    tasks.decompress_task("P1")
+
+    assert (local_env / "decompressed" / "P1_R1.fastq").read_bytes() == r1
+    assert (local_env / "decompressed" / "P1_R2.fastq").read_bytes() == r2
+    assert not (local_env / "decompressed" / "P1.fastq").exists()
+
+
+def test_decompress_refuses_a_lone_mate(local_env):
+    write_raw(local_env, "P1_R1", gzip.compress(b"@a\nA\n+\nI\n"))
+    with pytest.raises(tasks.LayoutError):
+        tasks.decompress_task("P1")
+    assert last_metric(local_env)["status"] == "Failure"
+    assert not (local_env / "decompressed").exists()
