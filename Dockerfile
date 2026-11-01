@@ -1,10 +1,14 @@
 # ./Dockerfile
 
-FROM python:3.11-slim-bullseye
+# Debian 13 (trixie). Debian 11 (bullseye) security updates were removed from the mirrors,
+# so fresh builds on it fail with 404s. FastQC needs fontconfig, a font and libharfbuzz (for
+# Java's font manager) to draw its report charts; without them it throws inside a worker
+# thread and hangs instead of exiting.
+FROM python:3.11-slim-trixie
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    openjdk-11-jre-headless wget unzip bwa samtools bcftools perl sra-toolkit curl openssl \
+    openjdk-21-jre-headless fontconfig fonts-dejavu-core libharfbuzz0b wget unzip bwa samtools bcftools perl sra-toolkit curl openssl \
     && apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

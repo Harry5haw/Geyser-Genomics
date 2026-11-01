@@ -1,0 +1,26 @@
+"""Nothing at build time checks that tasks.py, the state machine and the local runner agree. This does."""
+import os
+import re
+
+import run_local
+import tasks
+from conftest import REPO_ROOT
+
+ARRAY_RE = re.compile(
+    r"States\.Array\('python',\s*'tasks\.py',\s*'(\w+)',\s*\$\.srr_id(,\s*\$\.reference_name)?\)"
+)
+
+
+def state_machine_stages():
+    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+        return [(m.group(1), bool(m.group(2))) for m in ARRAY_RE.finditer(fh.read())]
+
+
+def test_state_machine_matches_local_runner():
+    assert state_machine_stages() == run_local.STAGES
+
+
+def test_state_machine_stages_exist_in_tasks():
+    for stage, needs_ref in state_machine_stages():
+        assert stage in tasks.TASKS
+        assert tasks.TASKS[stage][1] == needs_ref, f"reference argument mismatch for '{stage}'"

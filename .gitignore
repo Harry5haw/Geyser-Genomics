@@ -105,3 +105,11 @@ scripts/migrations/*.json   # migration input/mapping files
 # Infra scratch files
 # -----------------------------------------------------------------------------
 infrastructure/query.json
+
+# Terraform plans and vars
+infrastructure/tfplan-*
+*.tfplan
+*.tfvars
+
+# Offline pipeline runs (scripts/run_local.py, scripts/make_test_data.py)
+local_bucket/
