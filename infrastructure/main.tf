@@ -34,22 +34,44 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
 }
+# NAT is optional (var.enable_nat_gateway, default false) because it bills
+# hourly. With it off, the private subnet has no internet route; Fargate jobs
+# run in the public subnet with a public IP instead.
+locals {
+  # One element when NAT is on, none when off; drives the private default route.
+  nat_route_keys = var.enable_nat_gateway ? ["default"] : []
+}
 resource "aws_eip" "nat" {
+  count      = var.enable_nat_gateway ? 1 : 0
   domain     = "vpc"
   depends_on = [aws_internet_gateway.gw]
 }
 resource "aws_nat_gateway" "nat" {
-  allocation_id = aws_eip.nat.id
+  count         = var.enable_nat_gateway ? 1 : 0
+  allocation_id = aws_eip.nat[0].id
   subnet_id     = aws_subnet.public.id
   tags          = { Name = "${var.project_name}-nat-gw" }
   depends_on    = [aws_internet_gateway.gw]
 }
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
-  route {
-    cidr_block     = "0.0.0.0/0"
-    nat_gateway_id = aws_nat_gateway.nat.id
-  }
+  # Attribute syntax (not a route block) so that an empty list actually removes
+  # the default route when NAT is off, instead of leaving it unmanaged.
+  route = [for _ in local.nat_route_keys : {
+    cidr_block                 = "0.0.0.0/0"
+    nat_gateway_id             = aws_nat_gateway.nat[0].id
+    carrier_gateway_id         = null
+    core_network_arn           = null
+    destination_prefix_list_id = null
+    egress_only_gateway_id     = null
+    gateway_id                 = null
+    ipv6_cidr_block            = null
+    local_gateway_id           = null
+    network_interface_id       = null
+    transit_gateway_id         = null
+    vpc_endpoint_id            = null
+    vpc_peering_connection_id  = null
+  }]
   tags = { Name = "${var.project_name}-private-rt" }
 }
 resource "aws_route_table_association" "private" {
@@ -73,6 +95,24 @@ resource "aws_ecr_repository" "geyser_app" {
   name         = "${var.project_name}-app"
   force_delete = true # Note: In production, consider removing this for safety.
   tags         = { Name = "${var.project_name}-ecr-repo" }
+}
+
+# Keep the 20 most recent images (any tag status) and expire the rest, so
+# storage cost stays bounded as CI/local builds push a tag per commit.
+resource "aws_ecr_lifecycle_policy" "geyser_app" {
+  repository = aws_ecr_repository.geyser_app.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep the 20 most recent images"
+      selection = {
+        tagStatus   = "any"
+        countType   = "imageCountMoreThan"
+        countNumber = 20
+      }
+      action = { type = "expire" }
+    }]
+  })
 }
 ################################################################################
 # IAM ROLES AND POLICIES
@@ -133,9 +173,12 @@ resource "aws_batch_compute_environment" "geyser_fargate" {
   type                     = "MANAGED"
   service_role             = aws_iam_role.geyser_batch_service_role.arn
   compute_resources {
-    type               = "FARGATE"
-    max_vcpus          = 16
-    subnets            = [aws_subnet.private.id]
+    type      = "FARGATE"
+    max_vcpus = 16
+    # Public subnet + assignPublicIp (job definition) so tasks reach ECR, S3 and
+    # CloudWatch through the internet gateway without a NAT gateway. The VPC
+    # default security group allows no inbound traffic from the internet.
+    subnets            = [aws_subnet.public.id]
     security_group_ids = [aws_vpc.main.default_security_group_id]
   }
   tags = { Name = "${var.project_name}-ComputeEnv" }
@@ -166,6 +209,11 @@ resource "aws_batch_job_definition" "geyser_app_job_def" {
     jobRoleArn = aws_iam_role.geyser_batch_task_role.arn
     fargatePlatformConfiguration = {
       platformVersion = "LATEST"
+    }
+    # Required for Fargate in a public subnet with no NAT: without a public IP
+    # the task cannot pull its image or reach S3.
+    networkConfiguration = {
+      assignPublicIp = "ENABLED"
     }
     resourceRequirements = [
       { type = "VCPU", value = "2" },
