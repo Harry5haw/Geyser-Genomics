@@ -11,16 +11,14 @@ locals {
   # so a token from an environment job looks like
   #   repo:<owner>/<repo>:environment:prod:ref:refs/heads/main
   # Dev accepts any branch; prod accepts only main.
-  #
-  # TRANSITION: the first entry of each list is GitHub's default sub format
-  # (no ref). It is kept only until the sub customisation is switched on and
-  # verified, then removed so prod really requires refs/heads/main.
+  # The sub customisation is a GitHub repo setting, not Terraform. Check it with:
+  #   gh api repos/<owner>/<repo>/actions/oidc/customization/sub
+  # If it is ever reset to the default, these subjects stop matching and CI
+  # cannot assume the roles until it is set back.
   oidc_subs_dev = [
-    "${local.gh_sub_prefix}:environment:dev",
     "${local.gh_sub_prefix}:environment:dev:ref:refs/heads/*",
   ]
   oidc_subs_prod = [
-    "${local.gh_sub_prefix}:environment:prod",
     "${local.gh_sub_prefix}:environment:prod:ref:refs/heads/main",
   ]
 
