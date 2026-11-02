@@ -47,6 +47,7 @@ for _sub in ("app", "app-deepvariant"):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+import provenance  # noqa: E402
 from storage import LocalStorage, S3Storage, storage_from_env  # noqa: E402
 from tasks import ALIGNMENT_FORMS, MATES, PAIRED, SINGLE, keys_for, keys_of, legacy_qc_keys  # noqa: E402
 
@@ -170,9 +171,36 @@ def open_runs(sfn_client, state_machine_arn: str) -> Counter:
         kwargs["nextToken"] = page["nextToken"]
 
 
-def reconcile(keys, running: Counter = None) -> dict:
+def run_records(storage, keys) -> dict:
+    """Summaries of the stages' run records, by sample. Unreadable ones are skipped.
+
+    A sample has a record if it has parts (runs/<id>.provenance/<Task>.json) or the stored copy
+    (runs/<id>.provenance.json): the copy can be missing when the stage that would have written it failed.
+    """
+    part_keys = {}  # sample -> its part keys (from the listing reconcile already has: no extra LIST)
+    for key in keys:
+        rest = key[len(provenance.RUN_PREFIX):] if key.startswith(provenance.RUN_PREFIX) else ""
+        if rest.endswith(".provenance.json"):
+            part_keys.setdefault(rest[:-len(".provenance.json")], [])
+        elif ".provenance/" in rest:
+            part_keys.setdefault(rest.split(".provenance/", 1)[0], []).append(key)
+    out = {}
+    for sample_id in sorted(part_keys):
+        try:
+            record = provenance.read_record(storage, sample_id, sorted(part_keys[sample_id]))
+        except Exception as err:  # noqa: BLE001 - e.g. S3 AccessDenied or throttling on one record
+            print(f"WARNING: could not read the run record of {sample_id}: {err}", file=sys.stderr)
+            continue
+        if record:
+            out[sample_id] = provenance.summary(record)
+    return out
+
+
+def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
+    """records: run_records() output; each sample row gets its summary as "run_record" (or None)."""
     keys = set(keys)
     running = running or Counter()
+    records = records or {}
     trigger = load_trigger()
     extras = extra_outputs()
 
@@ -223,9 +251,21 @@ def reconcile(keys, running: Counter = None) -> dict:
         if open_count > 1:
             note = f"{open_count} runs at once: they overwrite each other's outputs"
             problem = "concurrent runs"
+        record = records.get(sample_id)
+        failed_stages = [t for t, st in (record or {}).get("stages", {}).items() if st != "Success"]
+        if failed_stages:
+            # Each failed stage with its own run (an inherited upstream stage can come from an older run).
+            runs = record.get("stage_runs") or {}
+            failures = ", ".join(t + (f" in {r}" if (r := runs.get(t) or record.get("run_name")) else "")
+                                 for t in failed_stages)
+            note = "; ".join(n for n in (note, f"run record: {failures} failed") if n)
+            # A core stage failing in the latest run is a problem even if an earlier run's outputs are all
+            # there; not while a retry is open, and not for an extra caller (DeepVariant) alone.
+            if record["status"] == "failed" and not open_count:
+                problem = problem or "run failed"
         rows.append({"sample_id": sample_id, "status": status, "layout": layout, "raw": has_raw,
                      "outputs": outputs, "extra_outputs": extra, "open_runs": open_count, "note": note,
-                     "problem": problem})
+                     "problem": problem, "run_record": record})
 
     return {"samples": rows, "upload_problems": upload_problems,
             "problem_count": len(upload_problems) + sum(1 for r in rows if r["problem"])}
@@ -234,16 +274,19 @@ def reconcile(keys, running: Counter = None) -> dict:
 def print_report(result: dict) -> None:
     labels = [label for _, label in STAGE_OUTPUTS]
     extra_labels = sorted({label for r in result["samples"] for label in r["extra_outputs"]})
-    print(f"{'Sample':<24} {'Status':<12} {'Outputs':<{2 * len(labels) + 3 * len(extra_labels)}} Note")
+    width = 2 * len(labels) + 3 * len(extra_labels) + 2
+    print(f"{'Sample':<24} {'Status':<12} {'Outputs':<{width}} Note")
     for r in result["samples"]:
         marks = " ".join(label if r["outputs"][name] else "." for name, label in STAGE_OUTPUTS)
         marks += "".join(f" {label if r['extra_outputs'].get(label) else '.' * len(label)}" for label in extra_labels)
+        record = r.get("run_record")
+        marks += " " + ("." if not record else "R" if record["status"] == "succeeded" else "r")
         flag = "!" if r["problem"] else " "
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
-        print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} "
-              f"{note}")
+        print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{width}} {note}")
     print("Outputs: Q QC report (fastp), A alignment, V VCF"
-          + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else ""))
+          + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
+          + ", R run record (r: incomplete or failed)")
     if result["upload_problems"]:
         print("\nUpload problems:")
         for p in result["upload_problems"]:
@@ -285,7 +328,8 @@ def main(argv=None, storage=None, sfn_client=None) -> int:
         print("NOTE: no --state-machine-arn/SFN_ARN, so open runs aren't checked: a sample still being "
               "processed shows as 'not started' or 'incomplete'.", file=sys.stderr)
 
-    result = reconcile(storage.list_keys(""), running)
+    keys = set(storage.list_keys(""))
+    result = reconcile(keys, running, run_records(storage, keys))
     if args.json:
         print(json.dumps(result, indent=2))
     else:

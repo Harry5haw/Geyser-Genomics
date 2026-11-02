@@ -186,7 +186,7 @@ def test_paired_end_report(tmp_path, capsys, monkeypatch):
     make_bucket(tmp_path, paired_sample("P1"))
     assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 0
     out = capsys.readouterr().out
-    assert " P1                      complete     Q A V .. ..  paired-end" in out
+    assert " P1                      complete     Q A V .. .. .  paired-end" in out  # last '.': no run record
     assert "1 complete; 0 problem(s)" in out
 
 
@@ -228,3 +228,77 @@ def test_stats_files_belong_to_their_sample():
     for name in ("flagstat.txt", "mosdepth.summary.txt", "mosdepth.global.dist.txt", "bcftools.stats.txt"):
         assert reconcile.match_sample(f"stats/ABC/{name}", patterns) == "ABC"
     assert reconcile.match_sample("stats/ABC/other.txt", patterns) is None
+
+
+def test_run_records_show_in_the_report(tmp_path, capsys, monkeypatch):
+    import provenance
+
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    store = make_bucket(tmp_path, full_sample("S1") + paired_sample("P1"))
+    provenance._put_json(store, "runs/S1.provenance.json", {
+        "status": "succeeded", "complete": True, "run_name": "S1-run", "stages": {"Align": {"status": "Success"}}})
+    provenance._put_json(store, "runs/P1.provenance.json", {
+        "status": "failed", "complete": False, "run_name": "P1-run", "stages": {"Align": {"status": "Failure"}}})
+
+    assert reconcile.main(["--local-dir", str(tmp_path), "--json"]) == 0
+    rows = {r["sample_id"]: r for r in json.loads(capsys.readouterr().out)["samples"]}
+    assert rows["S1"]["run_record"]["status"] == "succeeded"
+    assert "run record: Align in P1-run failed" in rows["P1"]["note"]
+
+    reconcile.main(["--local-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert " S1 " in out and "Q A V .. .. R" in out and "Q A V .. .. r" in out
+
+
+def put_parts(store, sample_id, statuses, run_name="run"):
+    import provenance
+
+    for task, status in statuses:
+        provenance._put_json(store, f"runs/{sample_id}.provenance/{task}.json", {
+            "task": task, "status": status, "run_name": run_name, "finished": "2026-11-02T10:00:00Z",
+            "inputs": [], "outputs": [], "tools": {}, "stats": {}})
+
+
+def test_a_failed_core_stage_is_a_problem_even_with_all_outputs(tmp_path, capsys, monkeypatch):
+    # An earlier run's outputs are all there, but the latest run's variant calling failed.
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    store = make_bucket(tmp_path, full_sample("S1"))
+    put_parts(store, "S1", [("QualityControl", "Success"), ("Align", "Success"), ("CallVariants", "Failure")])
+
+    assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 1
+    out = capsys.readouterr().out
+    assert "!S1 " in out and "Q A V .. .. r" in out and "CallVariants in run failed" in out
+
+
+def test_a_failed_extra_caller_is_noted_not_a_problem(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    store = make_bucket(tmp_path, full_sample("S1"))
+    put_parts(store, "S1", [("QualityControl", "Success"), ("Align", "Success"), ("CallVariants", "Success"),
+                            ("DeepVariant", "Failure")])
+
+    assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 0
+    out = capsys.readouterr().out
+    assert "Q A V .. .. R" in out and "DeepVariant in run failed" in out
+
+
+def test_a_failed_run_with_a_retry_open_is_not_a_problem(tmp_path):
+    from collections import Counter
+
+    store = make_bucket(tmp_path, full_sample("S1"))
+    put_parts(store, "S1", [("QualityControl", "Success"), ("Align", "Failure")])
+    keys = set(store.list_keys(""))
+    (row,) = reconcile.reconcile(keys, Counter({"S1": 1}), reconcile.run_records(store, keys))["samples"]
+    assert row["status"] == "running" and row["problem"] is None and "Align in run failed" in row["note"]
+
+
+def test_an_unreadable_run_record_is_skipped(tmp_path, monkeypatch, capsys):
+    import provenance
+
+    store = make_bucket(tmp_path, full_sample("S1") + ["runs/S1.provenance.json"])
+
+    def denied(storage, sample_id):
+        raise PermissionError("AccessDenied")
+
+    monkeypatch.setattr(provenance, "read_record", denied)
+    assert reconcile.run_records(store, set(store.list_keys(""))) == {}
+    assert "could not read the run record of S1" in capsys.readouterr().err

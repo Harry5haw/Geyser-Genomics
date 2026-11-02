@@ -128,3 +128,13 @@ def test_a_cram_index_alone_is_not_an_alignment(storage):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     put(storage, "alignments/S1.cram.crai", b"x")
     assert states(status.load_one(storage, "S1"))[1] == "running"
+
+
+def test_run_records_ignore_the_stages_provenance_files(storage):
+    # runs/<id>.provenance.json (app/provenance.py) sits next to the worker's runs/<id>.json.
+    from samples.runs import read_all_runs
+
+    write_run(storage, "S1", {"state": "succeeded"})
+    put(storage, "runs/S1.provenance.json", b'{"status": "succeeded"}')
+    put(storage, "runs/S1.provenance/Align.json", b'{"status": "Success"}')
+    assert read_all_runs(storage) == {"S1": {"state": "succeeded"}}

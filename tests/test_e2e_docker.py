@@ -31,6 +31,28 @@ def test_pipeline_recovers_planted_snps(tmp_path, capfd):
     assert "bwa-mem2#262" in log and "Aligning with bwa\n" in log.replace("\r", "")
     _check_cram_and_indexes(root, "SYNTH001", reads=10_000)
     _check_stats(root, "SYNTH001", paired=False)
+    _check_run_record(root, "SYNTH001", aligner="bwa")
+
+
+def _check_run_record(root, sample, aligner):
+    """runs/<id>.provenance.json: one complete run, with real tool versions and the reference's MD5."""
+    import hashlib
+    import json
+
+    record = json.loads((root / "runs" / f"{sample}.provenance.json").read_text())
+    assert record["status"] == "succeeded" and record["complete"], record["stages"]
+    assert set(record["stages"]) == {"QualityControl", "Align", "CallVariants"}
+    assert record["run_name"].startswith(f"{sample}-") and record["run_name"].endswith("-local")
+    assert record["app_version"].startswith("local:")
+    assert record["aligner"] == aligner
+    ref = root / "reference" / "synthetic_ref.fa"
+    assert record["reference"]["md5"] == hashlib.md5(ref.read_bytes()).hexdigest()
+    for tool in ("fastp", "samtools", "bcftools", "mosdepth", aligner):
+        assert record["tools"].get(tool), (tool, record["tools"])  # every tool reported a version
+    assert record["tools"]["mosdepth release"] == "0.3.15"
+    outputs = {o["key"] for o in record["outputs"]}
+    assert {f"alignments/{sample}.cram", f"variants/{sample}.vcf.gz", f"stats/{sample}/flagstat.txt"} <= outputs
+    assert record["stats"]["flagstat"]["in_total"] == 10_000
 
 
 def _check_stats(root, sample, paired):
@@ -144,6 +166,7 @@ def test_paired_end_sample_runs_through_every_stage(tmp_path, capfd):
     assert "samtools fixmate -m" in log
     _check_cram_and_indexes(root, "PAIRED001", reads=10_000)  # 5,000 pairs
     _check_stats(root, "PAIRED001", paired=True)
+    _check_run_record(root, "PAIRED001", aligner="bwa-mem2")
     report = json.loads((root / "qc_reports" / "PAIRED001.fastp.json").read_text())  # one report, both mates
     assert report["summary"]["before_filtering"]["total_reads"] == 10_000 and report["insert_size"]["peak"] > 0
     assert not list((root / "qc_reports").glob("PAIRED001_R*"))
