@@ -123,6 +123,13 @@ def _number(text, kind=float):
     return None if math.isnan(value) else kind(value)
 
 
+def has_subsets(extended_csv, subsets):
+    """True if a hap.py extended.csv already has rows for every stratification region in subsets."""
+    with open(extended_csv, newline="", encoding="utf-8") as fh:
+        found = {row["Subset"] for row in csv.DictReader(fh)}
+    return all(s in found for s in subsets)
+
+
 def read_extended(path, subsets):
     """{(subset, 'SNP'|'INDEL'): {...}} from a hap.py extended.csv: PASS rows over all subtypes, for the given
     stratification regions ('*' is the whole confident region). F1 is None when a region has no variants."""

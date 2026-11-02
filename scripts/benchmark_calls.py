@@ -11,15 +11,15 @@ giraffe, both cut to chr20). That removes the bias of aligning only reads a line
         --region chr20 --stratification stratifications/GRCh38_chr20.tsv --pg-shards 12 --pg-memory 18g
 
 Each configuration runs on its own sample name: a configuration whose sample differs from its alignment's (e.g.
-a MAPQ>=5 run) gets a hard link of that alignment, so every caller output has its own key. Calls and hap.py results
-that already exist are reused (delete a sample's VCF to redo it). Outputs: benchmarks/calls_<preset>.csv and
-benchmarks/calls_<preset>/summary.md.
+a MAPQ>=5 run) gets a hard link of that alignment, so every caller output has its own key. Calls are redone when the
+alignment or the caller settings change, and hap.py when the VCF changes (benchmark_giraffe.score_config); a VCF
+made before this script recorded its settings is reused and marked 'unrecorded' in the CSV. Outputs:
+benchmarks/calls_<preset>.csv and benchmarks/calls_<preset>/summary.md.
 """
 
 import argparse
 import os
 import sys
-import time
 
 import benchmark_aligners as ba
 import benchmark_giraffe as bg
@@ -32,18 +32,43 @@ PANGENOME_MQ5 = {
 }
 VG_LINEAR = {"DEEPVARIANT_EXTRA_ARGS": bg.VG_LINEAR_DV_ARGS}
 
-# preset: {"base": truth/<base>.*, "configs": [(label, sample, alignment sample, caller, env, DV memory)]}
+# preset: {"base": truth/<base>.*, "configs": [(label, aligner, sample, alignment sample, caller, env, DV memory)]}
 PRESETS = {
     "google-case-studies": {
         "base": "HG003_chr20",
         "configs": [
-            ("BWA + linear DV", "HG003_chr20", "HG003_chr20", "deepvariant", {}, "12g"),
-            ("BWA + pangenome DV", "HG003_chr20", "HG003_chr20", "pangenome", bg.PANGENOME_ENV, "14g"),
-            ("BWA + pangenome DV, MAPQ>=5", "HG003_chr20_mq5", "HG003_chr20", "pangenome", PANGENOME_MQ5, "14g"),
-            ("giraffe + linear DV (VG flags)", "HG003_chr20_vg", "HG003_chr20_vg", "deepvariant", VG_LINEAR, "12g"),
-            ("giraffe + pangenome DV", "HG003_chr20_vg", "HG003_chr20_vg", "pangenome", bg.PANGENOME_ENV, "14g"),
+            ("BWA + linear DV", "bwa", "HG003_chr20", "HG003_chr20", "deepvariant", {}, "12g"),
+            ("BWA + pangenome DV", "bwa", "HG003_chr20", "HG003_chr20", "pangenome", bg.PANGENOME_ENV, "14g"),
+            (
+                "BWA + pangenome DV, MAPQ>=5",
+                "bwa",
+                "HG003_chr20_mq5",
+                "HG003_chr20",
+                "pangenome",
+                PANGENOME_MQ5,
+                "14g",
+            ),
+            (
+                "giraffe + linear DV (VG flags)",
+                "giraffe",
+                "HG003_chr20_vg",
+                "HG003_chr20_vg",
+                "deepvariant",
+                VG_LINEAR,
+                "12g",
+            ),
+            (
+                "giraffe + pangenome DV",
+                "giraffe",
+                "HG003_chr20_vg",
+                "HG003_chr20_vg",
+                "pangenome",
+                bg.PANGENOME_ENV,
+                "14g",
+            ),
             (
                 "giraffe + pangenome DV, MAPQ>=5",
+                "giraffe",
                 "HG003_chr20_vg_mq5",
                 "HG003_chr20_vg",
                 "pangenome",
@@ -53,6 +78,25 @@ PRESETS = {
         ],
     },
 }
+ERROR_KEYS = ("snp_fn", "snp_fp", "indel_fn", "indel_fp")
+
+
+def missing_inputs(root, preset, reference, graph=run_local.DEFAULT_PANGENOME):
+    """Keys a preset needs that are not under root: alignments, truth, reference, and the graph for pangenome runs."""
+    need = [f"truth/{preset['base']}.vcf.gz", f"truth/{preset['base']}.bed", f"reference/{reference}"]
+    if any(c[4] == "pangenome" for c in preset["configs"]):
+        need.append(f"pangenome/{graph}")
+    missing = [k for k in need if not os.path.exists(ba.path_of(root, k))]
+    for source in dict.fromkeys(c[3] for c in preset["configs"]):
+        if ba.alignment_path(root, source) is None:
+            missing.append(f"alignments/{source}.cram or .bam")
+    return missing
+
+
+def error_total(row):
+    """SNP + indel FN + FP, or '' if any of the four counts is missing (a partial sum would look like a real one)."""
+    values = [row.get(k) for k in ERROR_KEYS]
+    return sum(values) if all(isinstance(v, int) for v in values) else ""
 
 
 def summary_markdown(preset, rows):
@@ -60,16 +104,15 @@ def summary_markdown(preset, rows):
         f"# Caller configurations: {preset}",
         "",
         "| Configuration | SNP FN / FP | SNP F1 | Indel FN / FP | Indel F1 | SNP+indel errors | SNP errors in segdups "
-        "| SNP errors, low mappability |",
-        "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| SNP errors, low mappability | Calls |",
+        "| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- |",
     ]
     for r in rows:
         f1 = {k: f"{r[k]:.6f}" if isinstance(r[k], float) else "" for k in ("snp_f1", "indel_f1")}
-        total = sum(r[k] for k in ("snp_fn", "snp_fp", "indel_fn", "indel_fp") if isinstance(r[k], int))
         lines.append(
             f"| {r['configuration']} | {r['snp_fn']} / {r['snp_fp']} | {f1['snp_f1']} | {r['indel_fn']} / "
-            f"{r['indel_fp']} | {f1['indel_f1']} | {total} | {r['segdups_snp_errors']} | "
-            f"{r['lowmappabilityall_snp_errors']} |"
+            f"{r['indel_fp']} | {f1['indel_f1']} | {error_total(r)} | {r['segdups_snp_errors']} | "
+            f"{r['lowmappabilityall_snp_errors']} | {r.get('calls_provenance', '')} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -82,52 +125,48 @@ def main(argv=None):
     p.add_argument("--region", help="hap.py -l, e.g. chr20")
     p.add_argument("--stratification", help="hap.py stratification TSV key (benchmark_happy --stratification)")
     p.add_argument("--pg-shards", type=int, default=6, help="make_examples workers for pangenome DV")
-    p.add_argument("--pg-memory", default="14g", help="memory cap for the pangenome DV container")
+    p.add_argument("--pg-memory", help="memory cap for pangenome DV (default: each configuration's own)")
     a = p.parse_args(argv)
 
     root = os.path.abspath(a.root)
     preset = PRESETS[a.preset]
+    missing = missing_inputs(root, preset, a.reference)
+    if a.stratification and not os.path.exists(ba.path_of(root, a.stratification)):
+        missing.append(a.stratification)
+    if missing:
+        p.error("missing before any run: " + ", ".join(missing) + " (fetch them first, see --help)")
     out_dir = ba.path_of(root, f"benchmarks/calls_{a.preset}")
     os.makedirs(out_dir, exist_ok=True)
     subsets = ["*"] + (
         benchmark_happy.read_stratification_names(ba.path_of(root, a.stratification)) if a.stratification else []
     )
-    for _, _, source, _, _, _ in preset["configs"]:
-        if ba.alignment_path(root, source) is None:
-            p.error(f"no alignments/{source}.cram or .bam: fetch it first (see --help)")
 
     rows = []
-    for label, sid, source, caller, env, dv_memory in preset["configs"]:
-        aln = ba.alignment_path(root, source)
+    for label, aligner, sid, source, caller, env, dv_memory in preset["configs"]:
         if sid != source:
+            aln = ba.alignment_path(root, source)
             bg.link_or_copy(aln, ba.path_of(root, f"alignments/{sid}.{aln.rsplit('.', 1)[-1]}"))
         env, dv_memory = bg.caller_settings(caller, env, dv_memory, a.pg_shards, a.pg_memory)
         cpath = os.path.join(out_dir, f"calls_{sid}_{caller}.json")
-        if not os.path.exists(run_local.vcf_path(root, caller, sid)):
-            print(f">>> calls: {label}", flush=True)
-            started = time.monotonic()
-            if bg.run_caller(root, sid, a.reference, caller, env, dv_memory) != 0:
-                return 1
-            ba.save_json(
-                cpath,
-                {
-                    "calls_wall_s": round(time.monotonic() - started, 1),
-                    "calls_shards": env.get("DEEPVARIANT_SHARDS", "default"),
-                },
-            )
-        if sid != preset["base"]:
-            ba.ensure_truth(root, preset["base"], sid)
-        prefix = ba.path_of(root, f"benchmarks/{sid}/{caller}")
-        if not os.path.exists(prefix + ".extended.csv") or (a.stratification and not bg._has_subsets(prefix, subsets)):
-            args = ["--root", root, "--sample", sid, "--reference", a.reference, "--callers", caller]
-            args += ["--region", a.region] if a.region else []
-            args += ["--stratification", a.stratification] if a.stratification else []
-            if benchmark_happy.main(args) != 0:
-                return 1
-        summary = benchmark_happy.read_summary(prefix + ".summary.csv")
-        extended = benchmark_happy.read_extended(prefix + ".extended.csv", subsets)
-        aligner = label.split(" + ")[0]
-        rows.append(bg.result_row(label, aligner, sid, caller, summary, extended, ba.load_json(cpath) or {}))
+        scored = bg.score_config(
+            root,
+            out_dir,
+            cpath,
+            label,
+            sid,
+            caller,
+            env,
+            dv_memory,
+            a.reference,
+            preset["base"],
+            a.region,
+            a.stratification,
+            subsets,
+        )
+        if scored is None:
+            return 1
+        summary, extended, info = scored
+        rows.append(bg.result_row(label, aligner, sid, caller, summary, extended, info))
 
     csv_path = ba.path_of(root, f"benchmarks/calls_{a.preset}.csv")
     ba.write_csv(csv_path, rows)

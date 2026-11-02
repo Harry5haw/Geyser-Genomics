@@ -23,9 +23,10 @@ def test_google_preset_pairs_each_caller_on_both_alignments():
     configs = bc.PRESETS["google-case-studies"]["configs"]
     assert bc.PRESETS["google-case-studies"]["base"] == "HG003_chr20"
     by_source = {}
-    for label, sid, source, caller, env, memory in configs:
+    for label, aligner, sid, source, caller, env, memory in configs:
         by_source.setdefault(source, []).append((caller, env.get("DEEPVARIANT_EXTRA_ARGS", "")))
-        assert label.split(" + ")[0] in ("BWA", "giraffe")
+        assert aligner == ("giraffe" if source.endswith("_vg") else "bwa")
+        assert label.lower().startswith(aligner)
         # a configuration on its own sample name is a hard link of its alignment (MAPQ>=5 runs)
         assert (sid == source) != sid.endswith("_mq5")
         assert memory == ("14g" if caller == "pangenome" else "12g")
@@ -62,3 +63,17 @@ def test_summary_totals_errors():
 def test_missing_alignment_stops_before_any_run(tmp_path):
     with pytest.raises(SystemExit):
         bc.main(["--root", str(tmp_path), "--preset", "google-case-studies", "--reference", "r.fa"])
+
+
+def test_error_total_is_blank_when_a_count_is_missing():
+    row = {"snp_fn": 1, "snp_fp": 2, "indel_fn": 3, "indel_fp": 4}
+    assert bc.error_total(row) == 10
+    assert bc.error_total({**row, "indel_fp": ""}) == ""
+
+
+def test_missing_inputs_lists_everything_up_front(tmp_path):
+    preset = bc.PRESETS["google-case-studies"]
+    missing = bc.missing_inputs(str(tmp_path), preset, "GRCh38_chr20.fa")
+    assert "truth/HG003_chr20.vcf.gz" in missing and "reference/GRCh38_chr20.fa" in missing
+    assert any(m.startswith("pangenome/") for m in missing)
+    assert "alignments/HG003_chr20.cram or .bam" in missing and "alignments/HG003_chr20_vg.cram or .bam" in missing
