@@ -53,6 +53,20 @@ updates:
     commit-message:
       prefix: "Docker"
 
+  # The quality gate crate (gate/). Its Rust toolchain is pinned in gate/rust-toolchain.toml and
+  # bumped by hand.
+  - package-ecosystem: cargo
+    directory: "/gate"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      cargo:
+        patterns: ["*"]
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "Deps"
+
   # Monthly: every Terraform update needs a reviewed plan, and the AWS provider is pinned on purpose.
   - package-ecosystem: terraform
     directory: "/infrastructure"
