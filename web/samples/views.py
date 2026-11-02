@@ -23,7 +23,7 @@ from geyser_web.pipeline import (
     keys_for,
     keys_of,
     layout_from_raw,
-    read_record,
+    read_part,
 )
 
 from . import status as status_mod
@@ -171,22 +171,24 @@ def _status_context(storage, sample):
 
 
 def _current_annotated_vcf(storage, sample):
-    """The annotated VCF's key if it belongs to the sample's latest run, else None.
+    """The annotated VCF's key if the sample's last variants run wrote it, else None.
 
-    Nothing deletes an old one when a later run doesn't annotate (no GFF, ANNOTATE=off, csq failed),
-    so its presence alone could show an earlier run's calls. The run record's outputs list what the
-    latest run wrote. Without a record (imported data), the file is trusted.
+    Nothing deletes an old one when a later variants run doesn't annotate (no GFF, ANNOTATE=off, csq
+    failed), so its presence alone could show an earlier run's calls. The variants stage's own part
+    (runs/<id>.provenance/CallVariants.json, rewritten by every variants run) lists what that run
+    wrote; a later run that stopped before variant calling doesn't touch it. Without a part
+    (imported data, runs from before the run record), the file is trusted.
     """
     key = sample.keys["csq_vcf"]
     if not storage.exists(key):
         return None
     try:
-        record = read_record(storage, sample.sample_id)
-    except Exception:  # noqa: BLE001 - the record is a hint here; never fail the page over it
-        record = None
-    if record is None:
+        part = read_part(storage, sample.sample_id, "CallVariants")
+    except Exception:  # noqa: BLE001 - the part is a hint here; never fail the page over it
+        part = None
+    if part is None:
         return key
-    return key if any(o.get("key") == key for o in record.get("outputs") or []) else None
+    return key if any(o.get("key") == key for o in part.get("outputs") or []) else None
 
 
 @require_GET
@@ -201,6 +203,8 @@ def sample_detail(request, sample_id):
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):
         key = _file_key(sample_id, kind, sample.keys)
+        if kind == "csq_vcf" and variants_key != key:
+            continue  # an annotated VCF from an earlier run: not this sample's current calls
         if storage.exists(key):
             downloads.append(
                 {"kind": kind, "label": label, "description": description, "filename": os.path.basename(key)}

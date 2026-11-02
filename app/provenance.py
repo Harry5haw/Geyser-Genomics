@@ -270,6 +270,11 @@ def _union(lists) -> list:
     return [by_key[k] for k in sorted(by_key)]
 
 
+def read_part(storage, sample_id: str, task: str):
+    """One stage's part (the last run of that stage), or None. Each task has exactly one, overwritten per run."""
+    return _read_json(storage, f"{part_prefix(sample_id)}{task}.json")
+
+
 def read_record(storage, sample_id: str, part_keys=None):
     """The sample's run record, assembled from its parts (or the stored copy if there are none), or None."""
     return build(storage, sample_id, part_keys) or _read_json(storage, record_key(sample_id))

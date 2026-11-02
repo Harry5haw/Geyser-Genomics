@@ -187,18 +187,43 @@ def test_detail_page_without_annotation_has_no_consequence_column(client, storag
     assert "Consequence" not in body and "/samples/S1/files/csq_vcf/" not in body
 
 
-def test_an_annotated_vcf_from_an_earlier_run_is_not_shown(client, storage):
-    # A later run that didn't annotate leaves the old csq VCF in place (nothing deletes it); the run
-    # record's outputs say what the latest run wrote.
+def test_an_annotated_vcf_from_an_earlier_run_is_not_shown_or_offered(client, storage):
+    # A later variants run that didn't annotate leaves the old csq VCF in place (nothing deletes it);
+    # the variants stage's part says what its last run wrote.
     import gzip
 
     finished_sample(storage)
     put(storage, "variants/S1.csq.vcf.gz", gzip.compress(CSQ_VCF.encode()))
-    record = {"run_name": "S1-run2", "status": "succeeded", "outputs": [{"key": "variants/S1.vcf.gz", "bytes": 1}]}
-    put(storage, "runs/S1.provenance.json", json.dumps(record))
+    part = {"task": "CallVariants", "run_name": "S1-run2", "outputs": [{"key": "variants/S1.vcf.gz", "bytes": 1}]}
+    put(storage, "runs/S1.provenance/CallVariants.json", json.dumps(part))
     body = client.get("/samples/S1/").content.decode()
-    assert "<th>Consequence</th>" not in body
+    assert "<th>Consequence</th>" not in body and "/samples/S1/files/csq_vcf/" not in body
 
-    record["outputs"].append({"key": "variants/S1.csq.vcf.gz", "bytes": 1})
-    put(storage, "runs/S1.provenance.json", json.dumps(record))
+    part["outputs"].append({"key": "variants/S1.csq.vcf.gz", "bytes": 1})
+    put(storage, "runs/S1.provenance/CallVariants.json", json.dumps(part))
+    body = client.get("/samples/S1/").content.decode()
+    assert "<th>Consequence</th>" in body and "/samples/S1/files/csq_vcf/" in body
+
+
+def test_a_later_run_that_stopped_before_variants_keeps_the_annotation(client, storage):
+    # run2 failed in align: its parts don't include CallVariants, whose part is still run1's.
+    import gzip
+
+    finished_sample(storage)
+    put(storage, "variants/S1.csq.vcf.gz", gzip.compress(CSQ_VCF.encode()))
+    run1 = {
+        "task": "CallVariants",
+        "run_name": "S1-run1",
+        "finished": "2026-11-02T10:00:00Z",
+        "outputs": [{"key": "variants/S1.csq.vcf.gz", "bytes": 1}, {"key": "variants/S1.vcf.gz", "bytes": 1}],
+    }
+    run2 = {
+        "task": "Align",
+        "run_name": "S1-run2",
+        "finished": "2026-11-02T11:00:00Z",
+        "status": "Failure",
+        "outputs": [],
+    }
+    put(storage, "runs/S1.provenance/CallVariants.json", json.dumps(run1))
+    put(storage, "runs/S1.provenance/Align.json", json.dumps(run2))
     assert "<th>Consequence</th>" in client.get("/samples/S1/").content.decode()
