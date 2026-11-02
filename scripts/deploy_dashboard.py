@@ -77,7 +77,7 @@ def parse_args(argv=None):
     p.add_argument(
         "--bucket",
         default=os.environ.get("BUCKET_NAME"),
-        help="Data lake bucket for the S3 link (default: $BUCKET_NAME; link left out if unset)",
+        help="Data lake bucket for the S3 links and the storage widgets (default: $BUCKET_NAME; left out if unset)",
     )
     p.add_argument(
         "--trigger-function-name",
@@ -166,6 +166,7 @@ def main(argv=None, client=None, sts_client=None) -> int:
                 batch_log_group=args.batch_log_group,
             ),
             quality=not args.no_quality,
+            bucket=args.bucket,
             batch_log_group=args.batch_log_group,
         )
     except ValueError as err:

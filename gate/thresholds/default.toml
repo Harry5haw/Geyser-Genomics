@@ -1,6 +1,7 @@
 # Geyser quality gate: built-in thresholds, for human germline short-read WGS at ~30x, called with
-# the pipeline's bcftools stage. Checked against HG003 and HG005 chr20 (GIAB, 2 x 150 bp, ~33-37x):
-# both pass with a margin on every check. Rationale and the measured values: gate/README.md.
+# the pipeline's bcftools stage. Checked against HG003 and HG005 chr20 (GIAB, 2 x 151 bp, ~33-37x):
+# both pass every check with a margin (HG005 apart from read_count_difference, see below).
+# Rationale and the measured values: gate/README.md.
 #
 # A config file is the whole set: a check it doesn't list is not run. Bounds are inclusive.
 
@@ -14,6 +15,17 @@ on_missing = "fail"
 statuses = ["succeeded"]
 
 [checks]
+# % of bases with quality >= 30, from fastp before any filtering. HG003/HG005: 91.39 / 91.76. Below 80
+# (Illumina's typical spec for 2 x 150 bp) the run had a sequencing problem.
+q30_pct = { min = 80.0 }
+# GC content of the reads, %. HG003/HG005 chr20: 43.86 / 44.07 (the human genome: ~41). Outside 35-50
+# the library is GC-biased or contaminated (bacteria range from ~25 to ~70).
+gc_pct = { min = 35.0, max = 50.0 }
+# Reads in the alignment minus reads fastp saw in the upload, exact: 0 when no read is lost (bwa-mem2
+# writes unmapped reads too, markdup only marks). Below 0 the align stage lost reads; above 0 the
+# alignment isn't from this upload. HG003 (aligned by the pipeline's align stage): 0. The HG005 fixture
+# fails it by design: its alignment is a downloaded BAM, not made from these reads (see gate/README.md).
+read_count_difference = { min = 0, max = 0 }
 # % of reads that mapped. HG003/HG005: 99.77 / 99.82. Below 95 means the wrong reference, a
 # contaminated sample or a broken alignment.
 mapped_pct = { min = 95.0 }
@@ -25,6 +37,9 @@ properly_paired_pct = { min = 90.0 }
 # Mean depth over the reference, duplicates excluded. HG003/HG005: 36.78 / 32.64. Below 20 a 30x
 # sample loses sensitivity, mostly for heterozygous calls.
 mean_depth = { min = 20.0 }
+# % of the reference covered at >= 10x. HG003/HG005 chr20: 98 / 98 (chr20 is ~1% N gap, never
+# covered). Below 90 the depth is uneven: a mean of 30x can hide regions too thin to call.
+breadth_10x_pct = { min = 90.0 }
 # At least one SNP: a complete run with an empty VCF is broken, whatever the other numbers say.
 snps = { min = 1 }
 # Transitions / transversions of the calls. Unfiltered bcftools calls, HG003/HG005: 1.81 / 1.85

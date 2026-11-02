@@ -471,6 +471,39 @@ def quality_widgets(
     ]
 
 
+def storage_widgets(region: str, bucket: str) -> list:
+    """Data lake size and object count (#62), from the free daily S3 storage metrics (AWS/S3, one
+    datapoint a day per bucket and storage class, about a day behind). The lifecycle rules in
+    infrastructure/storage_lifecycle.tf expire intermediate/ and decompressed/; this shows the effect."""
+    size = [
+        [
+            "AWS/S3",
+            "BucketSizeBytes",
+            "BucketName",
+            bucket,
+            "StorageType",
+            "StandardStorage",
+            {"id": "bytes", "stat": "Average", "visible": False},
+        ],
+        [{"expression": "bytes / 1000000000", "id": "gb", "label": "Data lake size, GB (S3 Standard)"}],
+    ]
+    count = [
+        [
+            "AWS/S3",
+            "NumberOfObjects",
+            "BucketName",
+            bucket,
+            "StorageType",
+            "AllStorageTypes",
+            {"id": "objects", "stat": "Average", "label": "Objects"},
+        ],
+    ]
+    return [
+        _metric_widget("Data lake size, GB (daily)", size, region, period=86400, y_label="GB"),
+        _metric_widget("Data lake objects (daily)", count, region, period=86400, y_label="objects"),
+    ]
+
+
 def build_dashboard(
     region: str = DEFAULT_REGION,
     namespace: str = DEFAULT_NAMESPACE,
@@ -484,9 +517,10 @@ def build_dashboard(
     quality: bool = True,
     batch_log_group: str = BATCH_LOG_GROUP,
     thresholds: QualityThresholds = DEFAULT_THRESHOLDS,
+    bucket: str = None,
 ) -> dict:
     """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, result
-    quality (from the Batch job logs), stage durations."""
+    quality (from the Batch job logs), data lake storage (with a bucket name), stage durations."""
     _check_schema(schema)
     groups = resolve_groups(groups)
     duration_note = (
@@ -543,6 +577,8 @@ def build_dashboard(
     )
     if quality:
         widgets += quality_widgets(region, batch_log_group, thresholds)
+    if bucket:
+        widgets += storage_widgets(region, bucket)
     for name, stages in groups.items():
         widgets.append(
             _metric_widget(

@@ -146,8 +146,10 @@ def test_has_subsets(tmp_path):
     prefix = str(tmp_path / "pangenome")
     with open(prefix + ".extended.csv", "w", encoding="utf-8") as fh:
         fh.write("Type,Subtype,Subset,Filter\nSNP,*,*,PASS\nSNP,*,segdups,PASS\n")
-    assert bg._has_subsets(prefix, ["*", "segdups"])
-    assert not bg._has_subsets(prefix, ["*", "segdups", "lowmappabilityall"])
+    import benchmark_happy
+
+    assert benchmark_happy.has_subsets(prefix + ".extended.csv", ["*", "segdups"])
+    assert not benchmark_happy.has_subsets(prefix + ".extended.csv", ["*", "segdups", "lowmappabilityall"])
 
 
 def test_needs_the_bwa_mem2_benchmark_first(tmp_path):
@@ -260,3 +262,118 @@ def test_run_step_reruns_when_its_output_is_gone(tmp_path, monkeypatch):
 def test_graph_index_cost_is_blank_when_not_measured():
     assert bg.graph_index_seconds({}) == ""
     assert bg.graph_index_seconds({"index_dist": {"wall_s": 39.0}, "index_hapl": {"wall_s": 297.04}}) == 336.0
+
+
+def test_caller_settings_keep_the_configuration_memory_without_override():
+    assert bg.caller_settings("pangenome", bg.PANGENOME_ENV, "14g", 12, None)[1] == "14g"
+
+
+def test_call_settings_ignore_shard_count():
+    a = bg.call_settings("pangenome", {**bg.PANGENOME_ENV, "DEEPVARIANT_SHARDS": "6"})
+    b = bg.call_settings("pangenome", {**bg.PANGENOME_ENV, "DEEPVARIANT_SHARDS": "12"})
+    assert a == b and a["caller"] == "pangenome" and "DEEPVARIANT_SHARDS" not in a
+    assert a != bg.call_settings("pangenome", {"DEEPVARIANT_EXTRA_ARGS": "x"})
+
+
+def test_remove_caller_outputs_keeps_other_callers(tmp_path):
+    root = str(tmp_path)
+    for caller in ("deepvariant", "pangenome"):
+        vcf = run_local.vcf_path(root, caller, "S")
+        os.makedirs(os.path.dirname(vcf), exist_ok=True)
+        open(vcf, "wb").close()
+    happy = tmp_path / "benchmarks" / "S"
+    happy.mkdir(parents=True)
+    for name in ("pangenome.summary.csv", "pangenome.extended.csv", "deepvariant.summary.csv"):
+        (happy / name).write_text("x")
+    bg.remove_caller_outputs(root, "S", "pangenome")
+    assert not os.path.exists(run_local.vcf_path(root, "pangenome", "S"))
+    assert os.path.exists(run_local.vcf_path(root, "deepvariant", "S"))
+    assert sorted(os.listdir(happy)) == ["deepvariant.summary.csv"]
+
+
+SUMMARY = "\n".join(
+    [
+        "Type,Filter,TRUTH.TOTAL,TRUTH.TP,TRUTH.FN,QUERY.FP,METRIC.Recall,METRIC.Precision,METRIC.F1_Score",
+        "SNP,PASS,10,9,1,2,0.9,0.8,0.85",
+        "INDEL,PASS,5,5,0,1,1.0,0.8,0.9",
+        "",
+    ]
+)
+
+
+@pytest.fixture
+def scoring(tmp_path, monkeypatch):
+    """A root with an alignment and truth, and fake run_caller / hap.py that count their runs."""
+    import benchmark_happy
+
+    root = tmp_path
+    (root / "alignments").mkdir()
+    (root / "alignments" / "S.bam").write_bytes(b"aln")
+    (root / "truth").mkdir()
+    runs = {"calls": 0, "happy": 0}
+
+    def fake_caller(r, sid, reference, caller, env, memory):
+        runs["calls"] += 1
+        vcf = run_local.vcf_path(r, caller, sid)
+        os.makedirs(os.path.dirname(vcf), exist_ok=True)
+        with open(vcf, "wb") as fh:
+            fh.write(b"vcf %d" % runs["calls"])
+        return 0
+
+    def fake_happy(args):
+        runs["happy"] += 1
+        out = root / "benchmarks" / "S"
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "pangenome.summary.csv").write_text(SUMMARY)
+        (out / "pangenome.extended.csv").write_text(
+            "\n".join(
+                [
+                    "Type,Subtype,Subset,Filter,METRIC.F1_Score,TRUTH.TOTAL,TRUTH.FN,QUERY.FP",
+                    "SNP,*,*,PASS,0.85,10,1,2",
+                    "",
+                ]
+            )
+        )
+        return 0
+
+    monkeypatch.setattr(bg, "run_caller", fake_caller)
+    monkeypatch.setattr(benchmark_happy, "main", fake_happy)
+    out_dir = root / "out"
+    out_dir.mkdir()
+
+    def score(env=bg.PANGENOME_ENV):
+        return bg.score_config(
+            str(root), str(out_dir), str(out_dir / "calls.json"), "L", "S", "pangenome", env, "14g", "r.fa", "S"
+        )
+
+    return root, runs, score
+
+
+def test_score_config_calls_once_then_reuses(scoring):
+    root, runs, score = scoring
+    summary, _, info = score()
+    assert runs == {"calls": 1, "happy": 1} and summary["SNP"]["fn"] == 1
+    assert info["calls_provenance"] == "recorded" and info["calls_shards"] == "6"
+    score()
+    assert runs == {"calls": 1, "happy": 1}  # nothing changed: both reused
+
+
+def test_score_config_redoes_calls_when_settings_or_alignment_change(scoring):
+    root, runs, score = scoring
+    score()
+    score({**bg.PANGENOME_ENV, "DEEPVARIANT_SHARDS": "12"})  # speed only: reused
+    assert runs == {"calls": 1, "happy": 1}
+    score({**bg.PANGENOME_ENV, "DEEPVARIANT_EXTRA_ARGS": "--x"})  # other flags: called again, then re-scored
+    assert runs == {"calls": 2, "happy": 2}
+    (root / "alignments" / "S.bam").write_bytes(b"new alignment")
+    score({**bg.PANGENOME_ENV, "DEEPVARIANT_EXTRA_ARGS": "--x"})
+    assert runs == {"calls": 3, "happy": 3}
+
+
+def test_score_config_reuses_an_unrecorded_vcf_and_says_so(scoring):
+    root, runs, score = scoring
+    vcf = run_local.vcf_path(str(root), "pangenome", "S")
+    os.makedirs(os.path.dirname(vcf), exist_ok=True)
+    open(vcf, "wb").close()
+    _, _, info = score()
+    assert runs == {"calls": 0, "happy": 1} and info["calls_provenance"] == "unrecorded"
