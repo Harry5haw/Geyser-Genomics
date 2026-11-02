@@ -139,18 +139,27 @@ def write_gff(path, contig, genes):
             fh.write(f"{contig}\tgeyser\tCDS\t{s}\t{e}\t.\t{strand}\t0\tID=CDS:{n}P;Parent=transcript:{n}T\n")
 
 
-def decoy_snps(rng, reference, planted, count, offset=0):
-    """SNPs only the graph's panel carries: away from the planted ones (>= 1 kb) and from the contig ends.
-    Positions are 1-based and include offset, like the planted SNPs after the leading gap is added."""
+def decoy_snps(rng, reference, planted, count, offset=0, gap=1000, attempts=10_000):
+    """SNPs only the graph's panel carries: at least `gap` bp from the planted ones and each other, and from the
+    contig ends. Positions are 1-based and include offset, like the planted SNPs after the leading gap is added.
+    ValueError if they do not fit (a short reference, or planted SNPs closer together than 2 x gap)."""
+    if len(reference) <= 2 * gap:
+        raise ValueError(f"a {len(reference):,} bp reference is too short for decoy SNPs (needs > {2 * gap:,} bp)")
     taken = [snp["pos"] for snp in planted]
     decoys = []
-    while len(decoys) < count:
-        pos0 = rng.randrange(1000, len(reference) - 1000)
+    for _ in range(attempts):
+        if len(decoys) == count:
+            break
+        pos0 = rng.randrange(gap, len(reference) - gap)
         pos = pos0 + 1 + offset
-        if all(abs(pos - t) >= 1000 for t in taken):
+        if all(abs(pos - t) >= gap for t in taken):
             ref_base = reference[pos0]
             decoys.append({"pos": pos, "ref": ref_base, "alt": rng.choice([b for b in BASES if b != ref_base])})
             taken.append(pos)
+    if len(decoys) < count:
+        raise ValueError(
+            f"no room for {count} decoy SNPs {gap:,} bp from the planted ones: use fewer --snps or a longer --length"
+        )
     return sorted(decoys, key=lambda d: d["pos"])
 
 
@@ -164,44 +173,47 @@ def panel_carries(index, hap, decoy):
 
 def pangenome_gfa(contig, sequence, planted, decoys):
     """GFA 1.1 of the reference with one SNP bubble per variant, the reference as a GRCh38 walk and the panel
-    haplotypes as walks. sequence is the whole FASTA sequence (leading gap included); positions are 1-based."""
+    haplotypes as walks. sequence is the whole FASTA sequence (leading gap included); positions are 1-based.
+    Variants may be adjacent or at either end: no empty segment is written."""
     variants = sorted([(v, False) for v in planted] + [(v, True) for v in decoys], key=lambda x: x[0]["pos"])
     segments, links = [], []
     ref_walk = []
     hap_walks = [[] for _ in PANEL_HAPLOTYPES]
-    prev_tails = None  # segment ids the previous bubble ends on (for links)
+    tails = []  # segments the walks are currently on (nothing before the first segment)
 
     def add_segment(seq):
         segments.append(seq)
         return len(segments)
 
-    def link(froms, to):
-        for f in froms:
-            links.append((f, to))
+    def append_shared(seq):
+        """A stretch every walk shares; skipped if empty."""
+        nonlocal tails
+        if not seq:
+            return
+        seg = add_segment(seq)
+        links.extend((t, seg) for t in tails)
+        ref_walk.append(seg)
+        for walk in hap_walks:
+            walk.append(seg)
+        tails = [seg]
 
-    start = 0
-    for index, (variant, decoy) in enumerate(variants):
+    start, planted_index = 0, 0
+    for variant, decoy in variants:
         pos0 = variant["pos"] - 1
+        if pos0 < start:
+            raise ValueError(f"variants overlap at position {variant['pos']}")
         if sequence[pos0] != variant["ref"]:
             raise ValueError(f"reference base at {variant['pos']} is {sequence[pos0]}, not {variant['ref']}")
-        chunk = add_segment(sequence[start:pos0])
-        if prev_tails:
-            link(prev_tails, chunk)
+        append_shared(sequence[start:pos0])
         ref_seg, alt_seg = add_segment(variant["ref"]), add_segment(variant["alt"])
-        link([chunk], ref_seg)
-        link([chunk], alt_seg)
-        ref_walk += [chunk, ref_seg]
-        planted_index = sum(1 for v, d in variants[:index] if not d)
+        links.extend((t, seg) for t in tails for seg in (ref_seg, alt_seg))
+        ref_walk.append(ref_seg)
         for hap, walk in enumerate(hap_walks):
-            walk += [chunk, alt_seg if panel_carries(planted_index, hap, decoy) else ref_seg]
-        prev_tails = [ref_seg, alt_seg]
+            walk.append(alt_seg if panel_carries(planted_index, hap, decoy) else ref_seg)
+        tails = [ref_seg, alt_seg]
+        planted_index += not decoy
         start = pos0 + 1
-    tail = add_segment(sequence[start:])
-    if prev_tails:
-        link(prev_tails, tail)
-    ref_walk.append(tail)
-    for walk in hap_walks:
-        walk.append(tail)
+    append_shared(sequence[start:])
 
     lines = ["H\tVN:Z:1.1"]
     lines += [f"S\t{i}\t{seq}" for i, seq in enumerate(segments, start=1)]
@@ -216,30 +228,20 @@ def pangenome_gfa(contig, sequence, planted, decoys):
     return "\n".join(lines) + "\n"
 
 
-def walk_sequence(gfa, sample, hap):
-    """The sequence a GFA W-line spells (for checks and tests)."""
-    segs = {}
-    for line in gfa.splitlines():
-        cols = line.split("\t")
-        if cols[0] == "S":
-            segs[cols[1]] = cols[2]
-    for line in gfa.splitlines():
-        cols = line.split("\t")
-        if cols[0] == "W" and cols[1] == sample and cols[2] == str(hap):
-            return "".join(segs[n] for n in cols[6].split(">")[1:])
-    raise KeyError((sample, hap))
-
-
-def gbz_command(root, gfa_key, gbz_key, image=VG_IMAGE):
-    """docker run converting the GFA to GBZ with the reference sample kept as the reference (vg gbwt -G)."""
+def gbz_command(root, gfa_key, gbz_key, image=VG_IMAGE, memory="4g"):
+    """docker run converting the GFA to GBZ with the reference sample kept as the reference (vg gbwt -G). A failed
+    conversion removes its partial file. The GFA is kept next to the GBZ (about 50 KB, readable when debugging)."""
     gfa, gbz = f"/data/{gfa_key}", f"/data/{gbz_key}"
     script = (
-        f"set -e; vg gbwt -G {gfa} --gbz-format -g {gbz}.part --set-reference {GRAPH_REFERENCE}; mv {gbz}.part {gbz}"
+        f"set -e; trap 'rm -f {gbz}.part' ERR; "
+        f"vg gbwt -G {gfa} --gbz-format -g {gbz}.part --set-reference {GRAPH_REFERENCE}; mv {gbz}.part {gbz}"
     )
     return [
         "docker",
         "run",
         "--rm",
+        "--memory",
+        memory,
         "--mount",
         f"type=bind,source={os.path.abspath(root)},target=/data",
         image,
@@ -321,6 +323,19 @@ def main(argv=None):
     elif os.path.exists(gff_path):
         os.remove(gff_path)  # an earlier --gff run's models describe a different genome now
 
+    stem = os.path.splitext(a.reference)[0]
+    graph_keys = (f"pangenome/{stem}.gfa", f"pangenome/{stem}.gbz")
+    for key in graph_keys:  # an earlier --pangenome run's graph describes another genome now
+        if os.path.exists(os.path.join(a.root, *key.split("/"))):
+            os.remove(os.path.join(a.root, *key.split("/")))
+    gfa = None
+    if a.pangenome:  # before any reads are written: a graph that cannot be made stops the run here
+        try:
+            decoys = decoy_snps(random.Random(a.seed + 2), reference, snps, DECOY_SNPS, a.leading_gap)
+            gfa = pangenome_gfa(a.contig, "N" * a.leading_gap + reference, snps, decoys)
+        except ValueError as err:
+            p.error(f"--pangenome: {err}")
+
     raw_dir = os.path.join(a.root, "raw_reads")
     os.makedirs(raw_dir, exist_ok=True)
     if a.paired:
@@ -360,17 +375,13 @@ def main(argv=None):
         )
 
     graph_note = ""
-    if a.pangenome:
-        full = "N" * a.leading_gap + reference
-        decoys = decoy_snps(random.Random(a.seed + 2), reference, snps, DECOY_SNPS, a.leading_gap)
-        gfa = pangenome_gfa(a.contig, full, snps, decoys)
-        stem = os.path.splitext(a.reference)[0]
-        gfa_key, gbz_key = f"pangenome/{stem}.gfa", f"pangenome/{stem}.gbz"
+    if gfa is not None:
+        gfa_key, gbz_key = graph_keys
         os.makedirs(os.path.join(a.root, "pangenome"), exist_ok=True)
         with open(os.path.join(a.root, *gfa_key.split("/")), "w", encoding="ascii", newline="\n") as fh:
             fh.write(gfa)
         subprocess.run(gbz_command(a.root, gfa_key, gbz_key), check=True)
-        graph_note = f"{gbz_key} ({len(PANEL_HAPLOTYPES)} panel haplotypes, {len(decoys)} decoy SNPs)"
+        graph_note = f"{gbz_key} ({len(PANEL_HAPLOTYPES)} panel haplotypes, {DECOY_SNPS} decoy SNPs)"
 
     unit = "pairs" if a.paired else "reads"
     gap = f", starting with {a.leading_gap:,} Ns" if a.leading_gap else ""
