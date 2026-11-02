@@ -23,7 +23,7 @@ locals {
   ]
 
   # Terraform backend (must match backend.tf and backend-<env>.hcl, which cannot use variables).
-  tf_state_bucket = "geyser-tfstate-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
+  tf_state_bucket = "geyser-tfstate-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.region}"
   tf_state_keys   = ["env/dev/terraform.tfstate", "env/prod/terraform.tfstate"] # one state per environment (#45)
   tf_lock_table   = "geyser-tf-lock"
 }
@@ -247,7 +247,7 @@ resource "aws_iam_policy" "geyser_github_terraform_plan_policy" {
           "dynamodb:PutItem",
           "dynamodb:DeleteItem"
         ],
-        Resource = "arn:aws:dynamodb:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:table/${local.tf_lock_table}"
+        Resource = "arn:aws:dynamodb:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:table/${local.tf_lock_table}"
       },
       {
         Sid      = "DenyDataLakeObjectRead",

@@ -49,10 +49,12 @@ Both environments scale to zero when idle (`min_vcpus = 0`), and every Batch job
 ## Layer 3: the $20 budget and its kill switch (AWS-enforced, delayed)
 
 - Budget `geyser-claude-project-cap`: COST, $20, **account-wide** (it also counts the idle teraflow stack
-  and S3 storage, which is deliberately conservative), from `2026-11-02_00:00`. The pinned AWS provider (5.100.0, June 2025)
-  predates the `CUSTOM` budget period AWS added in September 2025, so the budget is `ANNUALLY` from that
-  start date and resets on 2 Nov 2027. After the apply, check the period the console shows. If AWS aligned
-  it to a calendar year, set `claude_project_cap_start` to a period AWS accepts.
+  and S3 storage, which is deliberately conservative), `CUSTOM` period from `2026-11-02_00:00` to
+  `2087-06-14_00:00` (AWS deletes a budget after its end date, so the end is the latest it allows).
+- **Why CUSTOM (#76):** the first version had to be `ANNUALLY`, because provider 5.100.0 predates the `CUSTOM`
+  period AWS added in September 2025. AWS calculated an annual budget's actual spend over the whole calendar
+  year, whatever the start date: $352.16 (Jan-Apr 2026), so the $8 action attached the kill switch the moment
+  it was created. The fail-safe behaved correctly; the period was wrong. Provider 6.69.0 accepts `CUSTOM`.
 - Emails at 50% and 80% actual and 100% forecast, to `var.budget_alert_email`.
 - **Budget action:** when actual spend passes `var.claude_kill_switch_usd` ($8), AWS Budgets
   automatically attaches the deny-all policy `geyser-claude-kill-switch` to the role. An explicit deny wins
