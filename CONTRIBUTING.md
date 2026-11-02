@@ -17,13 +17,15 @@ docker build -f Dockerfile -t geyser-app .
 | Check | Command | When |
 |---|---|---|
 | Unit tests | `pytest` | every edit; no Docker or AWS needed |
+| Lint and format | `ruff check .` and `ruff format --check .` (config in `pyproject.toml`; `ruff format .` fixes formatting); `terraform fmt -check -recursive` in `infrastructure/` | every edit |
 | Docker end-to-end | `GEYSER_E2E=1 pytest tests/test_e2e_docker.py` | before a PR; needs the image built |
 | Truth check, single-end | `python scripts/make_test_data.py` then `python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --check` | before a PR |
 | Truth check, paired-end | `python scripts/make_test_data.py --sample PAIRED001 --paired` then `python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --check` | before a PR |
 | DeepVariant (CPU image) | `GEYSER_DV_E2E=1 pytest tests/test_e2e_deepvariant.py` | when the caller changes; CI runs it on PRs |
 
 `--check` must report all planted SNPs called and no unexpected calls. CI (`.github/workflows/tests.yml`)
-runs the unit tests and the Docker end-to-end test on every push and pull request, with no AWS credentials.
+runs the lint job (ruff, `terraform fmt`, `terraform validate -backend=false`), the unit tests and the Docker
+end-to-end test on every push and pull request, with no AWS credentials.
 Changes to a caller or aligner are also benchmarked with `scripts/benchmark_happy.py` (hap.py against the
 GIAB truth set) before they merge.
 

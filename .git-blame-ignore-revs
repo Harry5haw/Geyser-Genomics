@@ -1,0 +1,5 @@
+# Commits that only reformat code. GitHub's blame view skips them; locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# ruff format (J1, CI quality gates)
+67ec153e49ac021ef7c62fd81d74aa2de8ee5081
