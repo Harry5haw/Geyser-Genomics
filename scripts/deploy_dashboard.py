@@ -82,7 +82,11 @@ def resolve_account_id(args, sts_client=None) -> str:
 
 def existing_alarms(client, names) -> list:
     """The alarms among `names` that exist, so the status widget never points at a missing one."""
-    found = {a["AlarmName"] for a in client.describe_alarms(AlarmNames=list(names)).get("MetricAlarms", [])}
+    try:
+        found = {a["AlarmName"] for a in client.describe_alarms(AlarmNames=list(names)).get("MetricAlarms", [])}
+    except Exception as err:  # noqa: BLE001 - e.g. no cloudwatch:DescribeAlarms; don't block the deploy
+        print(f"WARNING: could not check the alarms exist ({err}); adding them anyway.", file=sys.stderr)
+        return list(names)
     for name in names:
         if name not in found:
             print(f"NOTE: alarm '{name}' does not exist (run deploy_alarms.py first, same --prefix); "

@@ -144,9 +144,9 @@ def test_paired_end_samples(tmp_path):
     assert all(rows["P1"]["outputs"].values())
     assert rows["run_1"]["layout"] == "single"
     assert rows["P2"]["problem"] == "lone mate" and "R2 missing" in rows["P2"]["note"]
-    # One mate's QC report is not a QC output: P3 last finished decompress.
+    # One mate's QC report is not a QC output, but it does show the run reached qc.
     assert rows["P3"]["outputs"] == {"fastq": True, "qc_html": False, "bam": False, "vcf": False}
-    assert "last output from 'decompress'" in rows["P3"]["note"]
+    assert "last output from 'qc'" in rows["P3"]["note"]
     assert rows["P4"]["problem"] == "both layouts" and rows["P4"]["layout"] is None
     assert rows["P7"]["raw"] is False and rows["P7"]["outputs"]["fastq"] is True
     # Per-mate keys never show up as samples of their own.
@@ -157,7 +157,8 @@ def test_paired_end_samples(tmp_path):
     assert problems["raw_reads/P5_R1.fq.gz"]["problem"] == "refused"
     assert "_R1.fastq.gz" in problems["raw_reads/P5_R1.fq.gz"]["detail"]
     assert problems["raw_reads/sub/P6_R1.fastq.gz"]["problem"] == "will fail"
-    assert "decompress reads raw_reads/P6_R1.fastq.gz" in problems["raw_reads/sub/P6_R1.fastq.gz"]["detail"]
+    detail = problems["raw_reads/sub/P6_R1.fastq.gz"]["detail"]
+    assert "waits for raw_reads/sub/P6_R2.fastq.gz" in detail and "stages read raw_reads/P6_R1.fastq.gz" in detail
     assert result["problem_count"] == 2 + 3  # 2 upload problems + P2, P3, P4
 
 
@@ -182,3 +183,10 @@ def test_warns_when_open_runs_are_not_checked(tmp_path, capsys, monkeypatch):
     assert "open runs aren't checked" in capsys.readouterr().err
     reconcile.main(["--local-dir", str(tmp_path), "--state-machine-arn", SFN_ARN], sfn_client=fake_sfn(["S8", "S8"]))
     assert "open runs aren't checked" not in capsys.readouterr().err
+
+
+def test_one_decompressed_mate_is_incomplete_not_unstarted():
+    rows = by_sample(reconcile.reconcile(["raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz",
+                                          "decompressed/S1_R1.fastq"]))
+    assert rows["S1"]["status"] == "incomplete" and rows["S1"]["outputs"]["fastq"] is False
+    assert "last output from 'decompress'" in rows["S1"]["note"]

@@ -395,3 +395,14 @@ def test_dashboard_leaves_out_alarms_that_do_not_exist(monkeypatch, capsys):
     assert '"alarm"' not in client.put_dashboard.call_args.kwargs["DashboardBody"]
     assert "does not exist" in capsys.readouterr().err
     sts.get_caller_identity.assert_not_called()
+
+
+def test_dashboard_still_deploys_if_alarms_cannot_be_checked(monkeypatch, capsys):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    client, sts = mock.Mock(), mock.Mock()
+    client.put_dashboard.return_value = {}
+    client.describe_alarms.side_effect = RuntimeError("AccessDenied")
+    sts.get_caller_identity.return_value = {"Account": "000000000000"}
+    assert deploy_dashboard.main([], client=client, sts_client=sts) == 0
+    assert '"alarm"' in client.put_dashboard.call_args.kwargs["DashboardBody"]
+    assert "could not check" in capsys.readouterr().err

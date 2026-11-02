@@ -114,10 +114,15 @@ def raw_upload_problem(trigger, key: str):
         expected = keys_for(sample_id, SINGLE)["raw"]
     else:
         try:
-            trigger.mate_key(key)
+            partner = trigger.mate_key(key)
         except ValueError as err:
             return None, {"key": key, "problem": "refused", "detail": f"the trigger raises: {err}"}
         expected = keys_for(sample_id, PAIRED)[f"raw_{mate}"]
+        if key != expected:
+            # The trigger keeps the folder when it looks for the partner, but the stages don't.
+            return None, {"key": key, "problem": "will fail",
+                          "detail": f"the trigger waits for {partner}, then starts a run for '{sample_id}', "
+                                    f"but the stages read {expected}"}
     if key != expected:
         return None, {"key": key, "problem": "will fail",
                       "detail": f"starts a run for '{sample_id}', but decompress reads {expected}"}
@@ -192,7 +197,9 @@ def reconcile(keys, running: Counter = None) -> dict:
         # A per-mate output (decompressed, QC report) only counts once both mates have it.
         outputs = {name: all(k in keys for k in keys_of(expected, name)) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
-        reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS if outputs[name]]
+        # But one mate's output still shows the run got that far (e.g. decompress failed on R2).
+        reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS
+                   if any(k in keys for k in keys_of(expected, name))]
         open_count = running.get(sample_id, 0)
         problem = None
         if layout_problem:
