@@ -274,3 +274,13 @@ def test_gate_config_variables_are_expanded(sample, fake_gate, monkeypatch):
     tasks.gate_task("S1")
     cmd = fake_gate["calls"][0]["cmd"]
     assert cmd[cmd.index("--config") + 1] == "/opt/geyser-gate/thresholds/synthetic.toml"
+
+
+def test_the_gate_sees_a_deepvariant_only_run_as_succeeded(sample, fake_gate):
+    # #158: no CallVariants, but DeepVariant was the run's caller, so the record is complete and the
+    # gate's run_status check can pass it.
+    os.remove(sample / "runs" / "S1.provenance" / "CallVariants.json")
+    write_part(sample, "DeepVariant", finished="2026-11-02T10:05:00Z", layout="single", caller="deepvariant")
+    tasks.gate_task("S1")
+    given = fake_gate["calls"][0]["record"]
+    assert given["status"] == "succeeded" and given["caller"] == "deepvariant"

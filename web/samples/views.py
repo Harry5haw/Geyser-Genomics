@@ -24,12 +24,15 @@ from geyser_web.pipeline import (
     keys_of,
     layout_from_raw,
     read_part,
+    record_key,
 )
 
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
+from .gate import read_gate
 from .qc import read_qc_summary
+from .record import load_record, record_view
 from .runs import is_valid_sample_id, log_key, read_text
 from .vcf import check_truth, planted_positions, read_truth, read_variants, truth_key
 
@@ -48,13 +51,21 @@ FILE_KINDS = {
         "Annotated variants",
         "The VCF with bcftools csq consequences (INFO/BCSQ), when the reference has gene models",
     ),
+    "csq_tbi": ("Annotated variant index", "Tabix index (.tbi) of the annotated VCF"),
     "flagstat": ("Alignment stats", "samtools flagstat: reads, mapped, duplicates, properly paired"),
     "mosdepth_summary": ("Coverage summary", "mosdepth: mean, min and max depth per contig (duplicates excluded)"),
     "mosdepth_dist": ("Coverage distribution", "mosdepth: fraction of bases covered at each depth or more"),
     "bcftools_stats": ("Variant stats", "bcftools stats: SNP and indel counts, Ti/Tv, quality distributions"),
+    "gate_verdict": ("Quality gate verdict", "JSON: the verdict, named reasons and every check with its thresholds"),
+    "run_record": (
+        "Run record",
+        "JSON: inputs, reference MD5, tool versions, image, each stage's status, time and resources",
+    ),
     "truth": ("Planted SNPs", "Truth file for demo samples (JSON)"),
     "log": ("Run log", "Output of the local pipeline run"),
 }
+# Kinds that are one file per sample but not keys_for() names.
+SAMPLE_FILES = ("truth", "log", "run_record")
 LOG_TAIL_LINES = 300
 
 
@@ -72,13 +83,15 @@ def _file_key(sample_id, kind, keys):
         return truth_key(sample_id)
     if kind == "log":
         return log_key(sample_id)
+    if kind == "run_record":
+        return record_key(sample_id)
     return keys.get(kind)
 
 
 def _download_kinds(keys):
     """(kind, label, description) for every file a sample can have, both mates for paired-end."""
     for kind, (label, description) in FILE_KINDS.items():
-        if kind in keys or kind in ("truth", "log"):
+        if kind in keys or kind in SAMPLE_FILES:
             yield kind, label, description
         else:
             for mate in MATES:
@@ -196,6 +209,7 @@ def sample_detail(request, sample_id):
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
     truth = read_truth(storage, sample_id)
+    record = load_record(storage, sample_id)
     # The annotated VCF has the same records plus consequences: show it when the latest run wrote it.
     variants_key = _current_annotated_vcf(storage, sample) or sample.keys["vcf"]
     variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
@@ -203,8 +217,8 @@ def sample_detail(request, sample_id):
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):
         key = _file_key(sample_id, kind, sample.keys)
-        if kind == "csq_vcf" and variants_key != key:
-            continue  # an annotated VCF from an earlier run: not this sample's current calls
+        if kind in ("csq_vcf", "csq_tbi") and variants_key != sample.keys["csq_vcf"]:
+            continue  # an annotated VCF (and its index) from an earlier run: not this sample's current calls
         if storage.exists(key):
             downloads.append(
                 {"kind": kind, "label": label, "description": description, "filename": os.path.basename(key)}
@@ -218,6 +232,8 @@ def sample_detail(request, sample_id):
         "qc_report": storage.exists(sample.keys["qc_html"]),
         "qc_summary": read_qc_summary(storage, sample.keys["qc_json"]),
         "downloads": downloads,
+        "gate": read_gate(storage, sample.keys["gate_verdict"], record),
+        "record": record_view(record),
     }
     return render(request, "samples/detail.html", context)
 

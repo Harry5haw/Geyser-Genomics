@@ -218,6 +218,21 @@ def test_a_closed_failure_of_an_extra_caller_does_not_fail_the_core_run(store):
     assert record["stages"]["DeepVariant"]["status"] == "Failure"  # still shown
 
 
+def test_a_closed_failure_of_the_runs_own_caller_fails_it(store):
+    # PIPELINE_CALLER=deepvariant (#166): DeepVariant is this run's variant calling, not an extra caller.
+    write_part(store, "QualityControl", caller="deepvariant")
+    write_part(store, "Align", caller="deepvariant")
+    provenance._put_json(
+        store,
+        "runs/S1.provenance/Finalize.json",
+        {"task": "Finalize", "run_name": "run-1", "finished": "2026-11-02T11:00:00Z", "status": "failed"}
+        | {"failure": {"stage": "DeepVariant", "error": "States.TaskFailed", "reason": "exit 1"}},
+    )
+    record = provenance.build(store, "S1")
+    assert record["caller"] == "deepvariant" and record["status"] == "failed"
+    assert record["stages"]["DeepVariant"]["status"] == "Failure"
+
+
 def test_a_failed_shard_keeps_its_index():
     cause = json.dumps({"JobName": "CallVariantsShard-17-S1-20261102T100000Z-abc"})
     failure = provenance.parse_failure("States.TaskFailed", cause)

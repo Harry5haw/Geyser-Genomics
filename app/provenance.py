@@ -22,6 +22,7 @@ Everything here is best effort: a provenance problem prints a warning and never 
 
 Record (schema 1):
     schema, sample_id, run_name, status (succeeded | failed | incomplete), complete, updated,
+    caller (PIPELINE_CALLER: deepvariant | pangenome when one of them was the run's caller, else absent),
     app_version (APP_VERSION: the image tag in the cloud), layout, aligner,
     reference {name, md5, bytes}, inputs [{key, bytes}], outputs [{key, bytes}],
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
@@ -54,6 +55,13 @@ SCHEMA_VERSION = 1
 RUN_PREFIX = "runs/"
 # The stages every pipeline run has (metric names, as in tasks.timed_stage). DeepVariant parts are extra.
 CORE_STAGES = ("QualityControl", "Align", "CallVariants")
+# A run whose caller is DeepVariant (PIPELINE_CALLER: run_local.py sets it for a DeepVariant-only run,
+# and the cloud's DeepVariant branch once G2, #125, is applied) has no CallVariants of its own: its
+# variant calling is that caller's stage, or a CallVariants started after it (the cloud's bcftools
+# fallback when DeepVariant fails), whichever started last (#158). It inherits no CallVariants from an
+# earlier run: not its stage, VCF or stats. Without a caller (bcftools runs, --caller both, a caller
+# added with --skip-to-variants) the core pipeline is CORE_STAGES, as before.
+CALLER_STAGES = {"deepvariant": "DeepVariant", "pangenome": "PangenomeDeepVariant"}
 # Stages whose outputs a stage builds on. When the latest run starts part-way (run_local
 # --skip-to-variants, a stage re-run by hand), its upstream stages come from the run that last ran
 # them; downstream ones never do, so a run still in progress never borrows an old run's later stages.
@@ -63,10 +71,10 @@ UPSTREAM = {
     "CallVariants": ("QualityControl", "Align"),
     "DeepVariant": CORE_STAGES,
     "PangenomeDeepVariant": CORE_STAGES,
-    # The quality gate judges the core stages' outputs; a gate re-run by hand keeps them in the record.
-    # Not the extra callers: a run in progress (gate done, DeepVariant still running) would borrow an
-    # older run's DeepVariant entry, which is what UPSTREAM avoids.
-    "QualityGate": CORE_STAGES,
+    # The quality gate judges the run's calls, whichever caller made them; a gate re-run by hand keeps
+    # them in the record. The gate runs last (run_local.py, the state machine), so no run in progress
+    # can borrow an older caller stage this way.
+    "QualityGate": CORE_STAGES + ("DeepVariant", "PangenomeDeepVariant"),
 }
 # name -> (command, regex on its combined output). Run once per process, outside the pipeline's
 # subprocess helpers, so a missing or odd tool can't affect a stage.
@@ -111,6 +119,8 @@ def begin(task: str, sample_id: str) -> None:
         "sample_id": sample_id,
         "run_name": os.environ.get("RUN_NAME") or None,
         "app_version": os.environ.get("APP_VERSION") or None,
+        # Set only for the job of the run's own caller (deepvariant_task.pipeline_caller); see CALLER_STAGES.
+        "caller": os.environ.get("PIPELINE_CALLER", "").strip().lower() or None,
         "started": _now(),
         "inputs": [],
         "outputs": [],
@@ -352,7 +362,12 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     # Upstream stages the latest run didn't include come from whichever run last ran them (one part per task).
     in_run = {p["task"] for p in run}
     upstream = {u for task in in_run for u in UPSTREAM.get(task, ())} - in_run
-    run += [p for p in parts if p["task"] in upstream]
+    own_caller = run_caller(run)
+    if own_caller:  # it called the variants itself: an earlier run's CallVariants isn't this run's
+        upstream.discard("CallVariants")
+    inherited = [p for p in parts if p["task"] in upstream]
+    run += inherited
+    caller = own_caller or run_caller(inherited)  # a gate re-run by hand judges the inherited caller's calls
     # The run's closing part (the state machine's failure path, or tasks.py finalize), if it has one. Not a stage.
     final = next((p for p in run if p["task"] == FINALIZE_TASK), None)
     run = [p for p in run if p["task"] != FINALIZE_TASK]
@@ -378,14 +393,12 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
             "run_name": final.get("run_name"),
             "resources": None,
         }
-    complete = all(stages.get(t, {}).get("status") == "Success" for t in CORE_STAGES)
-    # The status is the core pipeline's; a failed extra caller (DeepVariant) shows in its stage entry
-    # but doesn't make the run failed when QC, align and variants are fine. A run closed as failed is failed
-    # whichever step failed (the planner, a shard, reading the regions, or unknown), unless that step is an
-    # extra caller: the same rule as for its own part.
-    failed = any(s["status"] != "Success" for t, s in stages.items() if t in CORE_STAGES)
-    closed_failed = (final or {}).get("status") == "failed" and (failure or {}).get("stage") not in EXTRA_CALLERS
-    failed = failed or closed_failed
+    complete, failed = _core_status(stages, caller)
+    # A run closed as failed is failed whichever step failed (the planner, a shard, reading the regions, or
+    # unknown), unless that step is an extra caller: the same rule as for its own part (_core_status). The run's
+    # own caller (PIPELINE_CALLER) is its variant calling, so its failure does fail the run.
+    extra = set(EXTRA_CALLERS) - {CALLER_STAGES.get(caller)}
+    failed = failed or ((final or {}).get("status") == "failed" and (failure or {}).get("stage") not in extra)
     record = {
         "schema": SCHEMA_VERSION,
         "sample_id": sample_id,
@@ -416,7 +429,34 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
         for field in ("reference", "layout", "aligner", "annotation", "gate"):
             if p.get(field) is not None:
                 record[field] = p[field]
+    if caller:
+        record["caller"] = caller
     return record
+
+
+def run_caller(parts: list):
+    """The caller these parts name (PIPELINE_CALLER, CALLER_STAGES), or None (none, or more than one)."""
+    callers = {p.get("caller") for p in parts if p.get("caller") in CALLER_STAGES}
+    return callers.pop() if len(callers) == 1 else None
+
+
+def _core_status(stages: dict, caller) -> tuple:
+    """(complete, failed) of the core pipeline: QualityControl, Align and the variant calling.
+
+    Without a caller the variant calling is CallVariants (CORE_STAGES); a failed extra caller (DeepVariant
+    added to a bcftools run) shows in its stage entry but doesn't make the run failed. With one, it is the
+    later-started of the caller's stage and CallVariants: a CallVariants after a failed DeepVariant is the
+    cloud's fallback, and one before it belongs to an earlier run (which matters only when parts have no
+    run name to tell runs apart). Until the fallback finishes, a failed DeepVariant reads as failed.
+    """
+    variant = "CallVariants"
+    if caller:
+        attempts = [t for t in (CALLER_STAGES[caller], "CallVariants") if t in stages]
+        variant = max(attempts, key=lambda t: stages[t].get("started") or "") if attempts else CALLER_STAGES[caller]
+    core = ("QualityControl", "Align", variant)
+    complete = all(stages.get(t, {}).get("status") == "Success" for t in core)
+    failed = any(stages[t].get("status") != "Success" for t in core if t in stages)
+    return complete, failed
 
 
 def assemble(storage, sample_id: str) -> dict:

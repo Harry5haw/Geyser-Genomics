@@ -176,9 +176,12 @@ def test_the_gate_runs_last_after_the_merge_of_a_scattered_call_and_deepvariant(
     assert [j["name"] for j in jobs] == ["qc", "align", "variants-shard", "variants", "deepvariant", "gate"]
 
 
-def test_no_gate_without_a_bcftools_call_set():
-    # It reads bcftools stats: DeepVariant-only runs have none yet.
+def test_a_deepvariant_only_run_is_gated_but_an_added_caller_is_not():
+    # DeepVariant-only: its PASS-call stats are the sample's (#147), and the cloud gates that path too.
     jobs = run_local.pipeline_jobs("S1", "r.fa", "deepvariant", gate=True)
+    assert [j["name"] for j in jobs] == ["qc", "align", "deepvariant", "gate"]
+    # --skip-to-variants adds a caller to an earlier run: the stats stay that run's, so no new verdict.
+    jobs = run_local.pipeline_jobs("S1", "r.fa", "deepvariant", gate=True, skip_to_variants=True)
     assert "gate" not in [j["name"] for j in jobs]
 
 
