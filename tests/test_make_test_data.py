@@ -130,3 +130,38 @@ def test_paired_duplicates_copy_both_mates(tmp_path):
     for name in dups:
         original = name[: -len("_dup")]
         assert r1[name] == r1[original] and r2[name] == r2[original]
+
+
+def test_gff_adds_gene_models_around_planted_snps_and_changes_nothing_else(tmp_path):
+    plain, annotated = tmp_path / "plain", tmp_path / "gff"
+    make_test_data.main(["--root", str(plain)])
+    make_test_data.main(["--root", str(annotated), "--gff"])
+    assert (plain / "reference/synthetic_ref.fa").read_bytes() == (
+        annotated / "reference/synthetic_ref.fa"
+    ).read_bytes()
+    reads = "raw_reads/SYNTH001.fastq.gz"  # compare contents: a gzip header holds its write time
+    assert gzip.open(plain / reads).read() == gzip.open(annotated / reads).read()
+    assert not (plain / "reference" / "synthetic_ref.fa.gff3.gz").exists()
+    assert "genes" not in json.loads((plain / "truth" / "SYNTH001.json").read_text())
+
+    truth = json.loads((annotated / "truth" / "SYNTH001.json").read_text())
+    genes, snps = truth["genes"], [s["pos"] for s in truth["snps"]]
+    assert [g["strand"] for g in genes] == ["+", "-"]
+    for g in genes:
+        assert (g["end"] - g["start"] + 1) % 3 == 0  # whole codons
+    inside = [p for p in snps if any(g["start"] <= p <= g["end"] for g in genes)]
+    assert inside == snps[1:5]  # SNPs 2-5 are genic, the rest intergenic
+
+    lines = gzip.open(annotated / "reference" / "synthetic_ref.fa.gff3.gz", "rt").read().splitlines()
+    assert lines[0] == "##gff-version 3"
+    features = [line.split("\t") for line in lines[1:]]
+    assert [f[2] for f in features] == ["gene", "mRNA", "CDS"] * 2
+    assert all(f[0] == "synth1" for f in features) and "biotype=protein_coding" in features[0][8]
+
+
+def test_gff_coordinates_follow_the_leading_gap(tmp_path):
+    make_test_data.main(["--root", str(tmp_path), "--gff", "--leading-gap", "1000"])
+    truth = json.loads((tmp_path / "truth" / "SYNTH001.json").read_text())
+    for g in truth["genes"]:
+        assert g["start"] > 1000
+    assert truth["genes"][0]["start"] <= truth["snps"][1]["pos"] <= truth["genes"][0]["end"]
