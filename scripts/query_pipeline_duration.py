@@ -152,7 +152,6 @@ STAGE_CSV_HEADER = [
     "LogStream",
     "CpuSeconds",
     "PeakMemoryMiB",
-    "ContainerPeakMemoryMiB",
     "CpuUse",
     "MemoryUse",
 ]
@@ -182,7 +181,7 @@ def print_stage_breakdown(sfn_client, batch_client, runs, prices, logs_client=No
                 f"{('GPU/EC2' if r['gpus'] else fmt_cost(r['cost_usd'])):>10} "
                 f"{r['attempts'] if r['attempts'] is not None else '---':>3} "
                 f"{'---' if r['cpu_seconds'] is None else round(r['cpu_seconds'], 1):>7} {fmt_share(r['cpu_use']):>5} "
-                f"{fmt_mib(r['container_peak_memory_mib'] or r['peak_memory_mib']):>7} {fmt_share(r['memory_use']):>5}"
+                f"{fmt_mib(r['peak_memory_mib']):>7} {fmt_share(r['memory_use']):>5}"
             )
             if r["reason"]:
                 print(f"      reason: {r['reason']}")
@@ -204,7 +203,6 @@ def print_stage_breakdown(sfn_client, batch_client, runs, prices, logs_client=No
                     r["log_stream"],
                     r["cpu_seconds"],
                     r["peak_memory_mib"],
-                    r["container_peak_memory_mib"],
                     r["cpu_use"],
                     r["memory_use"],
                 ]

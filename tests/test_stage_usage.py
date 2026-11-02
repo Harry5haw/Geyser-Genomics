@@ -37,7 +37,6 @@ def fake_resource(monkeypatch):
     fake = FakeResource()
     monkeypatch.setattr(metrics, "resource", fake)
     monkeypatch.setattr(metrics.sys, "platform", "linux")
-    monkeypatch.setattr(metrics, "container_peak_memory_mib", lambda: None)
     return fake
 
 
@@ -46,11 +45,6 @@ def test_usage_is_cpu_since_the_snapshot_and_the_largest_process_peak(fake_resou
     assert snapshot == {"cpu_seconds": 4.5}
     fake_resource.values[-1] = (12.0, 3.0, 2048 * 1024)  # the stage's tools: 12 s user, 3 s system, 2 GiB
     assert metrics.usage_since(snapshot) == {"cpu_seconds": 12.0, "peak_memory_mib": 2048.0}  # 3 s -> 15 s
-
-
-def test_usage_includes_the_container_peak_when_the_cgroup_gives_one(fake_resource, monkeypatch):
-    monkeypatch.setattr(metrics, "container_peak_memory_mib", lambda: 3000.5)
-    assert metrics.usage_since(metrics.usage_snapshot())["container_peak_memory_mib"] == 3000.5
 
 
 def test_macos_maxrss_is_in_bytes(fake_resource, monkeypatch):
@@ -64,28 +58,30 @@ def test_no_usage_without_getrusage(monkeypatch):
     assert metrics.usage_snapshot() is None and metrics.usage_since(None) is None
 
 
-def test_container_peak_from_the_first_readable_cgroup_file(tmp_path):
-    v1 = tmp_path / "max_usage_in_bytes"
-    v1.write_text(f"{3 * 2**30}\n")
-    bad = tmp_path / "memory.peak"
-    bad.write_text("max\n")
-    assert metrics.container_peak_memory_mib([str(tmp_path / "missing"), str(bad), str(v1)]) == 3072.0
-    assert metrics.container_peak_memory_mib([str(tmp_path / "missing")]) is None
-
-
 @pytest.mark.skipif(sys.platform == "win32", reason="getrusage is Unix-only")
-def test_real_getrusage_counts_a_finished_child():
-    snapshot = metrics.usage_snapshot()
-    subprocess.run(
-        [sys.executable, "-c", "sum(i * i for i in range(3_000_000)); b = bytearray(64 * 2**20)"], check=True
+def test_real_getrusage_counts_a_finished_childs_cpu_and_memory():
+    # Only the child can account for these: it burns ~1 s of CPU while this process waits, and touches
+    # more memory than this process has ever held, so peak_memory_mib must be the child's.
+    import resource
+
+    own_peak_mib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    child_mib = int(own_peak_mib) + 200
+    code = (
+        "import time\n"
+        "end = time.process_time() + 1.0\n"
+        "while time.process_time() < end: pass\n"
+        f"b = b'x' * ({child_mib} * 2**20)\n"  # written, so every page is resident
     )
+    snapshot = metrics.usage_snapshot()
+    subprocess.run([sys.executable, "-c", code], check=True)
     usage = metrics.usage_since(snapshot)
-    assert usage["cpu_seconds"] > 0 and usage["peak_memory_mib"] >= 64
+    assert usage["cpu_seconds"] >= 0.9, usage
+    assert usage["peak_memory_mib"] >= child_mib, (usage, own_peak_mib)
 
 
 # ---------- recording (metrics backends, timed_stage, run record) ----------
 
-USAGE = {"cpu_seconds": 15.0, "peak_memory_mib": 2048.0, "container_peak_memory_mib": 3000.5}
+USAGE = {"cpu_seconds": 15.0, "peak_memory_mib": 2048.0}
 
 
 def test_local_metrics_store_the_usage(tmp_path):
@@ -176,6 +172,7 @@ def test_stage_usage_reads_the_jobs_own_stream_across_pages():
     assert sb.stage_usage(logs, job()) == USAGE
     first, second = (c.kwargs for c in logs.filter_log_events.call_args_list)
     assert first["logGroupName"] == "/aws/batch/geyser-dev" and first["logStreamNames"] == ["geyser/default/abc"]
+    assert first["startTime"] == 1_790_000_110_000 - sb.USAGE_SEARCH_WINDOW_MS  # only the stream's tail
     assert second["nextToken"] == "t"
 
 
@@ -194,9 +191,7 @@ def test_job_log_group_defaults_to_batchs_own():
 def test_shares_of_paid_cpu_and_memory():
     row = sb.add_usage(sb.stage_row("Align_Genome", job()), USAGE)
     assert row["cpu_use"] == round(15.0 / (100 * 4), 3)
-    assert row["memory_use"] == round(3000.5 / 8192, 3)  # the container peak when there is one
-    row = sb.add_usage(sb.stage_row("Align_Genome", job()), {"cpu_seconds": 15.0, "peak_memory_mib": 2048.0})
-    assert row["memory_use"] == 0.25
+    assert row["memory_use"] == 0.25  # 2 GiB of 8
     row = sb.add_usage(sb.stage_row("Align_Genome", job()), None)
     assert row["cpu_seconds"] is None and row["cpu_use"] is None and row["memory_use"] is None
 
@@ -234,9 +229,9 @@ def test_query_cli_shows_usage_columns(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "PeakMiB" in out and "Mem%" in out
     align = next(ln for ln in out.splitlines() if ln.strip().startswith("Align_Genome"))
-    assert "15.0" in align and "4%" in align and "3000" in align and "37%" in align
+    assert "15.0" in align and "4%" in align and "2048" in align and "25%" in align
     import csv
 
     header, row = list(csv.reader(out_csv.open(newline="")))
     values = dict(zip(header, row, strict=True))
-    assert values["CpuSeconds"] == "15.0" and values["ContainerPeakMemoryMiB"] == "3000.5"
+    assert values["CpuSeconds"] == "15.0" and values["PeakMemoryMiB"] == "2048.0" and values["MemoryUse"] == "0.25"

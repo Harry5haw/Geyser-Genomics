@@ -57,8 +57,6 @@ def _check_run_record(root, sample, aligner):
     for task, stage in record["stages"].items():  # #59: each job measured itself
         usage = stage["resources"]
         assert usage["cpu_seconds"] > 0 and usage["peak_memory_mib"] > 10, (task, usage)
-        if "container_peak_memory_mib" in usage:  # cgroup v2 on kernel 5.19+, or cgroup v1
-            assert usage["container_peak_memory_mib"] >= usage["peak_memory_mib"], (task, usage)
         print(f"{task} resources: {usage}")
 
 

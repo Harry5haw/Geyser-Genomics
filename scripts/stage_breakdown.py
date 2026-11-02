@@ -34,8 +34,12 @@ FARGATE_FREE_STORAGE_GB = 20
 FARGATE_MINIMUM_SECONDS = 60
 USAGE_LOG_PREFIX = "stage-usage: "  # app/metrics.py USAGE_LOG_PREFIX
 DEFAULT_JOB_LOG_GROUP = "/aws/batch/job"  # Batch's group when a job definition names none
-USAGE_FIELDS = ("cpu_seconds", "peak_memory_mib", "container_peak_memory_mib")
+USAGE_FIELDS = ("cpu_seconds", "peak_memory_mib")
 MAX_LOG_PAGES = 20
+# The usage line is printed as the stage ends, so only the stream's tail is searched: from this long
+# before the job stopped. Without it a long, chatty stream (bwa-mem2 on a real sample) could use up
+# MAX_LOG_PAGES of FilterLogEvents pages before reaching the line.
+USAGE_SEARCH_WINDOW_MS = 10 * 60 * 1000
 BATCH_TASK_EVENTS = {
     "TaskSubmitted": ("taskSubmittedEventDetails", "output"),
     "TaskSucceeded": ("taskSucceededEventDetails", "output"),
@@ -204,6 +208,9 @@ def stage_usage(logs_client, job: dict):
     if logs_client is None or not stream:
         return None
     kwargs = {"logGroupName": job_log_group(job), "logStreamNames": [stream], "filterPattern": '"stage-usage"'}
+    stopped = _get(job, "StoppedAt")
+    if isinstance(stopped, (int, float)):
+        kwargs["startTime"] = max(0, int(stopped) - USAGE_SEARCH_WINDOW_MS)
     found = None
     try:
         for _ in range(MAX_LOG_PAGES):
@@ -229,8 +236,7 @@ def add_usage(row: dict, usage) -> dict:
         row[key] = usage.get(key)
     run, vcpu, memory_gb = row.get("run_seconds"), row.get("vcpu"), row.get("memory_gb")
     row["cpu_use"] = _share(row["cpu_seconds"], run * vcpu if run and vcpu else None)
-    peak = row["container_peak_memory_mib"] or row["peak_memory_mib"]
-    row["memory_use"] = _share(peak, memory_gb * 1024 if memory_gb else None)
+    row["memory_use"] = _share(row["peak_memory_mib"], memory_gb * 1024 if memory_gb else None)
     return row
 
 

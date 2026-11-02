@@ -14,12 +14,13 @@ Publishing is best effort: a metrics outage must never fail a pipeline stage.
 Resource use per stage (#59): ``usage_snapshot()`` before a stage and ``usage_since()`` after it give
 * ``cpu_seconds``: user + system CPU of this process and every tool it ran and waited for;
 * ``peak_memory_mib``: the peak RSS of the largest single process (this one or one tool). Piped tools
-  run at the same time, so the container can peak higher, up to their sum;
-* ``container_peak_memory_mib``: the container's own peak (cgroup ``memory.peak``), when the kernel
-  exposes it. This is the number an out-of-memory kill is judged on. It covers the container's
-  lifetime, which is one stage in Batch and in run_local.py.
-Peaks are high-water marks of the process, so they are exact when the process runs one stage (always
-in Batch and run_local.py). ``getrusage`` is Unix-only: on Windows there is no usage, only Duration.
+  run at the same time, so the container can peak higher, up to their sum.
+The container's cgroup peak (``memory.peak``) is deliberately not used: it counts the page cache, which
+the stages fill with every file they stream, so it would show I/O-heavy stages near their memory limit
+however little they needed. Peaks are high-water marks of the process, so they are exact when the
+process runs one stage (always in Batch and run_local.py). A stage killed from outside (out of memory,
+the Batch attempt timeout) never reaches the measurement and logs no usage; Batch's own status reason
+says why it stopped. ``getrusage`` is Unix-only: on Windows there is no usage, only Duration.
 """
 
 import json
@@ -37,15 +38,10 @@ except ImportError:  # Windows: no getrusage (the unit tests still run there)
 METRIC_NAMESPACE = "GeyserGenomics"
 # The job log line query_pipeline_duration.py --stages reads back (scripts/stage_breakdown.py).
 USAGE_LOG_PREFIX = "stage-usage: "
-CGROUP_PEAK_FILES = (
-    "/sys/fs/cgroup/memory.peak",  # cgroup v2, kernel 5.19+
-    "/sys/fs/cgroup/memory/memory.max_usage_in_bytes",  # cgroup v1
-)
 # usage key -> (CloudWatch metric name, unit)
 USAGE_METRICS = {
     "cpu_seconds": ("CpuSeconds", "Seconds"),
     "peak_memory_mib": ("PeakMemory", "Megabytes"),
-    "container_peak_memory_mib": ("ContainerPeakMemory", "Megabytes"),
 }
 
 
@@ -62,17 +58,6 @@ def _maxrss_mib(ru) -> float:
     return ru.ru_maxrss / 2**20 if sys.platform == "darwin" else ru.ru_maxrss / 1024
 
 
-def container_peak_memory_mib(paths=CGROUP_PEAK_FILES):
-    """The container's peak memory from its cgroup, or None where no file gives it."""
-    for path in paths:
-        try:
-            with open(path, encoding="ascii") as fh:
-                return round(int(fh.read().strip()) / 2**20, 1)
-        except (OSError, ValueError):
-            continue
-    return None
-
-
 def usage_snapshot():
     """The CPU time so far, to pass to usage_since(); None where getrusage doesn't exist."""
     if resource is None:
@@ -85,14 +70,10 @@ def usage_since(snapshot):
     if snapshot is None or resource is None:
         return None
     peak = max(_maxrss_mib(resource.getrusage(who)) for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN))
-    usage = {
+    return {
         "cpu_seconds": round(_cpu_seconds() - snapshot["cpu_seconds"], 2),
         "peak_memory_mib": round(peak, 1),
     }
-    container_peak = container_peak_memory_mib()
-    if container_peak is not None:
-        usage["container_peak_memory_mib"] = container_peak
-    return usage
 
 
 class NullMetrics:
