@@ -34,6 +34,8 @@ import benchmark_happy
 import benchmark_history
 import run_local
 
+# Benchmark aligner keys -> the aligner's name in the benchmark history.
+ALIGNER_NAMES = {"giraffe": "vg giraffe"}
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"  # the vg release Google's VG case study uses
 KMC_IMAGE = "quay.io/biocontainers/kmc:3.2.4--h5814d7d_6"
 KMER_LENGTH = 29  # vg haplotypes' default minimizer k; the KFF counts must use the same k
@@ -265,10 +267,14 @@ def score_config(
     region=None,
     stratification=None,
     subsets=("*",),
-    aligner=None,
+    *,
+    history=None,
 ):
     """Calls and hap.py for one configuration, each redone only when missing or stale. Returns
     (summary, extended, calls info) or None if a step failed.
+
+    history: what produced the calls, for the benchmark history ({"aligner", "alignment", "coverage", "graph"}:
+    benchmark_happy's history flags). Keyword-only, so a new positional parameter can't silently land in it.
 
     Calls are redone when the alignment file or the caller settings differ from those recorded in cpath. A VCF with
     no record is reused and reported as calls_provenance 'unrecorded' ('legacy' for records from before settings were
@@ -305,7 +311,8 @@ def score_config(
     ):
         args = ["--root", root, "--sample", sid, "--reference", reference, "--callers", caller]
         args += ["--caller-settings", benchmark_history.settings_tag(env.get("DEEPVARIANT_EXTRA_ARGS", ""))]
-        args += ["--aligner", aligner] if aligner else []
+        for field, value in (history or {}).items():
+            args += [f"--{field.replace('_', '-')}", value] if value else []
         args += ["--region", region] if region else []
         args += ["--stratification", stratification] if stratification else []
         if benchmark_happy.main(args) != 0:
@@ -523,7 +530,7 @@ def main(argv=None):
             a.region,
             a.stratification,
             subsets,
-            aligner={"giraffe": "vg giraffe"}.get(aligner, aligner),
+            history={"aligner": ALIGNER_NAMES.get(aligner, aligner)},
         )
         if scored is None:
             return 1

@@ -8,6 +8,7 @@ import subprocess
 
 import benchmark_happy
 import benchmark_history as bh
+import run_local
 
 EXT_HEADER = (
     "Type,Subtype,Subset,Filter,Genotype,QQ.Field,QQ,METRIC.Recall,METRIC.Precision,METRIC.Frac_NA,"
@@ -177,6 +178,28 @@ def test_benchmark_happy_appends_each_scored_caller(tmp_path, monkeypatch):
         ("S1", "deepvariant", "bwa-mem2", "MAPQ>=5", "abc1234")
     }
     assert benchmark_happy.main(args + ["--no-history"]) == 0 and len(bh.read_history(bh.HISTORY)) == len(rows)
+
+
+def test_benchmark_happy_records_the_graph_for_pangenome_rows_only(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    (root / "reference").mkdir(parents=True)
+    (root / "reference" / "r.fa.fai").write_text("c\t10\t3\t10\t11\n")
+    for caller in ("deepvariant", "pangenome"):
+        vcf = run_local.vcf_path(str(root), caller, "S1")
+        os.makedirs(os.path.dirname(vcf), exist_ok=True)
+        open(vcf, "wb").close()
+
+    def fake_happy(cmd, *a, **k):
+        out = next(c for c in cmd if c.startswith("/data/benchmarks/"))
+        write_happy(str(root / out[len("/data/") :]))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(benchmark_happy.subprocess, "run", fake_happy)
+    monkeypatch.setattr(bh, "git_commit", lambda repo=None: "abc1234")
+    args = ["--root", str(root), "--sample", "S1", "--reference", "r.fa", "--graph", "hprc-v2.0.gbz"]
+    assert benchmark_happy.main(args + ["--callers", "deepvariant", "pangenome"]) == 0
+    graphs = {(r["caller"], r["graph"]) for r in bh.read_history(bh.HISTORY)}
+    assert graphs == {("deepvariant", ""), ("pangenome", "hprc-v2.0.gbz")}
 
 
 def test_tests_never_touch_the_tracked_history():

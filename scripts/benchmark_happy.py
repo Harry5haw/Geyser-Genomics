@@ -233,6 +233,9 @@ def main(argv=None):
     p.add_argument("--alignment", help="history: where the alignment came from, in words")
     p.add_argument("--coverage", help="history: e.g. 30x")
     p.add_argument(
+        "--graph", help=f"history: the pangenome caller's graph (default: {benchmark_history.PANGENOME_GRAPH})"
+    )
+    p.add_argument(
         "--caller-settings",
         help="history: DeepVariant flags that change results (default: from $DEEPVARIANT_EXTRA_ARGS, e.g. MAPQ>=5)",
     )
@@ -297,6 +300,7 @@ def main(argv=None):
                 aligner=a.aligner,
                 alignment=a.alignment,
                 coverage=a.coverage,
+                graph=a.graph if caller == "pangenome" else None,
                 caller_settings=settings,
                 commit=benchmark_history.git_commit(),
                 source="benchmark_happy.py",

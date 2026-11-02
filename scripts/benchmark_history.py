@@ -8,8 +8,8 @@ tracked in git, so a change in accuracy shows up as a diff and the series keeps 
     python scripts/benchmark_history.py backfill --root ../geyser-data   # the benchmarks scored before this script
     python scripts/benchmark_history.py report                          # README.md + figure CSV next to the history
 
-benchmark_happy.py appends each caller it scores (and so do benchmark_giraffe.py / benchmark_calls.py, which run
-it). Re-scoring the same run and caller on the same day replaces those rows; a later day adds new ones.
+benchmark_happy.py appends each caller it scores, and so do benchmark_giraffe.py / benchmark_calls.py, which run it
+through benchmark_giraffe.score_config(history=...) with the aligner, alignment, coverage and (pangenome) graph. Re-scoring the same run and caller on the same day replaces those rows; a later day adds new ones.
 
 Numbers come from hap.py's extended.csv (PASS calls, all subtypes and genotypes), which also has the GIAB
 stratification rows when hap.py ran with them; summary.csv is the fallback for the whole region only.

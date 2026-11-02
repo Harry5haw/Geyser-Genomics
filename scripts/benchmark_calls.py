@@ -24,6 +24,7 @@ import sys
 import benchmark_aligners as ba
 import benchmark_giraffe as bg
 import benchmark_happy
+import benchmark_history
 import run_local
 
 PANGENOME_MQ5 = {
@@ -79,6 +80,17 @@ PRESETS = {
     },
 }
 ERROR_KEYS = ("snp_fn", "snp_fp", "indel_fn", "indel_fp")
+
+
+def history_metadata(aligner, source):
+    """What produced a configuration's calls, for the benchmark history: its aligner, plus the alignment and coverage
+    of the alignment it reuses when that one is a known benchmark run (a configuration's own sample name, e.g. an
+    _mq5 one, is only a link to it)."""
+    known = benchmark_history.KNOWN_RUNS.get(source, {})
+    return {
+        "aligner": bg.ALIGNER_NAMES.get(aligner, aligner),
+        **{k: known[k] for k in ("alignment", "coverage") if k in known},
+    }
 
 
 def missing_inputs(root, preset, reference, graph=run_local.DEFAULT_PANGENOME):
@@ -162,6 +174,7 @@ def main(argv=None):
             a.region,
             a.stratification,
             subsets,
+            history=history_metadata(aligner, source),
         )
         if scored is None:
             return 1
