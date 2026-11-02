@@ -129,8 +129,14 @@ def pipeline_jobs(
     pg_image="geyser-deepvariant-pangenome",
     pangenome=DEFAULT_PANGENOME,
     pg_shm=DEFAULT_PANGENOME_SHM,
+    regions=None,
+    shard_window=None,
 ):
-    """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome)."""
+    """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome).
+
+    regions + shard_window: scatter-gather variant calling, as the Map state will run it (#108): one
+    'variants --region' job per region, then 'variants --window' merging them into the usual VCF.
+    """
     if caller not in CALLERS:
         raise ValueError(f"unknown caller {caller!r}")
     sets = CALLER_SETS[caller]
@@ -139,6 +145,16 @@ def pipeline_jobs(
         if skip_to_variants and stage != "variants":
             continue
         if stage == "variants" and "bcftools" not in sets:
+            continue
+        if stage == "variants" and regions:
+            cmd = stage_command(stage, sample_id, reference_name, needs_ref)
+            jobs += [
+                {"name": "variants-shard", "cmd": cmd + ["--region", r], "image": app_image, "gpus": False}
+                for r in regions
+            ]
+            jobs.append(
+                {"name": stage, "cmd": cmd + ["--window", str(shard_window)], "image": app_image, "gpus": False}
+            )
             continue
         jobs.append(
             {
@@ -170,6 +186,16 @@ def pipeline_jobs(
             }
         )
     return jobs
+
+
+def local_regions(root, reference_name, window):
+    """The regions tasks.py will merge for this reference (tasks.regions_from_lengths), from the local FASTA."""
+    app_dir = os.path.join(REPO_ROOT, "app")
+    if app_dir not in sys.path:
+        sys.path.insert(0, app_dir)
+    import tasks  # noqa: PLC0415 - only for --shard-window; tasks.py imports nothing AWS-specific at import time
+
+    return tasks.reference_regions(os.path.join(root, "reference", reference_name), window)
 
 
 def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None):
@@ -379,8 +405,17 @@ def main(argv=None):
         action="store_true",
         help="start at variant calling, using an existing alignments/<sample>.cram (or .bam)",
     )
+    p.add_argument(
+        "--shard-window",
+        type=int,
+        metavar="BP",
+        help="scatter-gather variant calling: one bcftools job per region of BP bases, then a merge into the "
+        "usual VCF (what the Map state will run; #108). Default: one variants job",
+    )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     a = p.parse_args(argv)
+    if a.shard_window is not None and a.shard_window < 1:
+        p.error("--shard-window must be >= 1")
 
     trigger = load_trigger()
     keys = sample_keys(trigger, a.root, a.sample)
@@ -406,6 +441,8 @@ def main(argv=None):
             pg_image=a.pg_image,
             pangenome=a.pangenome,
             pg_shm=a.pg_shm_size,
+            regions=local_regions(a.root, reference, a.shard_window) if a.shard_window else None,
+            shard_window=a.shard_window,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:
