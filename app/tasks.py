@@ -32,6 +32,7 @@ Functions definition (infrastructure/state_machine.asl.json) and scripts/run_loc
 import argparse
 import gzip
 import hashlib
+import io
 import json
 import os
 import re
@@ -926,15 +927,26 @@ def variants_task(sample_id, reference_name, window=None):
 
 
 def regions_main(argv) -> int:
-    """tasks.py regions <reference_name> [--window N]: print the regions as a JSON list (the last stdout line)."""
+    """tasks.py regions <reference_name> [--window N] [--output-key KEY]: the regions as a JSON list.
+
+    Printed as the last stdout line, and with --output-key also stored at KEY: that is how the state
+    machine's planner hands the list to its Map (a Batch job can't return output; Read_Regions reads KEY).
+    """
     parser = argparse.ArgumentParser(prog="tasks.py regions", description=regions_main.__doc__)
     parser.add_argument("reference_name")
     parser.add_argument("--window", type=int, default=DEFAULT_REGION_WINDOW)
+    parser.add_argument("--output-key", help="also store the JSON list at this storage key")
     args = parser.parse_args(argv)
+    if args.window < 1:
+        parser.error("--window must be >= 1")
     wd = work_dir("regions")
     try:
         ref = ensure_reference_local(args.reference_name, wd, need_bwa_index=False)
-        print(json.dumps(reference_regions(ref, args.window)))
+        regions = json.dumps(reference_regions(ref, args.window))
+        if args.output_key:
+            storage().upload_stream(io.BytesIO(regions.encode("utf-8")), args.output_key)
+            print(f"Stored {len(json.loads(regions))} regions at {storage().describe(args.output_key)}", flush=True)
+        print(regions)
     finally:
         shutil.rmtree(wd, ignore_errors=True)
     return 0

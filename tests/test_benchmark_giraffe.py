@@ -377,3 +377,37 @@ def test_score_config_reuses_an_unrecorded_vcf_and_says_so(scoring):
     open(vcf, "wb").close()
     _, _, info = score()
     assert runs == {"calls": 0, "happy": 1} and info["calls_provenance"] == "unrecorded"
+
+
+def test_score_config_passes_history_metadata_to_hap_py(scoring, monkeypatch):
+    root, runs, _ = scoring
+    import benchmark_happy
+
+    seen, scored = [], benchmark_happy.main
+    monkeypatch.setattr(benchmark_happy, "main", lambda args: seen.append(args) or scored(args))
+    history = {"aligner": "vg giraffe", "alignment": "", "graph": "hprc-v2.0.gbz"}
+    out = root / "out"
+    bg.score_config(
+        str(root),
+        str(out),
+        str(out / "calls.json"),
+        "L",
+        "S",
+        "pangenome",
+        bg.PANGENOME_ENV,
+        "14g",
+        "r.fa",
+        "S",
+        history=history,
+    )
+    (args,) = seen
+    assert args[args.index("--aligner") + 1] == "vg giraffe" and args[args.index("--graph") + 1] == "hprc-v2.0.gbz"
+    assert "--alignment" not in args  # empty values are left out
+    # Keyword-only: a 14th positional argument (e.g. a graph from a branch that adds a parameter) can't land in it.
+    positional = [str(root), str(out), str(out / "calls.json"), "L", "S", "pangenome", bg.PANGENOME_ENV, "14g"]
+    positional += ["r.fa", "S", None, None, ("*",)]
+    with pytest.raises(TypeError, match="positional argument"):
+        bg.score_config(*positional, "hprc-v2.0.gbz")
+    with pytest.raises(ValueError, match="sample"):  # only benchmark_happy's history flags
+        bg.score_config(*positional, history={"sample": "S"})
+    assert len(seen) == 1  # neither reached hap.py

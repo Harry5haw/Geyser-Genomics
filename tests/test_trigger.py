@@ -109,15 +109,19 @@ def test_execution_name_is_always_valid(trigger, sample_id):
 def test_batch_job_names_still_fit(trigger):
     """The state machine builds job names as '<Prefix>-<srr_id>-<execution name>'; Batch allows 128 chars."""
     with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
-        prefixes = re.findall(
-            r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", fh.read()
-        )
-    assert prefixes == ["QualityControl", "AlignGenome", "CallVariants"]
+        asl = fh.read()
+    prefixes = re.findall(r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", asl)
+    assert prefixes == ["QualityControl", "AlignGenome", "PlanRegions", "CallVariants"]
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
     for prefix in prefixes:
         job_name = f"{prefix}-{sample_id}-{name}"
         assert len(job_name) <= 128 and re.fullmatch(r"[A-Za-z0-9_-]+", job_name)
+    # The variant-calling shards (Map iterations) name the region's index instead of the sample, which the
+    # execution name already contains: with the sample too, 131 characters at worst.
+    assert "States.Format('CallVariantsShard-{}-{}', $.index, $$.Execution.Name)" in asl
+    shard = f"CallVariantsShard-{99999}-{name}"
+    assert len(shard) <= 128 and re.fullmatch(r"[A-Za-z0-9_-]+", shard)
 
 
 def test_handler_names_the_execution_after_the_sample(trigger, monkeypatch):
