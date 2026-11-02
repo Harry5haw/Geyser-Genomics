@@ -27,15 +27,18 @@ Record (schema 1):
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
     stages {Task: {status, started, finished, duration_seconds, error, run_name}},
     failure {stage, error, reason, exit_code, job_id, log_stream} (only for a run closed as failed, below)
+    gate {verdict (pass | fail | null when the gate couldn't run), reasons, mode, config, gate_version, key}:
+        the quality gate's verdict (tasks.gate_task), once the QualityGate stage has run. It doesn't
+        change the status: in GATE_MODE=fail a failed verdict fails the QualityGate stage itself.
 
 Closing a failed run: a stage that fails in Python writes its own Failure part, but a job that is killed (out of
 memory, timeout), never starts, or a step outside the stages (the region planner, reading the regions, a shard)
-leaves the record without a final status. The state machine's failure path runs `tasks.py finalize <id> --status
-failed --error <Error> --cause <Cause>` (close_run), which writes runs/{id}.provenance/Finalize.json for the run:
-the record is then failed, with the failing stage (from the Batch job name in the Cause) and why. In the cloud the
-state machine writes that part itself, straight to S3 with the Catch output as "caught", and can't re-assemble:
-the stored runs/{id}.provenance.json keeps the last stage's view until something assembles it, while every
-reader that uses read_record() (reconcile, the web UI, the next stage) sees the close.
+leaves the record without a final status. A closing part, runs/{id}.provenance/Finalize.json, fixes that: the
+record is then failed, with the failing stage (from the Batch job name in the Catch's Cause) and why. The state
+machine's failure path writes it itself, straight to S3 with the Catch output as "caught" (parsed on read), and
+can't re-assemble: the stored runs/{id}.provenance.json keeps the last stage's view until something assembles
+it, while every reader that uses read_record() (reconcile, the web UI, the next stage) sees the close. By hand or
+for a local run: `tasks.py finalize <id> --status failed --run-name <run> [--caught JSON]` (close_run).
 """
 
 import hashlib
@@ -60,6 +63,10 @@ UPSTREAM = {
     "CallVariants": ("QualityControl", "Align"),
     "DeepVariant": CORE_STAGES,
     "PangenomeDeepVariant": CORE_STAGES,
+    # The quality gate judges the core stages' outputs; a gate re-run by hand keeps them in the record.
+    # Not the extra callers: a run in progress (gate done, DeepVariant still running) would borrow an
+    # older run's DeepVariant entry, which is what UPSTREAM avoids.
+    "QualityGate": CORE_STAGES,
 }
 # name -> (command, regex on its combined output). Run once per process, outside the pipeline's
 # subprocess helpers, so a missing or odd tool can't affect a stage.
@@ -70,6 +77,7 @@ TOOL_VERSION_COMMANDS = {
     "bwa": (["bwa"], r"Version: (\S+)"),
     "fastp": (["fastp", "--version"], r"fastp (\S+)"),
     "mosdepth": (["mosdepth", "--version"], r"mosdepth (\S+)"),
+    "geyser-gate": (["geyser-gate", "--version"], r"geyser-gate (\S+)"),
 }
 # The image exports the release it pinned where the binary reports something else (bwa-mem2 2.3
 # says 2.2.1); recorded as "<tool> release" next to the reported version.
@@ -405,7 +413,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
         record["stats"].update(p.get("stats") or {})
-        for field in ("reference", "layout", "aligner", "annotation"):
+        for field in ("reference", "layout", "aligner", "annotation", "gate"):
             if p.get(field) is not None:
                 record[field] = p[field]
     return record
