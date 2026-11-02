@@ -4,15 +4,15 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "= 6.69.0" # 6.x: CUSTOM budget periods (#76); upgrade notes in docs/design/claude-guardrails.md
+      version = "6.71.0" # 6.x: CUSTOM budget periods (#76); upgrade notes in docs/design/claude-guardrails.md
     }
     random = {
       source  = "hashicorp/random"
-      version = "= 3.7.2"
+      version = "3.9.1"
     }
     archive = {
       source  = "hashicorp/archive"
-      version = "= 2.7.1"
+      version = "2.8.1"
     }
   }
 }
