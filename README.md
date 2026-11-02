@@ -198,7 +198,7 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 | :--- | :--- | :--- |
 | **Reproducible results** | Tools and Python packages pinned exactly, base image pinned by digest; synthetic data with planted mutations as a truth check; a run record per sample | Done. The end-to-end truth check runs on every push. |
 | **No manual steps** | An S3 upload triggers a Lambda, which starts Step Functions | Verified in the cloud (single-end). Paired-end triggering is tested offline. |
-| **Pay only while running** | Batch on Fargate scales to zero, no NAT gateway, budgets | Applied. A small test run costs about $0.006; storage is the remaining idle cost. |
+| **Pay only while running** | Batch on Fargate scales to zero, no NAT gateway, budgets | Applied. Cost per sample, measured on the cloud runs CLOUD005-010 (10k single-end reads or 5k pairs from chr20; three stages): **$0.0066-0.0070**, at Fargate on-demand list prices for eu-west-2 (`query_pipeline_duration.py --stages`, defaults in `scripts/stage_breakdown.py`). Almost all of it is fixed per-job overhead (Fargate bills at least a minute per job). Storage is the remaining idle cost. |
 | **Fail loudly, recover from flaky infrastructure** | Infrastructure-only retries, per-stage and per-run time limits, failures published to SNS | Applied and tested in the cloud: a truncated upload fails once, notifies and ends Failed. |
 | **Scale out** | One execution per sample, QC and alignment in parallel, up to 8 Fargate vCPUs at once | Applied. Splitting one sample's variant calling across jobs is planned (2.0). |
 | **Accessible to non-cloud users** | A web UI for uploading samples and browsing results | Works offline against the local folder. Not deployed. |
@@ -537,7 +537,7 @@ By GIAB region type (`--stratification`, GIAB v3.3 stratifications), SNP errors 
   - Giraffe also needs a 37 s k-mer count (kmc, capped at 8 GB) per sample.
   - One-off graph indexes (distance index, r-index, haplotype information) take 345 s and under 1.5 GiB for chr20.
 - **Caveats:**
-  - **Biased towards the linear aligner.** The reads are only those BWA had placed on chr20 in Google's BAM, and the graph and reference are chr20 only. Giraffe on the whole genome (Google's case study) may gain more.
+  - **Biased towards the linear aligner.** The reads are only those BWA had placed on chr20 in Google's BAM, and the graph and reference are chr20 only. With whole-genome alignments the gain is much larger (next table).
   - **Flags differ for linear DeepVariant.** On giraffe BAMs it runs with Google's VG flags (`min_mapping_quality=0`, `keep_legacy_allele_counter_behavior`, `normalize_reads`); on the bwa-mem2 BAM it runs with defaults.
   - **One run each.** Pangenome-aware DeepVariant ran with 12 `make_examples` workers here (16.5 and 16.0 min); shard count changes speed only, not the calls.
 
@@ -546,6 +546,33 @@ python scripts/benchmark_aligners.py --root <root> --from-bam alignments/HG003_c
     --reference GRCh38_chr20.fa --region chr20          # reads + bwa-mem2 BAM first
 python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome --stratifications
 python scripts/benchmark_giraffe.py --root <root> --base HG003_chr20 --reference GRCh38_chr20.fa \
+    --region chr20 --stratification stratifications/GRCh38_chr20.tsv --pg-shards 12 --pg-memory 18g
+```
+
+**Without the bias: Google's whole-genome alignments, HG003 chr20, hap.py** (`scripts/benchmark_calls.py`). Google's two pangenome-aware case studies publish BAMs of the same HG003 35x reads aligned to the **whole genome**: one with BWA-MEM to GRCh38, one with vg giraffe to the whole-genome HPRC v1.1 graph. Both are cut to chr20 afterwards (`fetch_dv_testdata.py --dataset hg003-chr20` / `hg003-chr20-vg`). Every read could go anywhere in the genome, so neither aligner is favoured. Calls use the chr20 graph:
+
+| Alignment + caller | SNP FN / FP | Indel FN / FP | SNP + indel errors | SNP errors in segdups | SNP errors, low mappability |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| BWA + DeepVariant (linear) | 263 / 52 | 48 / 15 | 378 | 52 | 257 |
+| BWA + pangenome-aware DeepVariant | 242 / 78 | 42 / 18 | 380 | 41 | 266 |
+| BWA + pangenome-aware DeepVariant, MAPQ ≥ 5 | 235 / 62 | 43 / 19 | 359 | 46 | 240 |
+| **giraffe + DeepVariant (linear)** | 75 / **44** | 40 / 27 | **186** | **7** | **46** |
+| giraffe + pangenome-aware DeepVariant | **72** / 104 | **30** / 22 | 228 | 69 | 70 |
+| giraffe + pangenome-aware DeepVariant, MAPQ ≥ 5 | 96 / 87 | 36 / 30 | 249 | 55 | 79 |
+
+- **The setup reproduces Google's VG case study:** giraffe + pangenome-aware DeepVariant gives SNP FN/FP 72/104, against Google's published 72/106.
+- **Aligning to the graph halves the errors.** giraffe + plain linear DeepVariant has 186 errors against 378 for BWA + linear (51% fewer). In low-mappability regions SNP errors fall from 257 to 46, and in segmental duplications from 52 to 7. The chr20-only experiment above understated this, because its reads were the ones BWA had already put on chr20.
+- **On graph-aligned reads, linear DeepVariant beats the pangenome-aware model for SNPs** (119 against 176 SNP errors). The pangenome model still has the fewest misses and the fewest indel errors (52 against 67), but over-calls in segmental duplications (69 SNP errors there against 7).
+- **The MAPQ ≥ 5 filter helps only with BWA** (380 → 359). On giraffe reads it makes things worse (228 → 249), mostly through more missed SNPs (72 → 96). A likely reason, not verified: giraffe gives low mapping quality to reads the graph can still place usefully, so filtering them loses real evidence.
+- **Caveats:**
+  - The giraffe BAM is published without duplicate marking and the BWA BAM with it. This is Google's own comparison, kept as published.
+  - Linear DeepVariant on giraffe uses Google's VG flags.
+  - One chromosome and one run each.
+
+```bash
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome --stratifications
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20-vg                     # 947 MB
+python scripts/benchmark_calls.py --root <root> --preset google-case-studies --reference GRCh38_chr20.fa \
     --region chr20 --stratification stratifications/GRCh38_chr20.tsv --pg-shards 12 --pg-memory 18g
 ```
 

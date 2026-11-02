@@ -59,6 +59,11 @@ def _check_run_record(root, sample, aligner):
     assert record["gate"]["verdict"] == "pass" and record["gate"]["mode"] == "warn", record["gate"]
     assert f"qc_reports/{sample}.gate.json" in outputs
 
+    for task, stage in record["stages"].items():  # #59: each job measured itself
+        usage = stage["resources"]
+        assert usage["cpu_seconds"] > 0 and usage["peak_memory_mib"] > 10, (task, usage)
+        print(f"{task} resources: {usage}")
+
 
 def _check_gate(root, sample, layout):
     """qc_reports/{id}.gate.json: the real binary's verdict, with run_local's synthetic thresholds."""
