@@ -600,3 +600,27 @@ def test_batch_log_link_follows_the_log_group(capsys, monkeypatch):
     deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/geyser-prod"])
     header = json.loads(capsys.readouterr().out)["widgets"][0]["properties"]["markdown"]
     assert "geyser-prod" in header and "geyser-dev" not in header.split("Batch job logs](")[1].split(")")[0]
+
+
+# ------------------------------------------------------------------ data lake storage (#62)
+
+
+def test_storage_widgets_only_with_a_bucket():
+    titles = lambda body: [w["properties"].get("title", "") for w in body["widgets"]]  # noqa: E731
+    assert not any("Data lake" in t for t in titles(monitoring.build_dashboard()))
+    body = monitoring.build_dashboard(bucket="my-bucket")
+    storage = [w for w in body["widgets"] if w["properties"].get("title", "").startswith("Data lake")]
+    assert [w["properties"]["title"] for w in storage] == ["Data lake size, GB (daily)", "Data lake objects (daily)"]
+    rows = [r for w in storage for r in w["properties"]["metrics"]]
+    assert ["AWS/S3", "BucketSizeBytes", "BucketName", "my-bucket", "StorageType", "StandardStorage"] == rows[0][:6]
+    assert ["AWS/S3", "NumberOfObjects", "BucketName", "my-bucket", "StorageType", "AllStorageTypes"] == rows[2][:6]
+    assert all(w["properties"]["period"] == 86400 for w in storage)  # S3 storage metrics are daily
+    ids = [row_options(r)["id"] for r in rows]
+    assert all(METRIC_ID_RE.match(i) for i in ids) and len(ids) == len(set(ids))
+
+
+def test_dashboard_cli_bucket_adds_storage_widgets(capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    deploy_dashboard.main(["--dry-run", "--bucket", "my-bucket"])
+    body = json.loads(capsys.readouterr().out)
+    assert any(w["properties"].get("title") == "Data lake size, GB (daily)" for w in body["widgets"])
