@@ -417,20 +417,31 @@ JOB_NAME_PREFIXES = {
 }
 
 
-def attempts(events, state) -> int:
-    """How many times a Batch task state submitted its job (TaskScheduled events), retries included.
+COMPLETED = {"TaskSucceeded", "TaskFailed", "TaskTimedOut"}
 
-    Counted by the job name the state sets, not by walking previousEventId: with three Parallel
-    branches running at once, Step Functions Local now and then links an event to another branch's.
+
+def attempts(events, state) -> int:
+    """How many times a Batch task state's job ran to an outcome (succeeded, failed or timed out).
+
+    Counts completed attempts, not TaskScheduled: once MaxAttempts is used up, Step Functions Local
+    can emit a stray extra TaskScheduled + TaskStarted that never completes, racing the Parallel
+    state's failure (seen in #133's event histories). The state machine itself retries correctly.
+    Each completion is tied to its attempt through previousEventId (TaskFailed -> TaskStarted ->
+    TaskScheduled, which carries the job name the state sets).
     """
     prefix = JOB_NAME_PREFIXES[state]
-    return sum(
-        1
-        for e in events
-        if e["type"] == "TaskScheduled"
-        and e["taskScheduledEventDetails"]["resourceType"] == "batch"
-        and json.loads(e["taskScheduledEventDetails"]["parameters"])["JobName"].startswith(prefix)
-    )
+    by_id = {e["id"]: e for e in events}
+    count = 0
+    for e in events:
+        if e["type"] not in COMPLETED:
+            continue
+        cursor = e
+        while cursor is not None and cursor["type"] != "TaskScheduled":
+            cursor = by_id.get(cursor.get("previousEventId"))
+        if cursor is None or cursor["taskScheduledEventDetails"]["resourceType"] != "batch":
+            continue
+        count += json.loads(cursor["taskScheduledEventDetails"]["parameters"])["JobName"].startswith(prefix)
+    return count
 
 
 def history_text(events) -> str:
