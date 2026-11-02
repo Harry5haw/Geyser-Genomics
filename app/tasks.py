@@ -950,12 +950,13 @@ def regions_main(argv) -> int:
 
 
 def finalize_main(argv) -> int:
-    """tasks.py finalize <srr_id> --status failed [--error ERROR] [--cause CAUSE]: close the run's record.
+    """tasks.py finalize <srr_id> --status failed [--error E] [--cause C | --caught JSON]: close the run's record.
 
-    The state machine's failure path runs this with its Catch's Error and Cause, so a run whose failing job never
-    wrote its run-record part (killed, out of memory, timed out, a step outside the stages) still ends as failed,
-    with the failing stage and why (provenance.close_run). Best effort: always exits 0, so the failure path goes on
-    to its notification whatever happens here.
+    Closes a run whose failing job never wrote its run-record part (killed, out of memory, timed out, a step outside
+    the stages) as failed, with the failing stage and why (provenance.close_run): by hand, or for a local run. The
+    state machine's failure path writes the same closing part itself, straight to S3, without a Batch job (a
+    retried job's Cause can be too big for a command line). Once its arguments parse, it exits 0 whatever happens
+    (best effort).
     """
     parser = argparse.ArgumentParser(prog="tasks.py finalize", description=finalize_main.__doc__)
     parser.add_argument("srr_id")
@@ -964,8 +965,8 @@ def finalize_main(argv) -> int:
     parser.add_argument("--cause", help="the error's cause (a failed Batch job's description, as JSON)")
     parser.add_argument(
         "--caught",
-        help="the Catch output as JSON ({Error, Cause}: States.JsonToString($.error)); --error/--cause override it. "
-        "The state machine passes this one: a Pass state reading $.error.Cause would itself fail if Cause were absent",
+        help="a Step Functions Catch output as JSON ({Error, Cause}, e.g. copied from the execution's history); "
+        "--error / --cause override it",
     )
     args = parser.parse_args(argv)
     caught = {}

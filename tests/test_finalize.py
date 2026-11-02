@@ -22,13 +22,15 @@ def store(tmp_path, monkeypatch):
     return s
 
 
-def write_part(store, task, status="Success", run_name="run-1", finished="2026-11-02T10:00:00Z", **fields):
+def write_part(
+    store, task, status="Success", run_name="run-1", finished="2026-11-02T10:00:00Z", started=None, **fields
+):
     part = {
         "schema": 1,
         "task": task,
         "sample_id": "S1",
         "run_name": run_name,
-        "started": finished,
+        "started": started or finished,
         "finished": finished,
         "status": status,
         "error": None,
@@ -141,12 +143,68 @@ def test_a_later_run_is_not_failed_by_an_earlier_runs_close(store, monkeypatch):
     assert record["run_name"] == "run-2" and record["status"] == "incomplete" and "failure" not in record
 
 
-def test_without_run_name_a_close_counts_only_until_a_stage_runs_again(store):
+def test_without_run_name_a_close_counts_only_until_a_stage_starts_again(store):
     write_part(store, "QualityControl", run_name=None, finished="2000-01-01T00:00:00Z")
     assert provenance.close_run(store, "S1", "failed", "States.Timeout", "timed out")["status"] == "failed"
-    write_part(store, "QualityControl", run_name=None, finished="2099-01-01T00:00:00Z")  # re-run by hand later
+    # A sibling that started before the close and finished after it is the same run: still failed.
+    write_part(store, "Align", run_name=None, started="2000-01-01T00:00:01Z", finished="2099-01-01T00:00:00Z")
+    assert provenance.build(store, "S1")["status"] == "failed"
+    write_part(store, "QualityControl", run_name=None, finished="2099-01-02T00:00:00Z")  # re-run by hand later
     record = provenance.build(store, "S1")
     assert record["status"] == "incomplete" and "failure" not in record
+
+
+def test_a_close_without_run_name_joins_the_latest_stages_run(store):
+    # A by-hand `tasks.py finalize` (no RUN_NAME) closes the run that just failed, not a run of its own
+    # (which would drop every real stage from the record).
+    write_part(store, "QualityControl", run_name="run-1")
+    write_part(store, "Align", run_name="run-1")
+    record = provenance.close_run(store, "S1", "failed", "States.Timeout", "timed out")
+    assert record["run_name"] == "run-1" and {"QualityControl", "Align"} <= set(record["stages"])
+    assert record["status"] == "failed"
+
+
+def test_the_state_machines_raw_closing_part_is_parsed_on_read(store):
+    # What Close_Run_Record writes straight to S3: the Catch output as it is, the time with milliseconds.
+    write_part(store, "QualityControl", finished="2026-11-02T10:05:00Z")
+    caught = batch_failure()
+    provenance._put_json(
+        store,
+        "runs/S1.provenance/Finalize.json",
+        {
+            "schema": 1,
+            "task": "Finalize",
+            "sample_id": "S1",
+            "run_name": "run-1",
+            "finished": "2026-11-02T10:05:00.429Z",
+            "status": "failed",
+            "caught": caught,
+        },
+    )
+    record = provenance.read_record(store, "S1")
+    assert record["status"] == "failed" and record["failure"]["stage"] == "QualityControl"
+    assert record["failure"]["exit_code"] == 1 and record["run_name"] == "run-1"
+    assert "Finalize" not in record["stages"]
+
+
+def test_a_closed_failure_of_an_extra_caller_does_not_fail_the_core_run(store):
+    for task in provenance.CORE_STAGES:
+        write_part(store, task)
+    provenance._put_json(
+        store,
+        "runs/S1.provenance/Finalize.json",
+        {"task": "Finalize", "run_name": "run-1", "finished": "2026-11-02T11:00:00Z", "status": "failed"}
+        | {"failure": {"stage": "DeepVariant", "error": "States.TaskFailed", "reason": "exit 1"}},
+    )
+    record = provenance.build(store, "S1")
+    assert record["status"] == "succeeded" and record["complete"]
+    assert record["stages"]["DeepVariant"]["status"] == "Failure"  # still shown
+
+
+def test_a_failed_shard_keeps_its_index():
+    cause = json.dumps({"JobName": "CallVariantsShard-17-S1-20261102T100000Z-abc"})
+    failure = provenance.parse_failure("States.TaskFailed", cause)
+    assert failure["stage"] == "CallVariantsShard" and failure["shard_index"] == 17
 
 
 def test_close_run_never_raises(store, monkeypatch, capsys):

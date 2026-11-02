@@ -233,6 +233,7 @@ JOB_NAME_STAGES = (
     ("PlanRegions-", "PlanRegions"),
 )
 REASON_LIMIT = 1000  # characters of a failure reason kept in the record
+EXTRA_CALLERS = set(UPSTREAM) - set(CORE_STAGES)  # DeepVariant, PangenomeDeepVariant: never fail the core run
 FINALIZE_TASK = "Finalize"
 
 
@@ -252,6 +253,9 @@ def parse_failure(error: str = None, cause: str = None) -> dict:
     if isinstance(job, dict) and job.get("JobName"):
         name = job["JobName"]
         failure["stage"] = next((stage for prefix, stage in JOB_NAME_STAGES if name.startswith(prefix)), None)
+        if failure["stage"] == "CallVariantsShard":  # CallVariantsShard-<index>-<execution>: which region failed
+            index = name.split("-")[1]
+            failure["shard_index"] = int(index) if index.isdigit() else None
         container = job.get("Container") or {}
         failure["reason"] = "; ".join(r for r in (job.get("StatusReason"), container.get("Reason")) if r) or None
         failure["exit_code"] = container.get("ExitCode")
@@ -264,16 +268,49 @@ def parse_failure(error: str = None, cause: str = None) -> dict:
     return failure
 
 
+def _second(timestamp):
+    """A timestamp to the second, as the stages write them: the state machine's $$.State.EnteredTime has
+    milliseconds ('...:48.429Z'), which would sort before the same second written without them ('...:48Z')."""
+    if timestamp and timestamp.endswith("Z") and "." in timestamp:
+        return timestamp.split(".")[0] + "Z"
+    return timestamp
+
+
+def _failure_of(final) -> dict:
+    """A closing part's failure: parsed by close_run, or (the state machine writes the Catch output as it is)
+    parsed here from its "caught" {Error, Cause}."""
+    if final.get("failure"):
+        return final["failure"]
+    caught = final.get("caught")
+    if final.get("status") == "failed" and isinstance(caught, dict):
+        return parse_failure(caught.get("Error"), caught.get("Cause"))
+    return None
+
+
 def close_run(storage, sample_id: str, status: str = "failed", error: str = None, cause: str = None):
-    """Close the run (RUN_NAME) with a final status. The state machine's failure path calls this (tasks.py
-    finalize), so a run whose failing job never wrote its own part (killed, out of memory, timed out, or a step
-    outside the stages) still ends as failed, with the failing stage and why. Writes the Finalize part, then
-    re-assembles the record. Never raises; returns the record (or None)."""
+    """Close the run with a final status (tasks.py finalize), so a run whose failing job never wrote its own part
+    (killed, out of memory, timed out, or a step outside the stages) still ends as failed, with the failing stage
+    and why. Writes the Finalize part, then re-assembles the record. Never raises; returns the record (or None).
+
+    The run is RUN_NAME, or else the latest stage's run (a by-hand close of the run that just failed): a close
+    with no run name would otherwise be a run of its own and drop every real stage from the record.
+
+    The state machine's failure path writes the same part itself, straight to S3 with the Catch output as
+    "caught" (no Batch job: a retried job's Cause can be too big for a command line), and build() parses it.
+    """
+    run_name = os.environ.get("RUN_NAME") or None
+    if run_name is None:
+        try:
+            parts = [_read_json(storage, k) for k in storage.list_keys(part_prefix(sample_id))]
+            stages = [p for p in parts if p and p.get("task") != FINALIZE_TASK]
+            run_name = max(stages, key=lambda p: p.get("finished") or "").get("run_name") if stages else None
+        except Exception as err:  # noqa: BLE001 - best effort
+            _warn("find the run to close", err)
     part = {
         "schema": SCHEMA_VERSION,
         "task": FINALIZE_TASK,
         "sample_id": sample_id,
-        "run_name": os.environ.get("RUN_NAME") or None,
+        "run_name": run_name,
         "app_version": os.environ.get("APP_VERSION") or None,
         "finished": _now(),
         "status": status,
@@ -301,18 +338,21 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     parts = [p for p in (_read_json(storage, k) for k in part_keys if k.endswith(".json")) if p]
     if not parts:
         return None
+    for p in parts:
+        if p.get("task") == FINALIZE_TASK:
+            p["finished"] = _second(p.get("finished"))
     latest = max(parts, key=lambda p: p.get("finished") or "")
     run = [p for p in parts if p.get("run_name") == latest.get("run_name")]
     # Upstream stages the latest run didn't include come from whichever run last ran them (one part per task).
     in_run = {p["task"] for p in run}
     upstream = {u for task in in_run for u in UPSTREAM.get(task, ())} - in_run
     run += [p for p in parts if p["task"] in upstream]
-    # The run's closing part (close_run: the state machine's failure path), if it has one. Not a stage.
+    # The run's closing part (the state machine's failure path, or tasks.py finalize), if it has one. Not a stage.
     final = next((p for p in run if p["task"] == FINALIZE_TASK), None)
     run = [p for p in run if p["task"] != FINALIZE_TASK]
-    if final and final.get("run_name") is None and any((p.get("finished") or "") > final["finished"] for p in run):
-        # Without RUN_NAME every part is one run: a stage that ran after the close is a new run, so the old close
-        # doesn't fail it. (With RUN_NAME a stage finishing after the close, e.g. a cancelled sibling, is the same run.)
+    if final and final.get("run_name") is None and any((p.get("started") or "") > final["finished"] for p in run):
+        # Without a run name every part is one run: a stage that *started* after the close is a new run, so the old
+        # close doesn't fail it. (A sibling that started before and finished after the close is the same run.)
         final = None
     stages = {
         p["task"]: {
@@ -320,7 +360,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
         }
         for p in run
     }
-    failure = (final or {}).get("failure")
+    failure = _failure_of(final) if final else None
     if failure and failure.get("stage") and failure["stage"] not in stages:
         # The failing job never wrote its part (killed, out of memory, timed out before Python could record it).
         stages[failure["stage"]] = {
@@ -334,10 +374,12 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
         }
     complete = all(stages.get(t, {}).get("status") == "Success" for t in CORE_STAGES)
     # The status is the core pipeline's; a failed extra caller (DeepVariant) shows in its stage entry
-    # but doesn't make the run failed when QC, align and variants are fine. A run the state machine closed as
-    # failed is failed whichever step failed (the planner, a shard, reading the regions).
+    # but doesn't make the run failed when QC, align and variants are fine. A run closed as failed is failed
+    # whichever step failed (the planner, a shard, reading the regions, or unknown), unless that step is an
+    # extra caller: the same rule as for its own part.
     failed = any(s["status"] != "Success" for t, s in stages.items() if t in CORE_STAGES)
-    failed = failed or (final or {}).get("status") == "failed"
+    closed_failed = (final or {}).get("status") == "failed" and (failure or {}).get("stage") not in EXTRA_CALLERS
+    failed = failed or closed_failed
     record = {
         "schema": SCHEMA_VERSION,
         "sample_id": sample_id,

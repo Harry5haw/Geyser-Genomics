@@ -377,3 +377,21 @@ def test_annotated_vcf_is_not_mistaken_for_another_samples_vcf(tmp_path):
     keys = full_sample("S1") + ["variants/S1.csq.vcf.gz", "variants/S1.csq.vcf.gz.tbi"]
     rows = by_sample(reconcile.reconcile(make_bucket(tmp_path, keys).list_keys("")))
     assert set(rows) == {"S1"}  # no phantom orphan "S1.csq"
+
+
+def test_a_run_closed_as_failed_at_an_unknown_step_is_still_a_problem(tmp_path, capsys, monkeypatch):
+    # The state machine closed the run as failed (Read_Regions' S3 error): no stage failed, the run did.
+    import provenance
+
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    store = make_bucket(tmp_path, full_sample("S1"))
+    put_parts(store, "S1", [("QualityControl", "Success"), ("Align", "Success")])
+    provenance._put_json(
+        store,
+        "runs/S1.provenance/Finalize.json",
+        {"task": "Finalize", "run_name": "run", "finished": "2099-01-01T00:00:00Z", "status": "failed"}
+        | {"caught": {"Error": "S3.NoSuchKeyException", "Cause": "The specified key does not exist."}},
+    )
+    assert reconcile.main(["--local-dir", str(tmp_path), "--json", "--fail-on-problems"]) == 1
+    row = {r["sample_id"]: r for r in json.loads(capsys.readouterr().out)["samples"]}["S1"]
+    assert "run record: run failed (step unknown)" in row["note"] and row["problem"] == "run failed"
