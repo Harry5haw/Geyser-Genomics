@@ -132,6 +132,25 @@ def test_stage_fails_on_missing_or_empty_vcf(local_env, dv_inputs, monkeypatch, 
     assert metrics_lines(local_env)[-1]["status"] == "Failure"
 
 
+def test_stage_reads_the_cram_and_its_stored_index(local_env, dv_inputs, monkeypatch):
+    # The align stage writes CRAM + .crai; DeepVariant must read that, not look for a BAM.
+    (local_env / "alignments" / "S1.bam").unlink()
+    (local_env / "alignments" / "S1.cram").write_bytes(b"CRAM")
+    (local_env / "alignments" / "S1.cram.crai").write_bytes(b"CRAI")
+    seen = []
+
+    def run(cmd):
+        seen.extend(c for c in cmd if c.startswith("--reads="))
+        return fake_run(b"x")(cmd)
+
+    monkeypatch.setattr(dv, "run_streaming", run)
+
+    dv.deepvariant_task("S1", "ref.fa")
+
+    assert len(seen) == 1 and seen[0].endswith("S1.cram")
+    assert dv_inputs == []  # the stored .crai was used: nothing re-indexed
+
+
 def test_stage_fails_without_bam(local_env, dv_inputs, monkeypatch):
     (local_env / "alignments" / "S1.bam").unlink()
     monkeypatch.setattr(dv, "run_streaming", fake_run(b"x"))
