@@ -14,6 +14,10 @@ Inputs, in the pipeline's key layout under --root:
     reference/<reference> (+ .fai, written here if missing)
     variants/<sample>.vcf.gz, variants_deepvariant/..., variants_pangenome/...   (whichever exist)
 Outputs: benchmarks/<sample>/<caller>.* (hap.py's own files) and benchmarks/<sample>/summary.md.
+
+--stratification stratifications/GRCh38_chr20.tsv (from fetch_dv_testdata.py --stratifications) also scores each
+GIAB region type (difficult regions, segmental duplications, low mappability) and adds a per-region table to the
+summary. The overall numbers are unchanged: hap.py reports stratified rows next to the whole-region ones.
 """
 
 import argparse
@@ -65,8 +69,11 @@ def write_fai(fasta):
     return fai
 
 
-def happy_command(sample_id, reference_name, vcf_key, out_prefix, region=None):
-    """hap.py arguments, with paths as seen inside the container (the storage root is mounted at /data)."""
+def happy_command(sample_id, reference_name, vcf_key, out_prefix, region=None, stratification=None):
+    """hap.py arguments, with paths as seen inside the container (the storage root is mounted at /data).
+
+    stratification: key of a hap.py stratification TSV under the root (BED paths in it are relative to the TSV).
+    """
     cmd = [
         HAPPY_BIN,
         f"/data/truth/{sample_id}.vcf.gz",
@@ -79,7 +86,57 @@ def happy_command(sample_id, reference_name, vcf_key, out_prefix, region=None):
     ]
     if region:
         cmd += ["-l", region]
+    if stratification:
+        cmd += ["--stratification", f"/data/{stratification}"]
     return cmd
+
+
+def read_stratification_names(path):
+    """Region names from a hap.py stratification TSV (first column), in file order."""
+    with open(path, encoding="utf-8") as fh:
+        return [line.split("\t")[0] for line in fh if line.strip() and not line.startswith("#")]
+
+
+def _number(text, kind=float):
+    return kind(float(text)) if text not in ("", ".", None) else None
+
+
+def read_extended(path, subsets):
+    """{(subset, 'SNP'|'INDEL'): {...}} from a hap.py extended.csv: PASS rows over all subtypes, for the given
+    stratification regions ('*' is the whole confident region). F1 is None when a region has no variants."""
+    results = {}
+    with open(path, newline="", encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):
+            if row.get("Filter") != "PASS" or row.get("Subtype") != "*" or row.get("Subset") not in subsets:
+                continue
+            results[(row["Subset"], row["Type"])] = {
+                "truth": _number(row["TRUTH.TOTAL"], int) or 0,
+                "fn": _number(row["TRUTH.FN"], int) or 0,
+                "fp": _number(row["QUERY.FP"], int) or 0,
+                "f1": _number(row["METRIC.F1_Score"]),
+            }
+    return results
+
+
+def stratified_table(results, subsets):
+    """Markdown table of FN / FP and F1 per caller, one row per region and variant type.
+
+    results: {caller: {(subset, type): {...}}} from read_extended.
+    """
+    callers = [c for c in CALLER_ORDER if c in results]
+    lines = ["| Region | Type | Truth | " + " | ".join(f"{CALLER_LABELS[c]} FN / FP (F1)" for c in callers) + " |",
+             "| :--- | :--- | ---: | " + " | ".join("---:" for _ in callers) + " |"]
+    for subset in subsets:
+        for kind in ("SNP", "INDEL"):
+            cells = [results[c].get((subset, kind)) for c in callers]
+            if not any(cells):
+                continue
+            truth = next(r["truth"] for r in cells if r)
+            shown = [f"{r['fn']:,} / {r['fp']:,} ({r['f1']:.5f})" if r and r["f1"] is not None
+                     else (f"{r['fn']:,} / {r['fp']:,}" if r else "") for r in cells]
+            name = "all confident regions" if subset == "*" else subset
+            lines.append(f"| {name} | {kind} | {truth:,} | " + " | ".join(shown) + " |")
+    return "\n".join(lines)
 
 
 def read_summary(path):
@@ -125,9 +182,18 @@ def main(argv=None):
     p.add_argument("--callers", nargs="+", choices=CALLER_ORDER, default=list(CALLER_ORDER),
                    help="callers to score (default: every one with a VCF)")
     p.add_argument("--image", default=HAPPY_IMAGE)
+    p.add_argument("--stratification", metavar="TSV_KEY",
+                   help="hap.py stratification TSV under the root, e.g. stratifications/GRCh38_chr20.tsv "
+                        "(fetch_dv_testdata.py --stratifications): adds a per-region table")
     a = p.parse_args(argv)
 
     root = os.path.abspath(a.root)
+    subsets = None
+    if a.stratification:
+        tsv = os.path.join(root, *a.stratification.split("/"))
+        if not os.path.exists(tsv):
+            p.error(f"no {tsv}: run fetch_dv_testdata.py --stratifications first")
+        subsets = ["*"] + read_stratification_names(tsv)
     ref = os.path.join(root, "reference", a.reference)
     if not os.path.exists(ref + ".fai"):
         print(f"Writing {ref}.fai")
@@ -135,29 +201,36 @@ def main(argv=None):
     out_dir = f"benchmarks/{a.sample}"
     os.makedirs(os.path.join(root, *out_dir.split("/")), exist_ok=True)
 
-    results = {}
+    results, stratified = {}, {}
     for caller in a.callers:
         vcf_key = run_local.VCF_KEYS[caller].format(id=a.sample)
         if not os.path.exists(os.path.join(root, *vcf_key.split("/"))):
             print(f"skip {caller}: no {vcf_key}")
             continue
         prefix = f"{out_dir}/{caller}"
-        cmd = run_local.docker_command(happy_command(a.sample, a.reference, vcf_key, prefix, a.region), root, a.image)
+        cmd = run_local.docker_command(
+            happy_command(a.sample, a.reference, vcf_key, prefix, a.region, a.stratification), root, a.image)
         print(f"\n>>> hap.py: {caller}", flush=True)
         if subprocess.run(cmd).returncode != 0:
             print(f"hap.py failed for {caller}")
             return 1
         results[caller] = read_summary(os.path.join(root, *f"{prefix}.summary.csv".split("/")))
+        if subsets:
+            stratified[caller] = read_extended(os.path.join(root, *f"{prefix}.extended.csv".split("/")), subsets)
 
     if not results:
         print("No caller VCFs found to score.")
         return 1
     table = summary_table(results)
+    text = (f"# hap.py results: {a.sample}\n\nvcfeval engine, PASS only, GIAB confident regions"
+            f"{', ' + a.region if a.region else ''}.\n\n{table}\n")
+    if stratified:
+        text += (f"\n## By region type (GIAB stratifications, {a.stratification})\n\n"
+                 f"{stratified_table(stratified, subsets)}\n")
     summary_path = os.path.join(root, *out_dir.split("/"), "summary.md")
     with open(summary_path, "w", encoding="utf-8") as fh:
-        fh.write(f"# hap.py results: {a.sample}\n\nvcfeval engine, PASS only, GIAB confident regions"
-                 f"{', ' + a.region if a.region else ''}.\n\n{table}\n")
-    print(f"\n{table}\n\nWritten to {summary_path}")
+        fh.write(text)
+    print(f"\n{text}\nWritten to {summary_path}")
     return 0
 
 
