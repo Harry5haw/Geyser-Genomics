@@ -94,6 +94,89 @@ def test_s3_list_keys_follows_pagination():
         assert list(s.list_keys("raw_reads/")) == ["raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz"]
 
 
+class _NonSeekable(io.RawIOBase):
+    """Like botocore's StreamingBody (an S3 GetObject body): forward reads only."""
+
+    def __init__(self, data):
+        self._buf = io.BytesIO(data)
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        return self._buf.readinto(b)
+
+    def seekable(self):
+        return False
+
+
+def test_s3_upload_stream_never_seeks_a_gzip_over_a_non_seekable_body():
+    # #71: the first cloud run died in decompress. GzipFile says seekable() even over a StreamingBody;
+    # s3transfer seeked it to measure the size, and the backward seek raised io.UnsupportedOperation.
+    import gzip
+
+    from botocore.stub import ANY, Stubber
+
+    from storage import S3Storage
+
+    fastq = b"@r1\nACGTACGT\n+\nIIIIIIII\n" * 500
+    s = S3Storage("bucket", "eu-west-2")
+    uploaded = []
+
+    def capture(params, **kwargs):
+        uploaded.append(params["Body"].read())
+        params["Body"].seek(0)
+
+    s._client.meta.events.register("before-parameter-build.s3.PutObject", capture)
+    with Stubber(s._client) as stub:
+        stub.add_response("put_object", {}, {"Bucket": "bucket", "Key": "decompressed/X.fastq",
+                                             "Body": ANY, "ChecksumAlgorithm": ANY})
+        with gzip.GzipFile(fileobj=_NonSeekable(gzip.compress(fastq)), mode="rb") as unzipped:
+            s.upload_stream(unzipped, "decompressed/X.fastq")
+        stub.assert_no_pending_responses()
+    assert uploaded == [fastq]
+
+
+def test_s3_upload_stream_large_gzip_goes_multipart_without_seeking():
+    # Real FASTQs exceed the 8 MiB multipart threshold, which takes s3transfer's other (multipart) path.
+    import gzip
+    import os
+
+    from botocore.stub import ANY, Stubber
+
+    from storage import S3Storage
+
+    data = os.urandom(1024) * (9 * 1024)  # 9 MiB, compresses well
+    s = S3Storage("bucket", "eu-west-2")
+    parts = []
+
+    def capture(params, **kwargs):
+        parts.append(params["Body"].read())
+        params["Body"].seek(0)
+
+    s._client.meta.events.register("before-parameter-build.s3.UploadPart", capture)
+    key = "decompressed/BIG.fastq"
+    with Stubber(s._client) as stub:
+        stub.add_response("create_multipart_upload", {"UploadId": "u"}, {"Bucket": "bucket", "Key": key,
+                                                                           "ChecksumAlgorithm": ANY})
+        stub.add_response("upload_part", {"ETag": '"e1"'}, {"Bucket": "bucket", "Key": key, "UploadId": "u",
+                                                           "PartNumber": 1, "Body": ANY,
+                                                           "ChecksumAlgorithm": ANY})
+        stub.add_response("complete_multipart_upload", {}, {"Bucket": "bucket", "Key": key, "UploadId": "u",
+                                                             "MultipartUpload": ANY})
+        with gzip.GzipFile(fileobj=_NonSeekable(gzip.compress(data)), mode="rb") as unzipped:
+            s.upload_stream(unzipped, key)
+        stub.assert_no_pending_responses()
+    assert b"".join(parts) == data
+
+
+def test_s3_stream_chunk_size_allows_a_decompressed_30x_fastq():
+    # An unknown-size upload is split into chunks of this size, and S3 allows at most 10,000 parts.
+    from storage import _STREAM_CHUNK_BYTES
+
+    assert _STREAM_CHUNK_BYTES * 10_000 >= 500 * 2**30
+
+
 class _BrokenStream(io.RawIOBase):
     def readinto(self, buf):
         raise IOError("connection dropped")

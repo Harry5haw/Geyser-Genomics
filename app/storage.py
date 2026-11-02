@@ -85,6 +85,25 @@ class LocalStorage:
         yield from sorted(keys)
 
 
+_STREAM_CHUNK_BYTES = 64 * 1024 * 1024
+
+
+class _ForwardOnly:
+    """Read-only view of a stream that reports itself as not seekable (see S3Storage.upload_stream)."""
+
+    def __init__(self, stream: BinaryIO):
+        self._stream = stream
+
+    def read(self, size: int = -1) -> bytes:
+        return self._stream.read(size)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+
 class S3Storage:
     """Keys are objects in one S3 bucket. boto3 is imported lazily so local runs never need it."""
 
@@ -137,7 +156,19 @@ class S3Storage:
             raise
 
     def upload_stream(self, stream: BinaryIO, key: str) -> None:
-        self._client.upload_fileobj(stream, self.bucket, key)
+        """Upload by reading ``stream`` forward only; it is never seeked.
+
+        s3transfer seeks any stream that reports ``seekable()`` (to measure its size), and
+        ``gzip.GzipFile`` reports True even over an S3 ``StreamingBody``; seeking back then
+        rewinds the body, which raises ``io.UnsupportedOperation`` (#71). Wrapping the stream
+        makes s3transfer buffer it in chunks instead. The size is unknown up front, so the chunk
+        size sets the largest possible upload (10,000 parts): 64 MiB allows ~640 GiB, enough for
+        a decompressed 30x FASTQ, at up to 10 chunks (640 MiB) in memory.
+        """
+        from boto3.s3.transfer import TransferConfig
+
+        config = TransferConfig(multipart_chunksize=_STREAM_CHUNK_BYTES)
+        self._client.upload_fileobj(_ForwardOnly(stream), self.bucket, key, Config=config)
 
     def list_keys(self, prefix: str = "") -> Iterator[str]:
         """Yield every key starting with ``prefix`` (S3 returns them in sorted order)."""
