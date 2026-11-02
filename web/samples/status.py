@@ -15,9 +15,8 @@ import json
 from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
-from geyser_web.pipeline import (SINGLE, LayoutError, ObjectNotFound, keys_for, keys_of, layout_from_raw,
-                                 legacy_qc_keys, output_present,
-                                 parse_raw_key)
+from geyser_web.pipeline import (ALIGNMENT_FORMS, SINGLE, LayoutError, ObjectNotFound, keys_for, keys_of,
+                                 layout_from_raw, legacy_qc_keys, output_present, parse_raw_key)
 
 from .runs import is_valid_sample_id, read_all_runs, read_run
 
@@ -31,15 +30,16 @@ class Stage(NamedTuple):
     name: str      # CLI name, as in run_local.STAGES and the state machine
     metric: str    # TaskName recorded by @timed_stage in app/tasks.py
     label: str
-    output: str    # keys_for() name (via keys_of) whose keys all existing means the stage finished
+    output: tuple  # keys_for() names (via keys_of): the stage finished when all keys of any one exist
     after: tuple = ()  # stages whose output this one reads; none means it starts from the raw reads
 
 
 STAGES = (
-    Stage("qc", "QualityControl", "Quality control", "qc_html"),
-    Stage("align", "Align", "Alignment", "bam"),
-    # Reads only the BAM, but the state machine starts it after its Parallel state, i.e. after both.
-    Stage("variants", "CallVariants", "Variant calling", "vcf", after=("qc", "align")),
+    Stage("qc", "QualityControl", "Quality control", ("qc_html",)),
+    # The CRAM the align stage writes, or a BAM (runs from before CRAM, fetched benchmark data).
+    Stage("align", "Align", "Alignment", ALIGNMENT_FORMS),
+    # Reads only the alignment, but the state machine starts it after its Parallel state, i.e. after both.
+    Stage("variants", "CallVariants", "Variant calling", ("vcf",), after=("qc", "align")),
 )
 
 ACTIVE_STATES = ("queued", "running")
@@ -153,7 +153,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
     for st in STAGES:
         rec = latest.get(st.metric)
         duration = rec.get("duration_seconds") if rec else None
-        if output_present(sample_id, layout, st.output, present.__contains__):
+        if any(output_present(sample_id, layout, name, present.__contains__) for name in st.output):
             state = "done"
             if rec and rec.get("status") != "Success":
                 duration = None
@@ -204,7 +204,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
 
 def _present_keys(storage) -> set:
     present = set()
-    for prefix in {keys_for("x")[st.output].split("/", 1)[0] + "/" for st in STAGES}:
+    for prefix in {keys_for("x")[name].split("/", 1)[0] + "/" for st in STAGES for name in st.output}:
         present.update(storage.list_keys(prefix))
     return present
 
@@ -229,6 +229,6 @@ def load_one(storage, sample_id: str):
     except LayoutError:
         return None  # never uploaded, or not a complete sample yet
     keys = keys_for(sample_id, layout)
-    candidates = [k for st in STAGES for k in keys_of(keys, st.output)] + legacy_qc_keys(sample_id, layout)
+    candidates = [k for st in STAGES for name in st.output for k in keys_of(keys, name)] + legacy_qc_keys(sample_id, layout)
     present = {k for k in candidates if storage.exists(k)}
     return build_sample(sample_id, present, read_metrics(storage), read_run(storage, sample_id), layout)

@@ -5,7 +5,8 @@ Runs in its own image (app-deepvariant/Dockerfile, built on google/deepvariant) 
     /opt/geyser-venv/bin/python deepvariant_task.py <sample_id> <reference_name>
 
 Same storage contract as the other stages (app/storage.py, via app/tasks.py):
-    reads  alignments/{id}.bam and reference/{reference_name} (+ optional .fai)
+    reads  alignments/{id}.cram, or a BAM if that is all there is (tasks.alignment_input),
+           and reference/{reference_name} (+ optional .fai)
     writes variants_deepvariant/{id}.vcf.gz   (beside, not instead of, variants/{id}.vcf.gz)
 
 DeepVariant runs three steps: make_examples (CPU), call_variants (the only GPU step) and
@@ -14,10 +15,10 @@ GPU's real contribution can be reported honestly.
 
 Pangenome-aware mode (--pangenome <name>): runs Google's pangenome-aware DeepVariant
 (run_pangenome_aware_deepvariant, in the pangenome_aware_deepvariant image) on the same
-linear-reference BAM, adding a pangenome graph as a second input:
-    reads  alignments/{id}.bam, reference/{reference_name} and pangenome/{name} (a .gbz)
+linear-reference alignment, adding a pangenome graph as a second input:
+    reads  alignments/{id}.cram (or .bam), reference/{reference_name} and pangenome/{name} (a .gbz)
     writes variants_pangenome/{id}.vcf.gz
-The graph must be built on the same reference as the BAM (e.g. HPRC v1.1 on GRCh38).
+The graph must be built on the same reference as the alignment (e.g. HPRC v1.1 on GRCh38).
 
 Environment:
     DEEPVARIANT_MODEL_TYPE   default WGS
@@ -36,7 +37,8 @@ import subprocess
 import sys
 import time
 
-from tasks import ensure_reference_local, keys_for, metrics, run_shell, storage, timed_stage, work_dir
+from tasks import (ensure_reference_local, fetch_alignment, index_alignment, keys_for, metrics, storage,
+                   timed_stage, work_dir)
 
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
 RUN_PANGENOME_DEEPVARIANT = os.environ.get("RUN_PANGENOME_DEEPVARIANT",
@@ -58,6 +60,8 @@ PANGENOME_STEP_METRICS = {step: f"{STAGE_NAME[True]}.{suffix}" for step, suffix 
 
 
 def deepvariant_keys(sample_id: str, pangenome: str = None) -> dict:
+    # "bam" is kept for callers that list a sample's keys; the stage itself reads whatever
+    # tasks.alignment_input() resolves (the align stage's CRAM, else a BAM).
     keys = {"bam": keys_for(sample_id)["bam"]}
     if pangenome:
         keys["vcf"] = f"variants_pangenome/{sample_id}.vcf.gz"
@@ -146,8 +150,9 @@ def run_streaming(cmd):
     return proc.wait(), events, time.time()
 
 
-def index_bam(bam):
-    run_shell(f"samtools index {shlex.quote(bam)}")
+def index_bam(path):
+    """Kept as this module's hook (tests replace it); the command itself is tasks.index_alignment."""
+    index_alignment(path)
 
 
 def gpu_name():
@@ -170,14 +175,13 @@ def _call_variants(sample_id, reference_name, pangenome=None):
     keys = deepvariant_keys(sample_id, pangenome)
     wd = work_dir(sample_id)
     try:
-        bam = os.path.join(wd, f"{sample_id}.bam")
         vcf = os.path.join(wd, f"{sample_id}.{'pangenome' if pangenome else 'deepvariant'}.vcf.gz")
         intermediate = os.path.join(wd, "intermediate")
         os.makedirs(intermediate)
 
-        storage().download(keys["bam"], bam)
+        # The CRAM (or an imported BAM: DeepVariant reads both), indexed here for random access.
+        bam = fetch_alignment(sample_id, wd, need_index=True, indexer=index_bam)
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
-        index_bam(bam)  # DeepVariant needs random access; the bcftools path never indexed
         graph = None
         if pangenome:
             graph = os.path.join(wd, os.path.basename(pangenome))

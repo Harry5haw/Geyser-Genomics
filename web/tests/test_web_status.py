@@ -25,7 +25,7 @@ def test_fresh_upload_without_run_record_is_in_progress(storage):
 def test_completed_stages_come_from_keys_and_durations_from_metrics(storage):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     put(storage, "qc_reports/S1.fastp.html", b"x")
-    put(storage, "alignments/S1.bam", b"x")
+    put(storage, "alignments/S1.cram", b"x")
     write_metrics(storage, [metric("QualityControl", "S1", duration=5.5), metric("Align", "S1", duration=2.0),
                             metric("QualityControl", "OTHER", duration=99)])
     sample = status.load_one(storage, "S1")
@@ -114,3 +114,17 @@ def test_load_all_orders_most_recent_first(storage):
     write_run(storage, "OLD", {"state": "succeeded", "finished": 100})
     write_run(storage, "NEW", {"state": "queued", "queued": 200})
     assert [s.sample_id for s in status.load_all(storage)] == ["NEW", "OLD"]
+
+
+def test_a_bam_from_before_cram_still_counts_as_aligned(storage):
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    put(storage, "qc_reports/S1_fastqc.html", b"x")
+    put(storage, "alignments/S1.bam", b"x")
+    assert states(status.load_one(storage, "S1"))[1] == "done"
+    assert states(status.load_all(storage)[0])[1] == "done"  # the listing scans the same prefixes
+
+
+def test_a_cram_index_alone_is_not_an_alignment(storage):
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    put(storage, "alignments/S1.cram.crai", b"x")
+    assert states(status.load_one(storage, "S1"))[1] == "running"
