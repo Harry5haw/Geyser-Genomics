@@ -24,7 +24,7 @@ In scope:
 - The Django web UI in `web/` (it is built to run locally; it is not deployed).
 
 Out of scope: vulnerabilities in the third-party tools and images the pipeline uses (BWA, bwa-mem2,
-samtools, bcftools, FastQC, DeepVariant). Please report those upstream.
+samtools, bcftools, fastp, DeepVariant). Please report those upstream.
 
 ## How the project protects itself
 
