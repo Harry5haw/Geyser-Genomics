@@ -2,9 +2,11 @@
 """Create or update the Geyser Genomics CloudWatch dashboard.
 
 Widgets: alarm status, pipeline runs per day and end-to-end time (Step Functions, when a state machine
-ARN is given), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome
-DeepVariant. The alarm widget needs the account ID: --account-id, $AWS_ACCOUNT_ID, or looked up with
-STS on deploy (a placeholder is used with --dry-run).
+ARN is given), failures by stage, result quality per sample from the Batch job logs (Logs Insights:
+mapped %, duplicate %, mean depth, variants, Ti/Tv, and the samples outside thresholds; --no-quality
+leaves them out), and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant.
+The alarm widget needs the account ID: --account-id, $AWS_ACCOUNT_ID, or looked up with STS on deploy
+(a placeholder is used with --dry-run).
 The JSON is built in scripts/monitoring.py.
 
 Preview (no AWS calls):
@@ -87,6 +89,16 @@ def parse_args(argv=None):
         default=monitoring.DEFAULT_SFN_LOG_GROUP,
         help="Step Functions log group for its console link",
     )
+    p.add_argument(
+        "--batch-log-group",
+        default=monitoring.BATCH_LOG_GROUP,
+        help=f"Batch job log group the quality widgets query (default: {monitoring.BATCH_LOG_GROUP})",
+    )
+    p.add_argument(
+        "--no-quality",
+        action="store_true",
+        help="Leave out the result-quality widgets (each view runs a Logs Insights scan of the Batch log group)",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
     return p.parse_args(argv)
 
@@ -151,7 +163,10 @@ def main(argv=None, client=None, sts_client=None) -> int:
                 bucket=args.bucket,
                 trigger_function_name=args.trigger_function_name,
                 sfn_log_group=args.sfn_log_group,
+                batch_log_group=args.batch_log_group,
             ),
+            quality=not args.no_quality,
+            batch_log_group=args.batch_log_group,
         )
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}") from err

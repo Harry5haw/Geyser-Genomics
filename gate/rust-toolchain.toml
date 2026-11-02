@@ -1,0 +1,6 @@
+# Pinned like ruff and Terraform: a new Rust release can add clippy lints, and CI runs clippy with
+# -D warnings. rustup installs this toolchain on first use (locally and in CI).
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -51,6 +51,13 @@ def test_core_stages_match_timed_stage_names_in_tasks():
     assert [s.task_name for s in monitoring.STAGE_GROUPS["core"]] == timed
 
 
+def test_shard_stage_matches_tasks_py():
+    import tasks
+
+    assert [s.task_name for s in monitoring.STAGE_GROUPS["shards"]] == [tasks.SHARD_METRIC]
+    assert "." not in tasks.SHARD_METRIC  # a timed stage (records failures), not a success-only sub-step
+
+
 def test_deepvariant_stages_match_deepvariant_task():
     names = [s.task_name for s in monitoring.STAGE_GROUPS["deepvariant"]]
     assert names == ["DeepVariant", *deepvariant_task.STEP_METRICS.values()]
@@ -102,8 +109,12 @@ def test_dashboard_shape(schema, sfn_arn):
     assert json.loads(json.dumps(body)) == body
     assert body["start"] == "-P14D" and body["periodOverride"] == "inherit"
     for w in body["widgets"]:
-        assert w["type"] in ("metric", "text")
+        assert w["type"] in ("metric", "text", "log")
         assert 0 <= w["x"] and w["x"] + w["width"] <= monitoring.GRID_WIDTH and w["y"] >= 0
+        if w["type"] == "log":
+            props = w["properties"]
+            assert props["region"] == "eu-west-2" and props["view"] in ("table", "timeSeries")
+            assert props["query"].startswith(f"SOURCE '{monitoring.BATCH_LOG_GROUP}' | ")
         if w["type"] == "metric":
             props = w["properties"]
             assert props["region"] == "eu-west-2" and props["metrics"]
@@ -425,3 +436,167 @@ def test_dashboard_still_deploys_if_alarms_cannot_be_checked(monkeypatch, capsys
     assert deploy_dashboard.main([], client=client, sts_client=sts) == 0
     assert '"alarm"' in client.put_dashboard.call_args.kwargs["DashboardBody"]
     assert "could not check" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ result quality (#58)
+
+FIXTURES = os.path.join(REPO_ROOT, "tests", "fixtures", "stats")
+
+
+def _python_pattern(insights_pattern: str):
+    """A QUALITY_PARSE entry as a Python regex: /.../ with (?<name>) groups, or a "glob" as a, b."""
+    if insights_pattern.startswith("/"):
+        return re.compile(insights_pattern[1:-1].replace("(?<", "(?P<"))
+    glob, _, names = insights_pattern.partition(" as ")
+    names = [n.strip() for n in names.split(",")]
+    parts = re.escape(glob.strip('"')).split(r"\*")
+    regex = "".join(p + (f"(?P<{names[i]}>.*?)" if i < len(names) else "") for i, p in enumerate(parts))
+    return re.compile(regex + "$")
+
+
+def _extract(lines):
+    """What the dashboard's parse commands pull out of these log lines (first match per field)."""
+    fields = {}
+    for _, pattern in monitoring.QUALITY_PARSE:
+        regex = _python_pattern(pattern)
+        for line in lines:
+            m = regex.search(line)
+            if m:
+                fields.update({k: v for k, v in m.groupdict().items() if k not in fields})
+    return fields
+
+
+def _job_log_lines(capsys, layout):
+    """The lines a real align + variants run prints, made by the code that prints them."""
+    import tasks
+
+    for label, parse, name in (
+        ("flagstat", tasks.parse_flagstat, "flagstat.txt"),
+        ("mosdepth", tasks.parse_mosdepth_summary, "mosdepth.summary.txt"),
+        ("bcftools stats", tasks.parse_bcftools_stats, "bcftools.stats.txt"),
+    ):
+        tasks._log_summary(label, parse, os.path.join(FIXTURES, f"{layout}.{name}"))
+    return capsys.readouterr().out.splitlines()
+
+
+@pytest.mark.parametrize("layout", ["single", "paired"])
+def test_quality_patterns_read_the_lines_the_stages_print(capsys, layout):
+    # If app/tasks.py changes its headline format, the dashboard would silently show blanks: this fails first.
+    import tasks
+
+    lines = _job_log_lines(capsys, layout)
+    got = _extract(lines)
+
+    def read(parse, name):
+        with open(os.path.join(FIXTURES, f"{layout}.{name}")) as fh:
+            return parse(fh.read())
+
+    flag = read(tasks.parse_flagstat, "flagstat.txt")
+    depth = read(tasks.parse_mosdepth_summary, "mosdepth.summary.txt")
+    calls = read(tasks.parse_bcftools_stats, "bcftools.stats.txt")
+    assert int(got["x_reads"]) == flag["in_total"]
+    assert int(got["x_dups"]) == flag["duplicates"]
+    assert float(got["x_mapped"]) == flag["mapped_pct"]  # mapped_pct, not primary_mapped_pct
+    assert float(got["x_depth"]) == depth["mean_depth"]
+    assert (int(got["x_vars"]), int(got["x_snps"]), int(got["x_indels"])) == (
+        calls["records"],
+        calls["snps"],
+        calls["indels"],
+    )
+    if calls.get("tstv") is not None:
+        assert float(got["x_tstv"]) == calls["tstv"]
+
+
+def test_quality_patterns_read_the_stage_start_line(local_env, capsys):
+    import tasks
+
+    tasks.timed_stage("Align")(lambda sample_id: None)("SAMPLE_7")
+    got = _extract(capsys.readouterr().out.splitlines())
+    assert (got["x_task"], got["x_sample"]) == ("Align", "SAMPLE_7")
+
+
+def test_quality_query_shape():
+    q = monitoring.quality_query()
+    assert q.count("| stats ") == 2 and "by @logStream" in q and q.rstrip().endswith("| limit 100")
+    assert f"| display {', '.join(monitoring.QUALITY_COLUMNS)}" in q
+    assert "| filter mapped_pct" not in q
+    # Every parsed field is used by the first stats, and the aliases never reuse a parsed name.
+    parsed = set(re.findall(r"\(\?<(x_\w+)>", q)) | {"x_sample"}
+    assert all(f"({name})" in q for name in parsed - {"x_task"})
+    filtered = monitoring.quality_query(monitoring.QualityThresholds(min_mapped_pct=95, max_dup_pct=10))
+    assert "| filter mapped_pct < 95 or dup_pct > 10 or variants = 0" in filtered
+    assert "snps >= 1000 and (tstv < 1.8 or tstv > 2.4)" in filtered
+    assert filtered.index("| filter mapped_pct") < filtered.index("| display")
+
+
+def test_quality_trend_query_bins_by_day():
+    q = monitoring.quality_trend_query()
+    assert "by bin(1d)" in q and "avg(x_mapped)" in q and "100 * x_dups / x_reads" in q
+
+
+def test_dashboard_quality_widgets_on_by_default_and_optional():
+    logs = [w for w in monitoring.build_dashboard()["widgets"] if w["type"] == "log"]
+    assert [w["properties"]["view"] for w in logs] == ["table", "table", "timeSeries"]
+    assert "outside quality thresholds" in logs[1]["properties"]["title"]
+    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod")
+    assert all(
+        w["properties"]["query"].startswith("SOURCE '/aws/batch/geyser-prod' | ")
+        for w in custom["widgets"]
+        if w["type"] == "log"
+    )
+    assert not [w for w in monitoring.build_dashboard(quality=False)["widgets"] if w["type"] == "log"]
+
+
+def test_dashboard_cli_quality_options(capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/other"])
+    body = json.loads(capsys.readouterr().out)
+    assert any(w["type"] == "log" and "SOURCE '/aws/batch/other'" in w["properties"]["query"] for w in body["widgets"])
+    deploy_dashboard.main(["--dry-run", "--no-quality"])
+    assert not [w for w in json.loads(capsys.readouterr().out)["widgets"] if w["type"] == "log"]
+
+
+def test_run_records_link_only_with_a_bucket():
+    labels = dict(monitoring.console_links(bucket="my-bucket"))
+    assert labels["Run records (S3 runs/)"].endswith(
+        "s3/buckets/my-bucket?region=eu-west-2&prefix=runs/&showversions=false"
+    )
+    assert "Run records (S3 runs/)" not in dict(monitoring.console_links())
+
+
+def test_quality_patterns_take_the_exact_key_not_a_longer_one():
+    # The fixtures have duplicates == primary duplicates, so a pattern grabbing the wrong one would
+    # still pass above. Here every lookalike key comes after the real one, with a different value.
+    line = (
+        "flagstat: in_total=200, duplicates=12, primary_duplicates=7, mapped=190, mapped_pct=95.0, "
+        "primary_mapped=150, primary_mapped_pct=88.5"
+    )
+    got = _extract(
+        [
+            line,
+            "mosdepth: length=1, bases=1, mean_depth=3.5, x_mean_depth=9.9",
+            "bcftools stats: records=5, snps=4, indels=1, tstv=2.1, x_tstv=9.9",
+        ]
+    )
+    assert (got["x_reads"], got["x_dups"], got["x_mapped"]) == ("200", "12", "95.0")
+    assert (got["x_depth"], got["x_tstv"]) == ("3.5", "2.1")
+
+
+def test_quality_query_computes_dup_pct_per_job_and_drops_unnamed_jobs():
+    q = monitoring.quality_query()
+    first, second = (i for i, line in enumerate(q.splitlines()) if line.startswith("| stats "))
+    lines = q.splitlines()
+    assert lines[first + 1] == "| filter ispresent(sample)"
+    assert lines[first + 2] == "| fields 100 * dp / rd as dpp" and first + 2 < second
+    assert "max(dpp) as dup_raw" in lines[second] and "round(dup_raw, 2) as dup_pct" in q
+
+
+def test_thresholds_list_aligned_samples_without_variant_stats():
+    assert "(ispresent(reads) and not ispresent(variants))" in monitoring.DEFAULT_THRESHOLDS.filter_clause()
+
+
+def test_batch_log_link_follows_the_log_group(capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/geyser-prod"])
+    header = json.loads(capsys.readouterr().out)["widgets"][0]["properties"]["markdown"]
+    assert "geyser-prod" in header and "geyser-dev" not in header.split("Batch job logs](")[1].split(")")[0]

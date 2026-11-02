@@ -381,6 +381,15 @@ def test_a_failed_job_is_not_retried_by_the_state_machine(sfn):
     assert attempts(events, "Align_Genome") == 1
 
 
+def test_every_stage_gets_the_execution_name_as_run_name(sfn):
+    # The stages put RUN_NAME in the run record (app/provenance.py) so its parts group by run.
+    desc, events = run_case(sfn, "HappyPath")
+    params = batch_parameters(events)
+    assert set(params) == set(BATCH_TASKS)
+    for state, p in params.items():
+        assert p["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}], state
+
+
 @pytest.mark.parametrize(
     "case,failed_state",
     [("QCFails", "Quality_Control"), ("AlignFails", "Align_Genome"), ("VariantsFail", "Call_Variants")],

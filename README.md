@@ -213,16 +213,16 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 | :--- | :---: | :--- |
 | **Orchestration and trigger** | ☁️ Cloud | S3 upload → Lambda → Step Functions: QC and alignment in a `Parallel` state, then variant calling, each a Batch job on Fargate. Runs are named after the sample (`<id>-<UTC time>-<hash>`); a duplicate S3 event starts nothing. Tested offline in Step Functions Local. |
 | **Resilience and sizing** | ☁️ Cloud | Infrastructure-only retries (3 attempts), Batch API retries with back-off, per-stage timeouts and a 12-hour run limit, per-stage vCPU/memory, 30-day log retention. A failed stage publishes to SNS and the run ends Failed; a run that hits the time limit ends TimedOut (no SNS message, but it counts in the Step Functions metrics). |
-| **Bioinformatics tools** | ✅ Local + CI | fastp QC (one report per sample), bwa-mem2 alignment (with an automatic fallback to bwa for references that would trigger a bwa-mem2 bug), duplicates marked, CRAM + index, tabix-indexed VCF from bcftools. They reach the cloud with the next image push; the cloud runs so far used bwa, FastQC and BAM. |
-| **QC statistics** | ✅ Local + CI | `samtools flagstat`, `mosdepth` coverage and `bcftools stats` per sample, under `stats/<id>/`. |
-| **Run record (provenance)** | ✅ Local + CI | `runs/<id>.provenance.json` per sample, assembled from one part per stage so parallel stages never overwrite each other. In the cloud, the state machine doesn't pass the run name to the jobs yet, so cloud records will show `run_name: null` until it does. |
-| **Paired-end input** | ✅ Local + CI | `<id>_R1.fastq.gz` + `<id>_R2.fastq.gz`: the trigger waits for both mates and starts one run; the stages detect the layout themselves. The trigger's S3 read access is applied; no paired-end cloud run yet. |
+| **Bioinformatics tools** | ☁️ Cloud | fastp QC (one report per sample), bwa-mem2 alignment (with an automatic fallback to bwa for references that would trigger a bwa-mem2 bug), duplicates marked, CRAM + index, tabix-indexed VCF from bcftools. Verified in the cloud on 2 Nov 2026 (image `main-c6f490b`): single-end and paired-end chr20 runs, 10/10 planted SNPs each. The cloud reference stores both aligners' indexes, so no job builds one. |
+| **QC statistics** | ☁️ Cloud | `samtools flagstat`, `mosdepth` coverage and `bcftools stats` per sample, under `stats/<id>/`. |
+| **Run record (provenance)** | ☁️ Cloud | `runs/<id>.provenance.json` per sample, assembled from one part per stage so parallel stages never overwrite each other. Every job gets the Step Functions execution name as `RUN_NAME`, so each part records which run wrote it. |
+| **Paired-end input** | ☁️ Cloud | `<id>_R1.fastq.gz` + `<id>_R2.fastq.gz`: the trigger waits for both mates and starts one run; the stages detect the layout themselves. Verified with a paired-end chr20 run on 2 Nov 2026. |
 | **Offline development and testing** | ✅ Complete | The whole pipeline runs locally in Docker with no AWS account. CI: ruff lint and format, `terraform fmt`/`validate`, unit tests, Docker end-to-end truth check, Step Functions Local, and DeepVariant on the CPU image for pull requests. |
 | **Infrastructure as code** | ✅ Complete | Every AWS resource is in Terraform, with state per environment (`dev` is live; `prod` is intentionally not deployed). Changes are planned, reviewed, then applied. |
 | **CI authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
 | **Cost safety and guardrails** | ☁️ Applied | No NAT gateway, Fargate in a public subnet, capped Batch capacity, ECR and log retention, a $10 monthly budget alert. The role automation uses has a permissions boundary and a $20 project budget that attaches a deny-all policy by itself ([guardrails](docs/design/claude-guardrails.md)). |
 | **Automated deployment** | ⏸️ Manual by design | CI runs tests and checks only. The "Terraform Plan" workflow can only plan, is manual, and is disabled. Applies happen from a reviewed plan. |
-| **Monitoring** | 🔜 Planned | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). The dashboard and alarm are scripted and unit-tested, not deployed yet (see [Monitoring](#3-monitoring)). |
+| **Monitoring** | ☁️ Cloud | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). A CloudWatch dashboard (runs, end-to-end time, failures and durations by stage, console links) and one alarm on trigger Lambda errors are deployed by scripts (see [Monitoring](#3-monitoring)). |
 | **DeepVariant and pangenome-aware DeepVariant** | ✅ Local GPU | Alternative variant callers, benchmarked with hap.py on HG003 and HG005 chr20 (see below). A GPU Batch environment exists in AWS; the stage isn't wired into Step Functions yet and needs larger instances. |
 | **Web UI** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (QC summary and report, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
 | **Other S3-compatible storage** | ✅ Unit-tested | `S3_ENDPOINT_URL` points the storage layer at any S3-compatible service (OVHcloud Object Storage, MinIO, LocalStack). Not yet run against one. |
@@ -254,19 +254,17 @@ flowchart TB
     ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
     BATCH -->|"outputs, stats,<br/>run record"| OUT[("🪣 S3: qc_reports/, alignments/,<br/>variants/, stats/, runs/")]
     BATCH -.->|"Duration, FailureCount<br/>logs kept 30 days"| CW["📈 CloudWatch"]
-    CW -.-> DASH["Dashboard + alarm<br/>scripted, not deployed"]
+    CW -.-> DASH["Dashboard + alarm<br/>deployed by scripts"]
     BUD["🛡️ Budgets: $10/month alert<br/>$20 project cap → automatic deny-all"]
 
     classDef user fill:#2E7D32,stroke:#1B5E20,color:#fff
     classDef store fill:#6A1B9A,stroke:#4A148C,color:#fff
     classDef aws fill:#E65100,stroke:#BF360C,color:#fff
     classDef obs fill:#1565C0,stroke:#0D47A1,color:#fff
-    classDef pending fill:#9E9E9E,stroke:#616161,color:#fff,stroke-dasharray: 4 3
     class U user
     class S3,ECR,OUT store
     class L,SF1,SF2,SF3,BATCH,SNS aws
-    class CW,BUD obs
-    class DASH pending
+    class CW,BUD,DASH obs
 ```
 
 **Stages talk only through storage keys.** `app/tasks.py` holds the key conventions (`keys_for`), and every stage, the trigger, the web UI and the scripts use them. QC writes `qc_reports/`, alignment writes `alignments/` and `stats/`, variant calling reads the CRAM and writes `variants/` and `stats/`, and each stage adds its part of the run record under `runs/`. The same code runs against S3 in the cloud and against a folder offline (`STORAGE_BACKEND=s3|local`).
@@ -335,6 +333,9 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --che
 # Paired-end instead: writes PAIRED001_R1.fastq.gz and PAIRED001_R2.fastq.gz
 python scripts/make_test_data.py --sample PAIRED001 --paired
 python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --check
+
+# Scatter-gather variant calling: one bcftools job per 7,000 bp region, then a merge into the same VCF
+python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --shard-window 7000 --check
 ```
 
 > [!TIP]
@@ -345,6 +346,24 @@ python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --ch
 > The align stage uses [bwa-mem2](https://github.com/bwa-mem2/bwa-mem2), which runs the same algorithm as `bwa mem` faster on modern CPUs. The image picks the fastest build for the CPU it runs on. Set `ALIGNER=bwa` (e.g. `ALIGNER=bwa python scripts/run_local.py ...`) to align with classic `bwa mem` instead.
 >
 > bwa-mem2 has one known bug ([bwa-mem2#262](https://github.com/bwa-mem2/bwa-mem2/issues/262)): it shifts reads that start in the first few bases of the reference's first contig, which shows up as false SNPs. Human chromosomes start with long N gaps, so they are unaffected. For any reference whose first contig doesn't start with at least 1,000 Ns, the align stage uses bwa instead and logs why. The default synthetic genome is such a reference. `make_test_data.py --leading-gap 1000` gives it a human-like gap, and then bwa-mem2 produces the same 10,000 alignments as bwa. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
+>
+> In the cloud, `reference/chr20.fa` holds both aligners' indexes and the FASTA index: bwa's, bwa-mem2's `.0123` and `.bwt.2bit.64` (338 MB), and `chr20.fa.fai` (all uploaded 2 Nov 2026), so no stage rebuilds an index. The two share `.amb`/`.ann`/`.pac`, and bwa-mem2 writes them byte-identical to bwa's. To add an index for another reference, build it with the pipeline image and upload only the files that are missing:
+>
+> ```bash
+> docker run --rm -v "$PWD:/data" -w /data --entrypoint bwa-mem2 geyser-app index <name>.fa   # ~30 s and ~2 GB RAM for chr20
+> aws s3 cp <name>.fa.0123 s3://<data-lake>/reference/ && aws s3 cp <name>.fa.bwt.2bit.64 s3://<data-lake>/reference/
+> ```
+>
+> Effect on the cloud align job (wave-0 sample: 10k single-end reads, chr20; 4 vCPU / 8 GB Fargate):
+>
+> | Run | Aligner | bwa-mem2 index | Align job run time |
+> | :--- | :--- | :--- | ---: |
+> | `CLOUD003-20261102T144231Z-08dc9420` | bwa (image `main-69daa5c`) | n/a (stored bwa index) | 28.1 s |
+> | `CLOUD005-20261102T151205Z-548b7a1b` | bwa-mem2 | built in the job | 45.7 s |
+> | `CLOUD006-20261102T151552Z-7b850912` (paired, 5k pairs) | bwa-mem2 | built in the job | 66.0 s |
+> | `CLOUD007-20261102T152740Z-c8af04a5` | bwa-mem2 | **downloaded** | **29.3 s** |
+>
+> On a sample this small, alignment itself takes a second or two, so bwa-mem2 only matches bwa: it downloads 338 MB of index against bwa's 113 MB. The speed-up shows on real data (table below).
 >
 > **bwa vs bwa-mem2, measured** (`scripts/benchmark_aligners.py`). HG003 chr20: 19.0 M reads, paired FASTQs recovered from the 35x case-study BAM, aligned to chr20 by the real align stage. Each aligner ran once, with 16 threads, on an AMD Ryzen 7 3700X (bwa-mem2 picked its AVX2 build):
 >
@@ -370,6 +389,8 @@ python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --ch
 > python scripts/benchmark_aligners.py --root <root> --from-bam alignments/HG003_chr20.bam \
 >     --base HG003_chr20 --reference GRCh38_chr20.fa --region chr20
 > ```
+>
+> **Scatter-gather variant calling** (`--shard-window BP`) is how the cloud will spread variant calling over many jobs. `tasks.py regions <ref> --window BP` cuts the reference into regions in reference order. `tasks.py variants <id> <ref> --region R` calls one region into `variants/<id>/parts/<run>/`; there's one folder per run (`RUN_NAME`), so a merge never picks up an earlier run's parts. `tasks.py variants <id> <ref> --window BP` merges every part into the usual `variants/<id>.vcf.gz` (+ `.tbi` and stats), and fails, naming them, if any parts are missing. bcftools reports each position in exactly one region, so the merged VCF has the same records as a single job; the Docker E2E test checks this. Shards record the `CallVariantsShard` metric and the merge records `CallVariants`. The Step Functions `Map` state that runs the shards in parallel in the cloud comes in a separate infrastructure PR.
 
 **Tests:**
 
@@ -380,6 +401,8 @@ GEYSER_E2E=1 pytest tests/test_e2e_docker.py     # full pipeline in Docker
 ```
 
 The tests also check that the stage list in the Step Functions definition (`infrastructure/state_machine.asl.json`, which `step_functions.tf` renders with `templatefile()`), the stage code (`app/tasks.py`) and the local runner all agree. `tests/test_state_machine_local.py` runs that same definition in [Step Functions Local](https://docs.aws.amazon.com/step-functions/latest/dg/sfn-local.html) (Docker) with Batch and SNS mocked: the happy path (QC and alignment in parallel, then variants), each stage failing, and a failed notification still ending the run as Failed (`GEYSER_SFN_LOCAL=1`; CI runs it on every push).
+
+**Quality gate (Rust, not yet in the pipeline):** [`gate/`](gate/README.md) reads a run's QC statistics (`stats/<id>/`) and run record, checks them against thresholds from a TOML file (mapped %, duplicates, properly paired, mean depth, SNP count, Ti/Tv) and exits pass or fail with a JSON verdict that names each failed check. The default thresholds were checked on HG003 and HG005 chr20. `cd gate && cargo test`, then e.g. `cargo run -- --root ../local_bucket --sample SYNTH001 --config thresholds/synthetic.toml`.
 
 The storage and metrics backends are chosen by environment variables, so the same code runs locally and in AWS:
 
@@ -686,7 +709,7 @@ Once deployed, a run is started by uploading a file.
 ### 3. Monitoring
 
 > [!NOTE]
-> The dashboard and alarm below are written and unit-tested but **not deployed yet**. Now that cloud runs are verified, deploying them and checking them against those runs is the next monitoring step.
+> The dashboard (`geyser-dashboard-dev`) and the trigger alarm (`geyser-dev-trigger-lambda-errors`) are deployed, with the scripts below, after a `--dry-run` check. Both are within the CloudWatch free tier. The alarm has no actions: it is a signal on the dashboard, not an email.
 
 Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWatch namespace `GeyserGenomics`. The dashboard and alarm definitions are built in `scripts/monitoring.py` and deployed by small Python scripts rather than Terraform, because the dashboard JSON was hard to manage there.
 
@@ -738,7 +761,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | 🔜 | **Monitoring** | Deploy the dashboard and alarm and check them against the cloud runs |
 | 🎯 | **Pangenome: where it should help most** | Explain HG005's extra low-mappability errors, align reads to the graph (`vg giraffe`), newer HPRC graph, whole genome. **Top priority** ([#51](../../issues/51)) |
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions ([#43](../../issues/43), [#44](../../issues/44)) |
-| 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason |
+| 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason (the tool is built and tested in [`gate/`](gate/README.md); running it in the pipeline comes after the `Map` state) |
 | 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |
 
 ---

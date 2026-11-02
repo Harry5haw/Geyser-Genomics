@@ -5,25 +5,15 @@ The Docker end-to-end test covers the real tools.
 """
 
 import gzip
-import os
 import shlex
 import subprocess
 
 import pytest
 
 import tasks
+from conftest import stats_fixture
 
 REF = "ref.fa"
-# Real samtools 1.21 / mosdepth 0.3.15 / bcftools 1.21 output for the synthetic sample (single-end and
-# paired-end, both with --leading-gap 1000), so the parsers are tested on the tools' actual formats.
-STATS_FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "stats")
-
-
-def stats_fixture(layout, name):
-    with open(os.path.join(STATS_FIXTURES, f"{layout}.{name}"), "rb") as fh:
-        return fh.read()
-
-
 # The default aligner's index files (bwa-mem2: .0123, .amb, .ann, .bwt.2bit.64, .pac).
 INDEX_EXTS = tasks.ALIGNER_INDEX_EXTS[tasks.DEFAULT_ALIGNER]
 # A reference whose first contig starts with a gap, like a human chromosome: bwa-mem2 is safe on it.
@@ -34,72 +24,6 @@ def put(root, key, data=b"x"):
     path = root.joinpath(*key.split("/"))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
-
-
-@pytest.fixture
-def tool_calls(monkeypatch):
-    """Fake subprocess.run for index builders and fastp; each fake writes the files the real tool would."""
-    calls = []
-
-    def fake_run(cmd, check=False, timeout=None, **kwargs):
-        calls.append(list(cmd))
-        tool = cmd[0]
-        if tool in tasks.ALIGNER_INDEX_EXTS and cmd[1] == "index":
-            for ext in tasks.ALIGNER_INDEX_EXTS[tool]:
-                open(cmd[2] + ext, "wb").close()
-        elif tool == "samtools" and cmd[1] == "faidx":
-            open(cmd[2] + ".fai", "wb").close()
-        elif tool == "fastp":
-            # One report per run, at the paths given by --html and --json.
-            for flag, text in (("--html", "html"), ("--json", '{"summary": {}}')):
-                with open(cmd[cmd.index(flag) + 1], "w") as fh:
-                    fh.write(text)
-        else:
-            raise AssertionError(f"unexpected command {cmd}")
-        return subprocess.CompletedProcess(cmd, 0)
-
-    monkeypatch.setattr(tasks.subprocess, "run", fake_run)
-    return calls
-
-
-@pytest.fixture
-def shell_commands(monkeypatch):
-    """Fake run_shell: records each pipeline and creates the output file named after -o / the last argument.
-
-    Stats tools get real output (the fixtures): mosdepth writes <prefix>.mosdepth.*.txt (its last
-    argument is the input), flagstat and bcftools stats write the file after '>'.
-    """
-    commands = []
-
-    def fake_run_shell(command):
-        commands.append(command)
-        words = shlex.split(command)
-        if words[0] == "mosdepth":
-            prefix = words[-2]
-            for name in ("mosdepth.summary.txt", "mosdepth.global.dist.txt"):
-                with open(f"{prefix}.{name}", "wb") as fh:
-                    fh.write(stats_fixture("single", name))
-            return
-        out = words[words.index("-o") + 1] if "-o" in words else words[-1]
-        with open(out, "wb") as fh:
-            name = os.path.basename(out)
-            if name in ("flagstat.txt", "bcftools.stats.txt"):
-                fh.write(stats_fixture("single", name))
-            else:
-                fh.write(b"output of: " + command.encode())
-
-    monkeypatch.setattr(tasks, "run_shell", fake_run_shell)
-    return commands
-
-
-@pytest.fixture
-def uploads(local_env, monkeypatch):
-    """Record the keys uploaded, in order (the real upload still runs)."""
-    keys = []
-    store = tasks.storage()
-    real = store.upload
-    monkeypatch.setattr(store, "upload", lambda path, key: keys.append(key) or real(path, key))
-    return keys
 
 
 def work_dir_is_empty(local_env):

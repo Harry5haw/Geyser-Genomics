@@ -1,0 +1,34 @@
+# Geyser quality gate: built-in thresholds, for human germline short-read WGS at ~30x, called with
+# the pipeline's bcftools stage. Checked against HG003 and HG005 chr20 (GIAB, 2 x 150 bp, ~33-37x):
+# both pass with a margin on every check. Rationale and the measured values: gate/README.md.
+#
+# A config file is the whole set: a check it doesn't list is not run. Bounds are inclusive.
+
+# What a check counts as when its input file is missing (a stage didn't run, or its best-effort
+# stats tool failed) or its value is undefined (Ti/Tv with no transversions): "fail" or "skip".
+# An input that exists but can't be parsed always fails.
+on_missing = "fail"
+
+# The run record (runs/{id}.provenance.json): which statuses pass (succeeded | failed | incomplete).
+[run_record]
+statuses = ["succeeded"]
+
+[checks]
+# % of reads that mapped. HG003/HG005: 99.77 / 99.82. Below 95 means the wrong reference, a
+# contaminated sample or a broken alignment.
+mapped_pct = { min = 95.0 }
+# % of reads marked as duplicates (marked, not removed). HG003/HG005: 10.99 / 10.24. Above 20 the
+# library is low-complexity or over-amplified and the depth is mostly copies.
+duplicate_pct = { max = 20.0 }
+# % of paired reads mapped as proper pairs (paired-end only). HG003/HG005: 99.05 / 96.97.
+properly_paired_pct = { min = 90.0 }
+# Mean depth over the reference, duplicates excluded. HG003/HG005: 36.78 / 32.64. Below 20 a 30x
+# sample loses sensitivity, mostly for heterozygous calls.
+mean_depth = { min = 20.0 }
+# At least one SNP: a complete run with an empty VCF is broken, whatever the other numbers say.
+snps = { min = 1 }
+# Transitions / transversions of the calls. Unfiltered bcftools calls, HG003/HG005: 1.81 / 1.85
+# (GIAB truth in its confident regions: 2.29; DeepVariant PASS calls: 2.05-2.07). Random errors
+# have Ti/Tv ~0.5, so a call set full of false positives falls below 1.7; above 2.4 points at an
+# exome-like target or over-filtering. Exomes need their own range (~2.6-3.3).
+tstv = { min = 1.7, max = 2.4 }
