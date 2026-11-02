@@ -404,6 +404,8 @@ GEYSER_E2E=1 pytest tests/test_e2e_docker.py     # full pipeline in Docker
 
 The tests also check that the stage list in the Step Functions definition (`infrastructure/state_machine.asl.json`, which `step_functions.tf` renders with `templatefile()`), the stage code (`app/tasks.py`) and the local runner all agree. `tests/test_state_machine_local.py` runs that same definition in [Step Functions Local](https://docs.aws.amazon.com/step-functions/latest/dg/sfn-local.html) (Docker) with Batch and SNS mocked: the happy path (QC and alignment in parallel, then variants), each stage failing, and a failed notification still ending the run as Failed (`GEYSER_SFN_LOCAL=1`; CI runs it on every push).
 
+**Quality gate (Rust, not yet in the pipeline):** [`gate/`](gate/README.md) reads a run's QC statistics (`stats/<id>/`) and run record, checks them against thresholds from a TOML file (mapped %, duplicates, properly paired, mean depth, SNP count, Ti/Tv) and exits pass or fail with a JSON verdict that names each failed check. The default thresholds were checked on HG003 and HG005 chr20. `cd gate && cargo test`, then e.g. `cargo run -- --root ../local_bucket --sample SYNTH001 --config thresholds/synthetic.toml`.
+
 The storage and metrics backends are chosen by environment variables, so the same code runs locally and in AWS:
 
 | Variable | Values | Default |
@@ -732,7 +734,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | 🔜 | **Monitoring** | Deploy the dashboard and alarm and check them against the cloud runs |
 | 🎯 | **Pangenome: where it should help most** | Explain HG005's extra low-mappability errors, align reads to the graph (`vg giraffe`), newer HPRC graph, whole genome. **Top priority** ([#51](../../issues/51)) |
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions ([#43](../../issues/43), [#44](../../issues/44)) |
-| 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason |
+| 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason (the tool is built and tested in [`gate/`](gate/README.md); running it in the pipeline comes after the `Map` state) |
 | 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |
 
 ---

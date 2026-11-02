@@ -1,0 +1,125 @@
+{
+  "aligner": "bwa",
+  "app_version": "local:geyser-app:main-c6f490b",
+  "complete": true,
+  "inputs": [
+    {
+      "bytes": 36192,
+      "key": "alignments/SYNTH001.cram"
+    },
+    {
+      "bytes": 466542,
+      "key": "raw_reads/SYNTH001.fastq.gz"
+    }
+  ],
+  "layout": "single",
+  "outputs": [
+    {
+      "bytes": 36192,
+      "key": "alignments/SYNTH001.cram"
+    },
+    {
+      "bytes": 46,
+      "key": "alignments/SYNTH001.cram.crai"
+    },
+    {
+      "bytes": 225696,
+      "key": "qc_reports/SYNTH001.fastp.html"
+    },
+    {
+      "bytes": 50125,
+      "key": "qc_reports/SYNTH001.fastp.json"
+    },
+    {
+      "bytes": 5569,
+      "key": "stats/SYNTH001/bcftools.stats.txt"
+    },
+    {
+      "bytes": 471,
+      "key": "stats/SYNTH001/flagstat.txt"
+    },
+    {
+      "bytes": 1343,
+      "key": "stats/SYNTH001/mosdepth.global.dist.txt"
+    },
+    {
+      "bytes": 95,
+      "key": "stats/SYNTH001/mosdepth.summary.txt"
+    },
+    {
+      "bytes": 1353,
+      "key": "variants/SYNTH001.vcf.gz"
+    },
+    {
+      "bytes": 133,
+      "key": "variants/SYNTH001.vcf.gz.tbi"
+    }
+  ],
+  "reference": {
+    "bytes": 50842,
+    "md5": "6ed6100f41e8adf29b5e79e943f9cb6e",
+    "name": "synthetic_ref.fa"
+  },
+  "run_name": "SYNTH001-20261102T152425Z-local",
+  "sample_id": "SYNTH001",
+  "schema": 1,
+  "stages": {
+    "Align": {
+      "duration_seconds": 0.34,
+      "error": null,
+      "finished": "2026-11-02T15:24:29Z",
+      "run_name": "SYNTH001-20261102T152425Z-local",
+      "started": "2026-11-02T15:24:28Z",
+      "status": "Success"
+    },
+    "CallVariants": {
+      "duration_seconds": 0.48,
+      "error": null,
+      "finished": "2026-11-02T15:24:30Z",
+      "run_name": "SYNTH001-20261102T152425Z-local",
+      "started": "2026-11-02T15:24:29Z",
+      "status": "Success"
+    },
+    "QualityControl": {
+      "duration_seconds": 1.61,
+      "error": null,
+      "finished": "2026-11-02T15:24:27Z",
+      "run_name": "SYNTH001-20261102T152425Z-local",
+      "started": "2026-11-02T15:24:26Z",
+      "status": "Success"
+    }
+  },
+  "stats": {
+    "bcftools_stats": {
+      "indels": 0,
+      "records": 10,
+      "snps": 10,
+      "tstv": 1.5
+    },
+    "flagstat": {
+      "duplicates": 485,
+      "in_total": 10000,
+      "mapped": 10000,
+      "mapped_pct": 100.0,
+      "paired_in_sequencing": 0,
+      "primary_mapped": 10000,
+      "primary_mapped_pct": 100.0,
+      "properly_paired": 0
+    },
+    "mosdepth": {
+      "bases": 1427250,
+      "length": 50000,
+      "mean_depth": 28.55
+    }
+  },
+  "status": "succeeded",
+  "tools": {
+    "bcftools": "1.21",
+    "bwa": "0.7.18-r1243-dirty",
+    "fastp": "0.24.0",
+    "mosdepth": "0.3.15",
+    "mosdepth release": "0.3.15",
+    "samtools": "1.21"
+  },
+  "updated": "2026-11-02T15:24:30Z"
+}

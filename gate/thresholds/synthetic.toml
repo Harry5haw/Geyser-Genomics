@@ -1,0 +1,19 @@
+# Thresholds for the repo's synthetic test data (scripts/make_test_data.py defaults: 10,000 reads over a
+# 51 kb reference at ~30x, 10 planted SNPs, no indels), single- or paired-end. The same bounds the
+# Docker end-to-end test asserts (tests/test_e2e_docker.py). Use: --config gate/thresholds/synthetic.toml
+
+on_missing = "fail"
+
+[run_record]
+statuses = ["succeeded"]
+
+[checks]
+reads = { min = 10000 }
+mapped_pct = { min = 99.5 }
+# Single-end marking flags ~5% of reads by chance at 30x (485 of 10,000); paired-end ~0.04%.
+duplicate_pct = { max = 6.0 }
+properly_paired_pct = { min = 99.0 }
+mean_depth = { min = 25.0, max = 31.0 }
+snps = { min = 10, max = 10 }
+indels = { max = 0 }
+# No Ti/Tv check: 10 planted SNPs (6 transitions, 4 transversions) are too few for the ratio to mean anything.

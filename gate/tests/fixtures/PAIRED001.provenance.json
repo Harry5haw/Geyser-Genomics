@@ -1,0 +1,130 @@
+{
+  "aligner": "bwa",
+  "app_version": "local:geyser-app:main-c6f490b",
+  "complete": true,
+  "inputs": [
+    {
+      "bytes": 39065,
+      "key": "alignments/PAIRED001.cram"
+    },
+    {
+      "bytes": 233837,
+      "key": "raw_reads/PAIRED001_R1.fastq.gz"
+    },
+    {
+      "bytes": 233795,
+      "key": "raw_reads/PAIRED001_R2.fastq.gz"
+    }
+  ],
+  "layout": "paired",
+  "outputs": [
+    {
+      "bytes": 39065,
+      "key": "alignments/PAIRED001.cram"
+    },
+    {
+      "bytes": 46,
+      "key": "alignments/PAIRED001.cram.crai"
+    },
+    {
+      "bytes": 443773,
+      "key": "qc_reports/PAIRED001.fastp.html"
+    },
+    {
+      "bytes": 95954,
+      "key": "qc_reports/PAIRED001.fastp.json"
+    },
+    {
+      "bytes": 5575,
+      "key": "stats/PAIRED001/bcftools.stats.txt"
+    },
+    {
+      "bytes": 491,
+      "key": "stats/PAIRED001/flagstat.txt"
+    },
+    {
+      "bytes": 1546,
+      "key": "stats/PAIRED001/mosdepth.global.dist.txt"
+    },
+    {
+      "bytes": 95,
+      "key": "stats/PAIRED001/mosdepth.summary.txt"
+    },
+    {
+      "bytes": 1347,
+      "key": "variants/PAIRED001.vcf.gz"
+    },
+    {
+      "bytes": 133,
+      "key": "variants/PAIRED001.vcf.gz.tbi"
+    }
+  ],
+  "reference": {
+    "bytes": 50842,
+    "md5": "6ed6100f41e8adf29b5e79e943f9cb6e",
+    "name": "synthetic_ref.fa"
+  },
+  "run_name": "PAIRED001-20261102T152430Z-local",
+  "sample_id": "PAIRED001",
+  "schema": 1,
+  "stages": {
+    "Align": {
+      "duration_seconds": 0.34,
+      "error": null,
+      "finished": "2026-11-02T15:24:34Z",
+      "run_name": "PAIRED001-20261102T152430Z-local",
+      "started": "2026-11-02T15:24:33Z",
+      "status": "Success"
+    },
+    "CallVariants": {
+      "duration_seconds": 0.49,
+      "error": null,
+      "finished": "2026-11-02T15:24:35Z",
+      "run_name": "PAIRED001-20261102T152430Z-local",
+      "started": "2026-11-02T15:24:34Z",
+      "status": "Success"
+    },
+    "QualityControl": {
+      "duration_seconds": 1.68,
+      "error": null,
+      "finished": "2026-11-02T15:24:33Z",
+      "run_name": "PAIRED001-20261102T152430Z-local",
+      "started": "2026-11-02T15:24:31Z",
+      "status": "Success"
+    }
+  },
+  "stats": {
+    "bcftools_stats": {
+      "indels": 0,
+      "records": 10,
+      "snps": 10,
+      "tstv": 1.5
+    },
+    "flagstat": {
+      "duplicates": 4,
+      "in_total": 10000,
+      "mapped": 10000,
+      "mapped_pct": 100.0,
+      "paired_in_sequencing": 10000,
+      "primary_mapped": 10000,
+      "primary_mapped_pct": 100.0,
+      "properly_paired": 10000,
+      "properly_paired_pct": 100.0
+    },
+    "mosdepth": {
+      "bases": 1497064,
+      "length": 50000,
+      "mean_depth": 29.94
+    }
+  },
+  "status": "succeeded",
+  "tools": {
+    "bcftools": "1.21",
+    "bwa": "0.7.18-r1243-dirty",
+    "fastp": "0.24.0",
+    "mosdepth": "0.3.15",
+    "mosdepth release": "0.3.15",
+    "samtools": "1.21"
+  },
+  "updated": "2026-11-02T15:24:35Z"
+}
