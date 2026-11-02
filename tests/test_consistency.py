@@ -67,8 +67,9 @@ def test_quality_gate_reads_the_keys_the_stages_write():
         rs = fh.read()
     gate_keys = {k.replace("{sample_id}", "S1") for k in re.findall(r'format!\("((?:stats|runs)/[^"]+)"', rs)}
     keys = tasks.keys_for("S1")
-    expected = {keys["flagstat"], keys["mosdepth_summary"], keys["bcftools_stats"], provenance.record_key("S1")}
+    expected = {keys["flagstat"], keys["mosdepth_summary"], keys["bcftools_stats"]}
+    expected |= {provenance.record_key("S1"), provenance.part_prefix("S1")}
     assert gate_keys == expected
-    # The gate reads run record schema 1 only; a schema bump must update gate/src/inputs.rs (RunRecord::parse).
-    assert provenance.SCHEMA_VERSION == 1
-    assert "Some(1) | None => Ok(record)" in rs
+    # The gate reads one run record schema; a schema bump in provenance.py must reach the gate.
+    gate_schema = re.search(r"pub const RUN_RECORD_SCHEMA: u64 = (\d+);", rs).group(1)
+    assert int(gate_schema) == provenance.SCHEMA_VERSION

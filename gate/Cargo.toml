@@ -2,7 +2,6 @@
 name = "geyser-gate"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
 description = "Quality gate for Geyser Genomics runs: QC statistics against configurable thresholds, a JSON verdict and a pass/fail exit code"
 license = "MIT"
 publish = false

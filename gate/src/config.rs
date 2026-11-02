@@ -122,18 +122,21 @@ impl Config {
             if b.min.into_iter().chain(b.max).any(|v| !v.is_finite()) {
                 return Err(format!("checks.{metric}: bounds must be finite numbers"));
             }
-            if let (Some(min), Some(max)) = (b.min, b.max) {
-                if min > max {
-                    return Err(format!("checks.{metric}: min {min} is greater than max {max}"));
-                }
+            if let (Some(min), Some(max)) = (b.min, b.max)
+                && min > max
+            {
+                return Err(format!("checks.{metric}: min {min} is greater than max {max}"));
             }
         }
-        if let Some(rule) = &self.run_record {
-            if rule.statuses.is_empty() {
-                return Err(
-                    "run_record.statuses is empty: no run could pass (leave [run_record] out to skip the check)".into(),
-                );
-            }
+        if self.checks.is_empty() && self.run_record.is_none() {
+            return Err("nothing to check: give [checks] or [run_record]".into());
+        }
+        if let Some(rule) = &self.run_record
+            && rule.statuses.is_empty()
+        {
+            return Err(
+                "run_record.statuses is empty: no run could pass (leave [run_record] out to skip the check)".into()
+            );
         }
         Ok(())
     }
@@ -161,9 +164,24 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_config_checks_nothing() {
-        let c = Config::parse("").unwrap();
-        assert!(c.checks.is_empty() && c.run_record.is_none());
+    fn a_config_must_check_something() {
+        assert!(Config::parse("").unwrap_err().contains("nothing to check"));
+        assert!(
+            Config::parse(
+                "on_missing = \"skip\"
+[checks]
+"
+            )
+            .unwrap_err()
+            .contains("nothing to check")
+        );
+        assert!(
+            Config::parse(
+                "[run_record]
+statuses = [\"succeeded\"]"
+            )
+            .is_ok()
+        );
     }
 
     #[test]

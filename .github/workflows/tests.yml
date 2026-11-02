@@ -62,7 +62,8 @@ jobs:
         run: |
           rustup target add x86_64-unknown-linux-musl
           cargo build --release --locked --target x86_64-unknown-linux-musl
-          file target/x86_64-unknown-linux-musl/release/geyser-gate | tee /dev/stderr | grep -q "statically linked"
+          # Rust's musl target builds static-pie executables: `file` says "static-pie linked".
+          file target/x86_64-unknown-linux-musl/release/geyser-gate | tee /dev/stderr | grep -Eq "static-pie linked|statically linked"
 
   unit:
     name: Unit tests

@@ -26,6 +26,19 @@ The same keys the pipeline writes, under a folder laid out like the bucket (`--r
 
 The run record is `runs/<id>.provenance.json`, not `runs/<id>.json` (that file is the local web worker's state).
 
+**Only this run's files count.** Nothing in the bucket is ever deleted (the pipeline has no
+`s3:DeleteObject`) and the stats tools are best effort, so a re-run can leave an earlier run's stats
+behind. With a run record, the gate therefore uses only what that run produced:
+
+- A stats file that isn't among the record's `outputs` counts as **missing** ("left over from an earlier run").
+- The stored record is a convenience copy that `app/provenance.py` rebuilds from the per-stage parts
+  (`runs/<id>.provenance/*.json`). If a part finished after the record was assembled (its re-assembly
+  failed), the record is **invalid** (stale), so a failed re-run can't pass on an old "succeeded".
+- If flagstat's layout disagrees with the record's, flagstat is **invalid**.
+- A record for another sample, or with a schema other than 1, is **invalid**.
+
+Without a run record (or one without `outputs`), the stats files are taken as they are.
+
 ## Usage
 
 ```bash
@@ -45,7 +58,7 @@ geyser-gate --print-default-config            # start your own thresholds from t
 ```
 
 **Exit status:** `0` pass, `1` fail, `2` usage or config error (unknown option, unreadable or invalid
-config, bad sample ID, `--root` not a folder). A missing or unparsable *input* is not an error: it is
+config or one that checks nothing, bad sample ID, `--root` not a folder). A missing or unparsable *input* is not an error: it is
 reported in the verdict (see `on_missing`).
 
 The verdict JSON goes to stdout (or `--output`); a one-line-per-check summary goes to stderr:
@@ -80,9 +93,11 @@ mapped_pct = { min = 95.0 }
 tstv = { min = 1.7, max = 2.4 }
 ```
 
-**`on_missing`**: what a check counts as when its input file is missing (the stage didn't run, or its
-best-effort stats tool failed) or its value is undefined (Ti/Tv with no transversions). `fail` (default)
-or `skip`. An input that exists but can't be parsed always fails: the gate can't vouch for it.
+**`on_missing`**: what a check counts as when its input file is missing (the stage didn't run, its
+best-effort stats tool failed, or the file is from an earlier run) or its value is undefined (Ti/Tv with
+no transversions). `fail` (default) or `skip`. An invalid input (unparsable, stale, contradicting the
+record) always fails: the gate can't vouch for it. And a verdict where **no check passed** (everything
+skipped or not applicable, e.g. a wrong `--root` with `skip`) is a fail.
 
 **Not applicable:** `properly_paired_pct` doesn't apply to single-end reads. It is reported as
 `not_applicable` and never fails. The layout comes from flagstat (from the run record if flagstat is unusable).
@@ -139,7 +154,7 @@ to mean anything. The default thresholds fail synthetic data, by design (Ti/Tv 1
   "reasons": [],                     // one line per failed check: the named reasons
   "config": "thresholds/synthetic.toml",            // or "built-in default"
   "on_missing": "fail",
-  "inputs": {                        // each input: key, status ok | missing | invalid (+ error)
+  "inputs": {                        // each input: key, status ok | missing | invalid (+ detail: why)
     "flagstat": { "key": "stats/PAIRED001/flagstat.txt", "status": "ok" }, ...
   },
   "metrics": {                       // every metric, checked or not (null if unavailable)
@@ -162,12 +177,12 @@ rounded value shown.
 | Metric | From | Definition |
 | :--- | :--- | :--- |
 | `reads` | flagstat | Primary records, QC-passed (each mate counts). Supplementary and secondary alignments excluded |
-| `mapped_pct` | flagstat | primary mapped / primary × 100 (samtools < 1.13 has no primary lines: mapped / in total) |
+| `mapped_pct` | flagstat | primary mapped / primary × 100 (samtools < 1.13 has no primary lines: mapped / in total). This is the run record's `primary_mapped_pct`, not its `mapped_pct` (flagstat's own, over all records including supplementary) |
 | `duplicate_pct` | flagstat | primary duplicates / primary × 100 (marked by `samtools markdup`, not removed) |
 | `properly_paired_pct` | flagstat | properly paired / paired in sequencing × 100. Not applicable to single-end reads |
 | `mean_depth` | mosdepth | bases / length of the `total` row (mosdepth's `mean`, unrounded). Duplicates excluded |
 | `variants`, `snps`, `indels` | bcftools stats | `SN` counts of the first file (id 0) |
-| `tstv` | bcftools stats | transitions / transversions from the `TSTV` row. Undefined (not 0.00) with no transversions |
+| `tstv` | bcftools stats | transitions / transversions from the `TSTV` row. Undefined (not 0.00) with no transversions. The run record rounds it to 2 decimals, the verdict to 4 |
 
 ## Development
 
@@ -190,6 +205,9 @@ and the HG003/HG005 chr20 stats.
 
 ## Not yet
 
+- **Building the record from its parts:** the gate reads the stored record and rejects it when it is
+  stale; it doesn't re-assemble it from the parts as `provenance.read_record` does (that logic stays in
+  one place, Python).
 - **Wiring it into the pipeline:** a fourth state after variant calling (or the end of the variants
   stage), the static binary copied into the image, and the verdict stored as `runs/<id>.gate.json`.
   A failed gate would end the run through `Notify_Failure` with its reasons. That touches `app/`, the

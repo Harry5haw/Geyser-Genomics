@@ -146,8 +146,10 @@ impl BcftoolsStats {
                     }
                 }
                 ["TSTV", "0", t, v, ..] => {
-                    ts = t.parse().ok();
-                    tv = v.parse().ok();
+                    // A TSTV row whose counts don't parse is a broken file, not an undefined ratio.
+                    let count = |s: &str| s.trim().parse::<u64>().map_err(|_| format!("bad TSTV count {s:?}"));
+                    ts = Some(count(t)?);
+                    tv = Some(count(v)?);
                 }
                 _ => {}
             }
@@ -173,6 +175,15 @@ impl BcftoolsStats {
     }
 }
 
+/// The run record schema this gate reads (app/provenance.py SCHEMA_VERSION; tests/test_consistency.py checks them).
+pub const RUN_RECORD_SCHEMA: u64 = 1;
+
+/// One entry of the record's `outputs`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Output {
+    pub key: String,
+}
+
 /// The fields of the provenance run record (app/provenance.py, schema 1) the gate reads. Others are ignored.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct RunRecord {
@@ -181,16 +192,31 @@ pub struct RunRecord {
     pub run_name: Option<String>,
     pub status: Option<String>,
     pub layout: Option<String>,
+    /// When the record was assembled (`%Y-%m-%dT%H:%M:%SZ`, so string order is time order).
+    pub updated: Option<String>,
+    /// Every key the record's run uploaded (upstream stages inherited from earlier runs included).
+    pub outputs: Option<Vec<Output>>,
 }
 
 impl RunRecord {
     pub fn parse(text: &str) -> Result<Self, String> {
         let record: RunRecord = serde_json::from_str(text).map_err(|e| format!("not a run record: {e}"))?;
         match record.schema {
-            Some(1) | None => Ok(record),
-            Some(other) => Err(format!("run record schema {other}; this gate reads schema 1")),
+            Some(RUN_RECORD_SCHEMA) | None => Ok(record),
+            Some(other) => Err(format!("run record schema {other}; this gate reads schema {RUN_RECORD_SCHEMA}")),
         }
     }
+
+    fn has_output(&self, key: &str) -> Option<bool> {
+        self.outputs.as_ref().map(|outputs| outputs.iter().any(|o| o.key == key))
+    }
+}
+
+/// The fields of one stage's part (runs/{id}.provenance/{Task}.json) the gate reads.
+#[derive(Debug, Deserialize)]
+struct Part {
+    task: Option<String>,
+    finished: Option<String>,
 }
 
 fn pct(n: u64, d: u64) -> Option<f64> {
@@ -201,10 +227,18 @@ fn pct(n: u64, d: u64) -> Option<f64> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Loaded<T> {
     Ok(T),
-    /// The file doesn't exist: the stage didn't run, or its (best-effort) stats tool failed.
-    Missing,
-    /// The file exists but can't be read or parsed.
+    /// No usable file, with why: it doesn't exist (the stage didn't run, or its best-effort stats tool
+    /// failed), or it is left over from an earlier run.
+    Missing(String),
+    /// The file exists but can't be read or parsed, or contradicts the run record.
     Invalid(String),
+}
+
+/// What is wrong with an input, if anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Problem<'a> {
+    Missing(&'a str),
+    Invalid(&'a str),
 }
 
 impl<T> Loaded<T> {
@@ -212,6 +246,14 @@ impl<T> Loaded<T> {
         match self {
             Loaded::Ok(v) => Some(v),
             _ => None,
+        }
+    }
+
+    pub fn problem(&self) -> Option<Problem<'_>> {
+        match self {
+            Loaded::Ok(_) => None,
+            Loaded::Missing(why) => Some(Problem::Missing(why)),
+            Loaded::Invalid(why) => Some(Problem::Invalid(why)),
         }
     }
 }
@@ -266,56 +308,107 @@ pub struct Inputs {
 
 impl Inputs {
     /// Read the sample's inputs from `root`, a folder laid out like the bucket (e.g. local_bucket/).
+    ///
+    /// Nothing in the bucket is ever deleted (the pipeline has no s3:DeleteObject) and the stats tools
+    /// are best effort, so files can be left over from an earlier run. With a run record, the gate only
+    /// uses what that run produced:
+    /// - the record must be newer than every stage part (runs/{id}.provenance/*.json). The stored record
+    ///   is a convenience copy; a stage whose re-assembly failed leaves it behind its parts.
+    /// - a stats file must be among the record's outputs, otherwise it is from an earlier run (missing).
+    /// - flagstat's layout must agree with the record's.
     pub fn load(root: &Path, sample_id: &str) -> Inputs {
-        let path = |input: Input| -> PathBuf { root.join(input.key(sample_id)) };
-        let mut record = load(&path(Input::RunRecord), RunRecord::parse);
-        if let Loaded::Ok(RunRecord { sample_id: Some(other), .. }) = &record {
-            if other != sample_id {
-                record = Loaded::Invalid(format!("the record is for sample '{other}'"));
+        let mut record = load(root, sample_id, Input::RunRecord, RunRecord::parse);
+        if let Loaded::Ok(r) = &record
+            && let Some(problem) = record_problem(root, sample_id, r)
+        {
+            record = Loaded::Invalid(problem);
+        }
+        let mut inputs = Inputs {
+            sample_id: sample_id.to_string(),
+            flagstat: load(root, sample_id, Input::Flagstat, Flagstat::parse),
+            mosdepth: load(root, sample_id, Input::Mosdepth, MosdepthSummary::parse),
+            bcftools: load(root, sample_id, Input::Bcftools, BcftoolsStats::parse),
+            record,
+        };
+        if let Loaded::Ok(r) = &inputs.record {
+            let run = r.run_name.as_deref().unwrap_or("in the run record");
+            let stale = |input: Input| -> Option<String> {
+                let key = input.key(sample_id);
+                (r.has_output(&key) == Some(false))
+                    .then(|| format!("{key} is not an output of run {run}: left over from an earlier run"))
+            };
+            fn drop_stale<T>(l: &mut Loaded<T>, why: Option<String>) {
+                if let (Loaded::Ok(_), Some(why)) = (&*l, why) {
+                    *l = Loaded::Missing(why);
+                }
+            }
+            drop_stale(&mut inputs.flagstat, stale(Input::Flagstat));
+            drop_stale(&mut inputs.mosdepth, stale(Input::Mosdepth));
+            drop_stale(&mut inputs.bcftools, stale(Input::Bcftools));
+
+            if let (Loaded::Ok(f), Some(recorded)) = (&inputs.flagstat, r.layout.as_deref()) {
+                let seen = layout_of(f);
+                if seen != recorded {
+                    inputs.flagstat =
+                        Loaded::Invalid(format!("shows {seen}-end reads, the run record says {recorded}"));
+                }
             }
         }
-        Inputs {
-            sample_id: sample_id.to_string(),
-            flagstat: load(&path(Input::Flagstat), Flagstat::parse),
-            mosdepth: load(&path(Input::Mosdepth), MosdepthSummary::parse),
-            bcftools: load(&path(Input::Bcftools), BcftoolsStats::parse),
-            record,
-        }
+        inputs
     }
 
-    /// (missing, error) of one input.
-    pub fn state(&self, input: Input) -> (bool, Option<&str>) {
-        fn of<T>(l: &Loaded<T>) -> (bool, Option<&str>) {
-            match l {
-                Loaded::Ok(_) => (false, None),
-                Loaded::Missing => (true, None),
-                Loaded::Invalid(e) => (false, Some(e)),
-            }
-        }
+    pub fn problem(&self, input: Input) -> Option<Problem<'_>> {
         match input {
-            Input::Flagstat => of(&self.flagstat),
-            Input::Mosdepth => of(&self.mosdepth),
-            Input::Bcftools => of(&self.bcftools),
-            Input::RunRecord => of(&self.record),
+            Input::Flagstat => self.flagstat.problem(),
+            Input::Mosdepth => self.mosdepth.problem(),
+            Input::Bcftools => self.bcftools.problem(),
+            Input::RunRecord => self.record.problem(),
         }
     }
 
     /// The layout: the alignment's (flagstat sees the reads), else the run record's.
     pub fn layout(&self) -> Option<String> {
         match &self.flagstat {
-            Loaded::Ok(f) => Some(if f.is_paired() { "paired" } else { "single" }.to_string()),
+            Loaded::Ok(f) => Some(layout_of(f).to_string()),
             _ => self.record.ok().and_then(|r| r.layout.clone()),
         }
     }
 }
 
-fn load<T>(path: &Path, parse: fn(&str) -> Result<T, String>) -> Loaded<T> {
-    match fs::read_to_string(path) {
+fn layout_of(f: &Flagstat) -> &'static str {
+    if f.is_paired() { "paired" } else { "single" }
+}
+
+/// Why a parsed record can't be trusted: another sample's, or older than one of its stage parts.
+fn record_problem(root: &Path, sample_id: &str, r: &RunRecord) -> Option<String> {
+    if let Some(other) = r.sample_id.as_deref().filter(|other| *other != sample_id) {
+        return Some(format!("the record is for sample '{other}'"));
+    }
+    let updated = r.updated.as_deref()?;
+    // No parts folder (or an unreadable part): nothing to compare; the parts are provenance.py's business.
+    let entries = fs::read_dir(root.join(format!("runs/{sample_id}.provenance/"))).ok()?;
+    let mut newer: Vec<(String, String)> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| serde_json::from_str::<Part>(&fs::read_to_string(e.path()).ok()?).ok())
+        .filter_map(|p| Some((p.finished.filter(|f| f.as_str() > updated)?, p.task.unwrap_or_default())))
+        .collect();
+    newer.sort();
+    let (finished, task) = newer.pop()?;
+    Some(format!(
+        "stale: stage {task} finished at {finished}, after the record was assembled at {updated} (its re-assembly failed?)"
+    ))
+}
+
+fn load<T>(root: &Path, sample_id: &str, input: Input, parse: fn(&str) -> Result<T, String>) -> Loaded<T> {
+    let key = input.key(sample_id);
+    let path: PathBuf = root.join(&key);
+    match fs::read_to_string(&path) {
         Ok(text) => match parse(&text) {
             Ok(v) => Loaded::Ok(v),
             Err(e) => Loaded::Invalid(e),
         },
-        Err(e) if e.kind() == ErrorKind::NotFound => Loaded::Missing,
+        Err(e) if e.kind() == ErrorKind::NotFound => Loaded::Missing(format!("{key} not found")),
         Err(e) => Loaded::Invalid(e.to_string()),
     }
 }
@@ -459,8 +552,81 @@ mod tests {
         let inputs = Inputs::load(dir.path(), "S1");
         assert!(matches!(inputs.flagstat, Loaded::Ok(_)));
         assert!(matches!(inputs.mosdepth, Loaded::Invalid(_)));
-        assert_eq!(inputs.bcftools, Loaded::Missing);
+        assert_eq!(inputs.bcftools, Loaded::Missing("stats/S1/bcftools.stats.txt not found".into()));
         assert_eq!(inputs.record, Loaded::Invalid("the record is for sample 'S2'".into()));
         assert_eq!(inputs.layout().as_deref(), Some("single"));
+    }
+
+    /// A root with the single-end stats and the given record JSON (plus stage parts: (task, finished)).
+    fn root_with(record: serde_json::Value, parts: &[(&str, &str)]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let stats = dir.path().join("stats/S1");
+        fs::create_dir_all(&stats).unwrap();
+        fs::write(stats.join("flagstat.txt"), SINGLE_FLAGSTAT).unwrap();
+        fs::write(stats.join("mosdepth.summary.txt"), SINGLE_MOSDEPTH).unwrap();
+        fs::write(stats.join("bcftools.stats.txt"), SINGLE_BCFTOOLS).unwrap();
+        let part_dir = dir.path().join("runs/S1.provenance");
+        fs::create_dir_all(&part_dir).unwrap();
+        fs::write(dir.path().join("runs/S1.provenance.json"), record.to_string()).unwrap();
+        for (task, finished) in parts {
+            let part = serde_json::json!({"task": task, "finished": finished, "status": "Success"});
+            fs::write(part_dir.join(format!("{task}.json")), part.to_string()).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn stats_that_are_not_outputs_of_the_recorded_run_are_left_overs() {
+        // Run 2 re-aligned but its flagstat and mosdepth failed (best effort): only bcftools stats is its own.
+        let record = serde_json::json!({
+            "schema": 1, "sample_id": "S1", "run_name": "S1-run2", "status": "succeeded",
+            "outputs": [{"key": "stats/S1/bcftools.stats.txt", "bytes": 1}],
+        });
+        let dir = root_with(record, &[]);
+        let inputs = Inputs::load(dir.path(), "S1");
+        assert_eq!(
+            inputs.flagstat,
+            Loaded::Missing(
+                "stats/S1/flagstat.txt is not an output of run S1-run2: left over from an earlier run".into()
+            )
+        );
+        assert!(matches!(inputs.mosdepth, Loaded::Missing(_)));
+        assert!(matches!(inputs.bcftools, Loaded::Ok(_)));
+        assert_eq!(inputs.layout(), None, "neither flagstat nor the record give one");
+    }
+
+    #[test]
+    fn a_record_without_outputs_trusts_the_stats_files() {
+        let dir = root_with(serde_json::json!({"schema": 1, "sample_id": "S1", "status": "succeeded"}), &[]);
+        let inputs = Inputs::load(dir.path(), "S1");
+        assert!(inputs.flagstat.ok().is_some() && inputs.bcftools.ok().is_some());
+    }
+
+    #[test]
+    fn a_record_older_than_a_stage_part_is_stale() {
+        // Variants failed after a successful earlier run, and its re-assembly of the stored copy failed.
+        let record = serde_json::json!({"schema": 1, "sample_id": "S1", "status": "succeeded", "updated": "2026-11-02T10:00:00Z"});
+        let dir =
+            root_with(record.clone(), &[("Align", "2026-11-02T10:00:00Z"), ("CallVariants", "2026-11-02T11:30:00Z")]);
+        let Loaded::Invalid(why) = Inputs::load(dir.path(), "S1").record else { panic!("not invalid") };
+        assert!(why.starts_with("stale: stage CallVariants finished at 2026-11-02T11:30:00Z"), "{why}");
+
+        let dir = root_with(record, &[("Align", "2026-11-02T09:00:00Z"), ("CallVariants", "2026-11-02T10:00:00Z")]);
+        assert!(Inputs::load(dir.path(), "S1").record.ok().is_some(), "parts up to the same second are fine");
+    }
+
+    #[test]
+    fn flagstat_must_agree_with_the_recorded_layout() {
+        let record = serde_json::json!({"schema": 1, "sample_id": "S1", "status": "succeeded", "layout": "paired"});
+        let dir = root_with(record, &[]);
+        let inputs = Inputs::load(dir.path(), "S1");
+        assert_eq!(inputs.flagstat, Loaded::Invalid("shows single-end reads, the run record says paired".into()));
+        assert_eq!(inputs.layout().as_deref(), Some("paired"));
+    }
+
+    #[test]
+    fn a_tstv_row_that_does_not_parse_is_invalid() {
+        let text = "SN\t0\tnumber of records:\t2\nSN\t0\tnumber of SNPs:\t2\nSN\t0\tnumber of indels:\t0\nTSTV\t0\t2\tx\t0.00\n";
+        assert!(BcftoolsStats::parse(text).unwrap_err().contains("bad TSTV count"));
     }
 }

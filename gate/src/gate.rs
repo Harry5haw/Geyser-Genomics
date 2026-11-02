@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::config::{Bounds, Config, Metric, OnMissing};
-use crate::inputs::{Input, Inputs};
+use crate::inputs::{Input, Inputs, Problem};
 
 /// Version of the verdict's JSON layout. Bump it on a breaking change; adding fields is not one.
 pub const VERDICT_SCHEMA: u32 = 1;
@@ -64,15 +64,16 @@ impl Metric {
     }
 
     fn observe(self, inputs: &Inputs) -> Observed {
-        let key = self.input().key(&inputs.sample_id);
-        match inputs.state(self.input()) {
-            (true, _) => return Observed::Missing(format!("{key} not found")),
-            (_, Some(err)) => return Observed::Invalid(format!("could not read {key}: {err}")),
-            _ => {}
+        match inputs.problem(self.input()) {
+            Some(Problem::Missing(why)) => return Observed::Missing(why.to_string()),
+            Some(Problem::Invalid(why)) => {
+                return Observed::Invalid(format!("could not use {}: {why}", self.input().key(&inputs.sample_id)));
+            }
+            None => {}
         }
         let undefined = |why: &str| Observed::Undefined(format!("{self} is undefined: {why}"));
         let ratio = |v: Option<f64>, why: &str| v.map_or_else(|| undefined(why), |v| Observed::Value(Value::ratio(v)));
-        // state() said Ok, so the input's value is there.
+        // problem() is None, so the input's value is there.
         let (f, m, b) = (inputs.flagstat.ok(), inputs.mosdepth.ok(), inputs.bcftools.ok());
         match self {
             Metric::Reads => Observed::Value(Value::Count(f.unwrap().reads())),
@@ -124,8 +125,9 @@ pub struct InputState {
     pub key: String,
     /// "ok", "missing" or "invalid".
     pub status: &'static str,
+    /// Why it is missing or invalid.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -173,8 +175,7 @@ fn missing(on_missing: OnMissing, why: String) -> (Status, Option<String>) {
     }
 }
 
-fn metric_check(metric: Metric, b: &Bounds, inputs: &Inputs, on_missing: OnMissing) -> Check {
-    let observed = metric.observe(inputs);
+fn metric_check(metric: Metric, observed: Observed, b: &Bounds, sample_id: &str, on_missing: OnMissing) -> Check {
     let value = match &observed {
         Observed::Value(v) => Some(serde_json::to_value(v).expect("a number serialises")),
         _ => None,
@@ -195,7 +196,7 @@ fn metric_check(metric: Metric, b: &Bounds, inputs: &Inputs, on_missing: OnMissi
         min: b.min,
         max: b.max,
         expected: None,
-        source: metric.input().key(&inputs.sample_id),
+        source: metric.input().key(sample_id),
         reason,
     }
 }
@@ -203,10 +204,10 @@ fn metric_check(metric: Metric, b: &Bounds, inputs: &Inputs, on_missing: OnMissi
 fn run_status_check(statuses: &[String], inputs: &Inputs, on_missing: OnMissing) -> Check {
     let key = Input::RunRecord.key(&inputs.sample_id);
     let status = inputs.record.ok().and_then(|r| r.status.clone());
-    let (state, reason) = match inputs.state(Input::RunRecord) {
-        (true, _) => missing(on_missing, format!("{key} not found")),
-        (_, Some(err)) => (Status::Fail, Some(format!("could not read {key}: {err}"))),
-        _ => match &status {
+    let (state, reason) = match inputs.problem(Input::RunRecord) {
+        Some(Problem::Missing(why)) => missing(on_missing, why.to_string()),
+        Some(Problem::Invalid(why)) => (Status::Fail, Some(format!("could not use {key}: {why}"))),
+        None => match &status {
             None => missing(on_missing, "the run record has no status".into()),
             Some(s) if statuses.contains(s) => (Status::Pass, None),
             Some(s) => (Status::Fail, Some(format!("run_status is '{s}', expected {}", statuses.join(" or ")))),
@@ -226,37 +227,39 @@ fn run_status_check(statuses: &[String], inputs: &Inputs, on_missing: OnMissing)
 
 /// Apply `config` to `inputs`. `config_source` names the thresholds in the verdict.
 pub fn evaluate(config: &Config, config_source: &str, inputs: &Inputs) -> Verdict {
+    let observed: BTreeMap<Metric, Observed> = Metric::ALL.into_iter().map(|m| (m, m.observe(inputs))).collect();
     let mut checks = Vec::new();
     if let Some(rule) = &config.run_record {
         checks.push(run_status_check(&rule.statuses, inputs, config.on_missing));
     }
     for (metric, bounds) in &config.checks {
-        checks.push(metric_check(*metric, bounds, inputs, config.on_missing));
+        let obs = observed[metric].clone();
+        checks.push(metric_check(*metric, obs, bounds, &inputs.sample_id, config.on_missing));
     }
-    let reasons: Vec<String> = checks
+    let mut reasons: Vec<String> = checks
         .iter()
         .filter(|c| c.status == Status::Fail)
         .map(|c| c.reason.clone().unwrap_or_else(|| format!("{} failed", c.name)))
         .collect();
+    // With on_missing = "skip", a wrong --root or a sample that never ran would otherwise pass on nothing.
+    if reasons.is_empty() && !checks.iter().any(|c| c.status == Status::Pass) {
+        reasons.push("no check passed: every check was skipped or not applicable".into());
+    }
     let input_states = Input::ALL
         .into_iter()
         .map(|input| {
-            let (missing, error) = inputs.state(input);
-            let status = if missing {
-                "missing"
-            } else if error.is_some() {
-                "invalid"
-            } else {
-                "ok"
+            let (status, detail) = match inputs.problem(input) {
+                None => ("ok", None),
+                Some(Problem::Missing(why)) => ("missing", Some(why.to_string())),
+                Some(Problem::Invalid(why)) => ("invalid", Some(why.to_string())),
             };
-            let state = InputState { key: input.key(&inputs.sample_id), status, error: error.map(String::from) };
-            (input.name(), state)
+            (input.name(), InputState { key: input.key(&inputs.sample_id), status, detail })
         })
         .collect();
-    let metrics = Metric::ALL
+    let metrics = observed
         .into_iter()
-        .map(|m| {
-            let value = match m.observe(inputs) {
+        .map(|(m, obs)| {
+            let value = match obs {
                 Observed::Value(v) => Some(v),
                 _ => None,
             };
@@ -315,6 +318,8 @@ mod tests {
                 run_name: Some("S1-20261102T100000Z-abc".into()),
                 status: Some("succeeded".into()),
                 layout: Some("paired".into()),
+                updated: None,
+                outputs: None,
             }),
         }
     }
@@ -398,7 +403,7 @@ mod tests {
     #[test]
     fn missing_inputs_fail_by_default_and_can_be_skipped() {
         let mut i = inputs();
-        i.bcftools = Loaded::Missing;
+        i.bcftools = Loaded::Missing("stats/S1/bcftools.stats.txt not found".into());
         let v = evaluate(&config(ALL_CHECKS), "test", &i);
         assert_eq!(v.reasons.len(), 4, "variants, snps, indels and tstv: {:?}", v.reasons);
         assert_eq!(v.reasons[0], "missing: stats/S1/bcftools.stats.txt not found");
@@ -415,7 +420,7 @@ mod tests {
         let mut i = inputs();
         i.bcftools =
             Loaded::Ok(BcftoolsStats { records: 3, snps: 3, indels: 0, transitions: Some(3), transversions: Some(0) });
-        let text = "[checks]\ntstv = { min = 1.9 }";
+        let text = "[checks]\nsnps = { min = 1 }\ntstv = { min = 1.9 }";
         let v = evaluate(&config(text), "test", &i);
         assert_eq!(v.reasons, ["missing: tstv is undefined: no transversions"]);
         let v = evaluate(&config(&format!("on_missing = \"skip\"\n{text}")), "test", &i);
@@ -431,18 +436,25 @@ mod tests {
         assert_eq!(
             v.reasons,
             [
-                "could not read runs/S1.provenance.json: not a run record",
-                "could not read stats/S1/mosdepth.summary.txt: no 'total' row",
+                "could not use runs/S1.provenance.json: not a run record",
+                "could not use stats/S1/mosdepth.summary.txt: no 'total' row",
             ]
         );
-        assert_eq!(v.inputs["mosdepth_summary"].error.as_deref(), Some("no 'total' row"));
+        assert_eq!(v.inputs["mosdepth_summary"].detail.as_deref(), Some("no 'total' row"));
         assert_eq!(v.run_name, None);
     }
 
     #[test]
     fn unchecked_metrics_are_still_reported() {
-        let v = evaluate(&config(""), "test", &inputs());
-        assert!(v.passed() && v.checks.is_empty());
+        let v = evaluate(
+            &config(
+                "[checks]
+reads = { min = 1 }",
+            ),
+            "test",
+            &inputs(),
+        );
+        assert!(v.passed() && v.checks.len() == 1);
         assert_eq!(v.metrics[&Metric::Tstv], Some(Value::Ratio(2.0)));
         assert_eq!(v.metrics[&Metric::Reads], Some(Value::Count(1000)));
         assert_eq!(v.metrics.len(), Metric::ALL.len());
@@ -468,5 +480,25 @@ mod tests {
     fn ratios_are_rounded_to_four_decimals() {
         assert_eq!(Value::ratio(485.0 * 100.0 / 10_000.0), Value::Ratio(4.85));
         assert_eq!(Value::ratio(2.0 / 3.0), Value::Ratio(0.6667));
+    }
+
+    #[test]
+    fn nothing_passing_is_a_fail_even_when_everything_was_skipped() {
+        let mut i = inputs();
+        i.flagstat = Loaded::Missing("stats/S1/flagstat.txt not found".into());
+        i.mosdepth = Loaded::Missing("stats/S1/mosdepth.summary.txt not found".into());
+        i.bcftools = Loaded::Missing("stats/S1/bcftools.stats.txt not found".into());
+        i.record = Loaded::Missing("runs/S1.provenance.json not found".into());
+        let v = evaluate(
+            &config(&format!(
+                "on_missing = \"skip\"
+{ALL_CHECKS}"
+            )),
+            "test",
+            &i,
+        );
+        assert!(v.checks.iter().all(|c| c.status == Status::Skipped));
+        assert_eq!(v.reasons, ["no check passed: every check was skipped or not applicable"]);
+        assert!(!v.passed());
     }
 }
