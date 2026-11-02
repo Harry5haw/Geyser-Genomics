@@ -26,7 +26,6 @@ from .vcf import check_truth, planted_positions, read_truth, read_variants, trut
 # Per-read-file kinds (PER_MATE_KEYS) of a paired-end sample are served as <kind>_R1 / <kind>_R2.
 FILE_KINDS = {
     "raw": ("Raw reads", "Gzipped FASTQ as uploaded"),
-    "fastq": ("Decompressed reads", "Plain FASTQ"),
     "qc_html": ("FastQC report", "HTML"),
     "qc_zip": ("FastQC data", "ZIP"),
     "bam": ("Alignments", "Coordinate-sorted, duplicate-marked BAM"),

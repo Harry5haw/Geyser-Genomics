@@ -4,8 +4,9 @@
 This plays the part of the cloud orchestration:
   * Lambda trigger  -> the sample ID is parsed from raw_reads/<id>.fastq.gz using the
                        same function the Lambda uses (lambda/trigger/index.py).
-  * Step Functions  -> the four stages run in the same order with the same commands
-                       (infrastructure/step_functions.tf); the first failure stops the run.
+  * Step Functions  -> the three stages run with the same commands (infrastructure/step_functions.tf);
+                       qc and align are independent (both read raw_reads/), so they can run in
+                       parallel; here they run one after the other. The first failure stops the run.
   * AWS Batch       -> each stage runs in a fresh container from the same image.
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 
@@ -47,9 +48,8 @@ import time
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Same order and arguments as the Step Functions definition.
+# Same stages and arguments as the Step Functions definition (qc and align are its parallel branches).
 STAGES = [
-    ("decompress", False),
     ("qc", False),
     ("align", True),
     ("variants", True),
@@ -77,6 +77,8 @@ DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.chr20.gbz"
 DEFAULT_PANGENOME_SHM = "12g"
 DEEPVARIANT_PYTHON = "/opt/geyser-venv/bin/python"
 DEEPVARIANT_ENV_VARS = ("DEEPVARIANT_EXTRA_ARGS", "DEEPVARIANT_SHARDS", "DEEPVARIANT_MODEL_TYPE")
+# Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2.
+PIPELINE_ENV_VARS = ("ALIGNER",)
 # ALTs that are not real variants (gVCF-style placeholders, DeepVariant RefCall rows).
 NON_VARIANT_ALTS = {".", "<*>", "<NON_REF>"}
 
@@ -162,17 +164,20 @@ def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, sh
 
 def run_job(job, runner, root, dv_memory=None):
     if runner == "docker":
-        # DeepVariant tuning knobs are passed through to its container when set on the host.
-        extra, memory = {}, None
+        # Pipeline and DeepVariant knobs are passed through to the container when set on the host
+        # (the host runner inherits the whole environment anyway).
+        extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
+        memory = None
         if job["name"] in ("deepvariant", "pangenome"):
-            extra = {k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)}
+            extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
         return subprocess.run(docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory,
                                              job.get("shm"))).returncode
     if job["name"] in ("deepvariant", "pangenome"):
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
-    # host: tools (bwa, samtools, bcftools, fastqc) must be on PATH
+    # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastqc) must be on PATH. bwa-mem2 has no
+    # apt package (the image installs the upstream release); without it, set ALIGNER=bwa.
     host_env = {**os.environ, "STORAGE_BACKEND": "local", "METRICS_BACKEND": "local",
                 "LOCAL_STORAGE_DIR": os.path.abspath(root)}
     return subprocess.run([sys.executable, "tasks.py"] + job["cmd"][2:], cwd=os.path.join(REPO_ROOT, "app"),

@@ -48,24 +48,23 @@ parse_raw_key = _trigger.parse_raw_key
 
 
 @lru_cache(maxsize=4)
-def _build_storage(backend, local_dir, bucket, region):
-    return storage_from_env({
-        "STORAGE_BACKEND": backend,
-        "LOCAL_STORAGE_DIR": local_dir,
-        "BUCKET_NAME": bucket or "",
-        "AWS_REGION": region,
-    })
+def _build_storage(env_items):
+    return storage_from_env(dict(env_items))
 
 
 def get_storage():
-    """The storage backend described by settings. Cached per configuration, so tests that
-    override the settings get a fresh backend automatically."""
-    return _build_storage(
-        settings.GEYSER_STORAGE_BACKEND,
-        str(settings.GEYSER_LOCAL_STORAGE_DIR),
-        settings.GEYSER_BUCKET_NAME,
-        settings.GEYSER_AWS_REGION,
-    )
+    """The storage backend described by settings, using the pipeline's variable names so every
+    storage_from_env option reaches the UI. Cached per configuration, so tests that override the
+    settings get a fresh backend automatically."""
+    env = {
+        "STORAGE_BACKEND": settings.GEYSER_STORAGE_BACKEND,
+        "LOCAL_STORAGE_DIR": str(settings.GEYSER_LOCAL_STORAGE_DIR),
+        "BUCKET_NAME": settings.GEYSER_BUCKET_NAME or "",
+        "AWS_REGION": settings.GEYSER_AWS_REGION,
+        "S3_ENDPOINT_URL": settings.GEYSER_S3_ENDPOINT_URL or "",
+        "S3_ADDRESSING_STYLE": settings.GEYSER_S3_ADDRESSING_STYLE or "",
+    }
+    return _build_storage(tuple(sorted(env.items())))
 
 
 __all__ = [

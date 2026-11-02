@@ -1,19 +1,23 @@
 # app/tasks.py
-"""Pipeline stages: decompress -> qc -> align -> variants.
+"""Pipeline stages: (qc and align, side by side) -> variants.
 
 Each stage is run as its own container job (AWS Batch in the cloud, `docker run`
 locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 
 Stages communicate only through storage keys:
-    raw_reads/{id}.fastq.gz -> decompressed/{id}.fastq
-        -> qc_reports/{id}_fastqc.{html,zip}
-        -> alignments/{id}.bam (sorted, duplicates marked) -> variants/{id}.vcf.gz
-    reference/{reference_name} (+ optional .fai / bwa indexes)
+    raw_reads/{id}.fastq.gz -> qc_reports/{id}_fastqc.{html,zip}     (qc)
+                            -> alignments/{id}.bam                    (align: sorted, duplicates marked)
+    alignments/{id}.bam     -> variants/{id}.vcf.gz                   (variants)
+    reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
+
+qc and align both read the gzipped upload directly (FastQC, bwa-mem2 and bwa read gzip), so they don't
+depend on each other and can run in parallel (the three-stage state machine, #84). There is no
+decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
 
 Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
-every per-read key before alignment comes in an _R1/_R2 pair (see keys_for). Each stage detects
-the layout from which of its input keys exist (sample_layout), so the CLI and the Step Functions
-input are the same for both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
+the QC reports come in an _R1/_R2 pair too (see keys_for). qc and align detect the layout from
+which raw keys exist (sample_layout), so the CLI and the Step Functions input are the same for
+both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
 METRICS_BACKEND (see metrics.py). If you rename a stage or key, update the Step
@@ -32,10 +36,26 @@ import time
 from functools import wraps
 
 from metrics import metrics_from_env
-from storage import ForwardOnlyStream, ObjectNotFound, storage_from_env
+from storage import ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
-BWA_INDEX_EXTS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+# Aligners the align stage can run, chosen by the ALIGNER env var. bwa-mem2 is the default: the
+# same algorithm as bwa mem and, apart from the case below, the same alignments, faster on
+# AVX2/AVX-512 CPUs. bwa stays for comparisons (the pangenome benchmark, #51). Each needs its own
+# index next to the FASTA, built by `<aligner> index` and stored under reference/ with these
+# extensions (.amb/.ann/.pac are shared; bwa-mem2's .0123 and .bwt.2bit.64 replace .bwt and .sa).
+ALIGNER_INDEX_EXTS = {
+    "bwa-mem2": [".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"],
+    "bwa": [".amb", ".ann", ".bwt", ".pac", ".sa"],
+}
+DEFAULT_ALIGNER = "bwa-mem2"
+# bwa-mem2 (2.2.1 and 2.3) places reads that start in the first few bases of the FIRST contig of
+# the index at position 1, shifted, so they show up as false SNPs (upstream bwa-mem2#262, open;
+# on the synthetic data 3 of 10,000 reads, 5 false calls at positions 2-9; every other read is
+# identical to bwa). Human chromosomes start with long N gaps (chr1 10 kb, chr20 60 kb), where no
+# read aligns, so they are unaffected. When the first contig does not start with at least this
+# many Ns (bacteria, viruses, plasmids, the synthetic genome), the align stage uses bwa instead.
+BWA_MEM2_SAFE_N_PREFIX = 1000
 # samtools sort RAM budget in the align stage (see align_command).
 SORT_MAX_THREADS = 4
 SORT_MEMORY_PER_THREAD = "512M"
@@ -62,7 +82,7 @@ def metrics():
 SINGLE, PAIRED = "single", "paired"
 MATES = ("R1", "R2")
 # Keys that exist once per read file: plain for single-end, <name>_R1/<name>_R2 for paired-end.
-PER_MATE_KEYS = ("raw", "fastq", "qc_html", "qc_zip")
+PER_MATE_KEYS = ("raw", "qc_html", "qc_zip")
 
 
 class LayoutError(ValueError):
@@ -72,8 +92,8 @@ class LayoutError(ValueError):
 def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     """Single source of truth for every storage key a sample touches.
 
-    Paired-end samples get raw_R1/raw_R2, fastq_R1/fastq_R2, ... instead of raw, fastq, ...
-    (FastQC names its reports after the input file, so {id}_R1.fastq -> {id}_R1_fastqc.html).
+    Paired-end samples get raw_R1/raw_R2, qc_html_R1/qc_html_R2, ... instead of raw, qc_html, ...
+    (FastQC names its reports after the input file, so {id}_R1.fastq.gz -> {id}_R1_fastqc.html).
     Use keys_of() to get a stage's keys without caring about the layout.
     """
     if layout not in (SINGLE, PAIRED):
@@ -83,7 +103,6 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     for mate, stem in stems.items():
         suffix = f"_{mate}" if mate else ""
         keys[f"raw{suffix}"] = f"raw_reads/{stem}.fastq.gz"
-        keys[f"fastq{suffix}"] = f"decompressed/{stem}.fastq"
         keys[f"qc_html{suffix}"] = f"qc_reports/{stem}_fastqc.html"
         keys[f"qc_zip{suffix}"] = f"qc_reports/{stem}_fastqc.zip"
     keys["bam"] = f"alignments/{sample_id}.bam"
@@ -103,35 +122,29 @@ def all_raw_keys(sample_id: str) -> list:
     return keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
 
 
-def layout_from_keys(sample_id: str, exists, name: str = "raw") -> str:
-    """'single' or 'paired', from which of a sample's `name` keys exist ('raw' or 'fastq'). exists(key) -> bool.
+def layout_from_raw(sample_id: str, exists) -> str:
+    """'single' or 'paired', from which raw reads exist. exists(key) -> bool.
 
-    Each stage asks about its own inputs (decompress: raw, qc/align: fastq), so it never depends
-    on an earlier stage's files still being there. Fails loudly rather than guessing: a lone mate
-    (its partner not uploaded yet) or a sample present both ways is an error, not a silent
+    What qc, align, the trigger and the web UI all go by. Fails loudly rather than guessing: a lone
+    mate (its partner not uploaded yet) or a sample present both ways is an error, not a silent
     single-end run.
     """
-    single = exists(keys_for(sample_id, SINGLE)[name])
-    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"{name}_{m}"])]
+    single = exists(keys_for(sample_id, SINGLE)["raw"])
+    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"raw_{m}"])]
     if single and mates:
-        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) {name} files")
+        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) raw files")
     if single:
         return SINGLE
     if len(mates) == len(MATES):
         return PAIRED
     if mates:
         missing = [m for m in MATES if m not in mates][0]
-        raise LayoutError(f"{sample_id}: {name} {mates[0]} exists but {missing} is missing")
-    raise LayoutError(f"{sample_id}: no {name} files ({keys_for(sample_id)[name]} or _R1/_R2)")
+        raise LayoutError(f"{sample_id}: raw {mates[0]} exists but {missing} is missing")
+    raise LayoutError(f"{sample_id}: no raw files ({keys_for(sample_id)['raw']} or _R1/_R2)")
 
 
-def layout_from_raw(sample_id: str, exists) -> str:
-    """The layout a sample was uploaded with (what the trigger and the web UI go by)."""
-    return layout_from_keys(sample_id, exists, "raw")
-
-
-def sample_layout(sample_id: str, name: str = "raw") -> str:
-    return layout_from_keys(sample_id, storage().exists, name)
+def sample_layout(sample_id: str) -> str:
+    return layout_from_raw(sample_id, storage().exists)
 
 
 def run_shell(command: str) -> None:
@@ -169,13 +182,61 @@ def timed_stage(task_name):
     return decorator
 
 
-def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True) -> str:
-    """Fetch reference/<name> and any stored indexes; build missing indexes. Returns the local FASTA path.
+def aligner_from_env() -> str:
+    """The aligner named by ALIGNER (default bwa-mem2). Unknown names fail before any download."""
+    return check_aligner(os.environ.get("ALIGNER", "").strip() or DEFAULT_ALIGNER)
 
-    Variant calling only needs the .fai; skipping the BWA index there saves minutes on a full chromosome.
+
+def check_aligner(name: str) -> str:
+    """name if it is an aligner the align stage knows (ALIGNER_INDEX_EXTS), else ValueError."""
+    if name not in ALIGNER_INDEX_EXTS:
+        raise ValueError(f"Unknown aligner {name!r} (ALIGNER); expected one of {sorted(ALIGNER_INDEX_EXTS)}")
+    return name
+
+
+def first_contig_prefix(fasta_path: str, length: int) -> str:
+    """The first `length` bases of the first sequence in a FASTA (plain or gzipped), upper-case."""
+    opener = gzip.open if fasta_path.endswith(".gz") else open
+    seen_header, parts, total = False, [], 0
+    with opener(fasta_path, "rt") as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if seen_header:
+                    break  # the first contig ended before `length` bases
+                seen_header = True
+                continue
+            parts.append(line.strip())
+            total += len(parts[-1])
+            if total >= length:
+                break
+    return "".join(parts)[:length].upper()
+
+
+def effective_aligner(requested: str, local_ref: str) -> str:
+    """The aligner to run on this reference: bwa instead of bwa-mem2 where bwa-mem2#262 would bite."""
+    if requested != "bwa-mem2":
+        return requested
+    prefix = first_contig_prefix(local_ref, BWA_MEM2_SAFE_N_PREFIX)
+    if len(prefix) == BWA_MEM2_SAFE_N_PREFIX and set(prefix) == {"N"}:
+        return requested
+    print(f"WARNING: the first contig of {os.path.basename(local_ref)} does not start with "
+          f"{BWA_MEM2_SAFE_N_PREFIX} Ns; bwa-mem2 misplaces reads there (bwa-mem2#262), "
+          f"so aligning with bwa instead", flush=True)
+    return "bwa"
+
+
+def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True,
+                           aligner: str = None) -> str:
+    """Fetch reference/<name> and its .fai (built if missing). Returns the local FASTA path.
+
+    need_bwa_index: also prepare the aligner's index via prepare_aligner (so the bwa-mem2#262 guard
+    applies); aligner defaults to aligner_from_env(). Variant calling only needs the .fai; skipping
+    the aligner index there saves minutes on a full chromosome.
     """
     fasta_key = f"{REFERENCE_PREFIX}{reference_name}"
     local_ref = os.path.join(dest_dir, reference_name)
+    if need_bwa_index:
+        aligner = check_aligner(aligner) if aligner else aligner_from_env()  # before the (large) download
 
     try:
         print(f"Fetching reference {storage().describe(fasta_key)}")
@@ -183,54 +244,84 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     except ObjectNotFound as err:
         raise FileNotFoundError(f"Reference FASTA missing: {storage().describe(fasta_key)}") from err
 
-    for ext in [".fai"] + (BWA_INDEX_EXTS if need_bwa_index else []):
-        try:
-            storage().download(fasta_key + ext, local_ref + ext)
-        except ObjectNotFound:
-            pass  # built below
-
-    if need_bwa_index and any(not os.path.exists(local_ref + ext) for ext in BWA_INDEX_EXTS):
-        print("BWA index missing; running bwa index")
-        subprocess.run(["bwa", "index", local_ref], check=True)
-    if not os.path.exists(local_ref + ".fai"):
-        print("FASTA index missing; running samtools faidx")
-        subprocess.run(["samtools", "faidx", local_ref], check=True)
+    _fetch_or_build(fasta_key, local_ref, [".fai"], ["samtools", "faidx", local_ref], "FASTA index")
+    if need_bwa_index:
+        prepare_aligner(reference_name, local_ref, aligner)
     return local_ref
 
 
-@timed_stage("Decompress")
-def decompress_task(sample_id):
-    """Stream-decompress each raw_reads/ file (one, or R1 and R2) to decompressed/ without staging on disk."""
-    keys = keys_for(sample_id, sample_layout(sample_id))
-    for raw, fastq in zip(keys_of(keys, "raw"), keys_of(keys, "fastq")):
-        print(f"Decompressing {storage().describe(raw)} -> {storage().describe(fastq)}")
-        source = storage().open_read(raw)
+def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
+    """Choose the aligner for this reference (effective_aligner) and fetch or build its index.
+
+    Returns the aligner to run. The only way to an aligner index, so the guard can't be skipped.
+    """
+    aligner = effective_aligner(requested, local_ref)
+    _ensure_aligner_index(reference_name, local_ref, aligner)
+    return aligner
+
+
+def _ensure_aligner_index(reference_name: str, local_ref: str, aligner: str) -> None:
+    """Fetch the aligner's stored index next to local_ref, or build it if any file is missing.
+
+    Building in the job is fine for one chromosome. bwa-mem2 index needs ~28 bytes of RAM per
+    reference base (~90 GB for a whole genome), so build that once elsewhere and upload it under
+    reference/.
+    """
+    _fetch_or_build(f"{REFERENCE_PREFIX}{reference_name}", local_ref, ALIGNER_INDEX_EXTS[aligner],
+                    [aligner, "index", local_ref], f"{aligner} index")
+
+
+def _fetch_or_build(fasta_key: str, local_ref: str, exts, build_cmd, what: str) -> None:
+    """Download a stored index if every file of it is stored; otherwise build it.
+
+    Checking first avoids downloading part of a set only to overwrite it (the cloud reference/
+    holds bwa's index, whose .amb/.ann/.pac bwa-mem2 index rewrites).
+    """
+    if all(storage().exists(fasta_key + ext) for ext in exts):
         try:
-            with gzip.GzipFile(fileobj=source, mode="rb") as unzipped:
-                # GzipFile claims it can seek even over a forward-only S3 body; uploaders that
-                # believe it rewind the body and fail (#71). ForwardOnlyStream stops that.
-                storage().upload_stream(ForwardOnlyStream(unzipped), fastq)
-        finally:
-            source.close()
+            for ext in exts:
+                storage().download(fasta_key + ext, local_ref + ext)
+            return
+        except ObjectNotFound:
+            pass  # deleted in between: build it
+    print(f"{what} missing; running {' '.join(build_cmd[:2])}")
+    subprocess.run(build_cmd, check=True)
+
+
+def decompress_task(sample_id):
+    """No-op, kept so a new image still works under the old four-stage state machine.
+
+    qc and align now read raw_reads/ directly. Remove this (and its TASKS entry) once the
+    three-stage state machine is applied; it records no metric, so dashboards never show it.
+    """
+    print(f"'decompress' is no longer a stage: qc and align read raw_reads/ directly. "
+          f"Nothing to do for '{sample_id}'.", flush=True)
+
+
+def download_raw_reads(keys: dict, wd: str) -> list:
+    """Download the sample's gzipped read file(s) as-is into wd; returns the local paths (R1 first)."""
+    paths = []
+    for key in keys_of(keys, "raw"):
+        paths.append(os.path.join(wd, os.path.basename(key)))
+        storage().download(key, paths[-1])
+    return paths
 
 
 @timed_stage("QualityControl")
 def qc_task(sample_id):
-    """FastQC on each read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
-    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
+    """FastQC on each gzipped read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
+    keys = keys_for(sample_id, sample_layout(sample_id))
     wd = work_dir(sample_id)
     try:
         out_dir = os.path.join(wd, "qc")
         os.makedirs(out_dir)
-        fastqs = []
-        for key in keys_of(keys, "fastq"):
-            fastqs.append(os.path.join(wd, os.path.basename(key)))
-            storage().download(key, fastqs[-1])
-        # FastQC can hang (not exit) if its report thread crashes, so bound it. Matches the
-        # Step Functions timeout for this stage. One thread per file (-t) processes R1 and R2 at
+        fastqs = download_raw_reads(keys, wd)
+        # FastQC can hang (not exit) if its report thread crashes, so bound it. It now also
+        # decompresses the reads itself, so it gets the hour the decompress stage used to have
+        # (keep in step with the stage's Step Functions timeout). One thread per file (-t) processes R1 and R2 at
         # the same time, so a paired sample fits the same timeout as a single-end one
         # (FastQC reserves ~250 MB per thread; 2 fit the 4 GB job easily).
-        timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "1800"))
+        timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "3600"))
         subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
         for name in ("qc_html", "qc_zip"):
             for key in keys_of(keys, name):
@@ -239,10 +330,13 @@ def qc_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
-def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str) -> str:
+def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str,
+                  aligner: str = DEFAULT_ALIGNER) -> str:
     """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates.
 
-    fastqs is [reads] for single-end or [R1, R2] for paired-end.
+    fastqs is [reads] for single-end or [R1, R2] for paired-end. aligner is "bwa-mem2" (default)
+    or "bwa": both take the same `mem` arguments and write the same records, so everything below
+    applies to either.
 
     Paired-end: bwa mem gets both files and writes each pair's records together (name-grouped),
     which is what `samtools fixmate -m` needs. fixmate adds the mate tags (MC, ms) that markdup
@@ -268,12 +362,13 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
     which fits the 4 GB Fargate job and a shared local Docker VM.
     """
     fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    check_aligner(aligner)
     if len(fastqs) not in (1, 2):
         raise ValueError(f"align_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))
     tmp = os.path.join(tmp_dir, "tmp")
     read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
-    stages = [f"bwa mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+    stages = [f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
               + " ".join(shlex.quote(f) for f in fastqs)]
     if len(fastqs) == 2:
         stages.append("samtools fixmate -m -u - -")
@@ -284,17 +379,17 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa mem -> coordinate-sorted, duplicate-marked BAM, single- or paired-end (see align_command)."""
-    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
+    """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked BAM."""
+    aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
+    keys = keys_for(sample_id, sample_layout(sample_id))
     wd = work_dir(sample_id)
     try:
-        fastqs = []
-        for key in keys_of(keys, "fastq"):
-            fastqs.append(os.path.join(wd, os.path.basename(key)))
-            storage().download(key, fastqs[-1])
+        fastqs = download_raw_reads(keys, wd)
         bam = os.path.join(wd, f"{sample_id}.bam")
-        ref = ensure_reference_local(reference_name, wd)
-        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id))
+        ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
+        aligner = prepare_aligner(reference_name, ref, aligner)
+        print(f"Aligning with {aligner}", flush=True)
+        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id, aligner))
         storage().upload(bam, keys["bam"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
@@ -319,7 +414,7 @@ def variants_task(sample_id, reference_name):
 
 
 TASKS = {
-    "decompress": (decompress_task, False),
+    "decompress": (decompress_task, False),  # no-op until the three-stage state machine is applied
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),

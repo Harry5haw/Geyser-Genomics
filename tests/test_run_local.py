@@ -19,7 +19,7 @@ def test_default_caller_runs_exactly_the_state_machine_stages():
 
 def test_deepvariant_caller_replaces_variants_stage_and_uses_gpu():
     jobs = run_local.pipeline_jobs("S1", "ref.fa", caller="deepvariant")
-    assert names(jobs) == ["decompress", "qc", "align", "deepvariant"]
+    assert names(jobs) == ["qc", "align", "deepvariant"]
     dv = jobs[-1]
     assert dv["image"] == "geyser-deepvariant" and dv["gpus"]
     assert dv["cmd"] == ["/opt/geyser-venv/bin/python", "deepvariant_task.py", "S1", "ref.fa"]
@@ -27,7 +27,7 @@ def test_deepvariant_caller_replaces_variants_stage_and_uses_gpu():
 
 def test_both_callers_run_bcftools_then_deepvariant():
     assert names(run_local.pipeline_jobs("S1", "ref.fa", caller="both")) == [
-        "decompress", "qc", "align", "variants", "deepvariant"]
+        "qc", "align", "variants", "deepvariant"]
 
 
 def test_skip_to_variants_starts_at_variant_calling():
@@ -57,6 +57,20 @@ def test_memory_cap_applies_to_deepvariant_only(monkeypatch):
     for job in run_local.pipeline_jobs("S1", "r", caller="both", skip_to_variants=True):
         run_local.run_job(job, "docker", "root", dv_memory="8g")
     assert ["--memory" in cmd for cmd in seen] == [False, True]
+
+
+def test_aligner_choice_reaches_the_stage_containers(monkeypatch):
+    seen = []
+    monkeypatch.setattr(run_local.subprocess, "run", lambda cmd: seen.append(cmd) or type("R", (), {"returncode": 0}))
+    monkeypatch.setenv("ALIGNER", "bwa")
+    for job in run_local.pipeline_jobs("S1", "r"):
+        run_local.run_job(job, "docker", "root")
+    assert all("ALIGNER=bwa" in cmd for cmd in seen) and len(seen) == len(run_local.STAGES)
+
+    seen.clear()
+    monkeypatch.delenv("ALIGNER")
+    run_local.run_job(run_local.pipeline_jobs("S1", "r")[0], "docker", "root")
+    assert not any(arg.startswith("ALIGNER=") for arg in seen[0])  # unset: the image default (bwa-mem2)
 
 
 def test_no_gpu_flag_reaches_the_job():

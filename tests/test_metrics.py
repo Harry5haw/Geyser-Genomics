@@ -76,6 +76,26 @@ def test_s3_storage_defaults_to_cloudwatch():
     assert isinstance(metrics_from_env({"STORAGE_BACKEND": "s3"}), CloudWatchMetrics)
 
 
+def test_s3_compatible_endpoint_defaults_to_no_metrics():
+    # #80: an S3-compatible service outside AWS has no CloudWatch next to it.
+    for var in ("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3"):
+        env = {"STORAGE_BACKEND": "s3", var: "https://s3.gra.io.cloud.ovh.net"}
+        assert isinstance(metrics_from_env(env), NullMetrics), var
+
+
+def test_an_aws_s3_endpoint_still_defaults_to_cloudwatch():
+    from metrics import CloudWatchMetrics
+
+    env = {"STORAGE_BACKEND": "s3", "S3_ENDPOINT_URL": "https://s3.eu-west-2.amazonaws.com"}
+    assert isinstance(metrics_from_env(env), CloudWatchMetrics)
+
+
+def test_s3_compatible_endpoint_can_still_choose_a_metrics_backend(tmp_path):
+    env = {"STORAGE_BACKEND": "s3", "S3_ENDPOINT_URL": "http://localhost:9000", "METRICS_BACKEND": "local",
+           "METRICS_FILE": str(tmp_path / "m.jsonl")}
+    assert isinstance(metrics_from_env(env), LocalMetrics)
+
+
 def test_metrics_file_override(tmp_path):
     path = str(tmp_path / "custom.jsonl")
     m = metrics_from_env({"STORAGE_BACKEND": "local", "METRICS_FILE": path})

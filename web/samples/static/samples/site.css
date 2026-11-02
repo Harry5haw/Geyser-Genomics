@@ -205,12 +205,11 @@ thead th { color: var(--geyser-muted); font-size: .85rem; font-weight: 600; }
 
 /* Each pipeline stage has its own colour: its panel, its progress segment and its step on the home page.
    Run state is shown by the pill (icon + colour), so the two don't compete. */
-.s-decompress { --stage: #5ad1c3; }
 .s-qc { --stage: #b9a3f0; }
 .s-align { --stage: #7fb6ff; }
 .s-variants { --stage: #f0c75e; }
 
-.progress-track { display: grid; grid-template-columns: repeat(4, 1fr); gap: .3rem; margin: 1.25rem 0 .4rem; }
+.progress-track { display: grid; grid-template-columns: repeat(3, 1fr); gap: .3rem; margin: 1.25rem 0 .4rem; }
 .progress-track .seg { height: .6rem; border-radius: 999px; background: var(--geyser-bg-deep); }
 .progress-track .seg.done { background: var(--stage); }
 .progress-track .seg.running { background: var(--stage); animation: pulse 1.2s ease-in-out infinite; }
@@ -219,8 +218,8 @@ thead th { color: var(--geyser-muted); font-size: .85rem; font-weight: 600; }
 .now-running { font-size: .95rem; margin-bottom: .25rem; }
 .now-running strong { color: var(--stage, var(--geyser-running)); }
 
-.timeline { display: grid; grid-template-columns: repeat(4, 1fr); gap: .75rem; margin: 1rem 0; }
-@media (max-width: 768px) { .timeline { grid-template-columns: repeat(2, 1fr); } }
+.timeline { display: grid; grid-template-columns: repeat(3, 1fr); gap: .75rem; margin: 1rem 0; }
+@media (max-width: 768px) { .timeline { grid-template-columns: 1fr; } }
 .timeline .stage { background: color-mix(in srgb, var(--stage) 20%, var(--geyser-bg-deep));
                    border: 1px solid color-mix(in srgb, var(--stage) 35%, transparent); border-top: 4px solid var(--stage);
                    border-radius: .6rem; padding: .75rem; }

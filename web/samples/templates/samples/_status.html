@@ -3,7 +3,7 @@
   <div class="sample-head">
     <h1>{{ sample.sample_id }}</h1>
     <span class="badge {{ sample.state }}">{{ sample.state_label }}</span>
-    {% if sample.duration %}<span class="muted">{{ sample.done_count }}/4 stages · {{ sample.duration|duration }}</span>{% endif %}
+    {% if sample.duration %}<span class="muted">{{ sample.done_count }}/{{ sample.stages|length }} stages · {{ sample.duration|duration }}</span>{% endif %}
   </div>
 
   <div class="progress-track" role="progressbar" aria-label="Pipeline progress"
