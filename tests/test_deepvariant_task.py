@@ -93,7 +93,12 @@ def test_run_streaming_captures_timestamped_lines_and_exit_code():
 
 
 def test_keys_follow_storage_contract():
-    assert dv.deepvariant_keys("S1") == {"bam": "alignments/S1.bam", "vcf": "variants_deepvariant/S1.vcf.gz"}
+    assert dv.deepvariant_keys("S1") == {
+        "bam": "alignments/S1.bam",
+        "vcf": "variants_deepvariant/S1.vcf.gz",
+        "caller_stats": "stats/S1/bcftools.stats.deepvariant.txt",
+        "bcftools_stats": "stats/S1/bcftools.stats.txt",  # tasks.keys_for: what the gate and widgets read
+    }
 
 
 @pytest.fixture
@@ -192,3 +197,127 @@ def test_stage_fails_without_bam(local_env, dv_inputs, monkeypatch):
 def test_cli_requires_reference():
     with pytest.raises(SystemExit):
         dv.main(["S1"])
+
+
+# ---------- PASS-call stats (#58 follow-up) ----------
+
+STATS_TEXT = (
+    "SN\t0\tnumber of records:\t5\n"
+    "SN\t0\tnumber of SNPs:\t4\n"
+    "SN\t0\tnumber of indels:\t1\n"
+    "TSTV\t0\t3\t1\t3.00\t3\t1\t3.00\n"
+)
+
+
+@pytest.fixture
+def fake_stats(monkeypatch):
+    """bcftools stats faked: writes STATS_TEXT to the command's '> out' and records the command."""
+    commands = []
+
+    def run(label, command, skipped="its stats are skipped for this run"):
+        commands.append(command)
+        out = command.rsplit("> ", 1)[1].strip("'")
+        with open(out, "w") as fh:
+            fh.write(STATS_TEXT)
+        return True
+
+    monkeypatch.setattr(dv, "_run_stats_tool", run)
+    return commands
+
+
+def test_stats_count_pass_calls_only():
+    cmd = dv.pass_stats_command("/w/ref.fa", "/w/S1.vcf.gz", "/w/out.txt")
+    assert cmd.startswith("bcftools stats -f PASS ") and cmd.endswith("/w/S1.vcf.gz > /w/out.txt")
+
+
+def test_extra_caller_writes_only_its_own_stats(local_env, dv_inputs, monkeypatch, fake_stats, capsys):
+    # A benchmark running bcftools and DeepVariant: the sample's bcftools.stats.txt is the bcftools stage's.
+    monkeypatch.delenv("PIPELINE_CALLER", raising=False)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert (local_env / "stats" / "S1" / "bcftools.stats.deepvariant.txt").read_text() == STATS_TEXT
+    assert not (local_env / "stats" / "S1" / "bcftools.stats.txt").exists()
+    assert len(fake_stats) == 1 and " -f PASS " in fake_stats[0]
+    out = capsys.readouterr().out
+    assert "bcftools stats deepvariant: records=5, snps=4, indels=1, tstv=3.0" in out
+    assert "\nbcftools stats: " not in out  # not the line the quality widgets read
+
+
+@pytest.mark.parametrize("pangenome", [None, "g.gbz"])
+def test_the_runs_caller_also_writes_the_samples_stats(
+    local_env, dv_inputs, monkeypatch, fake_stats, capsys, pangenome
+):
+    caller = "pangenome" if pangenome else "deepvariant"
+    monkeypatch.setenv("PIPELINE_CALLER", caller)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    if pangenome:
+        (local_env / "pangenome").mkdir()
+        (local_env / "pangenome" / pangenome).write_bytes(b"graph")
+        dv.pangenome_deepvariant_task("S1", "ref.fa", pangenome)
+    else:
+        dv.deepvariant_task("S1", "ref.fa")
+    stats = local_env / "stats" / "S1"
+    assert (stats / "bcftools.stats.txt").read_text() == (stats / f"bcftools.stats.{caller}.txt").read_text()
+    assert "bcftools stats: records=5, snps=4, indels=1, tstv=3.0" in capsys.readouterr().out
+    # Listed as outputs of the run, so the quality gate doesn't take them for leftovers of an earlier run.
+    import provenance
+    import tasks
+
+    record = provenance.read_record(tasks.storage(), "S1")
+    outputs = {o["key"] for o in record["outputs"]}
+    assert {"stats/S1/bcftools.stats.txt", f"stats/S1/bcftools.stats.{caller}.txt"} <= outputs
+    assert record["stats"]["bcftools_stats"]["tstv"] == 3.0
+
+
+def test_another_runs_caller_does_not_claim_the_samples_stats(local_env, dv_inputs, monkeypatch, fake_stats):
+    monkeypatch.setenv("PIPELINE_CALLER", "bcftools")
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert not (local_env / "stats" / "S1" / "bcftools.stats.txt").exists()
+
+
+@pytest.mark.parametrize("primary", [False, True])
+def test_failed_stats_never_fail_the_stage(local_env, dv_inputs, monkeypatch, primary):
+    if primary:
+        monkeypatch.setenv("PIPELINE_CALLER", "deepvariant")
+    else:
+        monkeypatch.delenv("PIPELINE_CALLER", raising=False)
+    monkeypatch.setattr(dv, "_run_stats_tool", lambda label, command, skipped="": False)
+    vcf = gzip.compress(b"##fileformat=VCFv4.2\n")
+    monkeypatch.setattr(dv, "run_streaming", fake_run(vcf))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz").read_bytes() == vcf
+    assert not (local_env / "stats" / "S1" / "bcftools.stats.deepvariant.txt").exists()
+    sample_stats = local_env / "stats" / "S1" / "bcftools.stats.txt"
+    assert sample_stats.exists() == primary
+
+
+def test_failed_stats_of_the_runs_caller_replace_an_earlier_runs_file(local_env, dv_inputs, monkeypatch):
+    # An earlier bcftools run left its stats; this DeepVariant run's own failed. Without a replacement the
+    # gate would take the old numbers for this run's (the record inherits that run's CallVariants part).
+    import provenance
+    import tasks
+
+    stats = local_env / "stats" / "S1"
+    stats.mkdir(parents=True)
+    (stats / "bcftools.stats.txt").write_text(STATS_TEXT)
+    monkeypatch.setenv("PIPELINE_CALLER", "deepvariant")
+    monkeypatch.setattr(dv, "_run_stats_tool", lambda label, command, skipped="": False)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    text = (stats / "bcftools.stats.txt").read_text()
+    assert text.startswith("# No bcftools stats: deepvariant") and "SN\t" not in text
+    assert tasks.parse_bcftools_stats(text) == {}
+    outputs = {o["key"] for o in provenance.read_record(tasks.storage(), "S1")["outputs"]}
+    assert "stats/S1/bcftools.stats.txt" in outputs
+
+
+def test_the_images_bcftools_is_recorded_under_its_own_name(local_env, dv_inputs, monkeypatch, fake_stats):
+    import provenance
+    import tasks
+
+    monkeypatch.setattr(provenance, "tool_version", lambda name: {"bcftools": "1.13"}.get(name))
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    tools = provenance.read_record(tasks.storage(), "S1")["tools"]
+    assert tools["bcftools (DeepVariant image)"] == "1.13" and "bcftools" not in tools
