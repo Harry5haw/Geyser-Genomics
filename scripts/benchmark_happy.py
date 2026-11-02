@@ -18,6 +18,10 @@ Outputs: benchmarks/<sample>/<caller>.* (hap.py's own files) and benchmarks/<sam
 --stratification stratifications/GRCh38_chr20.tsv (from fetch_dv_testdata.py --stratifications) also scores each
 GIAB region type (difficult regions, segmental duplications, low mappability) and adds a per-region table to the
 summary. The overall numbers are unchanged: hap.py reports stratified rows next to the whole-region ones.
+
+Each caller scored is also appended to the benchmark history (docs/benchmarks/history.csv, benchmark_history.py)
+with the repo's commit; --aligner / --alignment / --caller-settings describe what produced the calls, and
+--no-history leaves the history alone. Then `python scripts/benchmark_history.py report` and commit both.
 """
 
 import argparse
@@ -27,6 +31,7 @@ import os
 import subprocess
 import sys
 
+import benchmark_history
 import run_local
 
 HAPPY_IMAGE = "jmcdani20/hap.py:v0.3.12"  # the image Google's case studies use
@@ -224,6 +229,20 @@ def main(argv=None):
         help="callers to score (default: every one with a VCF)",
     )
     p.add_argument("--image", default=HAPPY_IMAGE)
+    p.add_argument("--aligner", help="history: the aligner that made the alignment (e.g. bwa-mem2, vg giraffe)")
+    p.add_argument("--alignment", help="history: where the alignment came from, in words")
+    p.add_argument("--coverage", help="history: e.g. 30x")
+    p.add_argument(
+        "--graph",
+        help="history: the pangenome caller's graph, a GBZ under pangenome/ or a label "
+        f"(default: {benchmark_history.PANGENOME_GRAPH})",
+    )
+    p.add_argument(
+        "--caller-settings",
+        help="history: DeepVariant flags that change results (default: from $DEEPVARIANT_EXTRA_ARGS, e.g. MAPQ>=5)",
+    )
+    p.add_argument("--history", default=benchmark_history.HISTORY, help="benchmark history CSV")
+    p.add_argument("--no-history", action="store_true", help="don't append to the benchmark history")
     p.add_argument(
         "--stratification",
         metavar="TSV_KEY",
@@ -273,6 +292,24 @@ def main(argv=None):
             print(f"hap.py failed for {caller}")
             return 1
         results[caller] = read_summary(os.path.join(root, *f"{prefix}.summary.csv".split("/")))
+        if not a.no_history:
+            settings = a.caller_settings
+            if settings is None and caller != "bcftools" and "DEEPVARIANT_EXTRA_ARGS" in os.environ:
+                # unset: not given, so a known run keeps its recorded settings (run_metadata)
+                settings = benchmark_history.settings_tag(os.environ["DEEPVARIANT_EXTRA_ARGS"])
+            meta = benchmark_history.run_metadata(
+                a.sample,
+                caller,
+                aligner=a.aligner,
+                alignment=a.alignment,
+                coverage=a.coverage,
+                graph=a.graph if caller == "pangenome" else None,
+                caller_settings=settings,
+                commit=benchmark_history.git_commit(),
+                source="benchmark_happy.py",
+            )
+            written = benchmark_history.record(os.path.join(root, *prefix.split("/")), meta, a.history)
+            print(f"{written} rows added to {a.history}")
         if subsets:
             stratified[caller] = read_extended(os.path.join(root, *f"{prefix}.extended.csv".split("/")), subsets)
 

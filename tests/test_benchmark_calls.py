@@ -4,6 +4,7 @@ import pytest
 
 import benchmark_calls as bc
 import benchmark_giraffe as bg
+import benchmark_history as bh
 import fetch_dv_testdata as fetch
 
 
@@ -77,3 +78,29 @@ def test_missing_inputs_lists_everything_up_front(tmp_path):
     assert "truth/HG003_chr20.vcf.gz" in missing and "reference/GRCh38_chr20.fa" in missing
     assert any(m.startswith("pangenome/") for m in missing)
     assert "alignments/HG003_chr20.cram or .bam" in missing and "alignments/HG003_chr20_vg.cram or .bam" in missing
+
+
+def test_history_metadata_names_the_aligner_and_the_reused_alignment():
+    vg = bc.history_metadata("giraffe", "HG003_chr20_vg")
+    assert vg["aligner"] == "vg giraffe" and vg["coverage"] == "35x"
+    assert vg["alignment"] == bh.KNOWN_RUNS["HG003_chr20_vg"]["alignment"]
+    assert bc.history_metadata("bwa", "NEW_SAMPLE") == {"aligner": "bwa"}  # unknown alignment: aligner only
+
+
+def test_every_configuration_is_scored_with_its_history_metadata(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_score(*args, history=None, **kw):
+        seen.append((args[4], args[5], history))  # sample, caller, history
+        return {}, {}, {}
+
+    monkeypatch.setattr(bc, "missing_inputs", lambda *a, **k: [])
+    monkeypatch.setattr(bc.ba, "alignment_path", lambda root, sid: str(tmp_path / f"{sid}.bam"))
+    monkeypatch.setattr(bg, "link_or_copy", lambda *a: None)
+    monkeypatch.setattr(bg, "score_config", fake_score)
+    assert bc.main(["--root", str(tmp_path), "--preset", "google-case-studies", "--reference", "r.fa"]) == 0
+    configs = bc.PRESETS["google-case-studies"]["configs"]
+    assert len(seen) == len(configs)
+    for (_, aligner, sid, source, caller, _, _), (seen_sid, seen_caller, history) in zip(configs, seen, strict=True):
+        assert (seen_sid, seen_caller) == (sid, caller)
+        assert history == bc.history_metadata(aligner, source) and history["alignment"]
