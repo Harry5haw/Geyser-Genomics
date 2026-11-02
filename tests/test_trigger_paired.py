@@ -1,19 +1,24 @@
 """Paired-end handling in the trigger Lambda: wait for both mates, then start exactly one run."""
+
 import json
+from datetime import UTC
 
 import pytest
 from botocore.exceptions import ClientError
 
 
-@pytest.mark.parametrize("key,expected", [
-    ("raw_reads/S1.fastq.gz", ("S1", None)),
-    ("raw_reads/S1_R1.fastq.gz", ("S1", "R1")),
-    ("raw_reads/S1_R2.fastq.gz", ("S1", "R2")),
-    ("raw_reads/my_sample_R2.fq.gz", ("my_sample", "R2")),
-    ("raw_reads/run_1.fastq.gz", ("run_1", None)),  # SRA-style _1/_2 are NOT mates (decision D1, #57)
-    ("raw_reads/R1.fastq.gz", ("R1", None)),        # a bare 'R1' is a sample name, not an empty ID
-    ("raw_reads/S1_r1.fastq.gz", ("S1_r1", None)),  # case-sensitive, like the keys tasks.py reads
-])
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("raw_reads/S1.fastq.gz", ("S1", None)),
+        ("raw_reads/S1_R1.fastq.gz", ("S1", "R1")),
+        ("raw_reads/S1_R2.fastq.gz", ("S1", "R2")),
+        ("raw_reads/my_sample_R2.fq.gz", ("my_sample", "R2")),
+        ("raw_reads/run_1.fastq.gz", ("run_1", None)),  # SRA-style _1/_2 are NOT mates (decision D1, #57)
+        ("raw_reads/R1.fastq.gz", ("R1", None)),  # a bare 'R1' is a sample name, not an empty ID
+        ("raw_reads/S1_r1.fastq.gz", ("S1_r1", None)),  # case-sensitive, like the keys tasks.py reads
+    ],
+)
 def test_parse_raw_key(trigger, key, expected):
     assert trigger.parse_raw_key(key) == expected
 
@@ -40,7 +45,9 @@ def test_execution_name_is_deterministic_and_valid(trigger):
     a = trigger.paired_execution_name("S1", [V1, V2])
     assert a == trigger.paired_execution_name("S1", [("abc", V1[1]), ("def", V2[1])])  # quotes don't matter
     assert a != trigger.paired_execution_name("S1", [V1, ('"xyz"', V2[1])])  # new content -> new run
-    assert a != trigger.paired_execution_name("S1", [V1, (V2[0], "2026-11-02 09:00:00+00:00")])  # same content re-uploaded
+    assert a != trigger.paired_execution_name(
+        "S1", [V1, (V2[0], "2026-11-02 09:00:00+00:00")]
+    )  # same content re-uploaded
     long_name = trigger.paired_execution_name("x" * 64 + "+weird id", [V1, V2])
     assert len(long_name) <= 80
     assert all(c.isalnum() or c in "-_" for c in long_name)
@@ -55,9 +62,9 @@ def test_paired_name_uses_the_same_format_as_single_end(trigger):
 
 
 def test_paired_name_accepts_headobject_datetimes(trigger):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    when = datetime(2026, 11, 1, 20, 0, 5, tzinfo=timezone.utc)
+    when = datetime(2026, 11, 1, 20, 0, 5, tzinfo=UTC)
     assert trigger.paired_execution_name("S1", [('"abc"', when), ('"def"', when)]).split("-")[1] == "20261101T200005Z"
 
 
@@ -67,6 +74,7 @@ def test_paired_upload_uses_the_same_pipeline_input_as_single_end(trigger, monke
 
 
 # --- handler ------------------------------------------------------------------
+
 
 def _not_found():
     return ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
@@ -148,8 +156,10 @@ def test_reuploading_an_identical_pair_runs_again(trigger, aws, monkeypatch):
     # e.g. after a failed run and a pipeline fix: same bytes (same ETags), new LastModified.
     s3, sfn = aws({"raw_reads/S1_R1.fastq.gz": "e1", "raw_reads/S1_R2.fastq.gz": "e2"})
     trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
-    s3.objects = {"raw_reads/S1_R1.fastq.gz": ("e1", "2026-11-02 08:00:00+00:00"),
-                  "raw_reads/S1_R2.fastq.gz": ("e2", "2026-11-02 08:00:03+00:00")}
+    s3.objects = {
+        "raw_reads/S1_R1.fastq.gz": ("e1", "2026-11-02 08:00:00+00:00"),
+        "raw_reads/S1_R2.fastq.gz": ("e2", "2026-11-02 08:00:03+00:00"),
+    }
     result = trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
     assert "executionArn" in json.loads(result["body"])
     assert len(sfn.started) == 2 and sfn.started[0]["name"] != sfn.started[1]["name"]

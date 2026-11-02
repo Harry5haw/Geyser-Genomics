@@ -19,6 +19,31 @@ permissions:
   contents: read
 
 jobs:
+  # Quality gates, no AWS: ruff (config in pyproject.toml) and Terraform formatting/validation.
+  # validate runs with -backend=false: it downloads the providers but never touches state.
+  lint:
+    name: Lint (ruff, terraform fmt + validate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install ruff (version pinned in requirements-dev.txt)
+        run: pip install "$(grep -E '^ruff==' requirements-dev.txt)"
+      - run: ruff check --output-format=github .
+      - run: ruff format --check .
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive
+        working-directory: infrastructure
+      - name: terraform validate
+        run: terraform init -backend=false -input=false && terraform validate
+        working-directory: infrastructure
+
   unit:
     name: Unit tests
     runs-on: ubuntu-latest

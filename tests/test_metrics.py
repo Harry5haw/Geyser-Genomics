@@ -91,8 +91,12 @@ def test_an_aws_s3_endpoint_still_defaults_to_cloudwatch():
 
 
 def test_s3_compatible_endpoint_can_still_choose_a_metrics_backend(tmp_path):
-    env = {"STORAGE_BACKEND": "s3", "S3_ENDPOINT_URL": "http://localhost:9000", "METRICS_BACKEND": "local",
-           "METRICS_FILE": str(tmp_path / "m.jsonl")}
+    env = {
+        "STORAGE_BACKEND": "s3",
+        "S3_ENDPOINT_URL": "http://localhost:9000",
+        "METRICS_BACKEND": "local",
+        "METRICS_FILE": str(tmp_path / "m.jsonl"),
+    }
     assert isinstance(metrics_from_env(env), LocalMetrics)
 
 

@@ -1,4 +1,5 @@
 """The UI's stage table must agree with the pipeline: stage order, metric names and output keys."""
+
 import os
 import re
 

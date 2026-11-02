@@ -50,10 +50,18 @@ def create_demo_sample(storage) -> str:
 
     with tempfile.TemporaryDirectory(prefix="geyser-demo-") as tmp:
         with contextlib.redirect_stdout(io.StringIO()):
-            make_test_data.main([
-                "--root", tmp, "--sample", sample_id, "--reference", DEMO_REFERENCE,
-                "--snps", str(snp_count(number)),
-            ])
+            make_test_data.main(
+                [
+                    "--root",
+                    tmp,
+                    "--sample",
+                    sample_id,
+                    "--reference",
+                    DEMO_REFERENCE,
+                    "--snps",
+                    str(snp_count(number)),
+                ]
+            )
         ref_key = f"reference/{DEMO_REFERENCE}"
         local_ref = os.path.join(tmp, "reference", DEMO_REFERENCE)
         with open(local_ref, "rb") as fh:
@@ -61,8 +69,10 @@ def create_demo_sample(storage) -> str:
         if storage.exists(ref_key):
             with storage.open_read(ref_key) as fh:
                 if fh.read() != ref_bytes:
-                    raise DemoError(f"{ref_key} already exists with different contents; "
-                                    "remove it or regenerate it with scripts/make_test_data.py defaults.")
+                    raise DemoError(
+                        f"{ref_key} already exists with different contents; "
+                        "remove it or regenerate it with scripts/make_test_data.py defaults."
+                    )
         else:
             put_bytes(storage, ref_key, ref_bytes)
 

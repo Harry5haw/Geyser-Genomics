@@ -37,12 +37,21 @@ import subprocess
 import sys
 import time
 
-from tasks import (ensure_reference_local, fetch_alignment, index_alignment, keys_for, metrics, storage,
-                   timed_stage, work_dir)
+from tasks import (
+    ensure_reference_local,
+    fetch_alignment,
+    index_alignment,
+    keys_for,
+    metrics,
+    storage,
+    timed_stage,
+    work_dir,
+)
 
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
-RUN_PANGENOME_DEEPVARIANT = os.environ.get("RUN_PANGENOME_DEEPVARIANT",
-                                           "/opt/deepvariant/bin/run_pangenome_aware_deepvariant")
+RUN_PANGENOME_DEEPVARIANT = os.environ.get(
+    "RUN_PANGENOME_DEEPVARIANT", "/opt/deepvariant/bin/run_pangenome_aware_deepvariant"
+)
 
 # run_deepvariant prints this banner, then the command, before each step.
 BANNER = "***** Running the command:*****"
@@ -71,8 +80,9 @@ def deepvariant_keys(sample_id: str, pangenome: str = None) -> dict:
     return keys
 
 
-def build_run_deepvariant_cmd(ref, bam, vcf, intermediate_dir, sample_name, num_shards,
-                              model_type="WGS", extra_args="", pangenome=None):
+def build_run_deepvariant_cmd(
+    ref, bam, vcf, intermediate_dir, sample_name, num_shards, model_type="WGS", extra_args="", pangenome=None
+):
     """run_deepvariant, or run_pangenome_aware_deepvariant when pangenome (a local .gbz path) is given."""
     cmd = [
         RUN_PANGENOME_DEEPVARIANT if pangenome else RUN_DEEPVARIANT,
@@ -82,14 +92,18 @@ def build_run_deepvariant_cmd(ref, bam, vcf, intermediate_dir, sample_name, num_
     ]
     if pangenome:
         cmd.append(f"--pangenome={pangenome}")
-    return cmd + [
-        f"--output_vcf={vcf}",
-        f"--intermediate_results_dir={intermediate_dir}",
-        # run_pangenome_aware_deepvariant (1.9.0) has no --sample_name: it names the reads' sample separately
-        # from the pangenome panel's (--sample_name_pangenome, left to its default).
-        f"--sample_name_reads={sample_name}" if pangenome else f"--sample_name={sample_name}",
-        f"--num_shards={num_shards}",
-    ] + shlex.split(extra_args or "")
+    return (
+        cmd
+        + [
+            f"--output_vcf={vcf}",
+            f"--intermediate_results_dir={intermediate_dir}",
+            # run_pangenome_aware_deepvariant (1.9.0) has no --sample_name: it names the reads' sample separately
+            # from the pangenome panel's (--sample_name_pangenome, left to its default).
+            f"--sample_name_reads={sample_name}" if pangenome else f"--sample_name={sample_name}",
+            f"--num_shards={num_shards}",
+        ]
+        + shlex.split(extra_args or "")
+    )
 
 
 def parse_step_timings(events, end_time):
@@ -142,8 +156,9 @@ def run_streaming(cmd):
     """Run cmd, echo its output live, and return (returncode, [(timestamp, line)], end_time)."""
     print("$ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
     events = []
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-                            encoding="utf-8", errors="replace")  # a stray byte in tool logs must not fail the stage
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding="utf-8", errors="replace"
+    )  # a stray byte in tool logs must not fail the stage
     for line in proc.stdout:
         events.append((time.time(), line.rstrip("\n")))
         print(line, end="", flush=True)
@@ -160,8 +175,9 @@ def gpu_name():
     if not shutil.which("nvidia-smi"):
         return None
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-                             capture_output=True, text=True, timeout=30)
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"], capture_output=True, text=True, timeout=30
+        )
     except (OSError, subprocess.SubprocessError):
         return None
     names = out.stdout.strip().splitlines() if out.returncode == 0 else []
@@ -191,7 +207,12 @@ def _call_variants(sample_id, reference_name, pangenome=None):
         shards = int(os.environ.get("DEEPVARIANT_SHARDS") or os.cpu_count() or 1)
         gpu = gpu_name()
         cmd = build_run_deepvariant_cmd(
-            ref, bam, vcf, intermediate, sample_id, shards,
+            ref,
+            bam,
+            vcf,
+            intermediate,
+            sample_id,
+            shards,
             model_type=os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS"),
             extra_args=os.environ.get("DEEPVARIANT_EXTRA_ARGS", ""),
             pangenome=graph,
@@ -209,8 +230,10 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             except Exception as err:  # noqa: BLE001 - metrics are best effort
                 print(f"WARNING: could not record metric: {err}", flush=True)
         counts = parse_example_counts(events)
-        print(f"  examples sent to call_variants: {counts['examples']}; "
-              f"called by the small model in make_examples (CPU): {counts['small_model_calls']}")
+        print(
+            f"  examples sent to call_variants: {counts['examples']}; "
+            f"called by the small model in make_examples (CPU): {counts['small_model_calls']}"
+        )
         missing = [s for s in step_metrics if s not in timings]
         if missing:
             print(f"WARNING: no timing found for {missing}; {os.path.basename(cmd[0])} output format may have changed")
@@ -237,9 +260,12 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Call variants with DeepVariant (one pipeline stage).")
     parser.add_argument("srr_id", help="Sample ID, e.g. SRR062634")
     parser.add_argument("reference_name", help="Reference FASTA name under reference/, e.g. chr20.fa")
-    parser.add_argument("--pangenome", metavar="GBZ",
-                        help="pangenome graph name under pangenome/ (e.g. hprc-v1.1-mc-grch38.gbz): "
-                             "run pangenome-aware DeepVariant and write variants_pangenome/<id>.vcf.gz")
+    parser.add_argument(
+        "--pangenome",
+        metavar="GBZ",
+        help="pangenome graph name under pangenome/ (e.g. hprc-v1.1-mc-grch38.gbz): "
+        "run pangenome-aware DeepVariant and write variants_pangenome/<id>.vcf.gz",
+    )
     args = parser.parse_args(argv)
     if args.pangenome:
         pangenome_deepvariant_task(args.srr_id, args.reference_name, args.pangenome)

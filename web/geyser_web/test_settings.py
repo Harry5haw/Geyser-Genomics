@@ -2,6 +2,7 @@
 
 Tests point storage at a temporary folder per test (see web/tests/conftest.py).
 """
+
 import os
 
 os.environ.setdefault("DJANGO_SECRET_KEY", "test-only-secret-key")

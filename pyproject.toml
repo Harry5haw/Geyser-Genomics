@@ -1,0 +1,27 @@
+# Tool configuration only: Geyser is not an installable package (the stages run from app/ in the image).
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "web/tests"]
+addopts = "-q"
+pythonpath = ["web"]
+DJANGO_SETTINGS_MODULE = "geyser_web.test_settings"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+# The DeepVariant image runs these on its own Python 3.10 (app-deepvariant/Dockerfile copies them in).
+per-file-target-version = { "app/storage.py" = "py310", "app/metrics.py" = "py310", "app/tasks.py" = "py310", "app-deepvariant/*.py" = "py310" }
+# Retired code is kept as it was (see the _archive/ directories). .gitignore'd paths are skipped too.
+extend-exclude = ["**/_archive"]
+# Where modules are imported from by path (sys.path), not as installed packages: these count as
+# first-party for import sorting.
+src = [".", "app", "app-deepvariant", "scripts", "web", "tests"]
+
+[tool.ruff.lint]
+# An explicit list, so a ruff upgrade (Dependabot) can't change the gate by changing its defaults.
+select = [
+    "E4", "E7", "E9", "F",  # pycodestyle errors and pyflakes: real mistakes
+    "B",                    # flake8-bugbear: likely bugs
+    "I",                    # isort: import order
+    "UP",                   # pyupgrade: modern syntax for the target version
+]

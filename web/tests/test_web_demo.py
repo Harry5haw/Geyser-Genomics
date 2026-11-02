@@ -3,8 +3,9 @@ import json
 
 import pytest
 
-from .web_helpers import put
 from samples import demo
+
+from .web_helpers import put
 
 
 def test_demo_button_creates_reference_reads_and_truth(client, storage):

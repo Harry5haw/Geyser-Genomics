@@ -76,7 +76,7 @@ def read_all_runs(storage) -> dict:
     runs = {}
     for key in storage.list_keys(RUN_PREFIX):
         if key.endswith(".json"):
-            sample_id = key[len(RUN_PREFIX):-len(".json")]
+            sample_id = key[len(RUN_PREFIX) : -len(".json")]
             if not is_valid_sample_id(sample_id):
                 continue
             record = read_run(storage, sample_id)

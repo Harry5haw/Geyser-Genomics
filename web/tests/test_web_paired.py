@@ -1,11 +1,13 @@
 """Paired-end samples in the web UI: upload both mates, list them as one sample, show both mates' files."""
+
 import json
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from .web_helpers import FASTP_PAIRED, fastq_gz, put, vcf_gz
 from samples import status
 from samples.worker import Worker
+
+from .web_helpers import FASTP_PAIRED, fastq_gz, put, vcf_gz
 
 R1, R2 = "raw_reads/P1_R1.fastq.gz", "raw_reads/P1_R2.fastq.gz"
 
@@ -28,6 +30,7 @@ def finished_pair(storage):
 
 
 # --- upload -------------------------------------------------------------------
+
 
 def test_paired_upload_stores_both_mates_under_one_id(client, storage):
     resp = upload_pair(client)
@@ -66,6 +69,7 @@ def test_upload_form_offers_an_r2_field(client, storage):
 
 
 # --- status and worker -------------------------------------------------------------
+
 
 def test_lone_mate_is_not_a_sample_until_its_partner_arrives(client, storage):
     put(storage, R1, fastq_gz())
@@ -117,6 +121,7 @@ def test_worker_runs_a_pair_once_when_both_mates_exist(storage):
 
 
 # --- detail page and downloads -------------------------------------------------------
+
 
 def test_detail_page_shows_both_mates_reads_and_one_qc_report(client, storage):
     finished_pair(storage)
