@@ -51,6 +51,8 @@ CALLER_CHOICES = {k: run_local.CALLER_SETS[k] for k in ("bcftools", "deepvariant
 MIB = 1024 * 1024
 # Files both aligners' indexes share (bwa-mem2 index rewrites them; they must come out identical to bwa's).
 SHARED_INDEX_EXTS = (".amb", ".ann", ".pac")
+# Alignment forms the callers read, in their order of preference (tasks.ALIGNMENT_FORMS): the align stage writes CRAM.
+ALIGNMENT_FORMS = ("cram", "bam")
 
 # Runs "$@" in the background and samples the container's cgroup v2 memory once a second. 'anon' is memory the
 # processes hold (not page cache); memory.peak is the kernel's high-water mark and does include page cache.
@@ -340,6 +342,16 @@ def ensure_truth(root, base, sid):
     return identity
 
 
+def alignment_path(root, sid):
+    """Local path of a sample's alignment as the callers read it: the CRAM the align stage writes, else a BAM
+    (from before CRAM, or imported). Same order as tasks.ALIGNMENT_FORMS. None if there is neither."""
+    for form in ALIGNMENT_FORMS:
+        path = path_of(root, f"alignments/{sid}.{form}")
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def downstream_paths(root, sid):
     """Outputs made from a sample's BAM: each caller's VCF and its hap.py folder (stale once the BAM is redone)."""
     vcfs = [run_local.vcf_path(root, c, sid) for c in CALLER_CHOICES["both"]]
@@ -416,8 +428,7 @@ def main(argv=None):
     for al in ALIGNERS:
         sid = samples[al]
         jpath = os.path.join(out_dir, f"align_{SAMPLE_SUFFIX[al]}.json")
-        bam = path_of(root, f"alignments/{sid}.bam")
-        if load_json(jpath) and os.path.exists(bam):
+        if load_json(jpath) and alignment_path(root, sid):
             align[al] = load_measured(jpath, jpath[:-5] + ".log")
         else:
             print(f">>> align: {sid} with ALIGNER={al}", flush=True)
@@ -437,7 +448,18 @@ def main(argv=None):
             if rc != 0:
                 print(f"align failed with {al}")
                 return 1
-            align[al] = {"sample": sid, "wall_s": wall, "bam_bytes": os.path.getsize(bam), **m}
+            aln = alignment_path(root, sid)
+            if aln is None:
+                print(f"align with {al} wrote no alignments/{sid}.cram or .bam")
+                return 1
+            # bam_bytes keeps its name for older CSVs; it is the size of whichever form was written
+            align[al] = {
+                "sample": sid,
+                "wall_s": wall,
+                "bam_bytes": os.path.getsize(aln),
+                "alignment_form": aln.rsplit(".", 1)[-1],
+                **m,
+            }
             save_json(jpath, align[al])
             print(f"    {wall:.0f} s, peak {m.get('peak_anon_bytes', 0) / MIB:,.0f} MiB", flush=True)
         problem = check_aligner_used(al, align[al])

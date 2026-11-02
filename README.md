@@ -528,7 +528,7 @@ By GIAB region type (`--stratification`, GIAB v3.3 stratifications), SNP errors 
 | giraffe + pangenome-aware DeepVariant | **190** / 146 | **31** / 21 | 388 | 76 | 237 |
 
 - **Aligning to the graph helps more than a graph-aware caller.** Giraffe with plain linear DeepVariant has the fewest errors: 19% fewer than bwa-mem2 + linear, and 12% fewer than bwa-mem2 + pangenome-aware DeepVariant. In segmental duplications, its SNP errors fall from 79 to 25.
-- **Pangenome-aware DeepVariant on giraffe reads finds the most variants** (fewest misses: SNP 190, indel 31) **but adds false SNPs** (146), mostly in segmental duplications (76 errors there, against 25 with linear DeepVariant). The two pangenome inputs, reads already placed with the graph plus graph haplotypes at every site, seem to overcount evidence there. Google's two case studies (pangenome-aware DeepVariant, whole genome, HG003 35x) show the same direction: SNP FN/FP 240/76 with BWA and 72/106 with giraffe.
+- **Pangenome-aware DeepVariant on giraffe reads finds the most variants** (fewest misses: SNP 190, indel 31) **but adds false SNPs**: 146 against 91 with linear DeepVariant on the same reads. 53 of those 55 extra false SNPs are in segmental duplications (74 there against 21). The two pangenome inputs, reads already placed with the graph plus graph haplotypes at every site, seem to overcount evidence there. Google's two case studies (pangenome-aware DeepVariant, whole genome, HG003 35x) show the same direction: SNP FN/FP 240/76 with BWA and 72/106 with giraffe.
 - **Cost per sample:**
   - giraffe: 546 s, of which 462 s mapping, peak 1.5 GiB; plus 158 s for fixmate, sort and markdup.
   - bwa-mem2 align stage: 521 s, peak 7.4 GiB.
@@ -759,7 +759,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | ✅ | **Repository quality** | ruff and Terraform checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
 | 🔜 | **Next cloud checkpoint** | Push an image from current main and run single- and paired-end samples; pass the run name to the jobs so cloud run records are complete |
 | 🔜 | **Monitoring** | Deploy the dashboard and alarm and check them against the cloud runs |
-| 🎯 | **Pangenome: where it should help most** | Explain HG005's extra low-mappability errors, align reads to the graph (`vg giraffe`), newer HPRC graph, whole genome. **Top priority** ([#51](../../issues/51)) |
+| 🎯 | **Pangenome: where it should help most** | Done offline on chr20: HG005's extra errors explained (MAPQ-0 reads), reads aligned to the graph (`vg giraffe`, fewest errors). Next: newer HPRC graph, whole genome, giraffe in the pipeline. **Top priority** ([#51](../../issues/51)) |
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions ([#43](../../issues/43), [#44](../../issues/44)) |
 | 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason (the tool is built and tested in [`gate/`](gate/README.md); running it in the pipeline comes after the `Map` state) |
 | 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |

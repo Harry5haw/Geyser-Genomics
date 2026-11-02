@@ -37,6 +37,9 @@ import run_local
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"  # the vg release Google's VG case study uses
 KMC_IMAGE = "quay.io/biocontainers/kmc:3.2.4--h5814d7d_6"
 KMER_LENGTH = 29  # vg haplotypes' default minimizer k; the KFF counts must use the same k
+# The align stage's samtools sort settings (tasks.SORT_MAX_THREADS / SORT_MEMORY_PER_THREAD; a test keeps them equal).
+SORT_THREADS = 4
+SORT_MEMORY = "512M"
 # Google's VG case study flags for linear DeepVariant on giraffe BAMs.
 VG_LINEAR_DV_ARGS = (
     "--make_examples_extra_args=min_mapping_quality=0,keep_legacy_allele_counter_behavior=true,normalize_reads=true"
@@ -130,12 +133,16 @@ def giraffe_command(sid, read_keys, keys, kff_key, unsorted_key, threads):
 
 
 def postprocess_command(unsorted_key, bam_key, threads):
-    """GRCh38#0#chr20 -> chr20 in the header and records, then the align stage's fixmate | sort | markdup."""
+    """GRCh38#0#chr20 -> chr20, then the align stage's fixmate | sort | markdup (its sort settings, see SORT_*).
+
+    The rename is Google's documented step (samtools view -h | sed over the whole SAM). Only the header holds contig
+    names, so `samtools reheader` would be faster; it is kept as published so the timing matches the case study.
+    """
     tmp = "/tmp/pp"
     script = (
         f"set -e -o pipefail; mkdir -p {tmp}; samtools view -h /data/{unsorted_key} | sed -e 's/GRCh38#0#//g' | "
         f"samtools fixmate -m -u - - | "
-        f"samtools sort -u -@ 4 -m 512M -T {tmp}/sort - | "
+        f"samtools sort -u -@ {SORT_THREADS} -m {SORT_MEMORY} -T {tmp}/sort - | "
         f"samtools markdup -s -@ {threads} -T {tmp}/markdup - /data/{bam_key}.part; "
         f"mv /data/{bam_key}.part /data/{bam_key}"
     )
@@ -150,11 +157,14 @@ def giraffe_mapping_seconds(text):
     return float(m.group(1)) if m else None
 
 
-def run_step(name, cmd, root, image, out_dir, results, extra_env=None):
-    """Run a measured container step once; its measurement is saved as <out_dir>/<name>.json."""
+def run_step(name, cmd, root, image, out_dir, results, outputs=(), extra_env=None, force=False):
+    """Run a measured container step once; its measurement is saved as <out_dir>/<name>.json.
+
+    A saved step is reused only while all its outputs (keys under root) still exist; force reruns it anyway.
+    """
     jpath, log = os.path.join(out_dir, f"{name}.json"), os.path.join(out_dir, f"{name}.log")
     saved = ba.load_measured(jpath, log)
-    if saved is not None:
+    if saved is not None and not force and all(os.path.exists(ba.path_of(root, k)) for k in outputs):
         results[name] = saved
         return True
     print(f">>> {name}", flush=True)
@@ -185,10 +195,15 @@ def giraffe_cost(costs):
         "giraffe_mapping_s": step["giraffe"].get("mapping_s", ""),
         "kmc_wall_s": round(step["kmc"]["wall_s"], 1) if "wall_s" in step["kmc"] else "",
         "kmc_peak_mib": round(step["kmc"]["peak_anon_bytes"] / ba.MIB) if step["kmc"].get("peak_anon_bytes") else "",
-        "graph_index_wall_s": round(
-            sum((costs.get(f"index_{n}") or {}).get("wall_s", 0) for n in ("dist", "ri", "hapl", "paths")), 1
-        ),
+        "graph_index_wall_s": graph_index_seconds(costs),
     }
+
+
+def graph_index_seconds(costs):
+    """Total measured graph index time, or '' when no index step was measured (built elsewhere)."""
+    walls = [(costs.get(f"index_{n}") or {}).get("wall_s") for n in ("dist", "ri", "hapl", "paths")]
+    walls = [w for w in walls if w is not None]
+    return round(sum(walls), 1) if walls else ""
 
 
 def bwa_mem2_cost(measurement):
@@ -214,11 +229,25 @@ def caller_settings(caller, env, dv_memory, pg_shards, pg_memory):
 
 
 def link_or_copy(src, dest):
-    if not os.path.exists(dest):
-        try:
-            os.link(src, dest)
-        except OSError:
-            shutil.copyfile(src, dest)
+    """Hard-link (or copy) src to dest, replacing dest if it no longer matches src (src was regenerated)."""
+    if os.path.exists(dest):
+        s, d = os.stat(src), os.stat(dest)
+        if (s.st_size, s.st_mtime_ns) == (d.st_size, d.st_mtime_ns):
+            return
+        os.remove(dest)
+    try:
+        os.link(src, dest)
+    except OSError:
+        shutil.copy2(src, dest)
+
+
+def remove_downstream(root, sid, callers=("deepvariant", "pangenome")):
+    """Delete a sample's VCFs and hap.py folder: they are stale once its alignment is regenerated."""
+    for caller in callers:
+        path = run_local.vcf_path(root, caller, sid)
+        if os.path.exists(path):
+            os.remove(path)
+    shutil.rmtree(ba.path_of(root, f"benchmarks/{sid}"), ignore_errors=True)
 
 
 def run_caller(root, sid, reference, caller, env, dv_memory):
@@ -312,41 +341,67 @@ def main(argv=None):
     root = os.path.abspath(a.root)
     out_dir = ba.path_of(root, f"benchmarks/giraffe_{a.base}")
     os.makedirs(out_dir, exist_ok=True)
-    reads = ba.raw_keys(a.reads or f"{a.base}_bwa")
+    reads_sample = a.reads or f"{a.base}_bwa"
+    reads = ba.raw_keys(reads_sample)
     for key in reads:
         if not os.path.exists(ba.path_of(root, key)):
             p.error(f"no {key}: run benchmark_aligners.py first (or pass --reads)")
     gsid, msid = f"{a.base}_giraffe", f"{a.base}_bwamem2"
-    if not os.path.exists(ba.path_of(root, f"alignments/{msid}.bam")):
-        p.error(f"no alignments/{msid}.bam: run benchmark_aligners.py first")
+    msid_alignment = ba.alignment_path(root, msid)
+    if msid_alignment is None:
+        p.error(f"no alignments/{msid}.cram or .bam: run benchmark_aligners.py first")
     keys = graph_keys(a.graph)
     costs = {}
 
-    # 1. graph indexes, 2. kmers, 3. giraffe + post-processing
+    # 1. graph indexes (an index built elsewhere, with no saved measurement, is used as is: its cost stays blank)
     for name, script in vg_index_commands(keys, a.threads).items():
-        if not os.path.exists(ba.path_of(root, keys[name])) or os.path.exists(
+        built_elsewhere = os.path.exists(ba.path_of(root, keys[name])) and not os.path.exists(
             os.path.join(out_dir, f"index_{name}.json")
+        )
+        if not built_elsewhere and not run_step(
+            f"index_{name}", ["bash", "-c", script], root, VG_IMAGE, out_dir, costs, outputs=[keys[name]]
         ):
-            if not run_step(f"index_{name}", ["bash", "-c", script], root, VG_IMAGE, out_dir, costs):
-                return 1
-    kff = f"pangenome/kmc/{a.reads or a.base + '_bwa'}.kff"
+            return 1
+    # 2. kmers, 3. giraffe + post-processing (each reruns if its output is gone, whatever its saved timing says)
+    kff = f"pangenome/kmc/{reads_sample}.kff"
     os.makedirs(os.path.dirname(ba.path_of(root, kff)), exist_ok=True)
-    if not run_step("kmc", kmc_command(reads, kff, a.threads), root, KMC_IMAGE, out_dir, costs):
+    if not run_step("kmc", kmc_command(reads, kff, a.threads), root, KMC_IMAGE, out_dir, costs, outputs=[kff]):
         return 1
     unsorted = f"alignments/{gsid}.unsorted.bam"
     bam = f"alignments/{gsid}.bam"
-    if not os.path.exists(ba.path_of(root, bam)):
+    if os.path.exists(ba.path_of(root, bam)):
+        for name in ("giraffe", "postprocess"):
+            jpath = os.path.join(out_dir, f"{name}.json")
+            costs[name] = ba.load_measured(jpath, jpath[:-5] + ".log") or {}
+    else:
         if not os.path.exists(ba.path_of(root, unsorted)) and not run_step(
-            "giraffe", giraffe_command(gsid, reads, keys, kff, unsorted, a.threads), root, VG_IMAGE, out_dir, costs
+            "giraffe",
+            giraffe_command(gsid, reads, keys, kff, unsorted, a.threads),
+            root,
+            VG_IMAGE,
+            out_dir,
+            costs,
+            force=True,
         ):
             return 1
-        if not run_step("postprocess", postprocess_command(unsorted, bam, a.threads), root, a.image, out_dir, costs):
+        costs.setdefault("giraffe", ba.load_measured(os.path.join(out_dir, "giraffe.json"), "") or {})
+        # A new giraffe BAM makes every call and score made from the old one stale, including _mq5 links.
+        for _, aligner, suffix, _, _, _ in CONFIGS + MAPQ5_CONFIGS:
+            if aligner == "giraffe":
+                remove_downstream(root, f"{a.base}_{suffix}")
+                if suffix != "giraffe" and os.path.exists(ba.path_of(root, f"alignments/{a.base}_{suffix}.bam")):
+                    os.remove(ba.path_of(root, f"alignments/{a.base}_{suffix}.bam"))
+        if not run_step(
+            "postprocess",
+            postprocess_command(unsorted, bam, a.threads),
+            root,
+            a.image,
+            out_dir,
+            costs,
+            force=True,
+        ):
             return 1
         os.remove(ba.path_of(root, unsorted))
-    for name in ("giraffe", "postprocess"):
-        costs.setdefault(
-            name, ba.load_measured(os.path.join(out_dir, f"{name}.json"), os.path.join(out_dir, f"{name}.log")) or {}
-        )
     bwamem2 = ba.load_json(ba.path_of(root, f"benchmarks/aligners_{a.base}/align_bwamem2.json")) or {}
 
     # 4. calls, 5. hap.py
@@ -357,8 +412,9 @@ def main(argv=None):
     rows = []
     for label, aligner, suffix, caller, env, dv_memory in configs:
         sid = f"{a.base}_{suffix}"
-        src_bam = ba.path_of(root, f"alignments/{gsid if aligner == 'giraffe' else msid}.bam")
-        link_or_copy(src_bam, ba.path_of(root, f"alignments/{sid}.bam"))
+        source_sid, source = (gsid, ba.path_of(root, bam)) if aligner == "giraffe" else (msid, msid_alignment)
+        if sid != source_sid:  # an _mq5 configuration: the same alignment under its own sample name
+            link_or_copy(source, ba.path_of(root, f"alignments/{sid}.{source.rsplit('.', 1)[-1]}"))
         env, dv_memory = caller_settings(caller, env, dv_memory, a.pg_shards, a.pg_memory)
         cpath = os.path.join(out_dir, f"calls_{suffix}_{caller}.json")
         if not os.path.exists(run_local.vcf_path(root, caller, sid)):

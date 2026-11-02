@@ -112,7 +112,14 @@ def test_run_caller_sets_and_restores_deepvariant_env(monkeypatch):
     monkeypatch.setattr(run_local, "main", fake_main)
     assert bg.run_caller("/r", "S_giraffe", "ref.fa", "pangenome", bg.PANGENOME_ENV, "14g") == 0
     assert seen["env"]["DEEPVARIANT_SHARDS"] == "6" and "batch_size=256" in seen["env"]["DEEPVARIANT_EXTRA_ARGS"]
-    assert seen["args"][-4:] == ["--caller", "pangenome", "--skip-to-variants", "--dv-memory", "14g"][-4:]
+    assert seen["args"][seen["args"].index("--caller") :] == [
+        "--caller",
+        "pangenome",
+        "--skip-to-variants",
+        "--dv-memory",
+        "14g",
+    ]
+    assert seen["args"][:6] == ["--root", "/r", "--sample", "S_giraffe", "--reference", "ref.fa"]
     assert os.environ["DEEPVARIANT_SHARDS"] == "16" and "DEEPVARIANT_EXTRA_ARGS" not in os.environ
 
 
@@ -181,3 +188,75 @@ def test_bwa_mem2_cost():
         "align_peak_mib": 7593,
     }
     assert bg.bwa_mem2_cost({}) == {"align_wall_s": "", "align_peak_mib": ""}
+
+
+def test_sort_settings_match_the_align_stage():
+    import tasks
+
+    assert (bg.SORT_THREADS, bg.SORT_MEMORY) == (tasks.SORT_MAX_THREADS, tasks.SORT_MEMORY_PER_THREAD)
+    script = bg.postprocess_command("alignments/u.bam", "alignments/S.bam", 16)[-1]
+    assert f"samtools sort -u -@ {bg.SORT_THREADS} -m {bg.SORT_MEMORY}" in script
+
+
+def test_alignment_path_prefers_cram_like_the_callers(tmp_path):
+    import benchmark_aligners as ba
+    import tasks
+
+    assert ba.ALIGNMENT_FORMS == tasks.ALIGNMENT_FORMS
+    (tmp_path / "alignments").mkdir()
+    assert ba.alignment_path(str(tmp_path), "S") is None
+    (tmp_path / "alignments" / "S.bam").write_bytes(b"b")
+    assert ba.alignment_path(str(tmp_path), "S").endswith("S.bam")
+    (tmp_path / "alignments" / "S.cram").write_bytes(b"c")
+    assert ba.alignment_path(str(tmp_path), "S").endswith("S.cram")
+
+
+def test_link_or_copy_refreshes_a_stale_link(tmp_path):
+    src, dest = tmp_path / "a.bam", tmp_path / "a_mq5.bam"
+    src.write_bytes(b"old")
+    bg.link_or_copy(str(src), str(dest))
+    assert dest.read_bytes() == b"old"
+    bg.link_or_copy(str(src), str(dest))  # unchanged: kept
+    src.unlink()
+    src.write_bytes(b"new alignment")  # regenerated: a new file, as mv of a .part does
+    bg.link_or_copy(str(src), str(dest))
+    assert dest.read_bytes() == b"new alignment"
+
+
+def test_remove_downstream_clears_calls_and_scores(tmp_path):
+    root = str(tmp_path)
+    for caller in ("deepvariant", "pangenome"):
+        path = run_local.vcf_path(root, caller, "S_giraffe")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        open(path, "wb").close()
+    (tmp_path / "benchmarks" / "S_giraffe").mkdir(parents=True)
+    bg.remove_downstream(root, "S_giraffe")
+    assert not os.path.exists(run_local.vcf_path(root, "pangenome", "S_giraffe"))
+    assert not (tmp_path / "benchmarks" / "S_giraffe").exists()
+    bg.remove_downstream(root, "S_giraffe")  # nothing left: no error
+
+
+def test_run_step_reruns_when_its_output_is_gone(tmp_path, monkeypatch):
+    import benchmark_aligners as ba
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    ba.save_json(str(out_dir / "kmc.json"), {"wall_s": 37.0})
+    calls = []
+    monkeypatch.setattr(ba, "run_measured", lambda *args, **kw: calls.append(args) or (0, 40.0, {}))
+    (out_dir / "kmc.log").write_text("")
+    results = {}
+    (tmp_path / "pangenome").mkdir()
+    (tmp_path / "pangenome" / "S.kff").write_bytes(b"k")
+    assert bg.run_step("kmc", ["x"], str(tmp_path), "img", str(out_dir), results, outputs=["pangenome/S.kff"])
+    assert calls == [] and results["kmc"]["wall_s"] == 37.0  # saved and output present: reused
+    (tmp_path / "pangenome" / "S.kff").unlink()
+    assert bg.run_step("kmc", ["x"], str(tmp_path), "img", str(out_dir), results, outputs=["pangenome/S.kff"])
+    assert len(calls) == 1 and results["kmc"]["wall_s"] == 40.0  # output gone: rerun
+    assert bg.run_step("kmc", ["x"], str(tmp_path), "img", str(out_dir), results, force=True)
+    assert len(calls) == 2
+
+
+def test_graph_index_cost_is_blank_when_not_measured():
+    assert bg.graph_index_seconds({}) == ""
+    assert bg.graph_index_seconds({"index_dist": {"wall_s": 39.0}, "index_hapl": {"wall_s": 297.04}}) == 336.0
