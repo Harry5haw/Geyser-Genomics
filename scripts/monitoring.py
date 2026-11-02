@@ -172,14 +172,15 @@ def pipeline_widgets(region: str, state_machine_arn: str) -> list:
             for name, label in (("ExecutionsStarted", "Started"), ("ExecutionsSucceeded", "Succeeded"),
                                 ("ExecutionsFailed", "Failed"), ("ExecutionsTimedOut", "Timed out"),
                                 ("ExecutionsAborted", "Aborted"))]
-    # ExecutionTime is in milliseconds and is a single series, so percentiles are real here.
+    # ExecutionTime is in milliseconds and is a single series, so percentiles are real here. It has no
+    # status dimension: failed runs count too, so early failures pull the percentiles down.
     times = []
     for stat in ("p50", "p95"):
         times.append(["AWS/States", "ExecutionTime", *dim, {"id": f"ms_{stat}", "stat": stat, "visible": False}])
-        times.append([{"expression": f"ms_{stat}/1000", "id": f"s_{stat}", "label": f"End-to-end {stat}"}])
+        times.append([{"expression": f"ms_{stat}/1000", "id": f"s_{stat}", "label": f"End-to-end {stat} (all runs)"}])
     return [
         _metric_widget("Pipeline runs per day (Step Functions)", runs, region, view="bar", period=86400),
-        _metric_widget("End-to-end pipeline time, seconds (Step Functions ExecutionTime)", times, region,
+        _metric_widget("End-to-end pipeline time, seconds (all runs, failed ones included)", times, region,
                        period=3600, y_label="seconds"),
     ]
 
@@ -190,7 +191,6 @@ def alarm_widget(alarm_arns) -> dict:
             "properties": {"title": "Alarm status", "alarms": list(alarm_arns)}}
 
 
-DEFAULT_JOB_QUEUE = "geyser-job-queue"                          # infrastructure/main.tf
 DEFAULT_SFN_LOG_GROUP = "/aws/vendedlogs/states/geyser-sfn-dev"  # infrastructure/step_functions.tf
 BATCH_LOG_GROUP = "/aws/batch/job"                               # Batch default (no logConfiguration set)
 
@@ -202,8 +202,7 @@ def _log_group_url(region: str, name: str) -> str:
 
 
 def console_links(region: str = DEFAULT_REGION, *, state_machine_arn: str = None, bucket: str = None,
-                  trigger_function_name: str = None, job_queue: str = DEFAULT_JOB_QUEUE,
-                  sfn_log_group: str = DEFAULT_SFN_LOG_GROUP) -> list:
+                  trigger_function_name: str = None, sfn_log_group: str = DEFAULT_SFN_LOG_GROUP) -> list:
     """(label, url) pairs for the AWS console pages that matter when looking into a run.
     Built only from names and the ARNs passed in; nothing account-specific is stored here."""
     function = trigger_function_name or DEFAULT_TRIGGER_FUNCTION
@@ -213,7 +212,7 @@ def console_links(region: str = DEFAULT_REGION, *, state_machine_arn: str = None
         links.append(("Pipeline runs (Step Functions)",
                       f"{console}/states/home?region={region}#/statemachines/view/{quote(state_machine_arn, safe='')}"))
     links += [
-        (f"Batch jobs ({job_queue})", f"{console}/batch/home?region={region}#jobs"),
+        ("Batch jobs", f"{console}/batch/home?region={region}#jobs"),
         ("Trigger Lambda", f"{console}/lambda/home?region={region}#/functions/{function}?tab=monitoring"),
         ("Batch job logs", _log_group_url(region, BATCH_LOG_GROUP)),
         ("Step Functions error logs", _log_group_url(region, sfn_log_group)),
@@ -234,7 +233,9 @@ def build_dashboard(region: str = DEFAULT_REGION, namespace: str = DEFAULT_NAMES
     _check_schema(schema)
     groups = resolve_groups(groups)
     duration_note = ("p50 and p95 of each stage" if schema == "aggregated" else
-                     "mean and max across samples (p50/p95 need the aggregated schema; see README)")
+                     "mean and max across samples (p50/p95 need the aggregated schema; see README). "
+                     "SEARCH reads at most 500 samples per widget, so over 500 samples in the window "
+                     "these and the failure counts cover only some of them")
     links = console_links(region, state_machine_arn=state_machine_arn) if links is None else links
     link_line = " · ".join(f"[{label}]({url})" for label, url in links)
     widgets = [_text_widget(

@@ -189,3 +189,11 @@ def test_query_cli_prints_failure_reason(capsys):
     query_pipeline_duration.main(["--state-machine-arn", SFN_ARN, "--status", "FAILED", "--stages"],
                                  sfn_client=sfn, batch_client=batch)
     assert "reason: Essential container in task exited (exit 1)" in capsys.readouterr().out
+
+
+def test_fargate_cost_counts_ephemeral_storage_above_the_free_20_gib():
+    prices = sb.Prices(vcpu_hour=1.0, gb_hour=0.5, storage_gb_hour=0.01)
+    assert sb.fargate_cost(3600, 1, 1, prices, storage_gb=20) == pytest.approx(1.5)
+    assert sb.fargate_cost(3600, 1, 1, prices, storage_gb=200) == pytest.approx(1.5 + 180 * 0.01)
+    job = {"Container": {"ResourceRequirements": FARGATE, "EphemeralStorage": {"SizeInGiB": 120}}}
+    assert sb.ephemeral_storage_gb(job) == 120 and sb.ephemeral_storage_gb({"Container": {}}) is None

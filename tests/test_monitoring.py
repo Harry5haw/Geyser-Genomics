@@ -263,6 +263,7 @@ def test_dashboard_deploy_calls_put_dashboard_with_account_from_sts(monkeypatch)
         monkeypatch.delenv(var, raising=False)
     client, sts = mock.Mock(), mock.Mock()
     client.put_dashboard.return_value = {"DashboardValidationMessages": []}
+    client.describe_alarms.return_value = {"MetricAlarms": [{"AlarmName": "geyser-dev-trigger-lambda-errors"}]}
     sts.get_caller_identity.return_value = {"Account": "000000000000"}
     assert deploy_dashboard.main(["--dashboard-name", "d1"], client=client, sts_client=sts) == 0
     kwargs = client.put_dashboard.call_args.kwargs
@@ -382,3 +383,15 @@ def test_dashboard_cli_link_options(capsys, monkeypatch):
     deploy_dashboard.main(["--dry-run", "--bucket", "my-bucket", "--trigger-function-name", "geyser-sfn-trigger-x"])
     header = json.loads(capsys.readouterr().out)["widgets"][0]["properties"]["markdown"]
     assert "s3/buckets/my-bucket" in header and "#/functions/geyser-sfn-trigger-x" in header
+
+
+def test_dashboard_leaves_out_alarms_that_do_not_exist(monkeypatch, capsys):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    client, sts = mock.Mock(), mock.Mock()
+    client.put_dashboard.return_value = {}
+    client.describe_alarms.return_value = {"MetricAlarms": []}
+    assert deploy_dashboard.main(["--alarm-prefix", "geyser-test"], client=client, sts_client=sts) == 0
+    assert client.describe_alarms.call_args.kwargs["AlarmNames"] == ["geyser-test-trigger-lambda-errors"]
+    assert '"alarm"' not in client.put_dashboard.call_args.kwargs["DashboardBody"]
+    assert "does not exist" in capsys.readouterr().err
+    sts.get_caller_identity.assert_not_called()

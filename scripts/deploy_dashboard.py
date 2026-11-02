@@ -61,7 +61,6 @@ def parse_args(argv=None):
     p.add_argument("--trigger-function-name",
                    default=os.environ.get("TRIGGER_FUNCTION_NAME", monitoring.DEFAULT_TRIGGER_FUNCTION),
                    help="Trigger Lambda name for its console links")
-    p.add_argument("--job-queue", default=monitoring.DEFAULT_JOB_QUEUE, help="Batch job queue name (link label)")
     p.add_argument("--sfn-log-group", default=monitoring.DEFAULT_SFN_LOG_GROUP,
                    help="Step Functions log group for its console link")
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
@@ -81,14 +80,29 @@ def resolve_account_id(args, sts_client=None) -> str:
     return sts_client.get_caller_identity()["Account"]
 
 
+def existing_alarms(client, names) -> list:
+    """The alarms among `names` that exist, so the status widget never points at a missing one."""
+    found = {a["AlarmName"] for a in client.describe_alarms(AlarmNames=list(names)).get("MetricAlarms", [])}
+    for name in names:
+        if name not in found:
+            print(f"NOTE: alarm '{name}' does not exist (run deploy_alarms.py first, same --prefix); "
+                  "left off the dashboard.", file=sys.stderr)
+    return [n for n in names if n in found]
+
+
 def main(argv=None, client=None, sts_client=None) -> int:
     args = parse_args(argv)
     monitoring.check_arn(args.state_machine_arn, "states", "--state-machine-arn")
+    if client is None and not args.dry_run:
+        import boto3
+        client = boto3.client("cloudwatch", region_name=args.region)
     alarm_arns = None
     if not args.no_alarm_widget:
-        account_id = resolve_account_id(args, sts_client)
-        alarm_arns = [monitoring.alarm_arn(args.region, account_id, name)
-                      for name in monitoring.alarm_names(args.alarm_prefix)]
+        names = monitoring.alarm_names(args.alarm_prefix)
+        if not args.dry_run:
+            names = existing_alarms(client, names)
+        account_id = resolve_account_id(args, sts_client) if names else None
+        alarm_arns = [monitoring.alarm_arn(args.region, account_id, name) for name in names]
     try:
         body = monitoring.build_dashboard(
             args.region, args.namespace, state_machine_arn=args.state_machine_arn, schema=args.schema,
@@ -96,7 +110,7 @@ def main(argv=None, client=None, sts_client=None) -> int:
             alarm_arns=alarm_arns,
             links=monitoring.console_links(
                 args.region, state_machine_arn=args.state_machine_arn, bucket=args.bucket,
-                trigger_function_name=args.trigger_function_name, job_queue=args.job_queue,
+                trigger_function_name=args.trigger_function_name,
                 sfn_log_group=args.sfn_log_group))
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}")
@@ -106,9 +120,6 @@ def main(argv=None, client=None, sts_client=None) -> int:
     if args.dry_run:
         print(monitoring.to_json(body))
         return 0
-    if client is None:
-        import boto3
-        client = boto3.client("cloudwatch", region_name=args.region)
     return deploy(client, args.dashboard_name, body)
 
 

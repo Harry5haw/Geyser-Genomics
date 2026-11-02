@@ -26,7 +26,7 @@ KEYS = (full_sample("S1") + ["variants_deepvariant/S1.vcf.gz"]
         + ["raw_reads/S2.fastq.gz"]                                                    # not started
         + ["raw_reads/S3.fastq.gz", "decompressed/S3.fastq", "qc_reports/S3_fastqc.html"]  # stopped after qc
         + ["raw_reads/S4.fq.gz", "raw_reads/notes.txt", "raw_reads/sub/S5.fastq.gz", "raw_reads/S7.v2.fastq.gz"]
-        + ["variants/S6.vcf.gz"]                                                       # orphan
+        + ["variants/S6.vcf.gz", "variants_pangenome/S9.vcf.gz"]                       # orphans
         + ["metrics/metrics.jsonl"])
 
 
@@ -38,8 +38,9 @@ def test_statuses_and_upload_problems(tmp_path):
     result = reconcile.reconcile(make_bucket(tmp_path, KEYS).list_keys(""))
     rows = by_sample(result)
     assert {s: r["status"] for s, r in rows.items()} == {
-        "S1": "complete", "S2": "not started", "S3": "incomplete", "S6": "orphan"}
-    assert rows["S1"]["extra_outputs"] == {"dv": True} and rows["S1"]["problem"] is None
+        "S1": "complete", "S2": "not started", "S3": "incomplete", "S6": "orphan", "S9": "orphan"}
+    assert rows["S1"]["extra_outputs"] == {"dv": True, "pg": False} and rows["S1"]["problem"] is None
+    assert rows["S9"]["extra_outputs"] == {"dv": False, "pg": True}
     assert "last output from 'qc'" in rows["S3"]["note"]
     assert rows["S6"]["problem"] is None  # worth knowing, not a failure
 
@@ -165,5 +166,19 @@ def test_paired_end_report(tmp_path, capsys, monkeypatch):
     make_bucket(tmp_path, paired_sample("P1"))
     assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 0
     out = capsys.readouterr().out
-    assert " P1                      complete     D Q A V ..  paired-end" in out
+    assert " P1                      complete     D Q A V .. ..  paired-end" in out
     assert "1 complete; 0 problem(s)" in out
+
+
+def test_folder_markers_are_not_uploads():
+    result = reconcile.reconcile(["raw_reads/", "raw_reads/sub/"] + full_sample("S1"))
+    assert result["upload_problems"] == [] and result["problem_count"] == 0
+
+
+def test_warns_when_open_runs_are_not_checked(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    make_bucket(tmp_path, full_sample("S1"))
+    reconcile.main(["--local-dir", str(tmp_path)])
+    assert "open runs aren't checked" in capsys.readouterr().err
+    reconcile.main(["--local-dir", str(tmp_path), "--state-machine-arn", SFN_ARN], sfn_client=fake_sfn(["S8", "S8"]))
+    assert "open runs aren't checked" not in capsys.readouterr().err

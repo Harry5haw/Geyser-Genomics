@@ -24,6 +24,8 @@ Sample status
   not started    raw reads only: the trigger didn't fire, or the run failed before writing anything
   orphan         outputs but no raw reads (raw deleted)
 With --state-machine-arn, more than one open run for a sample is flagged: they write the same keys.
+Without it, open runs are not checked, so a sample that is still running shows as not started or
+incomplete: run with the state machine ARN before trusting --fail-on-problems.
 
 Usage:
   python scripts/reconcile.py --local-dir local_bucket
@@ -65,12 +67,15 @@ def load_trigger():
 
 
 def extra_outputs() -> dict:
-    """Optional caller outputs beyond bcftools, keyed by column label. DeepVariant if importable."""
+    """Optional caller outputs beyond bcftools, keyed by column label: DeepVariant (dv) and
+    pangenome-aware DeepVariant (pg), if the DeepVariant module is importable."""
     try:
         from deepvariant_task import deepvariant_keys
     except Exception:  # noqa: BLE001 - the DeepVariant module is optional here
         return {}
-    return {"dv": lambda sample_id: deepvariant_keys(sample_id)["vcf"]}
+    # The pangenome VCF key doesn't depend on which graph was used; any name gives the same key.
+    return {"dv": lambda sample_id: deepvariant_keys(sample_id)["vcf"],
+            "pg": lambda sample_id: deepvariant_keys(sample_id, pangenome="graph.gbz")["vcf"]}
 
 
 def key_patterns(extras: dict) -> list:
@@ -167,7 +172,8 @@ def reconcile(keys, running: Counter = None) -> dict:
     extras = extra_outputs()
 
     upload_problems, samples = [], set()
-    for key in sorted(k for k in keys if k.startswith("raw_reads/")):
+    # Keys ending in "/" are folder markers (the S3 console's "Create folder"), not uploads.
+    for key in sorted(k for k in keys if k.startswith("raw_reads/") and not k.endswith("/")):
         sample_id, problem = raw_upload_problem(trigger, key)
         if problem:
             upload_problems.append(problem)
@@ -225,7 +231,8 @@ def print_report(result: dict) -> None:
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} "
               f"{note}")
-    print("Outputs: D decompressed, Q QC report, A alignment, V VCF" + (", dv DeepVariant VCF" if extra_labels else "")
+    print("Outputs: D decompressed, Q QC report, A alignment, V VCF"
+          + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
           + " (paired-end: D and Q need both mates)")
     if result["upload_problems"]:
         print("\nUpload problems:")
@@ -264,6 +271,9 @@ def main(argv=None, storage=None, sfn_client=None) -> int:
             import boto3
             sfn_client = boto3.client("stepfunctions", region_name=args.region)
         running = open_runs(sfn_client, args.state_machine_arn)
+    else:
+        print("NOTE: no --state-machine-arn/SFN_ARN, so open runs aren't checked: a sample still being "
+              "processed shows as 'not started' or 'incomplete'.", file=sys.stderr)
 
     result = reconcile(storage.list_keys(""), running)
     if args.json:

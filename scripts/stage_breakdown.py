@@ -23,6 +23,9 @@ from dataclasses import dataclass
 
 DEFAULT_VCPU_HOUR_USD = 0.04656
 DEFAULT_GB_HOUR_USD = 0.00511
+# Ephemeral storage above the free 20 GiB; us-east-1 list price, check the eu-west-2 figure.
+DEFAULT_STORAGE_GB_HOUR_USD = 0.000111
+FARGATE_FREE_STORAGE_GB = 20
 FARGATE_MINIMUM_SECONDS = 60
 BATCH_TASK_EVENTS = {
     "TaskSubmitted": ("taskSubmittedEventDetails", "output"),
@@ -36,6 +39,7 @@ BATCH_TASK_EVENTS = {
 class Prices:
     vcpu_hour: float = DEFAULT_VCPU_HOUR_USD
     gb_hour: float = DEFAULT_GB_HOUR_USD
+    storage_gb_hour: float = DEFAULT_STORAGE_GB_HOUR_USD
 
 
 def _get(d, name, default=None):
@@ -117,11 +121,23 @@ def resources(job: dict) -> tuple:
     return num("VCPU"), (memory_mb / 1024 if memory_mb is not None else None), num("GPU") or 0
 
 
-def fargate_cost(run_seconds, vcpu, memory_gb, prices: Prices = Prices()):
+def ephemeral_storage_gb(job: dict):
+    """The job's Fargate ephemeral storage in GiB, or None if it uses the default 20 GiB."""
+    size = _get(_get(_get(job, "Container", {}), "EphemeralStorage", {}) or {}, "SizeInGiB")
+    try:
+        return float(size) if size is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def fargate_cost(run_seconds, vcpu, memory_gb, prices: Prices = Prices(), storage_gb=None):
+    """vCPU + memory, plus ephemeral storage beyond the free 20 GiB, for the billed time (1 min minimum)."""
     if run_seconds is None or vcpu is None or memory_gb is None:
         return None
     billed_hours = max(run_seconds, FARGATE_MINIMUM_SECONDS) / 3600
-    return billed_hours * (vcpu * prices.vcpu_hour + memory_gb * prices.gb_hour)
+    extra_storage = max(0.0, (storage_gb or 0) - FARGATE_FREE_STORAGE_GB)
+    return billed_hours * (vcpu * prices.vcpu_hour + memory_gb * prices.gb_hour
+                           + extra_storage * prices.storage_gb_hour)
 
 
 def _seconds(start_ms, end_ms):
@@ -159,7 +175,7 @@ def stage_row(stage: str, job: dict, prices: Prices = Prices()) -> dict:
         "vcpu": vcpu,
         "memory_gb": memory_gb,
         "gpus": gpus,
-        "cost_usd": None if gpus else fargate_cost(run, vcpu, memory_gb, prices),
+        "cost_usd": None if gpus else fargate_cost(run, vcpu, memory_gb, prices, ephemeral_storage_gb(job)),
         "attempts": len(attempts) if isinstance(attempts, list) else None,
         "reason": failure_reason(job),
         "log_stream": _get(_get(job, "Container", {}), "LogStreamName"),
