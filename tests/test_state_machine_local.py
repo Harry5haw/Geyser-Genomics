@@ -83,7 +83,7 @@ TEST_CASES = {
     },
     "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
     "RegionsUnreadable": {"Read_Regions": "NoSuchKey", "Notify_Failure": "Published"},
-    "OneShardFails": {"Call_Shard": "SecondShardFails", "Notify_Failure": "Published"},
+    "ShardFails": {"Call_Shard": "ShardsFail", "Notify_Failure": "Published"},
 }
 TEST_CASES = {
     name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **SCATTER, **case}
@@ -108,10 +108,13 @@ MOCK_CONFIG = {
             "0-3": {"Throw": {"Error": "S3.NoSuchKeyException", "Cause": "The specified key does not exist."}}
         },
         "ShardsOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
-        "SecondShardFails": {
-            "0": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}},
-            "1": {"Throw": {"Error": "States.TaskFailed", "Cause": "Essential container in task exited (exit code 1)"}},
-            "2-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}},
+        # Every shard fails: Step Functions Local doesn't count mocked calls reliably across concurrent Map
+        # iterations, so "the second call fails" usually never happened. The point (a failed shard stops the
+        # run before the merge) is the same.
+        "ShardsFail": {
+            "0-99": {
+                "Throw": {"Error": "States.TaskFailed", "Cause": "Essential container in task exited (exit code 1)"}
+            }
         },
     },
 }
@@ -334,7 +337,7 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
         for e in events
         if e.get("previousEventId") == started["id"] and "stateEnteredEventDetails" in e
     }
-    assert heads == {"Prepare_QC_Command", "Prepare_Align_Command", "Prepare_Plan_Command"}
+    assert heads == {"Prepare_QC_Command", "Prepare_Align_Command"}
     for task in ("Quality_Control", "Align_Genome", "Call_Variants"):
         assert ancestor(by_id, state_entered(events, task), "ParallelStateStarted") is not None
     variants = state_entered(events, "Call_Variants")
@@ -345,8 +348,10 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
     assert output["parallel_output"] == {
         "qc": {"JobId": "job-ok", "Status": "SUCCEEDED"},
         "align": {"JobId": "job-ok", "Status": "SUCCEEDED"},
-        "plan": {"JobId": "job-ok", "Status": "SUCCEEDED"},
     }
+    # The planner runs after the Parallel state, as its own step.
+    assert ancestor(by_id, state_entered(events, "Plan_Regions"), "ParallelStateExited") is not None
+    assert output["plan_output"] == {"JobId": "job-ok", "Status": "SUCCEEDED"}
     assert output["plan"] == {"regions": REGIONS}
     assert output["srr_id"] == "S1" and output["reference_name"] == "chr20.fa"
 
@@ -526,7 +531,7 @@ def test_the_map_runs_at_most_the_configured_shards_at_once():
     )
 
 
-@pytest.mark.parametrize("case", ["PlanFails", "RegionsUnreadable", "OneShardFails"])
+@pytest.mark.parametrize("case", ["PlanFails", "RegionsUnreadable", "ShardFails"])
 def test_a_failed_planner_read_or_shard_notifies_and_never_merges(sfn, case):
     # A missing part would make the merge fail anyway, but it must not even start: the run ends at
     # Notify_Failure -> Pipeline_Failed, and nothing claims a VCF for this run.

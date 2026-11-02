@@ -68,9 +68,9 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
 
   lifecycle {
     precondition {
-      # The region planner runs with QC's size, alongside QC and align.
-      condition     = 2 * var.stage_resources["qc"].vcpu + var.stage_resources["align"].vcpu <= var.fargate_max_vcpus
-      error_message = "QC, the region planner (QC's size) and align run at the same time: 2 x qc + align vCPUs must fit in fargate_max_vcpus."
+      # The region planner runs with QC's size after QC, in the same branch, so never alongside QC.
+      condition     = var.stage_resources["qc"].vcpu + var.stage_resources["align"].vcpu <= var.fargate_max_vcpus
+      error_message = "QC (then the region planner, at QC's size) and align run at the same time: their vCPUs together must fit in fargate_max_vcpus."
     }
     precondition {
       condition     = var.variants_max_concurrency * var.stage_resources["variants"].vcpu <= var.fargate_max_vcpus
