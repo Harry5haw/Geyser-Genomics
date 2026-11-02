@@ -464,6 +464,33 @@ def step_commands(events):
     return steps
 
 
+def planned_steps(cmd):
+    """Every step the wrapper will run for cmd, from `<cmd> --dry_run=true` (both wrappers print the commands in
+    the same banner + 'time ...' form as a real run, without running them). [] if that fails: then only a run that
+    already printed postprocess_variants can be checkpointed."""
+    try:
+        out = subprocess.run(list(cmd) + ["--dry_run=true"], capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    lines = (out.stdout + "\n" + out.stderr).splitlines()
+    return step_commands([(0.0, line) for line in lines]) if out.returncode == 0 else []
+
+
+def remaining_steps(started, plan):
+    """The steps a retry must run, from RESUME_FROM on, or None if they are not known.
+
+    The plan (planned_steps) is used when the steps that did run are exactly its first entries; otherwise only the
+    run's own output, and only if it already shows the last step (a run stopped in call_variants never prints
+    postprocess_variants, so its own output alone is not enough)."""
+    names = [n for n, _ in plan]
+    if RESUME_FROM in names and started == plan[: len(started)]:
+        return plan[names.index(RESUME_FROM) :]
+    live = [n for n, _ in started]
+    if RESUME_FROM in live and live[-1] == "postprocess_variants":
+        return started[live.index(RESUME_FROM) :]
+    return None
+
+
 def make_examples_finished(steps):
     """True if the wrapper got past make_examples: it starts the next step only after one has succeeded."""
     names = [name for name, _ in steps]
@@ -533,7 +560,7 @@ def retire(prefix, why):
         print(f"[geyser] WARNING: could not retire the checkpoint: {err}", flush=True)
 
 
-def save_checkpoint(prefix, events, wd, intermediate, fingerprint):
+def save_checkpoint(prefix, events, wd, intermediate, fingerprint, plan=()):
     """Keep make_examples' intermediate files and the remaining steps, if the wrapper got past make_examples.
     Best effort: never hides the original failure. Returns True if a checkpoint was saved."""
     steps = step_commands(events)
@@ -543,10 +570,12 @@ def save_checkpoint(prefix, events, wd, intermediate, fingerprint):
     if fingerprint is None:
         print("[geyser] no checkpoint: could not tell the DeepVariant version", flush=True)
         return False
+    remaining = remaining_steps(steps, list(plan))
+    if remaining is None:
+        print("[geyser] no checkpoint: the remaining step commands are not known (no --dry_run plan)", flush=True)
+        return False
     try:
         retire(prefix, "being replaced")  # first: an older manifest must never describe the files about to be written
-        names = [n for n, _ in steps]
-        remaining = steps[names.index(RESUME_FROM) :]
         files = sorted(
             f
             for f in os.listdir(intermediate)
@@ -590,6 +619,8 @@ def load_checkpoint(prefix, wd, intermediate, fingerprint):
             changed = sorted(k for k in fingerprint or {} if old.get(k) != fingerprint[k]) or ["version unknown"]
             print(f"[geyser] checkpoint under {storage().describe(prefix)} not used: {', '.join(changed)} differ")
             return None
+        if not manifest["steps"] or manifest["steps"][-1][0] != "postprocess_variants":
+            raise ValueError("its steps do not end with postprocess_variants, so it could never write the VCF")
         for name in manifest["files"]:
             storage().download(prefix + name, os.path.join(intermediate, name))
         old_wd = manifest["work_dir"]
@@ -677,15 +708,18 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             run_fingerprint(cmd[0], bam, ref, graph, shards, model_type, extra_args) if checkpoints_enabled() else None
         )
         resumed = load_checkpoint(prefix, wd, intermediate, fingerprint) if checkpoints_enabled() else None
+        # The wrapper's own plan of all its steps, so a run stopped in call_variants can still be resumed
+        # (its output never shows the postprocess_variants command).
+        plan = planned_steps(cmd) if checkpoints_enabled() and not resumed else []
         try:
             code, events, end_time = run_steps(resumed, limits) if resumed else run_streaming(cmd, limits=limits)
         except WrapperStopped as err:
             if checkpoints_enabled() and not resumed:
-                save_checkpoint(prefix, err.events, wd, intermediate, fingerprint)
+                save_checkpoint(prefix, err.events, wd, intermediate, fingerprint, plan)
             raise
         if code != 0:
             if checkpoints_enabled() and not resumed:
-                save_checkpoint(prefix, events, wd, intermediate, fingerprint)
+                save_checkpoint(prefix, events, wd, intermediate, fingerprint, plan)
             raise RuntimeError(f"{'resumed steps' if resumed else os.path.basename(cmd[0])} exited with code {code}")
 
         timings = parse_step_timings(events, end_time)

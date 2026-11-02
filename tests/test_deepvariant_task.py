@@ -541,27 +541,31 @@ def option(cmd, name):
     return next(c.split("=", 1)[1] for c in cmd if c.startswith(f"--{name}="))
 
 
+def wrapper_events(cmd):
+    """Everything a wrapper prints for its three steps, with this run's paths (what --dry_run=true lists)."""
+    inter, vcf = option(cmd, "intermediate_results_dir"), option(cmd, "output_vcf")
+    return [
+        (0.0, dv.BANNER),
+        (0.0, f"time seq 0 1 | parallel /opt/deepvariant/bin/make_examples --examples {inter}/make_examples@2.gz"),
+        (9.0, dv.BANNER),
+        (9.0, f"time /opt/deepvariant/bin/call_variants --outfile {inter}/cvo.gz --examples {inter}/x@2.gz"),
+        (10.0, dv.BANNER),
+        (10.0, f"time /opt/deepvariant/bin/postprocess_variants --infile {inter}/cvo.gz --outfile {vcf}"),
+    ]
+
+
 def failing_wrapper(stopped=False, reach_call_variants=True):
-    """A fake wrapper that writes make_examples' outputs, starts call_variants with this run's paths and fails."""
+    """A fake wrapper that writes make_examples' outputs, then fails or is stopped inside call_variants, as a real
+    one does: so it never prints the postprocess_variants command (that comes from the --dry_run plan)."""
 
     def run(cmd, **_):
         inter = option(cmd, "intermediate_results_dir")
         for name in ("make_examples.tfrecord-00000-of-00002.gz", "make_examples.tfrecord-00001-of-00002.gz"):
             with open(f"{inter}/{name}", "wb") as fh:
                 fh.write(b"examples")
-        events = [
-            (0.0, dv.BANNER),
-            (0.0, f"time seq 0 1 | parallel /opt/deepvariant/bin/make_examples --examples {inter}/make_examples@2.gz"),
-        ]
+        events = wrapper_events(cmd)[: 4 if reach_call_variants else 2]
         if reach_call_variants:
-            vcf = option(cmd, "output_vcf")
-            events += [
-                (9.0, dv.BANNER),
-                (9.0, f"time /opt/deepvariant/bin/call_variants --outfile {inter}/cvo.gz --examples {inter}/x@2.gz"),
-                (9.0, "ResourceExhaustedError: OOM"),
-                (10.0, dv.BANNER),
-                (10.0, f"time /opt/deepvariant/bin/postprocess_variants --infile {inter}/cvo.gz --outfile {vcf}"),
-            ]
+            events.append((9.5, "ResourceExhaustedError: OOM"))
         if stopped:
             raise dv.WrapperStopped("run_deepvariant reported a fatal error", events)
         return 1, events, 11.0
@@ -586,7 +590,9 @@ def replaying_steps(seen):
 
 @pytest.fixture
 def versioned(monkeypatch):
+    """A known DeepVariant version, and the wrapper's --dry_run plan for the fake wrapper's steps."""
     monkeypatch.setattr(dv, "wrapper_version", lambda wrapper: "1.10.0")
+    monkeypatch.setattr(dv, "planned_steps", lambda cmd: dv.step_commands(wrapper_events(cmd)))
 
 
 def manifest(root, caller="deepvariant"):
@@ -769,3 +775,50 @@ def test_replayed_steps_share_one_overall_time_budget(monkeypatch):
     code, events, _ = dv.run_steps(steps, dv.WrapperLimits(timeout=10))
     assert code == 0 and seen[0] <= 10 and seen[1] < seen[0] - 1  # each step gets what is left
     assert [n for n, _ in dv.step_commands(events)] == []  # 'cv'/'pp' are not step binaries: nothing parsed
+
+
+def test_remaining_steps_come_from_the_plan_when_the_run_matches_it():
+    plan = [("make_examples", "me"), ("call_variants", "cv"), ("postprocess_variants", "pp")]
+    started = plan[:2]  # stopped inside call_variants: postprocess never printed
+    assert dv.remaining_steps(started, plan) == plan[1:]
+    assert dv.remaining_steps(started, []) is None  # no plan: commands unknown
+    assert dv.remaining_steps([("make_examples", "other"), ("call_variants", "cv")], plan) is None  # plan differs
+    assert dv.remaining_steps(plan, []) == plan[1:]  # the run itself got to postprocess
+
+
+def test_no_checkpoint_without_a_plan_when_stopped_in_call_variants(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "planned_steps", lambda cmd: [])
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper(stopped=True))
+    with pytest.raises(dv.WrapperStopped):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert manifest(local_env) is None  # a checkpoint without postprocess_variants could never finish
+
+
+def test_planned_steps_parse_a_dry_run(monkeypatch):
+    class Done:
+        returncode = 0
+        stdout = (
+            "I1102 ... intermediate\n\n***** Running the command:*****\ntime /opt/deepvariant/bin/call_variants --x\n"
+        )
+        stderr = ""
+
+    seen = []
+    monkeypatch.setattr(dv.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or Done())
+    assert dv.planned_steps(["/opt/deepvariant/bin/run_deepvariant", "--ref=r"]) == [
+        ("call_variants", "/opt/deepvariant/bin/call_variants --x")
+    ]
+    assert seen[0][-1] == "--dry_run=true"
+
+
+def test_a_checkpoint_without_postprocess_is_retired_not_replayed(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    path = local_env / "intermediate" / "deepvariant-checkpoints" / "S1" / "deepvariant" / "manifest.json"
+    m = json.loads(path.read_text())
+    m["steps"] = m["steps"][:1]  # only call_variants: what the first version saved for a run stopped in it
+    path.write_text(json.dumps(m))
+    full = []
+    monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: full.append(cmd) or fake_run(b"x")(cmd))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert full[0][0] == dv.RUN_DEEPVARIANT and manifest(local_env)["retired"].startswith("unusable")
