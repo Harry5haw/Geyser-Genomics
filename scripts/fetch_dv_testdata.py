@@ -18,6 +18,10 @@ Datasets (from DeepVariant's public bucket, https://storage.googleapis.com/deepv
   hg003-30x-chr20          HG003 from the same 30x set and pipeline as hg005-chr20, with the same truth as
                            hg003-chr20. Sample HG003_30x_chr20. The control for HG005: same sequencing, coverage,
                            aligner and reference, so ancestry is what differs.
+  hg003-chr20-vg           The same HG003 35x reads as hg003-chr20, aligned by Google with vg giraffe 1.55.0 to the
+                           whole-genome HPRC v1.1 graph (haplotype sampling, surjected to GRCh38), then cut to chr20
+                           (DeepVariant's pangenome-aware VG case study). 947 MB BAM, same truth as hg003-chr20.
+                           Sample HG003_chr20_vg. Unlike the BWA BAM it has no duplicate marking, as published.
 
 Written with the pipeline's key layout, so the DeepVariant stage runs on it directly:
 
@@ -75,7 +79,7 @@ PANGENOMES = {
         "key": "pangenome/hprc-v1.1-mc-grch38.gbz",
     },
 }
-GRCH38_DATASETS = {"hg003-chr20", "hg003-30x-chr20", "hg005-chr20"}
+GRCH38_DATASETS = {"hg003-chr20", "hg003-chr20-vg", "hg003-30x-chr20", "hg005-chr20"}
 # vg release used by Google's pangenome-aware VG case study.
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"
 # The whole-genome graph marks both references; keep them as references in the chr20 graph too.
@@ -152,6 +156,31 @@ DATASETS = {
                 "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed",
                 13219856,
                 "truth/HG003_chr20.bed",
+                "only:chr20",
+            ),
+        ],
+    },
+    "hg003-chr20-vg": {
+        "sample": "HG003_chr20_vg",
+        "reference": "GRCh38_chr20.fa",
+        "files": [
+            (
+                "vg-case-study/HG003.novaseq.pcr-free.35x.vg-1.55.0.chr20.bam",
+                947058313,
+                "alignments/HG003_chr20_vg.bam",
+                "copy",
+            ),
+            (GRCH38, None, "reference/GRCh38_chr20.fa", "fasta:chr20"),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz",
+                147212428,
+                "truth/HG003_chr20_vg.vcf.gz",
+                "only:chr20",
+            ),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed",
+                13219856,
+                "truth/HG003_chr20_vg.bed",
                 "only:chr20",
             ),
         ],
