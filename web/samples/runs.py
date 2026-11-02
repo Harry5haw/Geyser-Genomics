@@ -71,10 +71,14 @@ def write_run(storage, sample_id: str, record: dict) -> None:
 
 
 def read_all_runs(storage) -> dict:
+    """The worker's records by sample. Other files under runs/ (the stages' provenance record,
+    runs/<id>.provenance.json and its parts) are not worker records: sample IDs have no dots."""
     runs = {}
     for key in storage.list_keys(RUN_PREFIX):
         if key.endswith(".json"):
             sample_id = key[len(RUN_PREFIX):-len(".json")]
+            if not is_valid_sample_id(sample_id):
+                continue
             record = read_run(storage, sample_id)
             if record is not None:
                 runs[sample_id] = record
