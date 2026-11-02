@@ -50,7 +50,8 @@ Both environments scale to zero when idle (`min_vcpus = 0`), and every Batch job
 
 - Budget `geyser-claude-project-cap`: COST, $20, **account-wide** (it also counts the idle teraflow stack
   and S3 storage, which is deliberately conservative), `CUSTOM` period from `2026-11-02_00:00` to
-  `2087-06-14_00:00` (AWS deletes a budget after its end date, so the end is the latest it allows).
+  `2029-12-31_00:00`. AWS caps a custom COST period at 38 months (found when the first apply was rejected)
+  and deletes a budget after its end date, so **renew it before 31 Dec 2029**.
 - **Why CUSTOM (#76):** the first version had to be `ANNUALLY`, because provider 5.100.0 predates the `CUSTOM`
   period AWS added in September 2025. AWS calculated an annual budget's actual spend over the whole calendar
   year, whatever the start date: $352.16 (Jan-Apr 2026), so the $8 action attached the kill switch the moment
