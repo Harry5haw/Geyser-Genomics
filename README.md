@@ -198,7 +198,7 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 | :--- | :--- | :--- |
 | **Reproducible results** | Tools and Python packages pinned exactly, base image pinned by digest; synthetic data with planted mutations as a truth check; a run record per sample | Done. The end-to-end truth check runs on every push. |
 | **No manual steps** | An S3 upload triggers a Lambda, which starts Step Functions | Verified in the cloud (single-end). Paired-end triggering is tested offline. |
-| **Pay only while running** | Batch on Fargate scales to zero, no NAT gateway, budgets | Applied. A small test run costs about $0.006; storage is the remaining idle cost. |
+| **Pay only while running** | Batch on Fargate scales to zero, no NAT gateway, budgets | Applied. Cost per sample, measured on the cloud runs CLOUD005-010 (10k single-end reads or 5k pairs from chr20; three stages): **$0.0066-0.0070**, at Fargate on-demand list prices for eu-west-2 (`query_pipeline_duration.py --stages`, defaults in `scripts/stage_breakdown.py`). Almost all of it is fixed per-job overhead (Fargate bills at least a minute per job). Storage is the remaining idle cost. |
 | **Fail loudly, recover from flaky infrastructure** | Infrastructure-only retries, per-stage and per-run time limits, failures published to SNS | Applied and tested in the cloud: a truncated upload fails once, notifies and ends Failed. |
 | **Scale out** | One execution per sample, QC and alignment in parallel, up to 8 Fargate vCPUs at once | Applied. Splitting one sample's variant calling across jobs is planned (2.0). |
 | **Accessible to non-cloud users** | A web UI for uploading samples and browsing results | Works offline against the local folder. Not deployed. |
