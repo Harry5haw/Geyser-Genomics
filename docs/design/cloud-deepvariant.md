@@ -84,16 +84,39 @@ time = stage + ~6 min cold start: **~29 min on 4 vCPU, ~14 min on 16 vCPU** (est
 
 ## Rollout
 
-1. Push the DeepVariant image: build `app-deepvariant/Dockerfile` (GPU tag) and push it to `geyser-deepvariant:dev-local` once the repository exists. That's ~9.8 GB of upload and about $1/month of ECR storage per kept image.
-2. Plan the draft. Expected:
-   - in place: `gpu_env` (subnets, instance types, launch template, image type), the state machine, the Lambda environment, the Step Functions policy;
+Infra lane order (one infrastructure branch at a time, shared state): the trigger-Lambda slot, then the
+scatter-gather Map state (D), then this branch. Until its turn it stays a draft and is not planned.
+
+1. **Merge main and plan, as `geyser-claude`** (`terraform init -backend-config=backend-dev.hcl`, current
+   tfvars from `~/geyser-secrets`, `-var="image_version=dev-local"`). Expected:
+   - in place: `gpu_env` (subnets, instance types, launch template, image type), the state machine, the
+     Lambda environment, the Step Functions policy;
    - created: ECR repository and lifecycle, launch template, DeepVariant job definition.
-   
-   **Any replace of `gpu_env` or `gpu_queue` stops the plan.** Managed EC2 environments with `BEST_FIT_PROGRESSIVE` can be updated in place, but the plan has to show it.
-3. You apply (the compute-environment change needs your identity) and update the hook's GPU rule.
-4. One checkpoint run with `caller = deepvariant`, started by hand: `aws stepfunctions start-execution` with `{"srr_id", "reference_name", "caller": "deepvariant"}` after uploading a sample. Check the job ran on the GPU queue, on a g6/g5 in the public subnet; that `variants_deepvariant/{id}.vcf.gz` exists; the truth check; the cold start and stage times; and the cost from `query_pipeline_duration.py --stages`.
-5. The fallback is tested offline (Step Functions Local: `DeepVariantFallsBack`, `BothCallersFail`). A cloud check needs a failure that hits DeepVariant only. The simplest is a one-off job-definition revision whose image tag doesn't exist (`deepvariant_image_version = "missing"`; plan, apply, run, revert). The job fails, possibly after Batch's infrastructure retries (whether a failed pull counts as one depends on the status reason Batch reports). Then bcftools takes over and the run ends SUCCEEDED, with `deepvariant_error` in the output. It still costs a few minutes of GPU instance time, because the instance starts before the pull fails. It's optional.
-6. App follow-up (offline PR), then `default_caller = "deepvariant"`.
+
+   **Any replace of `gpu_env` or `gpu_queue` stops the plan.** Managed EC2 environments with
+   `BEST_FIT_PROGRESSIVE` can be updated in place, but the plan has to show it. The plan goes to you for
+   review.
+2. **You apply, as yourself.** The permissions boundary denies compute-environment changes to
+   `geyser-claude` by design, so this apply can't be Claude's. From your own terminal (a `!` command has no
+   stdin for the yes prompt): `AWS_PROFILE=default terraform apply -var-file=terraform.tfvars
+   -var="image_version=dev-local"`, checking that the plan it prints matches the reviewed one before
+   answering yes. No saved plan file.
+3. **Push the DeepVariant image** to the new repository: build `app-deepvariant/Dockerfile` (GPU tag) and
+   push it as `geyser-deepvariant:dev-local`. That's ~9.8 GB of upload and about $1/month of ECR storage
+   per kept image. The repository only exists after step 2.
+4. **You lift the hook's GPU-queue block** (`guard_aws.py` refuses GPU jobs until #43 is applied). Claude
+   drafts the change and its tests in the scratchpad; you copy it in, since Claude may not edit its own
+   guards.
+5. **One GPU checkpoint run** with `caller = deepvariant`, started by hand: `aws stepfunctions
+   start-execution` with `{"srr_id", "reference_name", "caller": "deepvariant"}` after uploading a sample.
+   Check:
+   - the job ran on the GPU queue, on a g6/g5 in the public subnet;
+   - `variants_deepvariant/{id}.vcf.gz` exists, and the truth check passes;
+   - the cold start and stage times;
+   - the cost, from `query_pipeline_duration.py --stages`;
+   - the instance scaled back to zero afterwards.
+6. The fallback is tested offline (Step Functions Local: `DeepVariantFallsBack`, `BothCallersFail`). A cloud check needs a failure that hits DeepVariant only. The simplest is a one-off job-definition revision whose image tag doesn't exist (`deepvariant_image_version = "missing"`; plan, apply, run, revert). The job fails, possibly after Batch's infrastructure retries (whether a failed pull counts as one depends on the status reason Batch reports). Then bcftools takes over and the run ends SUCCEEDED, with `deepvariant_error` in the output. It still costs a few minutes of GPU instance time, because the instance starts before the pull fails. It's optional.
+7. App follow-up (offline PR), then `default_caller = "deepvariant"`.
 
 ## Follow-ups (not in the draft)
 
