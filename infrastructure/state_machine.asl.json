@@ -1,5 +1,5 @@
 {
-  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling. Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
+  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling. Every job gets RUN_NAME = the execution name, which the stages write into the run record (app/provenance.py). Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
   "StartAt": "QC_and_Align",
   "TimeoutSeconds": ${pipeline_timeout_seconds},
   "States": {
@@ -16,6 +16,7 @@
                 "JobName.$": "States.Format('QualityControl-{}-{}', $.srr_id, $$.Execution.Name)",
                 "ContainerOverrides": {
                   "Command.$": "States.Array('python', 'tasks.py', 'qc', $.srr_id)",
+                  "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
                   "ResourceRequirements": [
                     { "Type": "VCPU", "Value": "${qc_vcpu}" },
                     { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
@@ -58,6 +59,7 @@
                 "JobName.$": "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)",
                 "ContainerOverrides": {
                   "Command.$": "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)",
+                  "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
                   "ResourceRequirements": [
                     { "Type": "VCPU", "Value": "${align_vcpu}" },
                     { "Type": "MEMORY", "Value": "${align_memory_mb}" }
@@ -108,6 +110,7 @@
         "JobName.$": "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
           "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)",
+          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
             { "Type": "VCPU", "Value": "${variants_vcpu}" },
             { "Type": "MEMORY", "Value": "${variants_memory_mb}" }

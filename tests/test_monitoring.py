@@ -51,6 +51,13 @@ def test_core_stages_match_timed_stage_names_in_tasks():
     assert [s.task_name for s in monitoring.STAGE_GROUPS["core"]] == timed
 
 
+def test_shard_stage_matches_tasks_py():
+    import tasks
+
+    assert [s.task_name for s in monitoring.STAGE_GROUPS["shards"]] == [tasks.SHARD_METRIC]
+    assert "." not in tasks.SHARD_METRIC  # a timed stage (records failures), not a success-only sub-step
+
+
 def test_deepvariant_stages_match_deepvariant_task():
     names = [s.task_name for s in monitoring.STAGE_GROUPS["deepvariant"]]
     assert names == ["DeepVariant", *deepvariant_task.STEP_METRICS.values()]
