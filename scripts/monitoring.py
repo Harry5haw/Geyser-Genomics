@@ -192,7 +192,10 @@ def alarm_widget(alarm_arns) -> dict:
 
 
 DEFAULT_SFN_LOG_GROUP = "/aws/vendedlogs/states/geyser-sfn-dev"  # infrastructure/step_functions.tf
-BATCH_LOG_GROUP = "/aws/batch/job"                               # Batch default (no logConfiguration set)
+# Terraform-managed, with retention (infrastructure/resilience.tf, #104). Logs from before that
+# change are in the AWS-created groups /aws/batch/job and /aws/lambda/geyser-sfn-trigger.
+BATCH_LOG_GROUP = "/aws/batch/geyser-dev"
+TRIGGER_LOG_GROUP = "/aws/lambda/geyser-sfn-trigger-dev"
 
 
 def _log_group_url(region: str, name: str) -> str:
@@ -216,7 +219,7 @@ def console_links(region: str = DEFAULT_REGION, *, state_machine_arn: str = None
         ("Trigger Lambda", f"{console}/lambda/home?region={region}#/functions/{function}?tab=monitoring"),
         ("Batch job logs", _log_group_url(region, BATCH_LOG_GROUP)),
         ("Step Functions error logs", _log_group_url(region, sfn_log_group)),
-        ("Trigger Lambda logs", _log_group_url(region, f"/aws/lambda/{function}")),
+        ("Trigger Lambda logs", _log_group_url(region, TRIGGER_LOG_GROUP)),
         ("Logs Insights", f"{console}/cloudwatch/home?region={region}#logsV2:logs-insights"),
         ("Alarms", f"{console}/cloudwatch/home?region={region}#alarmsV2:"),
     ]

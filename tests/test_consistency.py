@@ -43,3 +43,16 @@ def test_trigger_and_tasks_agree_on_raw_key_names(trigger):
     for mate in tasks.MATES:
         assert trigger.parse_raw_key(paired[f"raw_{mate}"]) == ("S1", mate)
     assert trigger.mate_key(paired["raw_R1"]) == paired["raw_R2"]
+
+
+def test_dashboard_log_links_match_the_terraform_log_groups():
+    # scripts/monitoring.py names the Batch and trigger-Lambda log groups that resilience.tf creates.
+    import monitoring
+
+    with open(os.path.join(REPO_ROOT, "infrastructure", "resilience.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    for prefix, constant in (("/aws/batch/", monitoring.BATCH_LOG_GROUP),
+                             ("/aws/lambda/", monitoring.TRIGGER_LOG_GROUP)):
+        template = re.search(r'name\s*=\s*"(' + re.escape(prefix) + r'[^"]+)"', tf).group(1)
+        rendered = template.replace("${var.project_name}", "geyser").replace("${var.environment}", "dev")
+        assert rendered == constant
