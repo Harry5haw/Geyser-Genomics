@@ -1,0 +1,5 @@
+# Terraform renders infrastructure/*.json into resources (templatefile): a CRLF checkout (Windows,
+# core.autocrlf=true) would change the deployed definition by whitespace and show drift in every plan.
+infrastructure/** text eol=lf
+# The trigger Lambda's zip is built from lambda/trigger/index.py (archive_file): the same CRLF problem.
+lambda/** text eol=lf

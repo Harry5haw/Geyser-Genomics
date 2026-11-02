@@ -75,3 +75,34 @@ def test_quality_gate_reads_the_keys_the_stages_write():
     # The gate reads one run record schema; a schema bump in provenance.py must reach the gate.
     gate_schema = re.search(r"pub const RUN_RECORD_SCHEMA: u64 = (\d+);", rs).group(1)
     assert int(gate_schema) == provenance.SCHEMA_VERSION
+
+
+def _lifecycle_prefixes():
+    """{rule id: prefix} from infrastructure/storage_lifecycle.tf (an empty filter = the whole bucket)."""
+    with open(os.path.join(REPO_ROOT, "infrastructure", "storage_lifecycle.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    rules = {}
+    for block in tf.split("  rule {")[1:]:
+        rule_id = re.search(r'id\s*=\s*"([^"]+)"', block).group(1)
+        prefix = re.search(r'prefix\s*=\s*"([^"]*)"', block)
+        rules[rule_id] = (prefix.group(1) if prefix else "", "expiration {" in block)
+    return rules
+
+
+def test_lifecycle_expires_the_apps_intermediate_prefix():
+    # #62: parts are written under tasks.INTERMEDIATE_PREFIX; the rule that clears them must match it.
+    rules = _lifecycle_prefixes()
+    assert rules["expire-intermediate"] == (tasks.INTERMEDIATE_PREFIX, True)
+    assert tasks.region_part_key("S1", "chr20:1-100").startswith(tasks.INTERMEDIATE_PREFIX)
+
+
+def test_lifecycle_never_expires_raw_reads_references_or_outputs():
+    # Decided with the user (2 Nov 2026): only disposable prefixes expire. A rule with an expiration must
+    # not cover (or sit inside) raw_reads/, reference/ or any output prefix the pipeline writes.
+    kept = {"raw_reads/", "reference/"} | {key.split("/")[0] + "/" for key in tasks.keys_for("S1").values()}
+    kept |= {key.split("/")[0] + "/" for key in tasks.keys_for("S1", tasks.PAIRED).values()}
+    for rule_id, (prefix, expires) in _lifecycle_prefixes().items():
+        if not expires:
+            continue  # e.g. aborting unfinished multipart uploads touches no stored object
+        assert prefix, f"{rule_id} expires the whole bucket"
+        assert not any(k.startswith(prefix) or prefix.startswith(k) for k in kept), (rule_id, prefix)

@@ -61,7 +61,7 @@ def test_fai_and_fasta_give_the_same_lengths(tmp_path):
 def test_part_keys_are_safe_and_distinct():
     a = tasks.region_part_key("S1", "{HLA-A*01:01}:1-3")
     b = tasks.region_part_key("S1", "{HLA-A*01_01}:1-3")  # same after sanitising, different region
-    assert a.startswith("variants/S1/parts/") and a.endswith(".vcf.gz") and a != b
+    assert a.startswith("intermediate/variant-parts/S1/") and a.endswith(".vcf.gz") and a != b
     assert all(c.isalnum() or c in "._-/" for c in a)
     assert tasks.region_part_key("S1", "c:1-10") == tasks.region_part_key("S1", "c:1-10")  # deterministic
 
@@ -218,9 +218,9 @@ def test_parts_are_kept_per_run(monkeypatch):
     first = tasks.region_part_key("S1", "c:1-10")
     monkeypatch.setenv("RUN_NAME", "S1-20261102T110000Z-def")
     second = tasks.region_part_key("S1", "c:1-10")
-    assert first.startswith("variants/S1/parts/S1-20261102T100000Z-abc/") and first != second
+    assert first.startswith("intermediate/variant-parts/S1/S1-20261102T100000Z-abc/") and first != second
     monkeypatch.delenv("RUN_NAME")
-    assert tasks.region_part_key("S1", "c:1-10").startswith("variants/S1/parts/unnamed/")
+    assert tasks.region_part_key("S1", "c:1-10").startswith("intermediate/variant-parts/S1/unnamed/")
 
 
 def test_the_merge_never_uses_another_runs_parts(local_env, tool_calls, shell_commands, uploads, monkeypatch):
@@ -269,3 +269,13 @@ def test_run_local_plans_regions_only_for_a_bcftools_stage(tmp_path, monkeypatch
     assert planned == []  # no bcftools stage: nothing to shard, the local reference isn't read
     run_local.main(["--root", str(tmp_path), "--sample", "S1", "--shard-window", "10"])
     assert len(planned) == 1
+
+
+def test_parts_are_intermediate_and_never_under_an_output_prefix():
+    # #62: the lifecycle rule expires intermediate/; outputs (variants/, alignments/, ...) must never be there,
+    # and parts must never sit under an output prefix, where no lifecycle rule can reach them.
+    key = tasks.region_part_key("S1", "chr20:1-100")
+    assert key.startswith(tasks.INTERMEDIATE_PREFIX)
+    outputs = {k: v for k, v in tasks.keys_for("S1").items() if not k.startswith("raw")}
+    assert not any(v.startswith(tasks.INTERMEDIATE_PREFIX) for v in outputs.values())
+    assert not any(key.startswith(v.split("/")[0] + "/") for v in outputs.values())

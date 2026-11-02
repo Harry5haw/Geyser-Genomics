@@ -106,6 +106,15 @@ STRATIFICATIONS = (
 #   fasta:<ctg>   fetch only that contig from an uncompressed FASTA, by HTTP range (size from its .fai)
 #   only:<ctg>    keep only that contig's rows (VCF keeps its header; gzipped if the local key ends .gz)
 #   region:<ctg>  fetch only that contig's reads from a remote indexed BAM (samtools in Docker)
+# Gene models for consequence annotation (bcftools csq, the variants stage): Ensembl's per-chromosome
+# GFF3, which names contigs without "chr". "ensembl:<contig>" renames them to match the GRCh38 FASTA.
+ENSEMBL_RELEASE = 115
+ENSEMBL_GFF = (
+    f"https://ftp.ensembl.org/pub/release-{ENSEMBL_RELEASE}/gff3/homo_sapiens/"
+    f"Homo_sapiens.GRCh38.{ENSEMBL_RELEASE}.chromosome.{{n}}.gff3.gz"
+)
+ENSEMBL_GFF_SIZES = {"20": 2019220}
+
 DATASETS = {
     "na12878-slice": {
         "sample": "NA12878_S1",
@@ -266,6 +275,45 @@ def keep_contig(src, dest, contig):
     return kept
 
 
+def ensembl_gff_for_contig(src, dest, contig):
+    """Ensembl GFF3 (contig '20') -> gzip GFF3 named like the reference ('chr20'). Returns rows kept.
+
+    Keeps the headers (renaming ##sequence-region) and the rows on that contig; drops other contigs.
+    """
+    ensembl = contig.removeprefix("chr")
+    prefix, kept = ensembl + "\t", 0
+    with (
+        gzip.open(src, "rt", encoding="utf-8", newline="") as fin,
+        gzip.open(dest + ".part", "wt", encoding="utf-8", newline="") as fout,
+    ):
+        for line in fin:
+            if line.startswith("##sequence-region"):
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == ensembl:
+                    fout.write(line.replace(f" {ensembl} ", f" {contig} ", 1))
+            elif line.startswith("#"):
+                fout.write(line)
+            elif line.startswith(prefix):
+                fout.write(contig + line[len(ensembl) :])
+                kept += 1
+    os.replace(dest + ".part", dest)
+    return kept
+
+
+def annotation_files(name):
+    """The file entry for a GRCh38 dataset's gene models: reference/<reference>.gff3.gz."""
+    contig = dataset_contig(name)
+    n = contig.removeprefix("chr")
+    return [
+        (
+            ENSEMBL_GFF.format(n=n),
+            ENSEMBL_GFF_SIZES.get(n),
+            f"reference/{DATASETS[name]['reference']}.gff3.gz",
+            f"ensembl:{contig}",
+        )
+    ]
+
+
 def remote_url(remote):
     """Full URL for a file entry: absolute URLs as-is, anything else under DeepVariant's bucket."""
     return remote if remote.startswith(("https://", "http://")) else BASE_URL + remote
@@ -293,15 +341,15 @@ def stratification_tsv(contig):
     return f"stratifications/GRCh38_{contig}.tsv", text
 
 
-def dataset_files(name, pangenome=None, stratifications=False):
-    """The file entries to fetch for a dataset, plus a pangenome graph ('chr20' or 'full') and the GIAB
-    stratification BEDs when asked.
+def dataset_files(name, pangenome=None, stratifications=False, annotation=False):
+    """The file entries to fetch for a dataset, plus a pangenome graph ('chr20' or 'full'), the GIAB
+    stratification BEDs and Ensembl gene models (for bcftools csq) when asked.
 
     Pangenome graphs and the stratifications are on GRCh38, so only GRCh38 datasets accept them.
     """
     files = list(DATASETS[name]["files"])
-    if (pangenome or stratifications) and name not in GRCH38_DATASETS:
-        flag = "--pangenome" if pangenome else "--stratifications"
+    if (pangenome or stratifications or annotation) and name not in GRCH38_DATASETS:
+        flag = "--pangenome" if pangenome else "--stratifications" if stratifications else "--annotation"
         raise ValueError(
             f"{flag} needs a GRCh38 dataset ({', '.join(sorted(GRCH38_DATASETS))}); {name} is on another reference"
         )
@@ -310,6 +358,8 @@ def dataset_files(name, pangenome=None, stratifications=False):
         files.append((graph["url"], graph["size"], graph["key"], "copy"))
     if stratifications:
         files += stratification_files(dataset_contig(name))
+    if annotation:
+        files += annotation_files(name)
     return files
 
 
@@ -377,9 +427,11 @@ def build_chr20_gbz(root, force=False):
     print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
 
 
-def fetch_dataset(name, root, force=False, pangenome=None, stratifications=False, app_image=APP_IMAGE):
+def fetch_dataset(
+    name, root, force=False, pangenome=None, stratifications=False, app_image=APP_IMAGE, annotation=False
+):
     ds = DATASETS[name]
-    files = dataset_files(name, pangenome, stratifications)
+    files = dataset_files(name, pangenome, stratifications, annotation)
     known = sum(f[1] or 0 for f in files)
     print(f"Dataset {name}: {len(files)} files, {known / 1e6:,.1f} MB plus any contig ranges")
     for remote, size, key, how in files:
@@ -418,6 +470,12 @@ def fetch_dataset(name, root, force=False, pangenome=None, stratifications=False
                 rows = keep_contig(tmp, dest, how.split(":", 1)[1])
                 os.remove(tmp)
                 print(f"    kept {rows:,} rows on {how.split(':', 1)[1]}")
+            elif how.startswith("ensembl:"):
+                tmp = raw + ".gz"
+                os.replace(raw, tmp)
+                rows = ensembl_gff_for_contig(tmp, dest, how.split(":", 1)[1])
+                os.remove(tmp)
+                print(f"    kept {rows:,} features, contig renamed to {how.split(':', 1)[1]}")
             else:
                 raise ValueError(how)
         print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
@@ -450,10 +508,16 @@ def main(argv=None):
         help="also get GIAB v3.3 stratification BEDs (difficult regions, segdups, low mappability) "
         "for benchmark_happy.py --stratification",
     )
+    p.add_argument(
+        "--annotation",
+        action="store_true",
+        help=f"also get Ensembl {ENSEMBL_RELEASE} gene models for the dataset's chromosome, as "
+        "reference/<reference>.gff3.gz, so the variants stage annotates consequences (bcftools csq)",
+    )
     p.add_argument("--app-image", default=APP_IMAGE, help="image with samtools, for datasets cut from remote BAMs")
     a = p.parse_args(argv)
     try:
-        fetch_dataset(a.dataset, a.root, a.force, a.pangenome, a.stratifications, a.app_image)
+        fetch_dataset(a.dataset, a.root, a.force, a.pangenome, a.stratifications, a.app_image, a.annotation)
     except ValueError as err:
         p.error(str(err))
 

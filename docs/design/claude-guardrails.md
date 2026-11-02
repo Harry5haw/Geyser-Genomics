@@ -34,9 +34,14 @@ could create a service role without a boundary and attach it to a Lambda.
 | Capacity | Cap | Worst case if fully used (eu-west-2 list prices, approximate) |
 |---|---|---|
 | Fargate compute environment | `max_vcpus = var.fargate_max_vcpus` (8, was 16): 4 jobs at 2 vCPU / 4 GB | 4 × ~$0.11/h ≈ **$0.45/h** |
+| Fargate Spot compute environment (#124, the queue's first choice) | `max_vcpus = var.fargate_spot_max_vcpus` (8) | at Spot prices (~70% off) ≈ **$0.14/h** |
 | GPU compute environment | `max_vcpus = var.gpu_max_vcpus` (4, was 64): one g5.xlarge or g4dn.xlarge | ≈ **$1.2/h** with EBS |
 | Public IPv4 per task or instance | | ~$0.005/h each |
-| **Total at both caps** | | **≈ $1.7/h** |
+| **Total at all caps** | | **≈ $1.85/h** |
+
+The Spot environment adds capacity rather than moving it: jobs go to Spot first and overflow to on-demand
+Fargate only when Spot is full or has no capacity, so at both Fargate caps 16 vCPUs can run. Creating a
+compute environment is outside the `geyser-claude` boundary, so the user applies that change.
 
 Changing `max_vcpus` is an in-place update. In provider 5.100.0 `max_vcpus` has no ForceNew, and the
 CustomizeDiff that forces replacement for environments with a custom service role covers only instance

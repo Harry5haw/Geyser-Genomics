@@ -213,16 +213,16 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 | :--- | :---: | :--- |
 | **Orchestration and trigger** | ☁️ Cloud | S3 upload → Lambda → Step Functions: QC and alignment in a `Parallel` state, then variant calling, each a Batch job on Fargate. Runs are named after the sample (`<id>-<UTC time>-<hash>`); a duplicate S3 event starts nothing. Tested offline in Step Functions Local. |
 | **Resilience and sizing** | ☁️ Cloud | Infrastructure-only retries (3 attempts), Batch API retries with back-off, per-stage timeouts and a 12-hour run limit, per-stage vCPU/memory, 30-day log retention. A failed stage publishes to SNS and the run ends Failed; a run that hits the time limit ends TimedOut (no SNS message, but it counts in the Step Functions metrics). |
-| **Bioinformatics tools** | ✅ Local + CI | fastp QC (one report per sample), bwa-mem2 alignment (with an automatic fallback to bwa for references that would trigger a bwa-mem2 bug), duplicates marked, CRAM + index, tabix-indexed VCF from bcftools. They reach the cloud with the next image push; the cloud runs so far used bwa, FastQC and BAM. |
-| **QC statistics** | ✅ Local + CI | `samtools flagstat`, `mosdepth` coverage and `bcftools stats` per sample, under `stats/<id>/`. |
-| **Run record (provenance)** | ✅ Local + CI | `runs/<id>.provenance.json` per sample, assembled from one part per stage so parallel stages never overwrite each other. In the cloud, the state machine doesn't pass the run name to the jobs yet, so cloud records will show `run_name: null` until it does. |
-| **Paired-end input** | ✅ Local + CI | `<id>_R1.fastq.gz` + `<id>_R2.fastq.gz`: the trigger waits for both mates and starts one run; the stages detect the layout themselves. The trigger's S3 read access is applied; no paired-end cloud run yet. |
+| **Bioinformatics tools** | ☁️ Cloud | fastp QC (one report per sample), bwa-mem2 alignment (with an automatic fallback to bwa for references that would trigger a bwa-mem2 bug), duplicates marked, CRAM + index, tabix-indexed VCF from bcftools. Verified in the cloud on 2 Nov 2026 (image `main-c6f490b`): single-end and paired-end chr20 runs, 10/10 planted SNPs each. The cloud reference stores both aligners' indexes, so no job builds one. |
+| **QC statistics** | ☁️ Cloud | `samtools flagstat`, `mosdepth` coverage and `bcftools stats` per sample, under `stats/<id>/`. |
+| **Run record (provenance)** | ☁️ Cloud | `runs/<id>.provenance.json` per sample, assembled from one part per stage so parallel stages never overwrite each other. Every job gets the Step Functions execution name as `RUN_NAME`, so each part records which run wrote it. |
+| **Paired-end input** | ☁️ Cloud | `<id>_R1.fastq.gz` + `<id>_R2.fastq.gz`: the trigger waits for both mates and starts one run; the stages detect the layout themselves. Verified with a paired-end chr20 run on 2 Nov 2026. |
 | **Offline development and testing** | ✅ Complete | The whole pipeline runs locally in Docker with no AWS account. CI: ruff lint and format, `terraform fmt`/`validate`, unit tests, Docker end-to-end truth check, Step Functions Local, and DeepVariant on the CPU image for pull requests. |
 | **Infrastructure as code** | ✅ Complete | Every AWS resource is in Terraform, with state per environment (`dev` is live; `prod` is intentionally not deployed). Changes are planned, reviewed, then applied. |
 | **CI authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
 | **Cost safety and guardrails** | ☁️ Applied | No NAT gateway, Fargate in a public subnet, capped Batch capacity, ECR and log retention, a $10 monthly budget alert. The role automation uses has a permissions boundary and a $20 project budget that attaches a deny-all policy by itself ([guardrails](docs/design/claude-guardrails.md)). |
 | **Automated deployment** | ⏸️ Manual by design | CI runs tests and checks only. The "Terraform Plan" workflow can only plan, is manual, and is disabled. Applies happen from a reviewed plan. |
-| **Monitoring** | 🔜 Planned | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). The dashboard and alarm are scripted and unit-tested, not deployed yet (see [Monitoring](#3-monitoring)). |
+| **Monitoring** | ☁️ Cloud | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). A CloudWatch dashboard (runs, end-to-end time, failures and durations by stage, console links) and one alarm on trigger Lambda errors are deployed by scripts (see [Monitoring](#3-monitoring)). |
 | **DeepVariant and pangenome-aware DeepVariant** | ✅ Local GPU | Alternative variant callers, benchmarked with hap.py on HG003 and HG005 chr20 (see below). A GPU Batch environment exists in AWS; the stage isn't wired into Step Functions yet and needs larger instances. |
 | **Web UI** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (QC summary and report, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
 | **Other S3-compatible storage** | ✅ Unit-tested | `S3_ENDPOINT_URL` points the storage layer at any S3-compatible service (OVHcloud Object Storage, MinIO, LocalStack). Not yet run against one. |
@@ -254,19 +254,17 @@ flowchart TB
     ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
     BATCH -->|"outputs, stats,<br/>run record"| OUT[("🪣 S3: qc_reports/, alignments/,<br/>variants/, stats/, runs/")]
     BATCH -.->|"Duration, FailureCount<br/>logs kept 30 days"| CW["📈 CloudWatch"]
-    CW -.-> DASH["Dashboard + alarm<br/>scripted, not deployed"]
+    CW -.-> DASH["Dashboard + alarm<br/>deployed by scripts"]
     BUD["🛡️ Budgets: $10/month alert<br/>$20 project cap → automatic deny-all"]
 
     classDef user fill:#2E7D32,stroke:#1B5E20,color:#fff
     classDef store fill:#6A1B9A,stroke:#4A148C,color:#fff
     classDef aws fill:#E65100,stroke:#BF360C,color:#fff
     classDef obs fill:#1565C0,stroke:#0D47A1,color:#fff
-    classDef pending fill:#9E9E9E,stroke:#616161,color:#fff,stroke-dasharray: 4 3
     class U user
     class S3,ECR,OUT store
     class L,SF1,SF2,SF3,BATCH,SNS aws
-    class CW,BUD obs
-    class DASH pending
+    class CW,BUD,DASH obs
 ```
 
 **Stages talk only through storage keys.** `app/tasks.py` holds the key conventions (`keys_for`), and every stage, the trigger, the web UI and the scripts use them. QC writes `qc_reports/`, alignment writes `alignments/` and `stats/`, variant calling reads the CRAM and writes `variants/` and `stats/`, and each stage adds its part of the run record under `runs/`. The same code runs against S3 in the cloud and against a folder offline (`STORAGE_BACKEND=s3|local`).
@@ -345,6 +343,8 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --sha
 >
 > `--duplicate-rate 0.1` plants exact read (or pair) copies, like PCR duplicates. The align stage's `samtools markdup` flags them, and the SNP calls stay the same.
 >
+> `--gff` also writes gene models (`reference/synthetic_ref.fa.gff3.gz`): one gene on each strand, around planted SNPs 2-5. The variants stage then annotates consequences with bcftools csq (`variants/SYNTH001.csq.vcf.gz`), and the web UI shows a Consequence column. Reads and SNPs are the same as without `--gff`. For real data, `fetch_dv_testdata.py --dataset hg003-chr20 --annotation` adds Ensembl's chr20 gene models, with the contig renamed to match GRCh38's `chr20`.
+>
 > The align stage uses [bwa-mem2](https://github.com/bwa-mem2/bwa-mem2), which runs the same algorithm as `bwa mem` faster on modern CPUs. The image picks the fastest build for the CPU it runs on. Set `ALIGNER=bwa` (e.g. `ALIGNER=bwa python scripts/run_local.py ...`) to align with classic `bwa mem` instead.
 >
 > bwa-mem2 has one known bug ([bwa-mem2#262](https://github.com/bwa-mem2/bwa-mem2/issues/262)): it shifts reads that start in the first few bases of the reference's first contig, which shows up as false SNPs. Human chromosomes start with long N gaps, so they are unaffected. For any reference whose first contig doesn't start with at least 1,000 Ns, the align stage uses bwa instead and logs why. The default synthetic genome is such a reference. `make_test_data.py --leading-gap 1000` gives it a human-like gap, and then bwa-mem2 produces the same 10,000 alignments as bwa. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
@@ -392,7 +392,7 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --sha
 >     --base HG003_chr20 --reference GRCh38_chr20.fa --region chr20
 > ```
 >
-> **Scatter-gather variant calling** (`--shard-window BP`) is how the cloud will spread variant calling over many jobs. `tasks.py regions <ref> --window BP` cuts the reference into regions in reference order. `tasks.py variants <id> <ref> --region R` calls one region into `variants/<id>/parts/<run>/`; there's one folder per run (`RUN_NAME`), so a merge never picks up an earlier run's parts. `tasks.py variants <id> <ref> --window BP` merges every part into the usual `variants/<id>.vcf.gz` (+ `.tbi` and stats), and fails, naming them, if any parts are missing. bcftools reports each position in exactly one region, so the merged VCF has the same records as a single job; the Docker E2E test checks this. Shards record the `CallVariantsShard` metric and the merge records `CallVariants`. The Step Functions `Map` state that runs the shards in parallel in the cloud comes in a separate infrastructure PR.
+> **Scatter-gather variant calling** (`--shard-window BP`) is how the cloud will spread variant calling over many jobs. `tasks.py regions <ref> --window BP` cuts the reference into regions in reference order. `tasks.py variants <id> <ref> --region R` calls one region into `intermediate/variant-parts/<id>/<run>/`; there's one folder per run (`RUN_NAME`), so a merge never picks up an earlier run's parts. Everything under `intermediate/` is disposable and expires after 7 days (S3 lifecycle, #62). `tasks.py variants <id> <ref> --window BP` merges every part into the usual `variants/<id>.vcf.gz` (+ `.tbi` and stats), and fails, naming them, if any parts are missing. bcftools reports each position in exactly one region, so the merged VCF has the same records as a single job; the Docker E2E test checks this. Shards record the `CallVariantsShard` metric and the merge records `CallVariants`. The Step Functions `Map` state that runs the shards in parallel in the cloud comes in a separate infrastructure PR.
 
 **Tests:**
 
@@ -437,7 +437,7 @@ A **pangenome** reference is a graph that combines many people's genomes. The Hu
 > [!NOTE]
 > **Where this project is:**
 > - **Done:** pangenome-aware variant calling (Google's pangenome-aware DeepVariant with the HPRC graph) runs **locally on the GPU** and is benchmarked on chr20 of HG003 (Ashkenazi) and HG005 (Han Chinese), overall and by GIAB region type (results below).
-> - **Still linear:** reads are aligned to GRCh38 with BWA-MEM (not to the graph).
+> - **Graph alignment, benchmarked offline:** reads aligned to the pangenome graph with vg giraffe (haplotype sampling, surjected to GRCh38) give the most accurate calls on HG003 chr20 (results below). The pipeline's align stage still uses bwa-mem2.
 > - **Not yet:** whole-genome graphs and runs in the cloud. These are next on the [Roadmap](#️-roadmap) (#51).
 
 #### Running it
@@ -519,6 +519,35 @@ By GIAB region type (`--stratification`, GIAB v3.3 stratifications), SNP errors 
   - The truth regions differ in kind. GIAB v4.2.1 ships only a "noinconsistent" BED for HG003 and only a plain BED for HG005. The plain BED keeps some harder sites the other drops, which could account for part of HG005's extra errors.
   - The 30x BAMs are aligned to hs38DH (with ALT and decoy contigs), the 35x HG003 BAM to no_alt. Only 0.03% of chr20 reads sit on chr20's ALT contigs (6,011 for HG005, 4,305 for HG003, from the BAM indexes), so dropping them by fetching `chr20` only has a negligible effect. The two 30x samples are aligned identically.
 - **Time:** pangenome-aware DeepVariant took 21.4 min on HG005 and 20.3 min on HG003 30x, with the settings below.
+
+**Aligning to the graph: vg giraffe vs bwa-mem2, HG003 chr20, hap.py** (`scripts/benchmark_giraffe.py`). Both aligners get the same 19.0 M reads (recovered from the 35x case-study BAM). bwa-mem2 aligns them to the chr20 reference with the pipeline's align stage; vg giraffe 1.55.0 aligns them to the HPRC v1.1 chr20 graph. Giraffe uses haplotype sampling, a personal 2-haplotype graph chosen from the sample's own k-mers, then surjects the reads to GRCh38 (Google's VG case-study flags). Both BAMs get the same fixmate, sort and markdup. Errors are missed + false calls:
+
+| Alignment + caller | SNP FN / FP | Indel FN / FP | SNP + indel errors | SNP errors in segdups | SNP errors, low mappability |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| bwa-mem2 + DeepVariant (linear) | 266 / 120 | 50 / 18 | 454 | 79 | 323 |
+| bwa-mem2 + pangenome-aware DeepVariant | 251 / 108 | 41 / 17 | 417 | 45 | 304 |
+| **giraffe + DeepVariant (linear)** | 216 / **91** | 40 / 21 | **368** | **25** | **230** |
+| giraffe + pangenome-aware DeepVariant | **190** / 146 | **31** / 21 | 388 | 76 | 237 |
+
+- **Aligning to the graph helps more than a graph-aware caller.** Giraffe with plain linear DeepVariant has the fewest errors: 19% fewer than bwa-mem2 + linear, and 12% fewer than bwa-mem2 + pangenome-aware DeepVariant. In segmental duplications, its SNP errors fall from 79 to 25.
+- **Pangenome-aware DeepVariant on giraffe reads finds the most variants** (fewest misses: SNP 190, indel 31) **but adds false SNPs**: 146 against 91 with linear DeepVariant on the same reads. 53 of those 55 extra false SNPs are in segmental duplications (74 there against 21). The two pangenome inputs, reads already placed with the graph plus graph haplotypes at every site, seem to overcount evidence there. Google's two case studies (pangenome-aware DeepVariant, whole genome, HG003 35x) show the same direction: SNP FN/FP 240/76 with BWA and 72/106 with giraffe.
+- **Cost per sample:**
+  - giraffe: 546 s, of which 462 s mapping, peak 1.5 GiB; plus 158 s for fixmate, sort and markdup.
+  - bwa-mem2 align stage: 521 s, peak 7.4 GiB.
+  - Giraffe also needs a 37 s k-mer count (kmc, capped at 8 GB) per sample.
+  - One-off graph indexes (distance index, r-index, haplotype information) take 345 s and under 1.5 GiB for chr20.
+- **Caveats:**
+  - **Biased towards the linear aligner.** The reads are only those BWA had placed on chr20 in Google's BAM, and the graph and reference are chr20 only. Giraffe on the whole genome (Google's case study) may gain more.
+  - **Flags differ for linear DeepVariant.** On giraffe BAMs it runs with Google's VG flags (`min_mapping_quality=0`, `keep_legacy_allele_counter_behavior`, `normalize_reads`); on the bwa-mem2 BAM it runs with defaults.
+  - **One run each.** Pangenome-aware DeepVariant ran with 12 `make_examples` workers here (16.5 and 16.0 min); shard count changes speed only, not the calls.
+
+```bash
+python scripts/benchmark_aligners.py --root <root> --from-bam alignments/HG003_chr20.bam --base HG003_chr20 \
+    --reference GRCh38_chr20.fa --region chr20          # reads + bwa-mem2 BAM first
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome --stratifications
+python scripts/benchmark_giraffe.py --root <root> --base HG003_chr20 --reference GRCh38_chr20.fa \
+    --region chr20 --stratification stratifications/GRCh38_chr20.tsv --pg-shards 12 --pg-memory 18g
+```
 
 Small datasets (exact-match counts): synthetic data, 10/10 planted SNPs and 0 extra calls for both callers; NA12878 slice, bcftools 45 TP / 4 FN / 4 FP and DeepVariant 49 TP / 0 FN / 0 FP. DeepVariant's accuracy is identical on GPU and CPU.
 
@@ -676,13 +705,14 @@ Once deployed, a run is started by uploading a file.
 | Quality control | `qc_reports/<id>.fastp.html` and `qc_reports/<id>.fastp.json` from [fastp](https://github.com/OpenGene/fastp) in report-only mode (nothing trimmed or filtered); one report per sample, both mates for paired-end |
 | Alignment | `alignments/<id>.cram` + `.cram.crai`, one per sample (coordinate-sorted, duplicates marked with samtools markdup; paired-end runs `samtools fixmate -m` first). CRAM stores the reads against the reference, so it is far smaller than a BAM, and it needs that same reference to read it: `samtools view -T reference/<name> alignments/<id>.cram` |
 | Variant calling | `variants/<id>.vcf.gz` + `.vcf.gz.tbi` (tabix index, for region queries) |
+| Consequence annotation (optional) | `variants/<id>.csq.vcf.gz` + `.tbi`: the same VCF with [bcftools csq](https://samtools.github.io/bcftools/howtos/csq-calling.html) consequences in `INFO/BCSQ` (e.g. `missense\|DEFB125\|ENST00000382410\|protein_coding\|+\|10I>10T`). Written only when the reference has gene models at `reference/<name>.gff3.gz` (Ensembl-style GFF3); `ANNOTATE=off` skips it. The cloud reference has none yet, so cloud runs don't annotate. |
 | QC statistics | `stats/<id>/`: `flagstat.txt` (samtools flagstat: mapped, duplicates, properly paired) and `mosdepth.summary.txt` / `mosdepth.global.dist.txt` (mean depth, and the fraction of bases covered at each depth; duplicates excluded) from the align stage; `bcftools.stats.txt` (SNP and indel counts, Ti/Tv) from variant calling. The job log prints the headline numbers. |
 | Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error, the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. In the cloud the state machine doesn't pass the execution name to the jobs yet, so cloud records say `run_name: null`, and after a partial re-run one record can mix two runs. |
 
 ### 3. Monitoring
 
 > [!NOTE]
-> The dashboard and alarm below are written and unit-tested but **not deployed yet**. Now that cloud runs are verified, deploying them and checking them against those runs is the next monitoring step.
+> The dashboard (`geyser-dashboard-dev`) and the trigger alarm (`geyser-dev-trigger-lambda-errors`) are deployed, with the scripts below, after a `--dry-run` check. Both are within the CloudWatch free tier. The alarm has no actions: it is a signal on the dashboard, not an email.
 
 Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWatch namespace `GeyserGenomics`. The dashboard and alarm definitions are built in `scripts/monitoring.py` and deployed by small Python scripts rather than Terraform, because the dashboard JSON was hard to manage there.
 
@@ -732,7 +762,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | ✅ | **Repository quality** | ruff and Terraform checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
 | 🔜 | **Next cloud checkpoint** | Push an image from current main and run single- and paired-end samples; pass the run name to the jobs so cloud run records are complete |
 | 🔜 | **Monitoring** | Deploy the dashboard and alarm and check them against the cloud runs |
-| 🎯 | **Pangenome: where it should help most** | Explain HG005's extra low-mappability errors, align reads to the graph (`vg giraffe`), newer HPRC graph, whole genome. **Top priority** ([#51](../../issues/51)) |
+| 🎯 | **Pangenome: where it should help most** | Done offline on chr20: HG005's extra errors explained (MAPQ-0 reads), reads aligned to the graph (`vg giraffe`, fewest errors). Next: newer HPRC graph, whole genome, giraffe in the pipeline. **Top priority** ([#51](../../issues/51)) |
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions ([#43](../../issues/43), [#44](../../issues/44)) |
 | 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason (the tool is built and tested in [`gate/`](gate/README.md); running it in the pipeline comes after the `Map` state) |
 | 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |

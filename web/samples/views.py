@@ -23,6 +23,7 @@ from geyser_web.pipeline import (
     keys_for,
     keys_of,
     layout_from_raw,
+    read_part,
 )
 
 from . import status as status_mod
@@ -43,6 +44,10 @@ FILE_KINDS = {
     "bam": ("Alignments (BAM)", "From a run before CRAM, or imported benchmark data"),
     "vcf": ("Variants", "Gzipped VCF"),
     "tbi": ("Variant index", "Tabix index (.tbi) of the VCF"),
+    "csq_vcf": (
+        "Annotated variants",
+        "The VCF with bcftools csq consequences (INFO/BCSQ), when the reference has gene models",
+    ),
     "flagstat": ("Alignment stats", "samtools flagstat: reads, mapped, duplicates, properly paired"),
     "mosdepth_summary": ("Coverage summary", "mosdepth: mean, min and max depth per contig (duplicates excluded)"),
     "mosdepth_dist": ("Coverage distribution", "mosdepth: fraction of bases covered at each depth or more"),
@@ -165,16 +170,41 @@ def _status_context(storage, sample):
     }
 
 
+def _current_annotated_vcf(storage, sample):
+    """The annotated VCF's key if the sample's last variants run wrote it, else None.
+
+    Nothing deletes an old one when a later variants run doesn't annotate (no GFF, ANNOTATE=off, csq
+    failed), so its presence alone could show an earlier run's calls. The variants stage's own part
+    (runs/<id>.provenance/CallVariants.json, rewritten by every variants run) lists what that run
+    wrote; a later run that stopped before variant calling doesn't touch it. Without a part
+    (imported data, runs from before the run record), the file is trusted.
+    """
+    key = sample.keys["csq_vcf"]
+    if not storage.exists(key):
+        return None
+    try:
+        part = read_part(storage, sample.sample_id, "CallVariants")
+    except Exception:  # noqa: BLE001 - the part is a hint here; never fail the page over it
+        part = None
+    if part is None:
+        return key
+    return key if any(o.get("key") == key for o in part.get("outputs") or []) else None
+
+
 @require_GET
 def sample_detail(request, sample_id):
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
     truth = read_truth(storage, sample_id)
-    variants = read_variants(storage, sample.keys["vcf"], settings.GEYSER_VARIANT_ROWS)
+    # The annotated VCF has the same records plus consequences: show it when the latest run wrote it.
+    variants_key = _current_annotated_vcf(storage, sample) or sample.keys["vcf"]
+    variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):
         key = _file_key(sample_id, kind, sample.keys)
+        if kind == "csq_vcf" and variants_key != key:
+            continue  # an annotated VCF from an earlier run: not this sample's current calls
         if storage.exists(key):
             downloads.append(
                 {"kind": kind, "label": label, "description": description, "filename": os.path.basename(key)}

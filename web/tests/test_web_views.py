@@ -157,3 +157,73 @@ def test_a_bam_from_before_cram_is_still_downloadable(client, storage):
     assert "/samples/S1/files/bam/" in client.get("/samples/S1/").content.decode()
     resp = client.get("/samples/S1/files/bam/")
     assert resp.status_code == 200 and b"".join(resp.streaming_content) == b"old"
+
+
+CSQ_VCF = (
+    "##fileformat=VCFv4.2\n"
+    '##INFO=<ID=BCSQ,Number=.,Type=String,Description="Haplotype-aware consequence annotation from BCFtools/csq">\n'
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample\n"
+    "synth1\t100\t.\tA\tG\t225\t.\tDP=30;BCSQ=missense|SYNTHG1|SYNTHG1T|protein_coding|+|5N>5S|100A>G\tGT\t1/1\n"
+    "synth1\t300\t.\tC\tT\t225\t.\tDP=30;BCSQ=*synonymous|SYNTHG2|SYNTHG2T|protein_coding|-|9Y|300C>T\tGT\t1/1\n"
+    "synth1\t500\t.\tG\tA\t225\t.\tDP=30\tGT\t1/1\n"
+)
+
+
+def test_detail_page_shows_consequences_from_the_annotated_vcf(client, storage):
+    import gzip
+
+    finished_sample(storage)
+    put(storage, "variants/S1.csq.vcf.gz", gzip.compress(CSQ_VCF.encode()))
+    body = client.get("/samples/S1/").content.decode()
+    assert "<th>Consequence</th>" in body
+    assert "missense SYNTHG1" in body and "synonymous SYNTHG2" in body  # the '*' marker is dropped
+    assert "/samples/S1/files/csq_vcf/" in body and "Annotated variants" in body
+    assert "2/3 planted SNPs recovered" in body  # same records, same truth check
+
+
+def test_detail_page_without_annotation_has_no_consequence_column(client, storage):
+    finished_sample(storage)
+    body = client.get("/samples/S1/").content.decode()
+    assert "Consequence" not in body and "/samples/S1/files/csq_vcf/" not in body
+
+
+def test_an_annotated_vcf_from_an_earlier_run_is_not_shown_or_offered(client, storage):
+    # A later variants run that didn't annotate leaves the old csq VCF in place (nothing deletes it);
+    # the variants stage's part says what its last run wrote.
+    import gzip
+
+    finished_sample(storage)
+    put(storage, "variants/S1.csq.vcf.gz", gzip.compress(CSQ_VCF.encode()))
+    part = {"task": "CallVariants", "run_name": "S1-run2", "outputs": [{"key": "variants/S1.vcf.gz", "bytes": 1}]}
+    put(storage, "runs/S1.provenance/CallVariants.json", json.dumps(part))
+    body = client.get("/samples/S1/").content.decode()
+    assert "<th>Consequence</th>" not in body and "/samples/S1/files/csq_vcf/" not in body
+
+    part["outputs"].append({"key": "variants/S1.csq.vcf.gz", "bytes": 1})
+    put(storage, "runs/S1.provenance/CallVariants.json", json.dumps(part))
+    body = client.get("/samples/S1/").content.decode()
+    assert "<th>Consequence</th>" in body and "/samples/S1/files/csq_vcf/" in body
+
+
+def test_a_later_run_that_stopped_before_variants_keeps_the_annotation(client, storage):
+    # run2 failed in align: its parts don't include CallVariants, whose part is still run1's.
+    import gzip
+
+    finished_sample(storage)
+    put(storage, "variants/S1.csq.vcf.gz", gzip.compress(CSQ_VCF.encode()))
+    run1 = {
+        "task": "CallVariants",
+        "run_name": "S1-run1",
+        "finished": "2026-11-02T10:00:00Z",
+        "outputs": [{"key": "variants/S1.csq.vcf.gz", "bytes": 1}, {"key": "variants/S1.vcf.gz", "bytes": 1}],
+    }
+    run2 = {
+        "task": "Align",
+        "run_name": "S1-run2",
+        "finished": "2026-11-02T11:00:00Z",
+        "status": "Failure",
+        "outputs": [],
+    }
+    put(storage, "runs/S1.provenance/CallVariants.json", json.dumps(run1))
+    put(storage, "runs/S1.provenance/Align.json", json.dumps(run2))
+    assert "<th>Consequence</th>" in client.get("/samples/S1/").content.decode()
