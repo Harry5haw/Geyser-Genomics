@@ -310,7 +310,7 @@ The platform's design is guided by modern cloud-native principles:
 
 **Why not Nextflow?** Most genomics pipelines are written for a workflow engine. [docs/design/why-not-nextflow.md](docs/design/why-not-nextflow.md) maps Geyser's pieces to Nextflow concepts, lists what an engine would and wouldn't have replaced, and says when the choice should change.
 
-**Design notes:** [why not Nextflow](docs/design/why-not-nextflow.md) · [guardrails for the automation role](docs/design/claude-guardrails.md) · [DeepVariant sizing on AWS](app-deepvariant/README.md)
+**Design notes:** [why not Nextflow](docs/design/why-not-nextflow.md) · [guardrails for the automation role](docs/design/claude-guardrails.md) · [DeepVariant sizing on AWS](app-deepvariant/README.md) · [a whole-genome vg giraffe align stage](docs/design/giraffe-align.md)
 
 ---
 
