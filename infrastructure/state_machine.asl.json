@@ -1,0 +1,140 @@
+{
+  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
+  "StartAt": "QC_and_Align",
+  "States": {
+    "QC_and_Align": {
+      "Type": "Parallel",
+      "Comment": "Both branches read raw_reads/ directly and don't depend on each other. If either fails, Step Functions stops the other and the Catch below handles it.",
+      "Branches": [
+        {
+          "StartAt": "Prepare_QC_Command",
+          "States": {
+            "Prepare_QC_Command": {
+              "Type": "Pass",
+              "Parameters": {
+                "JobName.$": "States.Format('QualityControl-{}-{}', $.srr_id, $$.Execution.Name)",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'qc', $.srr_id)"
+                }
+              },
+              "ResultPath": "$.batch_params",
+              "Next": "Quality_Control"
+            },
+            "Quality_Control": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "$.batch_params.JobName",
+                "JobDefinition": "${job_definition}",
+                "JobQueue": "${job_queue}",
+                "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+                "Timeout": { "AttemptDurationSeconds": 3600 }
+              },
+              "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+              "ResultPath": "$.batch_output",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Prepare_Align_Command",
+          "States": {
+            "Prepare_Align_Command": {
+              "Type": "Pass",
+              "Parameters": {
+                "JobName.$": "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)"
+                }
+              },
+              "ResultPath": "$.batch_params",
+              "Next": "Align_Genome"
+            },
+            "Align_Genome": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "$.batch_params.JobName",
+                "JobDefinition": "${job_definition}",
+                "JobQueue": "${job_queue}",
+                "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+                "Timeout": { "AttemptDurationSeconds": 14400 }
+              },
+              "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+              "ResultPath": "$.batch_output",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultSelector": {
+        "qc.$": "$[0].batch_output",
+        "align.$": "$[1].batch_output"
+      },
+      "ResultPath": "$.parallel_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+      ],
+      "Next": "Prepare_Variants_Command"
+    },
+    "Prepare_Variants_Command": {
+      "Type": "Pass",
+      "Parameters": {
+        "JobName.$": "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)"
+        }
+      },
+      "ResultPath": "$.batch_params",
+      "Next": "Call_Variants"
+    },
+    "Call_Variants": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "$.batch_params.JobName",
+        "JobDefinition": "${job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+        "Timeout": { "AttemptDurationSeconds": 7200 }
+      },
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.batch_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+      ],
+      "End": true
+    },
+    "Notify_Failure": {
+      "Type": "Task",
+      "Comment": "Even if the SNS publish itself fails, the run must still end as Failed.",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${sns_topic_arn}",
+        "Message": {
+          "PipelineName": "Geyser Genomics Pipeline",
+          "ExecutionId.$": "$$.Execution.Id",
+          "Status": "FAILED",
+          "ErrorDetails.$": "$.error",
+          "Input.$": "$$",
+          "StartTime.$": "$$.Execution.StartTime"
+        },
+        "MessageAttributes": {
+          "Status": { "DataType": "String", "StringValue": "FAILED" },
+          "Pipeline": { "DataType": "String", "StringValue": "Geyser Genomics" }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Pipeline_Failed", "ResultPath": "$.notify_error" }
+      ],
+      "Next": "Pipeline_Failed"
+    },
+    "Pipeline_Failed": {
+      "Type": "Fail",
+      "Comment": "Terminal state for any failed stage, so a failed run ends as FAILED instead of SUCCEEDED after the notification is sent.",
+      "Error": "PipelineStageFailed",
+      "Cause": "A pipeline stage failed. See the SNS failure notification or the execution history for details."
+    }
+  }
+}
