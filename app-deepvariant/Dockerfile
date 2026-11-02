@@ -14,12 +14,13 @@ FROM google/deepvariant:${DV_TAG}
 
 USER root
 
-# The base (Ubuntu 22.04, Python 3.10) already ships samtools 1.15.1 for BAM indexing and faidx.
+# The base (Ubuntu 22.04, Python 3.10) already ships samtools 1.15.1 for BAM indexing and faidx;
+# bcftools (Ubuntu's 1.13) is added for the PASS-call stats of the VCF (deepvariant_task.caller_stats).
 # python3-venv is missing (no ensurepip), and we need it for a separate env for our code (below).
 RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-venv && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-venv bcftools && \
     rm -rf /var/lib/apt/lists/* && \
-    samtools --version | head -1
+    samtools --version | head -1 && bcftools --version | head -1
 
 # Our code gets its own venv so boto3 can never disturb DeepVariant's pinned Python/TensorFlow packages.
 # boto3 is only imported for S3 storage / CloudWatch metrics; local runs never touch it.

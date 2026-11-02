@@ -7,12 +7,14 @@ Both need geyser-app too (docker build -f Dockerfile -t geyser-app .) for the st
 GEYSER_DV_IMAGE overrides the DeepVariant image name.
 """
 
+import json
 import os
 
 import pytest
 
 import make_test_data
 import run_local
+import tasks
 
 GPU = os.environ.get("GEYSER_GPU_E2E") == "1"
 CPU = os.environ.get("GEYSER_DV_E2E") == "1"
@@ -51,6 +53,37 @@ def test_deepvariant_on_synthetic_data(tmp_path):
     counts = run_local.truth_counts(str(root), "SYNTH001", "deepvariant")
     assert counts["tp"] == counts["truth"], f"missed planted SNPs: {counts['missed']}"
     assert not counts["extra"], f"unexpected calls: {counts['extra']}"
+    # PASS-call stats: exactly the planted SNPs, whatever RefCall candidates the VCF also holds. With
+    # bcftools in the run, the sample's bcftools.stats.txt stays the bcftools stage's.
+    stats_dir = root / "stats" / "SYNTH001"
+    dv_stats = tasks.parse_bcftools_stats((stats_dir / "bcftools.stats.deepvariant.txt").read_text())
+    assert dv_stats["snps"] == counts["truth"], dv_stats
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert "stats/SYNTH001/bcftools.stats.deepvariant.txt" in {o["key"] for o in record["outputs"]}
+
+
+def test_image_bcftools_counts_pass_calls_only(tmp_path):
+    """The DeepVariant image's own bcftools (Ubuntu's) on a VCF with RefCall candidates, using the stage's
+    exact command: 5 PASS records (4 SNPs, Ti/Tv 3.0), while all 10 records would give Ti/Tv 0.5."""
+    import shutil
+    import subprocess
+
+    import deepvariant_task as dv
+
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "deepvariant")
+    for name in ("ref.fa", "refcall.vcf"):
+        shutil.copy(os.path.join(fixtures, name), tmp_path / name)
+    image = dv_args()[1]
+
+    def stats(command):
+        docker = ["docker", "run", "--rm", "--mount", f"type=bind,source={tmp_path},target=/f", image]
+        out = subprocess.run(docker + ["bash", "-c", command], check=True, capture_output=True, text=True)
+        return tasks.parse_bcftools_stats(out.stdout)
+
+    passed = stats(dv.pass_stats_command("/f/ref.fa", "/f/refcall.vcf", "/dev/stdout"))
+    assert passed == {"records": 5, "snps": 4, "indels": 1, "tstv": 3.0}
+    everything = stats("bcftools stats -F /f/ref.fa -s - /f/refcall.vcf")
+    assert everything["records"] == 10 and everything["tstv"] == 0.5
 
 
 DV_TESTDATA = os.environ.get("GEYSER_DV_TESTDATA")  # a --root that scripts/fetch_dv_testdata.py filled
