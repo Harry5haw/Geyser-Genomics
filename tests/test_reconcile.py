@@ -172,7 +172,7 @@ def test_paired_end_report(tmp_path, capsys, monkeypatch):
     make_bucket(tmp_path, paired_sample("P1"))
     assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 0
     out = capsys.readouterr().out
-    assert " P1                      complete     Q A V .. ..  paired-end" in out
+    assert " P1                      complete     Q A V .. .. .  paired-end" in out  # last '.': no run record
     assert "1 complete; 0 problem(s)" in out
 
 
@@ -212,3 +212,23 @@ def test_stats_files_belong_to_their_sample():
     for name in ("flagstat.txt", "mosdepth.summary.txt", "mosdepth.global.dist.txt", "bcftools.stats.txt"):
         assert reconcile.match_sample(f"stats/ABC/{name}", patterns) == "ABC"
     assert reconcile.match_sample("stats/ABC/other.txt", patterns) is None
+
+
+def test_run_records_show_in_the_report(tmp_path, capsys, monkeypatch):
+    import provenance
+
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    store = make_bucket(tmp_path, full_sample("S1") + paired_sample("P1"))
+    provenance._put_json(store, "runs/S1.provenance.json", {
+        "status": "succeeded", "complete": True, "run_name": "S1-run", "stages": {"Align": {"status": "Success"}}})
+    provenance._put_json(store, "runs/P1.provenance.json", {
+        "status": "failed", "complete": False, "run_name": "P1-run", "stages": {"Align": {"status": "Failure"}}})
+
+    assert reconcile.main(["--local-dir", str(tmp_path), "--json"]) == 0
+    rows = {r["sample_id"]: r for r in json.loads(capsys.readouterr().out)["samples"]}
+    assert rows["S1"]["run_record"]["status"] == "succeeded"
+    assert "run record: Align failed in P1-run" in rows["P1"]["note"]
+
+    reconcile.main(["--local-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert " S1 " in out and "Q A V .. .. R" in out and "Q A V .. .. r" in out

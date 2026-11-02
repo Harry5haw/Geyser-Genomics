@@ -47,6 +47,7 @@ for _sub in ("app", "app-deepvariant"):
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
+import provenance  # noqa: E402
 from storage import LocalStorage, S3Storage, storage_from_env  # noqa: E402
 from tasks import ALIGNMENT_FORMS, MATES, PAIRED, PER_MATE_KEYS, SINGLE, keys_for, keys_of  # noqa: E402
 
@@ -179,9 +180,23 @@ def open_runs(sfn_client, state_machine_arn: str) -> Counter:
         kwargs["nextToken"] = page["nextToken"]
 
 
-def reconcile(keys, running: Counter = None) -> dict:
+def run_records(storage, keys) -> dict:
+    """Summaries of the stages' run records (runs/<id>.provenance.json), by sample. Unreadable ones are skipped."""
+    out = {}
+    for key in keys:
+        if key.startswith(provenance.RUN_PREFIX) and key.endswith(".provenance.json"):
+            sample_id = key[len(provenance.RUN_PREFIX):-len(".provenance.json")]
+            record = provenance.read_record(storage, sample_id)
+            if record:
+                out[sample_id] = provenance.summary(record)
+    return out
+
+
+def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
+    """records: run_records() output; each sample row gets its summary as "run_record" (or None)."""
     keys = set(keys)
     running = running or Counter()
+    records = records or {}
     trigger = load_trigger()
     extras = extra_outputs()
 
@@ -230,9 +245,14 @@ def reconcile(keys, running: Counter = None) -> dict:
         if open_count > 1:
             note = f"{open_count} runs at once: they overwrite each other's outputs"
             problem = "concurrent runs"
+        record = records.get(sample_id)
+        if record and record["status"] == "failed":
+            failed_stages = [t for t, st in record["stages"].items() if st != "Success"]
+            note = "; ".join(n for n in (note, f"run record: {', '.join(failed_stages)} failed"
+                                         + (f" in {record['run_name']}" if record["run_name"] else "")) if n)
         rows.append({"sample_id": sample_id, "status": status, "layout": layout, "raw": has_raw,
                      "outputs": outputs, "extra_outputs": extra, "open_runs": open_count, "note": note,
-                     "problem": problem})
+                     "problem": problem, "run_record": record})
 
     return {"samples": rows, "upload_problems": upload_problems,
             "problem_count": len(upload_problems) + sum(1 for r in rows if r["problem"])}
@@ -241,17 +261,19 @@ def reconcile(keys, running: Counter = None) -> dict:
 def print_report(result: dict) -> None:
     labels = [label for _, label in STAGE_OUTPUTS]
     extra_labels = sorted({label for r in result["samples"] for label in r["extra_outputs"]})
-    print(f"{'Sample':<24} {'Status':<12} {'Outputs':<{2 * len(labels) + 3 * len(extra_labels)}} Note")
+    width = 2 * len(labels) + 3 * len(extra_labels) + 2
+    print(f"{'Sample':<24} {'Status':<12} {'Outputs':<{width}} Note")
     for r in result["samples"]:
         marks = " ".join(label if r["outputs"][name] else "." for name, label in STAGE_OUTPUTS)
         marks += "".join(f" {label if r['extra_outputs'].get(label) else '.' * len(label)}" for label in extra_labels)
+        record = r.get("run_record")
+        marks += " " + ("." if not record else "R" if record["complete"] else "r")
         flag = "!" if r["problem"] else " "
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
-        print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} "
-              f"{note}")
+        print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{width}} {note}")
     print("Outputs: Q QC report, A alignment, V VCF"
           + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
-          + " (paired-end: Q needs both mates)")
+          + ", R run record (r: incomplete or failed) (paired-end: Q needs both mates)")
     if result["upload_problems"]:
         print("\nUpload problems:")
         for p in result["upload_problems"]:
@@ -293,7 +315,8 @@ def main(argv=None, storage=None, sfn_client=None) -> int:
         print("NOTE: no --state-machine-arn/SFN_ARN, so open runs aren't checked: a sample still being "
               "processed shows as 'not started' or 'incomplete'.", file=sys.stderr)
 
-    result = reconcile(storage.list_keys(""), running)
+    keys = set(storage.list_keys(""))
+    result = reconcile(keys, running, run_records(storage, keys))
     if args.json:
         print(json.dumps(result, indent=2))
     else:
