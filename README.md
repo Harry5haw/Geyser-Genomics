@@ -312,6 +312,31 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --sha
 >
 > bwa-mem2 has one known bug ([bwa-mem2#262](https://github.com/bwa-mem2/bwa-mem2/issues/262)): it shifts reads that start in the first few bases of the reference's first contig, which shows up as false SNPs. Human chromosomes start with long N gaps, so they are unaffected. For any reference whose first contig doesn't start with at least 1,000 Ns, the align stage uses bwa instead and logs why. The default synthetic genome is such a reference. `make_test_data.py --leading-gap 1000` gives it a human-like gap, and then bwa-mem2 produces the same 10,000 alignments as bwa. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
 >
+> **bwa vs bwa-mem2, measured** (`scripts/benchmark_aligners.py`). HG003 chr20: 19.0 M reads, paired FASTQs recovered from the 35x case-study BAM, aligned to chr20 by the real align stage. Each aligner ran once, with 16 threads, on an AMD Ryzen 7 3700X (bwa-mem2 picked its AVX2 build):
+>
+> | | bwa 0.7.18 | bwa-mem2 2.3 |
+> | :--- | ---: | ---: |
+> | Align stage, wall clock | 812 s | **521 s (1.56× faster)** |
+> | Aligner alone | 759 s | **460 s (1.65×)** |
+> | Peak process memory (whole stage) | **5.2 GiB** | 7.4 GiB |
+> | Index build, chr20 | 52 s, 93 MiB | 28 s, 1.5 GiB |
+> | hap.py, bcftools and DeepVariant | identical | identical |
+>
+> - **The calls are equivalent.** hap.py gives the same TP/FN/FP for both aligners with both callers. Comparing the PASS calls directly: bcftools 139,132 identical with none different; DeepVariant 109,228 shared, 2 only with bwa, none only with bwa-mem2. Both BAMs have the same 18,997,779 reads and 2,083,409 marked duplicates.
+> - **The price is memory:** about 2.3 GiB more at peak, and a much larger index (1.5 GiB of RAM to build for one chromosome, ~90 GB for a whole genome). bwa-mem2 spent 159 s of its 460 s writing SAM into the pipe, so `sort` and `markdup` downstream partly limit the gain.
+> - **Caveats:**
+>   - One run each, bwa first. The stage wall clock includes copying the reads into the container, so bwa-mem2 may have read them from a warm page cache. The aligners' own timers start after that copy, so the 1.65× ratio is not affected by run order.
+>   - bwa-mem2 2.3 reports itself as 2.2.1, so the CSV's version column says 2.2.1.
+>   - Against a chr20-only reference, reads from other chromosomes have nowhere else to go. DeepVariant's SNP false positives rise from 52 on Google's whole-genome BAM to 120 here, for both aligners alike.
+>
+> Results: `benchmarks/aligners_<base>.csv` and `benchmarks/aligners_<base>/summary.md` under the storage root:
+>
+> ```bash
+> python scripts/fetch_dv_testdata.py --dataset hg003-chr20
+> python scripts/benchmark_aligners.py --root <root> --from-bam alignments/HG003_chr20.bam \
+>     --base HG003_chr20 --reference GRCh38_chr20.fa --region chr20
+> ```
+>
 > **Scatter-gather variant calling** (`--shard-window BP`) is how the cloud will spread variant calling over many jobs. `tasks.py regions <ref> --window BP` cuts the reference into regions in reference order. `tasks.py variants <id> <ref> --region R` calls one region into `variants/<id>/parts/`. `tasks.py variants <id> <ref> --window BP` merges every part into the usual `variants/<id>.vcf.gz` (+ `.tbi` and stats), and fails, naming them, if any parts are missing. bcftools reports each position in exactly one region, so the merged VCF has the same records as a single job; the Docker E2E test checks this. Shards record the `CallVariantsShard` metric and the merge records `CallVariants`. The Step Functions `Map` state that runs the shards in parallel in the cloud comes in a separate infrastructure PR.
 
 **Tests:**
@@ -543,6 +568,17 @@ There is no database. Status is worked out from which outputs exist, the local m
 
 ### 1. The Deployment Process
 Deployment is manual. Terraform is run locally from `infrastructure/`: run `terraform plan`, review it, then `terraform apply`. The container image is built locally and pushed to ECR. There is no automatic deploy.
+
+**Sizing and resilience settings** (`infrastructure/variables.tf`, all with defaults):
+
+| Variable | Default | What it does |
+| :--- | :--- | :--- |
+| `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variants 2 / 4 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements`. Checked against Fargate's valid vCPU/memory pairs, and QC + align (which run at the same time) must fit in `fargate_max_vcpus`. |
+| `job_disk_gb` | 20 | Fargate ephemeral storage per job. 20 GiB is free; 21-200 is billed. A real 30x sample needs ~100+. |
+| `pipeline_timeout_hours` | 12 | Time limit for a whole run, queue waits included. A run past it ends as TimedOut. |
+| `log_retention_days` | 30 | How long Batch job logs (`/aws/batch/geyser-<env>`) and trigger Lambda logs (`/aws/lambda/geyser-sfn-trigger-<env>`) are kept. |
+
+**Retries.** The Batch job definition retries only infrastructure failures, up to 3 attempts: a host going away, a Spot interruption, a task that failed to start, or a failed image pull or log setup. Anything else exits at once, including every non-zero exit code, so an application error such as a corrupt upload fails fast. Each Batch task in the state machine also retries Batch API errors (throttling, server errors) 3 times with back-off. Both are tested offline in Step Functions Local.
 
 The GitHub Actions workflow `.github/workflows/deploy-platform.yml` ("Terraform Plan") can run a plan for the `dev` or `prod` environment. It authenticates with GitHub OIDC (short-lived credentials, no stored keys) using a read-only role, so it cannot change anything. It is manual and currently disabled.
 

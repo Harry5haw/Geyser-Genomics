@@ -376,8 +376,8 @@ def test_query_pipeline_duration_is_importable_and_uses_given_client(capsys, mon
 def test_console_links_without_arns_have_no_account_specific_parts():
     links = dict(monitoring.console_links("eu-west-2"))
     assert "Pipeline runs (Step Functions)" not in links and "Data lake (S3)" not in links
-    assert links["Batch job logs"].endswith("#logsV2:log-groups/log-group/$252Faws$252Fbatch$252Fjob")
-    assert links["Trigger Lambda logs"].endswith("log-group/$252Faws$252Flambda$252Fgeyser-sfn-trigger")
+    assert links["Batch job logs"].endswith("#logsV2:log-groups/log-group/$252Faws$252Fbatch$252Fgeyser-dev")
+    assert links["Trigger Lambda logs"].endswith("$252Faws$252Flambda$252Fgeyser-sfn-trigger-dev")
     assert links["Step Functions error logs"].endswith(
         "log-group/$252Faws$252Fvendedlogs$252Fstates$252Fgeyser-sfn-dev"
     )
