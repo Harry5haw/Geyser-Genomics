@@ -450,7 +450,9 @@ def quality_widgets(
             "over the whole reference, so a small sample on a large reference shows a tiny depth. Runs from "
             "images before the QC statistics (#102) have no values, and runs before the Terraform-managed log "
             "group (#104) are in `/aws/batch/job`, which these widgets don't read. Each run's full record, with tool "
-            f"versions, is `runs/<id>.provenance.json` in the data lake. Thresholds: mapped < "
+            "versions, is `runs/<id>.provenance.json` in the data lake (assembled from the parts in "
+            "`runs/<id>.provenance/`; `scripts/reconcile.py` reads the parts, so it also sees a failed run's close). "
+            f"Thresholds: mapped < "
             f"{thresholds.min_mapped_pct:g}%, duplicates > {thresholds.max_dup_pct:g}%, no variants, or Ti/Tv "
             f"outside {low:g}-{high:g} with at least {thresholds.min_snps_for_tstv:,} SNPs.",
             height=2,

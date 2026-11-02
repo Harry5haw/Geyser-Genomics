@@ -32,7 +32,10 @@ Closing a failed run: a stage that fails in Python writes its own Failure part, 
 memory, timeout), never starts, or a step outside the stages (the region planner, reading the regions, a shard)
 leaves the record without a final status. The state machine's failure path runs `tasks.py finalize <id> --status
 failed --error <Error> --cause <Cause>` (close_run), which writes runs/{id}.provenance/Finalize.json for the run:
-the record is then failed, with the failing stage (from the Batch job name in the Cause) and why.
+the record is then failed, with the failing stage (from the Batch job name in the Cause) and why. In the cloud the
+state machine writes that part itself, straight to S3 with the Catch output as "caught", and can't re-assemble:
+the stored runs/{id}.provenance.json keeps the last stage's view until something assembles it, while every
+reader that uses read_record() (reconcile, the web UI, the next stage) sees the close.
 """
 
 import hashlib
@@ -233,7 +236,7 @@ JOB_NAME_STAGES = (
     ("PlanRegions-", "PlanRegions"),
 )
 REASON_LIMIT = 1000  # characters of a failure reason kept in the record
-EXTRA_CALLERS = set(UPSTREAM) - set(CORE_STAGES)  # DeepVariant, PangenomeDeepVariant: never fail the core run
+EXTRA_CALLERS = ("DeepVariant", "PangenomeDeepVariant")  # their failure never fails the core run
 FINALIZE_TASK = "Finalize"
 
 
@@ -287,25 +290,20 @@ def _failure_of(final) -> dict:
     return None
 
 
-def close_run(storage, sample_id: str, status: str = "failed", error: str = None, cause: str = None):
-    """Close the run with a final status (tasks.py finalize), so a run whose failing job never wrote its own part
+def close_run(
+    storage, sample_id: str, status: str = "failed", error: str = None, cause: str = None, run_name: str = None
+):
+    """Close a run with a final status (tasks.py finalize), so a run whose failing job never wrote its own part
     (killed, out of memory, timed out, or a step outside the stages) still ends as failed, with the failing stage
     and why. Writes the Finalize part, then re-assembles the record. Never raises; returns the record (or None).
 
-    The run is RUN_NAME, or else the latest stage's run (a by-hand close of the run that just failed): a close
-    with no run name would otherwise be a run of its own and drop every real stage from the record.
+    run_name: the run to close (default RUN_NAME). Never guessed from the parts: the job that failed has often
+    written none, so the latest part can belong to an earlier, successful run.
 
     The state machine's failure path writes the same part itself, straight to S3 with the Catch output as
     "caught" (no Batch job: a retried job's Cause can be too big for a command line), and build() parses it.
     """
-    run_name = os.environ.get("RUN_NAME") or None
-    if run_name is None:
-        try:
-            parts = [_read_json(storage, k) for k in storage.list_keys(part_prefix(sample_id))]
-            stages = [p for p in parts if p and p.get("task") != FINALIZE_TASK]
-            run_name = max(stages, key=lambda p: p.get("finished") or "").get("run_name") if stages else None
-        except Exception as err:  # noqa: BLE001 - best effort
-            _warn("find the run to close", err)
+    run_name = run_name or os.environ.get("RUN_NAME") or None
     part = {
         "schema": SCHEMA_VERSION,
         "task": FINALIZE_TASK,
@@ -387,7 +385,15 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
         "status": "failed" if failed else "succeeded" if complete else "incomplete",
         "complete": complete,
         "updated": _now(),
-        "app_version": latest.get("app_version"),
+        # The state machine's closing part has no app_version: the latest part of the run that knows it.
+        "app_version": next(
+            (
+                p["app_version"]
+                for p in sorted(run, key=lambda p: p.get("finished") or "", reverse=True)
+                if p.get("app_version")
+            ),
+            latest.get("app_version"),
+        ),
         "stages": stages,
         "inputs": _union(p["inputs"] for p in run),
         "outputs": _union(p["outputs"] for p in run),

@@ -285,8 +285,10 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
             )
             note = "; ".join(n for n in (note, f"run record: {failures} failed") if n)
         elif (record or {}).get("status") == "failed":
-            # Closed as failed by the state machine at a step it couldn't name (an S3 error, a timeout).
-            note = "; ".join(n for n in (note, "run record: run failed (step unknown)") if n)
+            # Closed as failed with no failed stage entry: a step it couldn't name (an S3 error, a timeout), or a
+            # named stage whose job had already written Success (the task failed after it, e.g. polling the job).
+            at = record.get("failed_stage") or "step unknown"
+            note = "; ".join(n for n in (note, f"run record: run failed ({at})") if n)
         # A core stage failing in the latest run (or the run closed as failed) is a problem even if an earlier
         # run's outputs are all there; not while a retry is open, and not for an extra caller (DeepVariant) alone.
         if (record or {}).get("status") == "failed" and not open_count:

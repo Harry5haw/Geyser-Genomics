@@ -154,14 +154,31 @@ def test_without_run_name_a_close_counts_only_until_a_stage_starts_again(store):
     assert record["status"] == "incomplete" and "failure" not in record
 
 
-def test_a_close_without_run_name_joins_the_latest_stages_run(store):
-    # A by-hand `tasks.py finalize` (no RUN_NAME) closes the run that just failed, not a run of its own
-    # (which would drop every real stage from the record).
-    write_part(store, "QualityControl", run_name="run-1")
-    write_part(store, "Align", run_name="run-1")
-    record = provenance.close_run(store, "S1", "failed", "States.Timeout", "timed out")
-    assert record["run_name"] == "run-1" and {"QualityControl", "Align"} <= set(record["stages"])
+def test_a_by_hand_close_names_its_run_and_never_guesses(store, capsys):
+    # run-1 succeeded; run-2's QC was killed before writing any part. Guessing "the latest part's run" would fail
+    # run-1, so finalize needs the run: --run-name, or RUN_NAME.
+    for task in provenance.CORE_STAGES:
+        write_part(store, task, run_name="run-1")
+    with pytest.raises(SystemExit):
+        tasks.main(["finalize", "S1", "--status", "failed"])
+    assert "--run-name" in capsys.readouterr().err
+    assert provenance.build(store, "S1")["status"] == "succeeded"  # run-1 untouched
+    argv = ["finalize", "S1", "--status", "failed", "--run-name", "run-1", "--error", "States.Timeout"]
+    assert tasks.main(argv) == 0  # closing run-1 itself, when that's what's meant, works
+    record = provenance.build(store, "S1")
+    assert record["run_name"] == "run-1" and set(provenance.CORE_STAGES) <= set(record["stages"])
     assert record["status"] == "failed"
+
+
+def test_a_closed_runs_app_version_comes_from_its_stages(store):
+    write_part(store, "QualityControl", app_version="main-660ec8f")
+    provenance._put_json(
+        store,
+        "runs/S1.provenance/Finalize.json",
+        {"task": "Finalize", "run_name": "run-1", "finished": "2026-11-02T11:00:00.123Z", "status": "failed"}
+        | {"caught": {"Error": "States.Timeout", "Cause": "timed out"}},
+    )
+    assert provenance.build(store, "S1")["app_version"] == "main-660ec8f"  # not the closing part's (none)
 
 
 def test_the_state_machines_raw_closing_part_is_parsed_on_read(store):

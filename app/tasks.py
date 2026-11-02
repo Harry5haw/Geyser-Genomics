@@ -968,7 +968,15 @@ def finalize_main(argv) -> int:
         help="a Step Functions Catch output as JSON ({Error, Cause}, e.g. copied from the execution's history); "
         "--error / --cause override it",
     )
+    parser.add_argument(
+        "--run-name",
+        help="the run to close: its execution name (default $RUN_NAME). Required one way or the other: the failed "
+        "job often wrote no part, so the latest part can be an earlier, successful run's",
+    )
     args = parser.parse_args(argv)
+    run_name = args.run_name or os.environ.get("RUN_NAME")
+    if not run_name:
+        parser.error("which run? give --run-name (its execution name) or set RUN_NAME")
     caught = {}
     if args.caught:
         try:
@@ -980,7 +988,7 @@ def finalize_main(argv) -> int:
     error = args.error if args.error is not None else caught.get("Error")
     cause = args.cause if args.cause is not None else caught.get("Cause")
     try:
-        record = provenance.close_run(storage(), args.srr_id, args.status, error, cause)
+        record = provenance.close_run(storage(), args.srr_id, args.status, error, cause, run_name=run_name)
     except Exception as err:  # noqa: BLE001 - close_run never raises; storage() itself might
         print(f"WARNING: could not close the run record for {args.srr_id}: {err}", flush=True)
         return 0
