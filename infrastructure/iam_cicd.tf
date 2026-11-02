@@ -217,8 +217,8 @@ resource "aws_iam_role_policy_attachment" "github_terraform_plan_attach_prod" {
 # The CI terraform roles only ever run `terraform plan`. ReadOnlyAccess covers
 # refreshing resources; this adds what the S3 backend needs to read state and
 # take the DynamoDB lock, and blocks reading genomic data from the data lake.
-# No s3:PutObject: plan never writes state. State and lock table use AWS-managed
-# encryption (AES256 / AWS-owned key), so no kms:Decrypt is needed.
+# No s3:PutObject on the state: plan never writes it, only its .tflock lockfile (#135). State and
+# lock table use AWS-managed encryption (AES256 / AWS-owned key), so no kms:Decrypt is needed.
 resource "aws_iam_policy" "geyser_github_terraform_plan_policy" {
   name        = "geyser-github-terraform-plan-policy"
   description = "Read Terraform state and take the plan lock; deny reading data-lake objects."
@@ -239,6 +239,15 @@ resource "aws_iam_policy" "geyser_github_terraform_plan_policy" {
         Resource = [for key in local.tf_state_keys : "arn:aws:s3:::${local.tf_state_bucket}/${key}"]
       },
       {
+        # The S3 lockfile next to each state (#135): created with a conditional write on lock, read
+        # and deleted on unlock. Only the .tflock objects: plan still never writes state.
+        Sid      = "StateLockfile",
+        Effect   = "Allow",
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+        Resource = [for key in local.tf_state_keys : "arn:aws:s3:::${local.tf_state_bucket}/${key}.tflock"]
+      },
+      {
+        # The DynamoDB lock: kept while backend.tf has dynamodb_table (#135 transition), then removed.
         Sid    = "StateLock",
         Effect = "Allow",
         Action = [
