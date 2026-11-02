@@ -502,6 +502,7 @@ def main(argv=None):
         summaries = {c: path_of(root, f"benchmarks/{sid}/{c}.summary.csv") for c in callers}
         if load_json(spath) != settings or not all(os.path.exists(s) for s in summaries.values()):
             args = ["--root", root, "--sample", sid, "--reference", a.reference, "--callers", *callers]
+            args += ["--aligner", al]  # for the benchmark history
             if a.region:
                 args += ["--region", a.region]
             if benchmark_happy.main(args) != 0:
