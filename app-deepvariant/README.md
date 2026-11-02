@@ -7,7 +7,7 @@ about 10 GB.
 | | |
 |---|---|
 | Reads | `alignments/{id}.cram` + `.crai` (or `alignments/{id}.bam`, for imported data), `reference/{name}` (+ `.fai` if stored) |
-| Writes | `variants_deepvariant/{id}.vcf.gz`, beside the bcftools `variants/{id}.vcf.gz` |
+| Writes | `variants_deepvariant/{id}.vcf.gz`, beside the bcftools `variants/{id}.vcf.gz`; `stats/{id}/bcftools.stats.deepvariant.txt` (`bcftools stats -f PASS`: RefCall candidates excluded), also as the sample's `stats/{id}/bcftools.stats.txt` when DeepVariant is the run's caller (`PIPELINE_CALLER=deepvariant`) |
 | Command | `/opt/geyser-venv/bin/python deepvariant_task.py <id> <reference_name>` |
 | Metrics | `DeepVariant` (whole stage) plus `DeepVariant.MakeExamples`, `DeepVariant.CallVariants` and `DeepVariant.PostprocessVariants` |
 
@@ -134,7 +134,7 @@ is, and so are the pipeline's own BAMs: the `align` stage marks duplicates with 
 3. **Disk.** The default ECS GPU AMI root volume is far too small. The image is 9.8 GB compressed and 28 GB unpacked, and the stage copies the BAM to local disk. The compute environment needs a launch template with gp3 sized as below: about 100 GB for chromosome-scale inputs, 250 GB or more for a whole genome.
 4. **IAM.** The job role needs:
    - `s3:GetObject` on `alignments/*` and `reference/*`;
-   - `s3:PutObject` on `variants_deepvariant/*`;
+   - `s3:PutObject` on `variants_deepvariant/*` and `stats/*`;
    - `cloudwatch:PutMetricData`.
 5. **Networking.** `gpu_env` currently uses the private subnet. With the NAT gateway off by default (the cost-safe plan), it has no route to ECR or S3. Either move it to the public subnet with public IPs on launch, or add VPC endpoints (S3 gateway; ECR api/dkr interface endpoints, which also cost money).
 6. **Step Functions.** After `Align`, add a `Parallel` state with two branches:

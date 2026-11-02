@@ -1,11 +1,11 @@
 {
-  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling. Every job gets RUN_NAME = the execution name, which the stages write into the run record (app/provenance.py). Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
+  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling scattered by region (a Map over the planned regions) and merged. Every job gets RUN_NAME = the execution name, which the stages write into the run record (app/provenance.py). Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
   "StartAt": "QC_and_Align",
   "TimeoutSeconds": ${pipeline_timeout_seconds},
   "States": {
     "QC_and_Align": {
       "Type": "Parallel",
-      "Comment": "Both branches read raw_reads/ directly and don't depend on each other. If either fails, Step Functions stops the other and the Catch below handles it.",
+      "Comment": "QC and align read raw_reads/ directly and don't depend on each other; If either fails, Step Functions stops the other and the Catch below handles it. If either fails, Step Functions stops the other and the Catch below handles it.",
       "Branches": [
         {
           "StartAt": "Prepare_QC_Command",
@@ -106,7 +106,7 @@
     },
     "Choose_Caller": {
       "Type": "Choice",
-      "Comment": "caller = deepvariant (set by the trigger from Terraform's default_caller, or in a manual start) runs DeepVariant on the GPU queue; anything else, or no caller, runs bcftools as before.",
+      "Comment": "caller = deepvariant (set by the trigger from Terraform's default_caller, or in a manual start) runs DeepVariant on the GPU queue; anything else, or no caller, runs bcftools as before (regions planned, called in parallel, merged).",
       "Choices": [
         {
           "And": [
@@ -116,7 +116,7 @@
           "Next": "Prepare_DeepVariant_Command"
         }
       ],
-      "Default": "Prepare_Variants_Command"
+      "Default": "Prepare_Plan_Command"
     },
     "Prepare_DeepVariant_Command": {
       "Type": "Pass",
@@ -135,7 +135,7 @@
     },
     "DeepVariant": {
       "Type": "Task",
-      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead, and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit.",
+      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead (the scatter-gather path), and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit.",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
         "JobName.$": "$.batch_params.JobName",
@@ -155,16 +155,135 @@
       "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
       "ResultPath": "$.batch_output",
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Variants_Command", "ResultPath": "$.deepvariant_error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Plan_Command", "ResultPath": "$.deepvariant_error" }
       ],
       "End": true
+    },
+    "Prepare_Plan_Command": {
+      "Type": "Pass",
+      "Comment": "Plans the variant-calling regions (tasks.py regions) after QC and align. Its own step, not a Parallel branch: Step Functions Local re-applies a branch's retry interval when sibling branches finish during its back-off, which made the retry tests flaky. The window is the same template value the merge uses.",
+      "Parameters": {
+        "JobName.$": "States.Format('PlanRegions-{}-{}', $.srr_id, $$.Execution.Name)",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'regions', $.reference_name, '--window', '${variant_region_window}', '--output-key', States.Format('intermediate/variant-regions/{}/{}.json', $.srr_id, $$.Execution.Name))",
+          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value": "${qc_vcpu}" },
+            { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
+          ]
+        }
+      },
+      "ResultPath": "$.batch_params",
+      "Next": "Plan_Regions"
+    },
+    "Plan_Regions": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "$.batch_params.JobName",
+        "JobDefinition": "${job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+        "Timeout": { "AttemptDurationSeconds": 1800 }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.plan_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+      ],
+      "Next": "Read_Regions"
+    },
+    "Read_Regions": {
+      "Type": "Task",
+      "Comment": "The regions the planner wrote, read straight from S3 (no Lambda) and parsed into a list for the Map.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('intermediate/variant-regions/{}/{}.json', $.srr_id, $$.Execution.Name)"
+      },
+      "ResultSelector": { "regions.$": "States.StringToJson($.Body)" },
+      "ResultPath": "$.plan",
+      "Retry": [
+        { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+      ],
+      "Next": "Call_Variant_Shards"
+    },
+    "Call_Variant_Shards": {
+      "Type": "Map",
+      "Comment": "Scatter: one variants --region job per region, at most variants_max_concurrency at a time. Each writes intermediate/variant-parts/<id>/<RUN_NAME>/ (expired by #62's lifecycle rule).",
+      "ItemsPath": "$.plan.regions",
+      "Parameters": {
+        "srr_id.$": "$.srr_id",
+        "reference_name.$": "$.reference_name",
+        "region.$": "$$.Map.Item.Value",
+        "index.$": "$$.Map.Item.Index"
+      },
+      "MaxConcurrency": ${variants_max_concurrency},
+      "Iterator": {
+        "StartAt": "Prepare_Shard_Command",
+        "States": {
+          "Prepare_Shard_Command": {
+            "Type": "Pass",
+            "Parameters": {
+              "JobName.$": "States.Format('CallVariantsShard-{}-{}', $.index, $$.Execution.Name)",
+              "ContainerOverrides": {
+                "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--region', $.region)",
+                "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                "ResourceRequirements": [
+                  { "Type": "VCPU", "Value": "${variants_vcpu}" },
+                  { "Type": "MEMORY", "Value": "${variants_memory_mb}" }
+                ]
+              }
+            },
+            "ResultPath": "$.batch_params",
+            "Next": "Call_Shard"
+          },
+          "Call_Shard": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::batch:submitJob.sync",
+            "Parameters": {
+              "JobName.$": "$.batch_params.JobName",
+              "JobDefinition": "${job_definition}",
+              "JobQueue": "${job_queue}",
+              "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+              "Timeout": { "AttemptDurationSeconds": 7200 }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+      ],
+      "Next": "Prepare_Variants_Command"
     },
     "Prepare_Variants_Command": {
       "Type": "Pass",
       "Parameters": {
         "JobName.$": "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
-          "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)",
+          "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--window', '${variant_region_window}')",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
             { "Type": "VCPU", "Value": "${variants_vcpu}" },

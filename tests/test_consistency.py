@@ -7,17 +7,47 @@ import run_local
 import tasks
 from conftest import REPO_ROOT
 
-ARRAY_RE = re.compile(r"States\.Array\('python',\s*'tasks\.py',\s*'(\w+)',\s*\$\.srr_id(,\s*\$\.reference_name)?\)")
+# A stage command: tasks.py <stage> $.srr_id [$.reference_name] [extra flags, e.g. '--region', $.region].
+ARRAY_RE = re.compile(
+    r"States\.Array\('python',\s*'tasks\.py',\s*'(\w+)',\s*\$\.srr_id(,\s*\$\.reference_name)?(?P<extra>(,\s*'--[\w-]+',\s*[^,)]+)*)\)"
+)
+
+
+def asl_text():
+    with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def state_machine_commands():
+    """[(stage, needs_reference, extra flags)] in file order."""
+    return [(m.group(1), bool(m.group(2)), m.group("extra")) for m in ARRAY_RE.finditer(asl_text())]
 
 
 def state_machine_stages():
-    with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
-        return [(m.group(1), bool(m.group(2))) for m in ARRAY_RE.finditer(fh.read())]
+    """The distinct stages in file order (the variant shards and their merge are both 'variants')."""
+    stages = []
+    for stage, needs_ref, _ in state_machine_commands():
+        if (stage, needs_ref) not in stages:
+            stages.append((stage, needs_ref))
+    return stages
 
 
 def test_state_machine_matches_local_runner():
     # File order: the QC branch, the align branch, then variants (run_local runs them in that order).
     assert state_machine_stages() == run_local.STAGES
+
+
+def test_variant_shards_and_merge_use_the_planners_window():
+    # Scatter-gather (#108): the Map runs 'variants --region', the merge 'variants --window <W>', and the
+    # planner 'regions --window <W>' with the same W, or the merge would look for parts that don't exist.
+    variants = [extra for stage, _, extra in state_machine_commands() if stage == "variants"]
+    assert [re.findall(r"'(--[\w-]+)'", extra) for extra in variants] == [["--region"], ["--window"]]
+    windows = re.findall(r"'--window',\s*'([^']+)'", asl_text())
+    assert len(windows) == 2 and set(windows) == {"${variant_region_window}"}  # planner and merge
+    assert "'regions', $.reference_name, '--window'" in asl_text() and "'--output-key'" in asl_text()
+    # The planner's regions file is disposable too: under the prefix #62's lifecycle rule expires.
+    keys = re.findall(r"States\.Format\('([^']*regions[^']*)'", asl_text())
+    assert len(keys) == 2 and len(set(keys)) == 1 and keys[0].startswith(tasks.INTERMEDIATE_PREFIX), keys
 
 
 def test_state_machine_is_rendered_from_the_asl_file():

@@ -52,10 +52,18 @@ TEMPLATE_VARS = {
     # Cloud DeepVariant (deepvariant.tf, batch_gpu.tf).
     "deepvariant_job_definition": "geyser-deepvariant-job",
     "gpu_job_queue": "geyser-gpu-queue-dev",
+    # Scatter-gather (#108): the data lake, and the defaults of variant_region_window / variants_max_concurrency.
+    "bucket": "geyser-data-lake-local",
+    "variant_region_window": "50000000",
+    "variants_max_concurrency": "4",
 }
-BATCH_TASKS = ("Quality_Control", "Align_Genome", "Call_Variants")
+BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants")
+# What Read_Regions gets from S3 in the tests: the planner's JSON list, as GetObject returns it (a string).
+REGIONS = ["chr20:1-50000000", "chr20:50000001-64444167", "chr21:1-46709983"]
 
 OK, FAIL = "BatchSucceeded", "BatchFailed"
+# Every case plans, reads and calls its regions unless it says otherwise.
+SCATTER = {"Plan_Regions": OK, "Read_Regions": "RegionsRead", "Call_Shard": "ShardsOk"}
 TEST_CASES = {
     "HappyPath": {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK},
     "QCFails": {"Quality_Control": FAIL, "Align_Genome": OK, "Call_Variants": OK, "Notify_Failure": "Published"},
@@ -88,6 +96,13 @@ TEST_CASES = {
         "Call_Variants": FAIL,
         "Notify_Failure": "Published",
     },
+    "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
+    "RegionsUnreadable": {"Read_Regions": "NoSuchKey", "Notify_Failure": "Published"},
+    "ShardFails": {"Call_Shard": "ShardsFail", "Notify_Failure": "Published"},
+}
+TEST_CASES = {
+    name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **SCATTER, **case}
+    for name, case in TEST_CASES.items()
 }
 MOCK_CONFIG = {
     "StateMachines": {MACHINE: {"TestCases": TEST_CASES}},
@@ -103,6 +118,19 @@ MOCK_CONFIG = {
             "1": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}},
         },
         "AlwaysThrottled": {"0-3": {"Throw": {"Error": "Batch.AWSBatchException", "Cause": "Too Many Requests"}}},
+        "RegionsRead": {"0": {"Return": {"Body": json.dumps(REGIONS), "ContentType": "application/json"}}},
+        "NoSuchKey": {
+            "0-3": {"Throw": {"Error": "S3.NoSuchKeyException", "Cause": "The specified key does not exist."}}
+        },
+        "ShardsOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
+        # Every shard fails: Step Functions Local doesn't count mocked calls reliably across concurrent Map
+        # iterations, so "the second call fails" usually never happened. The point (a failed shard stops the
+        # run before the merge) is the same.
+        "ShardsFail": {
+            "0-99": {
+                "Throw": {"Error": "States.TaskFailed", "Cause": "Essential container in task exited (exit code 1)"}
+            }
+        },
     },
 }
 
@@ -296,6 +324,18 @@ def batch_parameters(events) -> dict:
     return params
 
 
+def batch_calls(events, state) -> list:
+    """Every Batch SubmitJob parameter set one task state sent (a Map state calls its task once per item)."""
+    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    return [
+        json.loads(e["taskScheduledEventDetails"]["parameters"])
+        for e in events
+        if e["type"] == "TaskScheduled"
+        and e["taskScheduledEventDetails"]["resourceType"] == "batch"
+        and names.get(e["previousEventId"]) == state
+    ]
+
+
 def test_template_has_only_the_terraform_variables():
     render_definition()
 
@@ -327,6 +367,10 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
         "qc": {"JobId": "job-ok", "Status": "SUCCEEDED"},
         "align": {"JobId": "job-ok", "Status": "SUCCEEDED"},
     }
+    # The planner runs after the Parallel state, as its own step.
+    assert ancestor(by_id, state_entered(events, "Plan_Regions"), "ParallelStateExited") is not None
+    assert output["plan_output"] == {"JobId": "job-ok", "Status": "SUCCEEDED"}
+    assert output["plan"] == {"regions": REGIONS}
     assert output["srr_id"] == "S1" and output["reference_name"] == "chr20.fa"
 
 
@@ -335,17 +379,38 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
     params = batch_parameters(events)
     assert set(params) == set(BATCH_TASKS)
     commands = {state: p["ContainerOverrides"]["Command"] for state, p in params.items()}
+    window = TEMPLATE_VARS["variant_region_window"]
+    del commands["Call_Shard"]  # one per region: checked in test_the_map_calls_every_region_once
     assert commands == {
         "Quality_Control": ["python", "tasks.py", "qc", "SAMPLE7"],
         "Align_Genome": ["python", "tasks.py", "align", "SAMPLE7", "ref.fa"],
-        "Call_Variants": ["python", "tasks.py", "variants", "SAMPLE7", "ref.fa"],
+        "Plan_Regions": [
+            "python",
+            "tasks.py",
+            "regions",
+            "ref.fa",
+            "--window",
+            window,
+            "--output-key",
+            f"intermediate/variant-regions/SAMPLE7/{params['Plan_Regions']['JobName'].split('-', 2)[2]}.json",
+        ],
+        "Call_Variants": ["python", "tasks.py", "variants", "SAMPLE7", "ref.fa", "--window", window],
     }
-    for p in params.values():
+    for state, p in params.items():
         assert p["JobDefinition"] == TEMPLATE_VARS["job_definition"]
         assert p["JobQueue"] == TEMPLATE_VARS["job_queue"]
-        assert re.fullmatch(r"(QualityControl|AlignGenome|CallVariants)-SAMPLE7-HappyPath-\w+", p["JobName"])
+        if state != "Call_Shard":
+            assert re.fullmatch(
+                r"(QualityControl|AlignGenome|PlanRegions|CallVariants)-SAMPLE7-HappyPath-\w+", p["JobName"]
+            )
     timeouts = {state: p["Timeout"]["AttemptDurationSeconds"] for state, p in params.items()}
-    assert timeouts == {"Quality_Control": 3600, "Align_Genome": 14400, "Call_Variants": 7200}
+    assert timeouts == {
+        "Quality_Control": 3600,
+        "Align_Genome": 14400,
+        "Plan_Regions": 1800,
+        "Call_Shard": 7200,
+        "Call_Variants": 7200,
+    }
     # Each stage asks Batch for its own size (variables.tf stage_resources), as strings.
     sizes = {
         state: {r["Type"]: r["Value"] for r in p["ContainerOverrides"]["ResourceRequirements"]}
@@ -354,22 +419,46 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
     assert sizes == {
         "Quality_Control": {"VCPU": "1", "MEMORY": "2048"},
         "Align_Genome": {"VCPU": "4", "MEMORY": "8192"},
+        "Plan_Regions": {"VCPU": "1", "MEMORY": "2048"},  # QC's size: it only reads the reference
+        "Call_Shard": {"VCPU": "2", "MEMORY": "4096"},  # each shard is a variants job
         "Call_Variants": {"VCPU": "2", "MEMORY": "4096"},
     }
 
 
+# The Batch job name each task state sets (its Pass state's States.Format prefix).
+JOB_NAME_PREFIXES = {
+    "Quality_Control": "QualityControl-",
+    "Align_Genome": "AlignGenome-",
+    "Plan_Regions": "PlanRegions-",
+    "Call_Shard": "CallVariantsShard-",
+    "Call_Variants": "CallVariants-",
+}
+
+
+COMPLETED = {"TaskSucceeded", "TaskFailed", "TaskTimedOut"}
+
+
 def attempts(events, state) -> int:
-    """How many times a task state called its service (TaskScheduled events), retries included."""
-    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    """How many times a Batch task state's job ran to an outcome (succeeded, failed or timed out).
+
+    Counts completed attempts, not TaskScheduled: once MaxAttempts is used up, Step Functions Local
+    can emit a stray extra TaskScheduled + TaskStarted that never completes, racing the Parallel
+    state's failure (seen in #133's event histories). The state machine itself retries correctly.
+    Each completion is tied to its attempt through previousEventId (TaskFailed -> TaskStarted ->
+    TaskScheduled, which carries the job name the state sets).
+    """
+    prefix = JOB_NAME_PREFIXES[state]
     by_id = {e["id"]: e for e in events}
     count = 0
     for e in events:
-        if e["type"] != "TaskScheduled":
+        if e["type"] not in COMPLETED:
             continue
         cursor = e
-        while cursor is not None and cursor["id"] not in names:
+        while cursor is not None and cursor["type"] != "TaskScheduled":
             cursor = by_id.get(cursor.get("previousEventId"))
-        count += cursor is not None and names[cursor["id"]] == state
+        if cursor is None or cursor["taskScheduledEventDetails"]["resourceType"] != "batch":
+            continue
+        count += json.loads(cursor["taskScheduledEventDetails"]["parameters"])["JobName"].startswith(prefix)
     return count
 
 
@@ -431,7 +520,8 @@ def test_a_failed_stage_notifies_and_ends_failed(sfn, case, failed_state):
     desc, events = run_case(sfn, case)
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
-    assert states[-2:] == ["Notify_Failure", "Pipeline_Failed"]
+    # Not states[-2:]: a cancelled Parallel branch can log its last StateEntered after Notify_Failure.
+    assert states[-1] == "Pipeline_Failed" and states.index("Notify_Failure") < states.index("Pipeline_Failed")
     if failed_state != "Call_Variants":
         assert "Call_Variants" not in states  # a failed branch stops the run before variants
 
@@ -453,14 +543,15 @@ def test_run_still_ends_failed_when_the_notification_fails(sfn):
 def test_without_a_caller_the_run_uses_bcftools_as_before(sfn):
     desc, events = run_case(sfn, "HappyPath", caller="bcftools")
     assert desc["status"] == "SUCCEEDED"
-    assert "DeepVariant" not in entered(events) and "Call_Variants" in entered(events)
+    assert "DeepVariant" not in entered(events) and "Plan_Regions" in entered(events)
+    assert "Call_Variants" in entered(events)
 
 
 def test_caller_deepvariant_runs_deepvariant_on_the_gpu_queue(sfn):
     desc, events = run_case(sfn, "DeepVariantOk", sample="SAMPLE7", reference="ref.fa", caller="deepvariant")
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
-    assert "DeepVariant" in states and "Call_Variants" not in states
+    assert "DeepVariant" in states and not {"Plan_Regions", "Call_Variants"} & set(states)
     names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
     (dv,) = [
         json.loads(e["taskScheduledEventDetails"]["parameters"])
@@ -487,7 +578,8 @@ def test_a_failed_deepvariant_falls_back_to_bcftools(sfn):
     desc, events = run_case(sfn, "DeepVariantFallsBack", caller="deepvariant")
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
-    assert states.index("DeepVariant") < states.index("Call_Variants")
+    # The fallback is the whole bcftools path: plan, shards, merge.
+    assert states.index("DeepVariant") < states.index("Plan_Regions") < states.index("Call_Variants")
     assert "Notify_Failure" not in states
     output = json.loads(desc["output"])
     assert output["deepvariant_error"]["Error"] == "States.TaskFailed"  # why the fallback happened
@@ -497,3 +589,56 @@ def test_both_callers_failing_fails_the_run(sfn):
     desc, events = run_case(sfn, "BothCallersFail", caller="deepvariant")
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     assert entered(events)[-2:] == ["Notify_Failure", "Pipeline_Failed"]
+
+
+# --- scatter-gather: the Map over the planned regions (#108) ------------------------------------
+
+
+def test_the_map_calls_every_region_once_then_merges(sfn):
+    desc, events = run_case(sfn, "HappyPath", sample="SAMPLE7", reference="ref.fa")
+    assert desc["status"] == "SUCCEEDED"
+    shards = batch_calls(events, "Call_Shard")
+    regions = sorted(p["ContainerOverrides"]["Command"][-1] for p in shards)
+    assert regions == sorted(REGIONS)
+    for p in shards:
+        assert p["ContainerOverrides"]["Command"][:6] == [
+            "python",
+            "tasks.py",
+            "variants",
+            "SAMPLE7",
+            "ref.fa",
+            "--region",
+        ]
+        assert p["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
+        assert re.fullmatch(rf"CallVariantsShard-[0-2]-{desc['name']}", p["JobName"])
+    # The merge comes after every shard, and reads the regions the planner wrote for this run.
+    by_id = {e["id"]: e for e in events}
+    assert ancestor(by_id, state_entered(events, "Call_Variants"), "MapStateExited") is not None
+    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    (read,) = [e for e in events if e["type"] == "TaskScheduled" and names.get(e["previousEventId"]) == "Read_Regions"]
+    params = json.loads(read["taskScheduledEventDetails"]["parameters"])
+    assert params == {
+        "Bucket": TEMPLATE_VARS["bucket"],
+        "Key": f"intermediate/variant-regions/SAMPLE7/{desc['name']}.json",
+    }
+
+
+def test_the_map_runs_at_most_the_configured_shards_at_once():
+    definition = json.loads(render_definition())
+    assert definition["States"]["Call_Variant_Shards"]["MaxConcurrency"] == int(
+        TEMPLATE_VARS["variants_max_concurrency"]
+    )
+
+
+@pytest.mark.parametrize("case", ["PlanFails", "RegionsUnreadable", "ShardFails"])
+def test_a_failed_planner_read_or_shard_notifies_and_never_merges(sfn, case):
+    # A missing part would make the merge fail anyway, but it must not even start: the run ends at
+    # Notify_Failure -> Pipeline_Failed, and nothing claims a VCF for this run.
+    desc, events = run_case(sfn, case)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    # Not states[-2:]: a cancelled Parallel branch can log its last StateEntered after Notify_Failure.
+    assert states[-1] == "Pipeline_Failed" and states.index("Notify_Failure") < states.index("Pipeline_Failed")
+    assert "Call_Variants" not in states
+    if case == "PlanFails":
+        assert "Read_Regions" not in states and "Call_Variant_Shards" not in states
