@@ -54,8 +54,16 @@ DEFAULT_REGION = "eu-west-2"
 _SENTINEL = "SAMPLEIDSENTINEL"
 # Pipeline outputs in stage order (keys of tasks.keys_for), with a short column label.
 # qc and align run side by side, so a sample can have A without Q (or the other way round).
-STAGE_OUTPUTS = (("qc_html", "Q"), ("bam", "A"), ("vcf", "V"))
-STAGE_NAMES = {"qc_html": "qc", "bam": "align", "vcf": "variants"}
+STAGE_OUTPUTS = (("qc_html", "Q"), ("cram", "A"), ("vcf", "V"))
+STAGE_NAMES = {"qc_html": "qc", "cram": "align", "vcf": "variants"}
+# Keys that also count as a stage's output: a BAM is an alignment too (runs from before CRAM,
+# fetched benchmark data). Its .crai / .tbi indexes are matched as sample outputs but never count.
+OUTPUT_ALTERNATIVES = {"cram": ("cram", "bam")}
+
+
+def output_keys(expected: dict, name: str) -> list:
+    """One key list per acceptable form of a stage output: [[cram], [bam]] for the alignment."""
+    return [keys_of(expected, alt) for alt in OUTPUT_ALTERNATIVES.get(name, (name,))]
 
 
 def load_trigger():
@@ -196,11 +204,12 @@ def reconcile(keys, running: Counter = None) -> dict:
         has_raw = layout is not None or layout_problem is not None
         expected = keys_for(sample_id, layout or output_layout(sample_id, keys))
         # A per-mate output (the QC reports) only counts once both mates have it.
-        outputs = {name: all(k in keys for k in keys_of(expected, name)) for name, _ in STAGE_OUTPUTS}
+        outputs = {name: any(all(k in keys for k in form) for form in output_keys(expected, name))
+                   for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
         # But one mate's report still shows the run got that far (e.g. FastQC failed on R2).
         reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS
-                   if any(k in keys for k in keys_of(expected, name))]
+                   if any(k in keys for form in output_keys(expected, name) for k in form)]
         open_count = running.get(sample_id, 0)
         problem = None
         if layout_problem:
