@@ -131,7 +131,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 1800 }
+        "Timeout": { "AttemptDurationSeconds": 1800 },
+        "Tags": { "Stage": "plan_regions" }
       },
       "Retry": [
         {
@@ -204,7 +205,8 @@
               "JobDefinition": "${job_definition}",
               "JobQueue": "${job_queue}",
               "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-              "Timeout": { "AttemptDurationSeconds": 7200 }
+              "Timeout": { "AttemptDurationSeconds": 7200 },
+              "Tags": { "Stage": "variants_shard" }
             },
             "Retry": [
               {
