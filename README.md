@@ -203,7 +203,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 | **Bioinformatics Pipeline** | ✅ Verified locally | fastp quality control and bwa-mem2 alignment (sorted, duplicate-marked CRAM), both straight from the gzipped upload so they can run side by side, then bcftools variant calling. |
 | **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
 | **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
-| **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs the four stages in order on AWS Batch (Fargate), with failure notifications via SNS. |
+| **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs QC and alignment in parallel, then variant calling, on AWS Batch (Fargate), with failure notifications via SNS. The definition is tested offline in Step Functions Local. |
 | **CI Authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
 | **Automated Deployment** | ⏸️ Not yet | CI runs tests only. The Terraform workflow can only plan, is manual, and is currently disabled. Deploys are done locally. |
 | **Cost Safety** | ✅ Applied | NAT gateway optional and off, Fargate jobs in a public subnet, ECR and log retention limits, $10 monthly budget alert. |
@@ -221,11 +221,16 @@ The design is event-driven and uses managed AWS services, so there are no server
 flowchart TB
     U(["📤 Upload<br/>raw_reads/ID.fastq.gz"]) --> S3[("🪣 Amazon S3<br/>data lake")]
     S3 -->|"S3 event<br/>prefix raw_reads/, suffix .gz"| L["λ Lambda trigger"]
-    L -->|"StartExecution"| SF1
+    L -->|"StartExecution"| SFN
 
     subgraph SFN ["⚙️ AWS Step Functions: one execution per sample"]
         direction LR
-        SF1["Decompress"] --> SF2["Quality control"] --> SF3["Align"] --> SF4["Call variants"]
+        subgraph PAR ["Parallel"]
+            direction TB
+            SF1["Quality control"]
+            SF2["Align"]
+        end
+        PAR --> SF3["Call variants"]
     end
 
     SFN ==>|"submitJob.sync<br/>one job per stage"| BATCH["🐳 AWS Batch on Fargate<br/>geyser-app image · 2 vCPU / 4 GB"]
@@ -312,7 +317,7 @@ pytest                                           # unit tests, no Docker needed
 GEYSER_E2E=1 pytest tests/test_e2e_docker.py     # full pipeline in Docker
 ```
 
-The tests also check that the stage list in the Step Functions definition (`infrastructure/step_functions.tf`), the stage code (`app/tasks.py`) and the local runner all agree.
+The tests also check that the stage list in the Step Functions definition (`infrastructure/state_machine.asl.json`, which `step_functions.tf` renders with `templatefile()`), the stage code (`app/tasks.py`) and the local runner all agree. `tests/test_state_machine_local.py` runs that same definition in [Step Functions Local](https://docs.aws.amazon.com/step-functions/latest/dg/sfn-local.html) (Docker) with Batch and SNS mocked: the happy path (QC and alignment in parallel, then variants), each stage failing, and a failed notification still ending the run as Failed (`GEYSER_SFN_LOCAL=1`; CI runs it on every push).
 
 The storage and metrics backends are chosen by environment variables, so the same code runs locally and in AWS:
 

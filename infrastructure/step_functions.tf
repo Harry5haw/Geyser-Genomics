@@ -1,4 +1,4 @@
-# infrastructure/step_functions.tf (Final Production Version)
+# infrastructure/step_functions.tf: the pipeline state machine (definition in state_machine.asl.json)
 
 resource "aws_iam_role" "geyser_sfn_execution_role" {
   name = "${var.project_name}-sfn-execution-role-${var.environment}"
@@ -46,64 +46,12 @@ resource "aws_cloudwatch_log_group" "geyser_sfn_log_group" {
 resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   name     = "${var.project_name}-pipeline-sfn-${var.environment}"
   role_arn = aws_iam_role.geyser_sfn_execution_role.arn
-  definition = jsonencode({
-    Comment = "Geyser Genomics Pipeline orchestrated by AWS Step Functions"
-    StartAt = "Prepare_Decompress_Command"
-    States = {
-      Prepare_Decompress_Command = {
-        Type       = "Pass",
-        Parameters = { "JobName.$" = "States.Format('DecompressSRA-{}-{}', $.srr_id, $$.Execution.Name)", "ContainerOverrides" = { "Command.$" = "States.Array('python', 'tasks.py', 'decompress', $.srr_id)" } },
-        ResultPath = "$.batch_params", Next = "Decompress_SRA"
-      },
-      Decompress_SRA = {
-        Type       = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 3600 } },
-        ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], Next = "Prepare_QC_Command"
-      },
-      Prepare_QC_Command = {
-        Type       = "Pass",
-        Parameters = { "JobName.$" = "States.Format('QualityControl-{}-{}', $.srr_id, $$.Execution.Name)", "ContainerOverrides" = { "Command.$" = "States.Array('python', 'tasks.py', 'qc', $.srr_id)" } },
-        ResultPath = "$.batch_params", Next = "Quality_Control"
-      },
-      Quality_Control = {
-        Type       = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 1800 } },
-        ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], Next = "Prepare_Align_Command"
-      },
-      Prepare_Align_Command = {
-        Type       = "Pass",
-        Parameters = { "JobName.$" = "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)", "ContainerOverrides" = { "Command.$" = "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)" } },
-        ResultPath = "$.batch_params", Next = "Align_Genome"
-      },
-      Align_Genome = {
-        Type       = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 14400 } },
-        ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], Next = "Prepare_Variants_Command"
-      },
-      Prepare_Variants_Command = {
-        Type       = "Pass",
-        Parameters = { "JobName.$" = "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)", "ContainerOverrides" = { "Command.$" = "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)" } },
-        ResultPath = "$.batch_params", Next = "Call_Variants"
-      },
-      Call_Variants = {
-        Type       = "Task", Resource = "arn:aws:states:::batch:submitJob.sync",
-        Parameters = { "JobName.$" = "$.batch_params.JobName", "JobDefinition" = aws_batch_job_definition.geyser_app_job_def.name, "JobQueue" = aws_batch_job_queue.geyser_queue.name, "ContainerOverrides.$" = "$.batch_params.ContainerOverrides", "Timeout" = { "AttemptDurationSeconds" = 7200 } },
-        ResultPath = "$.batch_output", Catch = [{ ErrorEquals = ["States.ALL"], Next = "Notify_Failure", ResultPath = "$.error" }], End = true
-      },
-      Notify_Failure = {
-        Type       = "Task", Resource = "arn:aws:states:::sns:publish",
-        Parameters = { "TopicArn" = aws_sns_topic.geyser_pipeline_status_topic.arn, "Message" = { "PipelineName" = "Geyser Genomics Pipeline", "ExecutionId.$" = "$$.Execution.Id", "Status" = "FAILED", "ErrorDetails.$" = "$.error", "Input.$" = "$$", "StartTime.$" = "$$.Execution.StartTime" }, "MessageAttributes" = { "Status" = { "DataType" = "String", "StringValue" = "FAILED" }, "Pipeline" = { "DataType" = "String", "StringValue" = "Geyser Genomics" } } },
-        # Even if the SNS publish itself fails, the run must still end as Failed.
-        ResultPath = null, Catch = [{ ErrorEquals = ["States.ALL"], Next = "Pipeline_Failed", ResultPath = "$.notify_error" }], Next = "Pipeline_Failed"
-      },
-      # Terminal state for any failed stage, so a failed run ends as FAILED
-      # instead of SUCCEEDED after the notification is sent.
-      Pipeline_Failed = {
-        Type  = "Fail",
-        Error = "PipelineStageFailed",
-        Cause = "A pipeline stage failed. See the SNS failure notification or the execution history for details."
-      }
-    }
+  # The definition lives in state_machine.asl.json so that tests/test_state_machine_local.py can run
+  # the very same file in Step Functions Local (Docker, no AWS). Only these three values are filled in.
+  definition = templatefile("${path.module}/state_machine.asl.json", {
+    job_definition = aws_batch_job_definition.geyser_app_job_def.name
+    job_queue      = aws_batch_job_queue.geyser_queue.name
+    sns_topic_arn  = aws_sns_topic.geyser_pipeline_status_topic.arn
   })
   logging_configuration {
     log_destination        = "${aws_cloudwatch_log_group.geyser_sfn_log_group.arn}:*"

@@ -107,12 +107,12 @@ def test_execution_name_is_always_valid(trigger, sample_id):
 
 
 def test_batch_job_names_still_fit(trigger):
-    """step_functions.tf builds job names as '<Prefix>-<srr_id>-<execution name>'; Batch allows 128 chars."""
-    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+    """The state machine builds job names as '<Prefix>-<srr_id>-<execution name>'; Batch allows 128 chars."""
+    with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
         prefixes = re.findall(
             r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", fh.read()
         )
-    assert len(prefixes) == 4
+    assert prefixes == ["QualityControl", "AlignGenome", "CallVariants"]
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
     for prefix in prefixes:

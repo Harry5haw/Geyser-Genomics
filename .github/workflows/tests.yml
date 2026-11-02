@@ -83,6 +83,22 @@ jobs:
         env:
           GEYSER_E2E: "1"
 
+  # The state machine definition (infrastructure/state_machine.asl.json, the file Terraform renders)
+  # run in Step Functions Local with Batch and SNS mocked: no AWS, no credentials.
+  state-machine:
+    name: State machine (Step Functions Local, mocked Batch/SNS)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest tests/test_state_machine_local.py -v
+        env:
+          GEYSER_SFN_LOCAL: "1"
+
   # DeepVariant on the CPU image (runners have no GPU). Same commands and storage wiring as the GPU
   # image, so this catches integration breakage. Only on PRs and manual runs: the base image is a
   # ~2 GB pull. The GPU path is tested locally with GEYSER_GPU_E2E=1 before merging.
