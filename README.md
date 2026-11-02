@@ -317,7 +317,7 @@ python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --ch
 > - **The calls are equivalent.** hap.py gives the same TP/FN/FP for both aligners with both callers. Comparing the PASS calls directly: bcftools 139,132 identical with none different; DeepVariant 109,228 shared, 2 only with bwa, none only with bwa-mem2. Both BAMs have the same 18,997,779 reads and 2,083,409 marked duplicates.
 > - **The price is memory:** about 2.3 GiB more at peak, and a much larger index (1.5 GiB of RAM to build for one chromosome, ~90 GB for a whole genome). bwa-mem2 spent 159 s of its 460 s writing SAM into the pipe, so `sort` and `markdup` downstream partly limit the gain.
 > - **Caveats:**
->   - One run each.
+>   - One run each, bwa first. The stage wall clock includes copying the reads into the container, so bwa-mem2 may have read them from a warm page cache. The aligners' own timers start after that copy, so the 1.65× ratio is not affected by run order.
 >   - bwa-mem2 2.3 reports itself as 2.2.1, so the CSV's version column says 2.2.1.
 >   - Against a chr20-only reference, reads from other chromosomes have nowhere else to go. DeepVariant's SNP false positives rise from 52 on Google's whole-genome BAM to 120 here, for both aligners alike.
 >

@@ -46,7 +46,8 @@ def test_measured_wraps_the_command_and_reports_memory():
 def test_parse_measurements_takes_the_last_aligner_timer():
     m = ba.parse_measurements(MEASURED_OUTPUT)
     assert m == {"peak_anon_bytes": 7516192768, "cgroup_peak_bytes": 12884901888, "markdup_reads": 33475012,
-                 "markdup_duplicates": 2911218, "aligner_real_s": 812.345, "aligner_cpu_s": 11893.21}
+                 "markdup_duplicates": 2911218, "aligner_real_s": 812.345, "aligner_cpu_s": 11893.21,
+                 "aligner_used": "bwa-mem2"}
     assert ba.parse_measurements("nothing here") == {}
 
 
@@ -132,15 +133,64 @@ def test_concordance_compares_pass_calls(tmp_path):
     assert ba.concordance(str(tmp_path), "bcftools", "A", "B") == (1, 1, 2)
 
 
-def test_ensure_truth_copies_once(tmp_path):
-    (tmp_path / "truth").mkdir()
-    (tmp_path / "truth" / "B.vcf.gz").write_bytes(b"v")
-    (tmp_path / "truth" / "B.bed").write_text("chr20\t0\t1\n")
-    ba.ensure_truth(str(tmp_path), "B", "B_bwa")
-    assert (tmp_path / "truth" / "B_bwa.vcf.gz").read_bytes() == b"v"
-    (tmp_path / "truth" / "B_bwa.bed").write_text("kept")
-    ba.ensure_truth(str(tmp_path), "B", "B_bwa")
-    assert (tmp_path / "truth" / "B_bwa.bed").read_text() == "kept"
+def test_ensure_truth_copies_and_refreshes_when_the_source_changes(tmp_path):
+    truth = tmp_path / "truth"
+    truth.mkdir()
+    (truth / "B.vcf.gz").write_bytes(b"v")
+    (truth / "B.bed").write_text("chr20\t0\t1\n")
+    first = ba.ensure_truth(str(tmp_path), "B", "B_bwa")
+    assert (truth / "B_bwa.vcf.gz").read_bytes() == b"v"
+    assert ba.ensure_truth(str(tmp_path), "B", "B_bwa") == first  # unchanged source: same identity
+    (truth / "B.bed").write_text("chr20\t0\t100\n")
+    second = ba.ensure_truth(str(tmp_path), "B", "B_bwa")
+    assert (truth / "B_bwa.bed").read_text() == "chr20\t0\t100\n" and second != first
+
+
+def test_parse_measurements_threads_aligner_used_and_unreadable_memory():
+    m = ba.parse_measurements("GEYSER_THREADS=16\nAligning with bwa\nGEYSER_PEAK_ANON_BYTES=\n"
+                              "GEYSER_CGROUP_PEAK_BYTES=0\nREAD: 0\n")
+    assert m == {"threads": 16, "aligner_used": "bwa", "markdup_reads": 0}
+
+
+def test_measure_script_prints_threads_and_never_a_fake_zero():
+    assert 'echo "GEYSER_THREADS=$(nproc)"' in ba.MEASURE_SCRIPT
+    assert "|| echo 0" not in ba.MEASURE_SCRIPT and "peak=\n" in ba.MEASURE_SCRIPT
+
+
+def test_check_aligner_used_catches_the_bwa_fallback():
+    assert ba.check_aligner_used("bwa-mem2", {"aligner_used": "bwa-mem2"}) is None
+    assert ba.check_aligner_used("bwa-mem2", {}) is None  # older logs without the line
+    assert "bwa-mem2#262" in ba.check_aligner_used("bwa-mem2", {"aligner_used": "bwa"})
+
+
+def test_parse_versions_by_label():
+    assert ba.parse_versions("bwa=0.7.18-r1243-dirty\nbwa-mem2=2.2.1\n") == {"bwa": "0.7.18-r1243-dirty",
+                                                                             "bwa-mem2": "2.2.1"}
+    assert ba.parse_versions("bwa=\nbwa-mem2=2.2.1\n") == {"bwa": "", "bwa-mem2": "2.2.1"}
+
+
+def test_file_digests_skips_missing_files(tmp_path):
+    (tmp_path / "a.pac").write_bytes(b"x")
+    d = ba.file_digests([str(tmp_path / "a.pac"), str(tmp_path / "b.pac")])
+    assert list(d) == [str(tmp_path / "a.pac")] and len(d[str(tmp_path / "a.pac")]) == 64
+
+
+def test_downstream_paths_cover_both_callers_and_scores(tmp_path):
+    vcfs, happy_dir = ba.downstream_paths(str(tmp_path), "S_bwa")
+    assert [v.replace("\\", "/").split("/")[-2:] for v in vcfs] == [["variants", "S_bwa.vcf.gz"],
+                                                                     ["variants_deepvariant", "S_bwa.vcf.gz"]]
+    assert happy_dir.replace("\\", "/").endswith("benchmarks/S_bwa")
+
+
+def test_caller_choices_come_from_run_local():
+    import run_local
+    assert all(ba.CALLER_CHOICES[k] == run_local.CALLER_SETS[k] for k in ba.CALLER_CHOICES)
+
+
+def test_summary_without_an_indel_row_does_not_crash():
+    rows = ba.csv_rows(["bwa", "bwa-mem2"], {}, {}, {}, {"bwa": {"bcftools": {"SNP": _happy(1, 2, 0, 0)["SNP"]}}}, {})
+    text = ba.summary_markdown("S", rows, {})
+    assert "| bwa | bcftools | 1 / 2 | 0.990000 |  /  |  |" in text
 
 
 def test_reads_are_required_without_from_bam(tmp_path):

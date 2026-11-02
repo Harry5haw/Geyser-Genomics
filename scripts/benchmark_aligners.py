@@ -27,6 +27,7 @@ measurements as benchmarks/aligners_<base>/<step>.json.
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -45,24 +46,29 @@ INDEX_EXTS = {
     "bwa-mem2": [".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"],
     "bwa": [".amb", ".ann", ".bwt", ".pac", ".sa"],
 }
-CALLER_CHOICES = {"bcftools": ["bcftools"], "deepvariant": ["deepvariant"], "both": ["bcftools", "deepvariant"]}
+# The caller sets this benchmark offers, as run_local defines them.
+CALLER_CHOICES = {k: run_local.CALLER_SETS[k] for k in ("bcftools", "deepvariant", "both")}
 MIB = 1024 * 1024
+# Files both aligners' indexes share (bwa-mem2 index rewrites them; they must come out identical to bwa's).
+SHARED_INDEX_EXTS = (".amb", ".ann", ".pac")
 
 # Runs "$@" in the background and samples the container's cgroup v2 memory once a second. 'anon' is memory the
 # processes hold (not page cache); memory.peak is the kernel's high-water mark and does include page cache.
+# A value that can't be read is printed empty (no measurement), never as 0.
 MEASURE_SCRIPT = r"""
+echo "GEYSER_THREADS=$(nproc)"
 "$@" &
 pid=$!
-peak=0
+peak=
 while kill -0 "$pid" 2>/dev/null; do
   a=$(awk '/^anon /{print $2}' /sys/fs/cgroup/memory.stat 2>/dev/null)
-  if [ -n "$a" ] && [ "$a" -gt "$peak" ]; then peak=$a; fi
+  if [ -n "$a" ] && [ "$a" -gt "${peak:-0}" ]; then peak=$a; fi
   sleep 1
 done
 wait "$pid"
 rc=$?
 echo "GEYSER_PEAK_ANON_BYTES=$peak"
-echo "GEYSER_CGROUP_PEAK_BYTES=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null || echo 0)"
+echo "GEYSER_CGROUP_PEAK_BYTES=$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"
 exit $rc
 """
 
@@ -111,6 +117,7 @@ def parse_measurements(text):
     """Numbers from a measured run's output: peak memory, the aligner's own timer, markdup's read counts."""
     out = {}
     patterns = {
+        "threads": r"^GEYSER_THREADS=(\d+)",
         "peak_anon_bytes": r"GEYSER_PEAK_ANON_BYTES=(\d+)",
         "cgroup_peak_bytes": r"GEYSER_CGROUP_PEAK_BYTES=(\d+)",
         "markdup_reads": r"^READ: (\d+)",
@@ -118,8 +125,12 @@ def parse_measurements(text):
     }
     for name, pattern in patterns.items():
         m = re.search(pattern, text, re.M)
-        if m:
+        if m and (int(m.group(1)) > 0 or name.startswith("markdup")):  # 0 memory means it couldn't be read
             out[name] = int(m.group(1))
+    # The align stage prints the aligner it actually ran (it falls back to bwa where bwa-mem2#262 would bite).
+    m = re.search(r"^Aligning with (\S+)", text, re.M)
+    if m:
+        out["aligner_used"] = m.group(1)
     # bwa (and bwa index) end with "[main] Real time: X sec; CPU: Y sec" (the last one is mem's). bwa-mem2 prints
     # no CPU total; its "Time taken for main_mem function" is the same span (index load to last record written).
     m = None
@@ -164,10 +175,38 @@ def run_measured(cmd, root, image, log_path, extra_env=None):
 
 def tool_versions(image):
     """{'bwa': ..., 'bwa-mem2': ...} as the tools report them (bwa-mem2 2.3 reports 2.2.1, see the Dockerfile)."""
-    script = "bwa 2>&1 | awk '/^Version/{print $2}'; bwa-mem2 version 2>/dev/null | tail -1"
+    script = ("echo \"bwa=$(bwa 2>&1 | awk '/^Version/{print $2}')\"; "
+              "echo \"bwa-mem2=$(bwa-mem2 version 2>/dev/null | tail -1)\"")
     out = subprocess.run(["docker", "run", "--rm", image, "bash", "-c", script], capture_output=True, text=True)
-    lines = out.stdout.split()
-    return {"bwa": lines[0] if lines else "", "bwa-mem2": lines[1] if len(lines) > 1 else ""}
+    return parse_versions(out.stdout)
+
+
+def parse_versions(text):
+    """{'bwa': ..., 'bwa-mem2': ...} from 'name=version' lines; a tool that printed nothing gets ''."""
+    found = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+    return {al: found.get(al, "").strip() for al in ALIGNERS}
+
+
+def file_digests(paths):
+    """{path: sha256} for the paths that exist."""
+    out = {}
+    for path in paths:
+        if os.path.exists(path):
+            h = hashlib.sha256()
+            with open(path, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+            out[path] = h.hexdigest()
+    return out
+
+
+def check_aligner_used(aligner, measurement):
+    """Error text if the align stage ran another aligner than asked (its bwa-mem2#262 fallback), else None."""
+    used = measurement.get("aligner_used")
+    if used and used != aligner:
+        return (f"asked for {aligner} but the align stage ran {used} (bwa-mem2#262 fallback: the reference's first "
+                f"contig does not start with enough Ns), so this would not compare the two aligners")
+    return None
 
 
 def concordance(root, caller, first, second):
@@ -239,9 +278,12 @@ def summary_markdown(base, rows, concord):
         for r in rows:
             for c in callers:
                 if f"{c}_snp_f1" in r:
-                    lines.append(f"| {r['aligner']} | {c} | {r[f'{c}_snp_fn']} / {r[f'{c}_snp_fp']} | "
-                                 f"{r[f'{c}_snp_f1']:.6f} | {r[f'{c}_indel_fn']} / {r[f'{c}_indel_fp']} | "
-                                 f"{r[f'{c}_indel_f1']:.6f} |")
+                    cells = []
+                    for kind in ("snp", "indel"):
+                        f1 = r.get(f"{c}_{kind}_f1")
+                        cells.append(f"{r.get(f'{c}_{kind}_fn', '')} / {r.get(f'{c}_{kind}_fp', '')} | "
+                                     + (f"{f1:.6f}" if isinstance(f1, float) else ""))
+                    lines.append(f"| {r['aligner']} | {c} | " + " | ".join(cells) + " |")
     if concord:
         lines += ["", "PASS calls compared directly (position, REF, ALT), whole contig:", "",
                   "| Caller | Shared | Only bwa | Only bwa-mem2 |", "| :--- | ---: | ---: | ---: |"]
@@ -263,11 +305,23 @@ def save_json(path, data):
 
 
 def ensure_truth(root, base, sid):
-    """Copy truth/<base>.vcf.gz and .bed to the aligner sample's name (benchmark_happy looks them up by sample)."""
+    """Copy truth/<base>.vcf.gz and .bed to the aligner sample's name (benchmark_happy looks them up by sample),
+    again whenever the source has changed. Returns the truth files' identity, (size, mtime) per file."""
+    identity = []
     for ext in (".vcf.gz", ".bed"):
         src, dest = path_of(root, f"truth/{base}{ext}"), path_of(root, f"truth/{sid}{ext}")
-        if not os.path.exists(dest):
-            shutil.copyfile(src, dest)
+        st = os.stat(src)
+        if not os.path.exists(dest) or (os.path.getsize(dest), int(os.path.getmtime(dest))) != \
+                (st.st_size, int(st.st_mtime)):
+            shutil.copy2(src, dest)  # copy2 keeps the mtime, so an unchanged source is not copied again
+        identity.append([st.st_size, int(st.st_mtime)])
+    return identity
+
+
+def downstream_paths(root, sid):
+    """Outputs made from a sample's BAM: each caller's VCF and its hap.py folder (stale once the BAM is redone)."""
+    vcfs = [run_local.vcf_path(root, c, sid) for c in CALLER_CHOICES["both"]]
+    return vcfs, path_of(root, f"benchmarks/{sid}")
 
 
 def main(argv=None):
@@ -316,10 +370,20 @@ def main(argv=None):
             index[al] = load_measured(jpath, jpath[:-5] + ".log") or {}
         else:
             print(f">>> index: {al}", flush=True)
+            # The aligners share .amb/.ann/.pac: a second build must leave them byte-identical, or the first
+            # aligner's index no longer matches them.
+            shared = [ref + ext for ext in SHARED_INDEX_EXTS]
+            before = file_digests(shared)
             rc, wall, m = run_measured(index_command(al, a.reference), root, a.image,
                                        os.path.join(out_dir, f"index_{SAMPLE_SUFFIX[al]}.log"))
             if rc != 0:
                 print(f"{al} index failed")
+                return 1
+            after = file_digests(shared)
+            changed = [os.path.basename(f) for f in before if before[f] != after.get(f)]
+            if changed:
+                print(f"{al} index rewrote {', '.join(changed)} differently from the other aligner's index; "
+                      f"build the two indexes in separate folders")
                 return 1
             index[al] = {"wall_s": wall, **m}
             save_json(jpath, index[al])
@@ -330,18 +394,26 @@ def main(argv=None):
         bam = path_of(root, f"alignments/{sid}.bam")
         if load_json(jpath) and os.path.exists(bam):
             align[al] = load_measured(jpath, jpath[:-5] + ".log")
-            continue
-        print(f">>> align: {sid} with ALIGNER={al}", flush=True)
-        rc, wall, m = run_measured(align_command(sid, a.reference), root, a.image,
-                                   os.path.join(out_dir, f"align_{SAMPLE_SUFFIX[al]}.log"), {"ALIGNER": al})
-        if rc != 0:
-            print(f"align failed with {al}")
+        else:
+            print(f">>> align: {sid} with ALIGNER={al}", flush=True)
+            # A new BAM makes this sample's calls and scores stale.
+            vcfs, happy_dir = downstream_paths(root, sid)
+            for path in vcfs:
+                if os.path.exists(path):
+                    os.remove(path)
+            shutil.rmtree(happy_dir, ignore_errors=True)
+            rc, wall, m = run_measured(align_command(sid, a.reference), root, a.image,
+                                       os.path.join(out_dir, f"align_{SAMPLE_SUFFIX[al]}.log"), {"ALIGNER": al})
+            if rc != 0:
+                print(f"align failed with {al}")
+                return 1
+            align[al] = {"sample": sid, "wall_s": wall, "bam_bytes": os.path.getsize(bam), **m}
+            save_json(jpath, align[al])
+            print(f"    {wall:.0f} s, peak {m.get('peak_anon_bytes', 0) / MIB:,.0f} MiB", flush=True)
+        problem = check_aligner_used(al, align[al])
+        if problem:
+            print(f"{sid}: {problem}")
             return 1
-        threads = subprocess.run(["docker", "run", "--rm", a.image, "nproc"], capture_output=True,
-                                 text=True).stdout.strip()
-        align[al] = {"sample": sid, "wall_s": wall, "threads": threads, "bam_bytes": os.path.getsize(bam), **m}
-        save_json(jpath, align[al])
-        print(f"    {wall:.0f} s, peak {m.get('peak_anon_bytes', 0) / MIB:,.0f} MiB", flush=True)
 
     # 4. calls, 5. hap.py
     callers = CALLER_CHOICES[a.caller]
@@ -350,21 +422,24 @@ def main(argv=None):
         sid = samples[al]
         missing = [c for c in callers if not os.path.exists(run_local.vcf_path(root, c, sid))]
         if missing:
-            caller_arg = "both" if len(missing) == 2 else missing[0]
+            caller_arg = next(k for k, v in CALLER_CHOICES.items() if v == missing)
             args = ["--root", root, "--sample", sid, "--reference", a.reference, "--caller", caller_arg,
                     "--skip-to-variants", "--image", a.image, "--dv-image", a.dv_image, "--dv-memory", a.dv_memory]
             if a.no_gpu:
                 args.append("--no-gpu")
             if run_local.main(args) != 0:
                 return 1
-        ensure_truth(root, a.base, sid)
+        # hap.py is rerun when its inputs change: callers, region or truth files (VCFs: see the align step).
+        settings = {"callers": callers, "region": a.region, "truth": ensure_truth(root, a.base, sid)}
+        spath = os.path.join(out_dir, f"happy_{SAMPLE_SUFFIX[al]}.json")
         summaries = {c: path_of(root, f"benchmarks/{sid}/{c}.summary.csv") for c in callers}
-        if not all(os.path.exists(s) for s in summaries.values()):
+        if load_json(spath) != settings or not all(os.path.exists(s) for s in summaries.values()):
             args = ["--root", root, "--sample", sid, "--reference", a.reference, "--callers", *callers]
             if a.region:
                 args += ["--region", a.region]
             if benchmark_happy.main(args) != 0:
                 return 1
+            save_json(spath, settings)
         happy[al] = {c: benchmark_happy.read_summary(s) for c, s in summaries.items()}
 
     concord = {c: concordance(root, c, samples[ALIGNERS[0]], samples[ALIGNERS[1]]) for c in callers}
