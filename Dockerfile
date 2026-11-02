@@ -4,7 +4,9 @@
 # so fresh builds on it fail with 404s. FastQC needs fontconfig, a font and libharfbuzz (for
 # Java's font manager) to draw its report charts; without them it throws inside a worker
 # thread and hangs instead of exiting.
-FROM python:3.11-slim-trixie
+# Pinned by digest so builds are reproducible; Dependabot proposes the new digest when the tag is rebuilt
+# (Debian and Python security patches). The tag stays for readers and for Dependabot.
+FROM python:3.11-slim-trixie@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

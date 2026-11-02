@@ -1,1 +1,3 @@
-boto3>=1.36  # request_checksum_calculation (S3-compatible endpoints, storage.py)
+# Exact pins; Dependabot (.github/dependabot.yml) proposes updates weekly.
+# boto3 >= 1.36 is required: request_checksum_calculation (S3-compatible endpoints, storage.py).
+boto3==1.43.123
