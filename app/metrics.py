@@ -4,7 +4,10 @@
 * ``LocalMetrics``      - appends one JSON line per stage run to a file, for offline runs.
 
 Select with ``METRICS_BACKEND=cloudwatch|local|none``. The default follows STORAGE_BACKEND:
-S3 storage reports to CloudWatch, local storage writes ``<LOCAL_STORAGE_DIR>/metrics/metrics.jsonl``.
+S3 storage on AWS reports to CloudWatch, S3 storage on an S3-compatible service elsewhere
+(``S3_ENDPOINT_URL``, see storage.py) records nothing, and local storage writes
+``<LOCAL_STORAGE_DIR>/metrics/metrics.jsonl``. ``cloudwatch`` is boto3's CloudWatch client in
+AWS_REGION: AWS, unless boto3's generic AWS_ENDPOINT_URL redirects every client.
 
 Publishing is best effort: a metrics outage must never fail a pipeline stage.
 """
@@ -12,6 +15,8 @@ Publishing is best effort: a metrics outage must never fail a pipeline stage.
 import json
 import os
 import time
+
+from storage import is_aws_endpoint, s3_endpoint_from_env
 
 METRIC_NAMESPACE = "GeyserGenomics"
 
@@ -73,7 +78,12 @@ class CloudWatchMetrics:
 def metrics_from_env(env=None):
     env = os.environ if env is None else env
     storage_backend = env.get("STORAGE_BACKEND", "s3").lower()
-    default = "cloudwatch" if storage_backend == "s3" else "local"
+    if storage_backend != "s3":
+        default = "local"
+    elif not is_aws_endpoint(s3_endpoint_from_env(env)):
+        default = "none"  # an S3-compatible service outside AWS has no CloudWatch next to it
+    else:
+        default = "cloudwatch"
     backend = env.get("METRICS_BACKEND", default).lower()
     if backend == "none":
         return NullMetrics()

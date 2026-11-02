@@ -29,3 +29,22 @@ def test_debug_opt_in_works_without_secret():
     result = load_settings({"DJANGO_DEBUG": "1"})
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("True")
+
+
+def test_s3_endpoint_follows_the_pipelines_variable_order():
+    # #80: same order as storage.S3_ENDPOINT_VARS, so the UI applies the S3-compatible settings whenever
+    # boto3 would send it somewhere other than AWS.
+    code = "import geyser_web.settings as s; print(repr(s.GEYSER_S3_ENDPOINT_URL))"
+
+    def endpoint(extra):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("DJANGO_", "GEYSER_", "S3_", "AWS_ENDPOINT_URL"))}
+        env.update({"DJANGO_SECRET_KEY": "x", **extra})
+        result = subprocess.run([sys.executable, "-c", code], cwd=WEB_DIR, env=env, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    assert endpoint({}) == "''"
+    assert endpoint({"AWS_ENDPOINT_URL": "http://y"}) == "'http://y'"
+    assert endpoint({"AWS_ENDPOINT_URL_S3": " http://x ", "AWS_ENDPOINT_URL": "http://y"}) == "'http://x'"
+    assert endpoint({"S3_ENDPOINT_URL": "https://s3.gra.io.cloud.ovh.net", "AWS_ENDPOINT_URL_S3": "http://x"}) \
+        == "'https://s3.gra.io.cloud.ovh.net'"
