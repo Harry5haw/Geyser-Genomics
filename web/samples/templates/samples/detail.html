@@ -6,6 +6,38 @@
 
 {% include "samples/_status.html" %}
 
+{% if gate %}
+  <section class="panel gate gate-{{ gate.state }}" aria-labelledby="gate-heading">
+    <h2 id="gate-heading">Quality gate <span class="badge {{ gate.css }}">{{ gate.label }}</span></h2>
+    {% if gate.state == "pass" %}
+      <p>Every configured check passed.</p>
+    {% elif gate.state == "warn" %}
+      <p><strong>The gate found problems, but it runs in warn mode, so the run still counts as succeeded.</strong>
+        Check the reasons before using these results.</p>
+    {% elif gate.state == "fail" %}
+      <p><strong>The gate failed this sample</strong> (fail mode: the gate stage itself failed).</p>
+    {% else %}
+      <p><strong>The gate gave no verdict</strong>, so these results haven't been checked. This is not a pass.</p>
+      <p class="muted">{{ gate.error }}</p>
+    {% endif %}
+    {% if gate.reasons %}
+      <ul class="gate-reasons">{% for r in gate.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+    {% endif %}
+    {% if gate.failed_checks %}
+      <table class="gate-checks">
+        <thead><tr><th scope="col">Check</th><th scope="col">Value</th><th scope="col">Allowed</th></tr></thead>
+        <tbody>
+        {% for c in gate.failed_checks %}
+          <tr><th scope="row">{{ c.name }}</th><td>{{ c.value|default_if_none:"missing" }}</td>
+            <td>{% if c.min is not None %}≥ {{ c.min }}{% endif %}{% if c.min is not None and c.max is not None %}, {% endif %}{% if c.max is not None %}≤ {{ c.max }}{% endif %}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+    <p class="muted"><small>Mode: {{ gate.mode }}{% if gate.config %} · thresholds: {{ gate.config }}{% endif %}{% if gate.gate_version %} · geyser-gate {{ gate.gate_version }}{% endif %}{% if gate.run_name %} · run {{ gate.run_name }}{% endif %}</small></p>
+  </section>
+{% endif %}
+
 {% if truth_result %}
   <section class="truth{% if not truth_result.perfect %} imperfect{% endif %}">
     <strong>{{ truth_result.recovered }}/{{ truth_result.total }} planted SNPs recovered</strong>,
@@ -60,6 +92,38 @@
       <p class="muted">Charts are blank here (the report's scripts are blocked). The downloaded report draws them when opened online: it loads its chart script from opengene.org.</p>
       <iframe class="qc-report" title="fastp report for {{ sample.sample_id }}" sandbox
               src="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1"></iframe>
+    </details>
+    {% endif %}
+  </section>
+{% endif %}
+
+{% if record %}
+  <section class="panel" aria-labelledby="record-heading">
+    <h2 id="record-heading">Run record{% if record.status %} <span class="badge {{ record.status }}">{{ record.status }}</span>{% endif %}</h2>
+    <table class="record-facts">
+      <tbody>
+      {% for label, value in record.facts %}<tr><th scope="row">{{ label }}</th><td><code>{{ value }}</code></td></tr>{% endfor %}
+      </tbody>
+    </table>
+    {% if record.stages %}
+    <table class="record-stages">
+      <thead><tr><th scope="col">Stage</th><th scope="col">Status</th><th scope="col">Time</th><th scope="col">CPU</th><th scope="col">Peak memory</th></tr></thead>
+      <tbody>
+      {% for s in record.stages %}
+        <tr><th scope="row">{{ s.name }}</th><td>{{ s.status }}{% if s.error %}<br><small class="muted">{{ s.error }}</small>{% endif %}</td>
+          <td>{{ s.duration }}</td><td>{{ s.cpu }}</td><td>{{ s.memory }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if record.tools %}
+    <details>
+      <summary>Tool versions ({{ record.tools|length }})</summary>
+      <table class="record-tools">
+        <tbody>
+        {% for name, version in record.tools %}<tr><th scope="row">{{ name }}</th><td><code>{{ version }}</code></td></tr>{% endfor %}
+        </tbody>
+      </table>
     </details>
     {% endif %}
   </section>
