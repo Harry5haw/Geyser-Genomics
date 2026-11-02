@@ -282,6 +282,7 @@ def console_links(
     bucket: str = None,
     trigger_function_name: str = None,
     sfn_log_group: str = DEFAULT_SFN_LOG_GROUP,
+    batch_log_group: str = None,
 ) -> list:
     """(label, url) pairs for the AWS console pages that matter when looking into a run.
     Built only from names and the ARNs passed in; nothing account-specific is stored here."""
@@ -298,7 +299,7 @@ def console_links(
     links += [
         ("Batch jobs", f"{console}/batch/home?region={region}#jobs"),
         ("Trigger Lambda", f"{console}/lambda/home?region={region}#/functions/{function}?tab=monitoring"),
-        ("Batch job logs", _log_group_url(region, BATCH_LOG_GROUP)),
+        ("Batch job logs", _log_group_url(region, batch_log_group or BATCH_LOG_GROUP)),
         ("Step Functions error logs", _log_group_url(region, sfn_log_group)),
         ("Trigger Lambda logs", _log_group_url(region, TRIGGER_LOG_GROUP)),
         ("Logs Insights", f"{console}/cloudwatch/home?region={region}#logsV2:logs-insights"),
@@ -327,15 +328,18 @@ def console_links(
 # tests/test_monitoring.py renders real lines through _log_summary and checks every pattern below.
 
 # Logs Insights regex: named groups are (?<name>...). Field names are prefixed x_ so the stats aliases
-# below can reuse the plain names (Logs Insights rejects redefining a field).
+# below can reuse the plain names (Logs Insights rejects redefining a field).  keeps a key from
+# matching inside a longer one (duplicates= inside a future primary_duplicates=).
+# Duplicate % is flagstat's duplicates over in_total (all records, secondary and supplementary
+# included), so it reads slightly below markdup's own primary-read rate on data with many of those.
 QUALITY_PARSE = (
     ("starting", "\"--- Starting '*' for sample '*' ---\" as x_task, x_sample"),
     ("reads", r"/^flagstat: in_total=(?<x_reads>\d+)/"),
-    ("dups", r"/^flagstat: .*duplicates=(?<x_dups>\d+)/"),
+    ("dups", r"/^flagstat: .*\bduplicates=(?<x_dups>\d+)/"),
     ("mapped", r"/^flagstat: .*\bmapped_pct=(?<x_mapped>[\d.]+)/"),
-    ("depth", r"/^mosdepth: .*mean_depth=(?<x_depth>[\d.]+)/"),
+    ("depth", r"/^mosdepth: .*\bmean_depth=(?<x_depth>[\d.]+)/"),
     ("variants", r"/^bcftools stats: records=(?<x_vars>\d+), snps=(?<x_snps>\d+), indels=(?<x_indels>\d+)/"),
-    ("tstv", r"/^bcftools stats: .*tstv=(?<x_tstv>[\d.]+)/"),
+    ("tstv", r"/^bcftools stats: .*\btstv=(?<x_tstv>[\d.]+)/"),
 )
 QUALITY_COLUMNS = (
     "sample",
@@ -353,7 +357,8 @@ QUALITY_COLUMNS = (
 
 @dataclass(frozen=True)
 class QualityThresholds:
-    """When a sample is listed under "outside thresholds". Ti/Tv is only judged with enough SNPs:
+    """When a sample is listed under "outside thresholds": low mapping, high duplication, no variants,
+    aligned without variant stats, or Ti/Tv out of range. Ti/Tv is only judged with enough SNPs:
     whole-genome germline calls sit around 2.0-2.1, but a handful of SNPs (synthetic data) says nothing."""
 
     min_mapped_pct: float = 90.0
@@ -365,6 +370,9 @@ class QualityThresholds:
         low, high = self.tstv_range
         return (
             f"mapped_pct < {self.min_mapped_pct} or dup_pct > {self.max_dup_pct} or variants = 0 "
+            # Aligned but no variant stats: variant calling failed or hasn't finished (bcftools stats is
+            # best effort, so a failed stats run also shows here).
+            "or (ispresent(reads) and not ispresent(variants)) "
             f"or (snps >= {self.min_snps_for_tstv} and (tstv < {low} or tstv > {high}))"
         )
 
@@ -374,8 +382,13 @@ DEFAULT_THRESHOLDS = QualityThresholds()
 
 def quality_query(thresholds: QualityThresholds = None) -> str:
     """One row per sample (core pipeline: align + bcftools variants), newest first. With thresholds,
-    only the samples outside them. A sample run more than once in the window shows the highest value
-    of each column across those runs: the run record (runs/<id>.provenance.json) has each run's own."""
+    only the samples outside them.
+
+    Two stats steps: per log stream (one Batch job), then per sample (its align and variants jobs).
+    Duplicate % is worked out per job first, so it is always one run's own figure. A sample run more
+    than once in the window shows the highest value of each column across those runs, which can come
+    from different runs: the run record (runs/<id>.provenance.json) has each run's own. A job whose
+    start line is outside the time range has no sample name and is left out."""
     lines = [
         "fields @timestamp, @message",
         "| filter @message like /^--- Starting '(Align|CallVariants)' for sample /"
@@ -386,10 +399,12 @@ def quality_query(thresholds: QualityThresholds = None) -> str:
         "| stats latest(x_sample) as sample, max(@timestamp) as t, max(x_reads) as rd, max(x_dups) as dp,"
         " max(x_mapped) as mp, max(x_depth) as dpt, max(x_vars) as v, max(x_snps) as sn,"
         " max(x_indels) as ind, max(x_tstv) as tt by @logStream",
-        "| stats max(t) as last_run, max(rd) as reads, max(mp) as mapped_pct, max(dp) as dups,"
+        "| filter ispresent(sample)",
+        "| fields 100 * dp / rd as dpp",
+        "| stats max(t) as last_run, max(rd) as reads, max(mp) as mapped_pct, max(dpp) as dup_raw,"
         " max(dpt) as mean_depth, max(v) as variants, max(sn) as snps, max(ind) as indels, max(tt) as tstv"
         " by sample",
-        "| fields round(100 * dups / reads, 2) as dup_pct",
+        "| fields round(dup_raw, 2) as dup_pct",
     ]
     if thresholds is not None:
         lines.append(f"| filter {thresholds.filter_clause()}")
@@ -430,7 +445,8 @@ def quality_widgets(
             "## Result quality (core pipeline)\n"
             "From the align and variants job logs (samtools flagstat, mosdepth, bcftools stats). Mean depth is "
             "over the whole reference, so a small sample on a large reference shows a tiny depth. Runs from "
-            "images before the QC statistics (#102) have no values. Each run's full record, with tool "
+            "images before the QC statistics (#102) have no values, and runs before the Terraform-managed log "
+            "group (#104) are in `/aws/batch/job`, which these widgets don't read. Each run's full record, with tool "
             f"versions, is `runs/<id>.provenance.json` in the data lake. Thresholds: mapped < "
             f"{thresholds.min_mapped_pct:g}%, duplicates > {thresholds.max_dup_pct:g}%, no variants, or Ti/Tv "
             f"outside {low:g}-{high:g} with at least {thresholds.min_snps_for_tstv:,} SNPs.",
@@ -477,7 +493,11 @@ def build_dashboard(
         "SEARCH reads at most 500 samples per widget, so over 500 samples in the window "
         "these and the failure counts cover only some of them"
     )
-    links = console_links(region, state_machine_arn=state_machine_arn) if links is None else links
+    links = (
+        console_links(region, state_machine_arn=state_machine_arn, batch_log_group=batch_log_group)
+        if links is None
+        else links
+    )
     link_line = " · ".join(f"[{label}]({url})" for label, url in links)
     widgets = [
         _text_widget(

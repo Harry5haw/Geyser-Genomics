@@ -4,8 +4,9 @@
 Widgets: alarm status, pipeline runs per day and end-to-end time (Step Functions, when a state machine
 ARN is given), failures by stage, result quality per sample from the Batch job logs (Logs Insights:
 mapped %, duplicate %, mean depth, variants, Ti/Tv, and the samples outside thresholds; --no-quality
-leaves them out), and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant. The alarm widget needs the account ID: --account-id, $AWS_ACCOUNT_ID, or looked up with
-STS on deploy (a placeholder is used with --dry-run).
+leaves them out), and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant.
+The alarm widget needs the account ID: --account-id, $AWS_ACCOUNT_ID, or looked up with STS on deploy
+(a placeholder is used with --dry-run).
 The JSON is built in scripts/monitoring.py.
 
 Preview (no AWS calls):
@@ -162,6 +163,7 @@ def main(argv=None, client=None, sts_client=None) -> int:
                 bucket=args.bucket,
                 trigger_function_name=args.trigger_function_name,
                 sfn_log_group=args.sfn_log_group,
+                batch_log_group=args.batch_log_group,
             ),
             quality=not args.no_quality,
             batch_log_group=args.batch_log_group,

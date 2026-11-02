@@ -479,7 +479,11 @@ def test_quality_patterns_read_the_lines_the_stages_print(capsys, layout):
 
     lines = _job_log_lines(capsys, layout)
     got = _extract(lines)
-    read = lambda parse, name: parse(open(os.path.join(FIXTURES, f"{layout}.{name}")).read())  # noqa: E731
+
+    def read(parse, name):
+        with open(os.path.join(FIXTURES, f"{layout}.{name}")) as fh:
+            return parse(fh.read())
+
     flag = read(tasks.parse_flagstat, "flagstat.txt")
     depth = read(tasks.parse_mosdepth_summary, "mosdepth.summary.txt")
     calls = read(tasks.parse_bcftools_stats, "bcftools.stats.txt")
@@ -551,3 +555,41 @@ def test_run_records_link_only_with_a_bucket():
         "s3/buckets/my-bucket?region=eu-west-2&prefix=runs/&showversions=false"
     )
     assert "Run records (S3 runs/)" not in dict(monitoring.console_links())
+
+
+def test_quality_patterns_take_the_exact_key_not_a_longer_one():
+    # The fixtures have duplicates == primary duplicates, so a pattern grabbing the wrong one would
+    # still pass above. Here every lookalike key comes after the real one, with a different value.
+    line = (
+        "flagstat: in_total=200, duplicates=12, primary_duplicates=7, mapped=190, mapped_pct=95.0, "
+        "primary_mapped=150, primary_mapped_pct=88.5"
+    )
+    got = _extract(
+        [
+            line,
+            "mosdepth: length=1, bases=1, mean_depth=3.5, x_mean_depth=9.9",
+            "bcftools stats: records=5, snps=4, indels=1, tstv=2.1, x_tstv=9.9",
+        ]
+    )
+    assert (got["x_reads"], got["x_dups"], got["x_mapped"]) == ("200", "12", "95.0")
+    assert (got["x_depth"], got["x_tstv"]) == ("3.5", "2.1")
+
+
+def test_quality_query_computes_dup_pct_per_job_and_drops_unnamed_jobs():
+    q = monitoring.quality_query()
+    first, second = (i for i, line in enumerate(q.splitlines()) if line.startswith("| stats "))
+    lines = q.splitlines()
+    assert lines[first + 1] == "| filter ispresent(sample)"
+    assert lines[first + 2] == "| fields 100 * dp / rd as dpp" and first + 2 < second
+    assert "max(dpp) as dup_raw" in lines[second] and "round(dup_raw, 2) as dup_pct" in q
+
+
+def test_thresholds_list_aligned_samples_without_variant_stats():
+    assert "(ispresent(reads) and not ispresent(variants))" in monitoring.DEFAULT_THRESHOLDS.filter_clause()
+
+
+def test_batch_log_link_follows_the_log_group(capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/geyser-prod"])
+    header = json.loads(capsys.readouterr().out)["widgets"][0]["properties"]["markdown"]
+    assert "geyser-prod" in header and "geyser-dev" not in header.split("Batch job logs](")[1].split(")")[0]
