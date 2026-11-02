@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Download public real-data test sets for the DeepVariant stage into the local bucket.
 
-Datasets (all from DeepVariant's public bucket, https://storage.googleapis.com/deepvariant/):
+Datasets (from DeepVariant's public bucket, https://storage.googleapis.com/deepvariant/, unless noted):
 
   na12878-slice (default)  NA12878 (GIAB HG001), Illumina, chr20:10.0-10.1 Mb on hg19, with GIAB truth.
                            ~5 MB download, ~64 MB on disk. Sample NA12878_S1.
@@ -10,6 +10,14 @@ Datasets (all from DeepVariant's public bucket, https://storage.googleapis.com/d
                            (1.11 GB BAM; only chr20's bytes of the 3.1 GB reference are fetched, by HTTP
                            range; the genome-wide truth VCF/BED are filtered to chr20 locally).
                            ~1.2 GB on disk. Sample HG003_chr20.
+  hg005-chr20              HG005 (GIAB, Han Chinese), NovaSeq PCR-free 30x, chr20 on GRCh38, with GIAB v4.2.1
+                           truth cut down to chr20. Sample HG005_chr20. The BAM is from Google's
+                           brain-genomics-public bucket (BWA-MEM 0.7.17 to hs38DH, Picard MarkDuplicates); only
+                           chr20 is fetched, by samtools over HTTP in the geyser-app image (~0.9 GB). GIAB publishes
+                           no "noinconsistent" BED for HG005, so the plain v4.2.1 BED is used. Truth from GIAB's FTP.
+  hg003-30x-chr20          HG003 from the same 30x set and pipeline as hg005-chr20, with the same truth as
+                           hg003-chr20. Sample HG003_30x_chr20. The control for HG005: same sequencing, coverage,
+                           aligner and reference, so ancestry is what differs.
 
 Written with the pipeline's key layout, so the DeepVariant stage runs on it directly:
 
@@ -23,7 +31,7 @@ Written with the pipeline's key layout, so the DeepVariant stage runs on it dire
 
 --pangenome also gets the HPRC v1.1 Minigraph-Cactus pangenome graph on GRCh38 (the graph Google's
 pangenome-aware case studies use), from the Human Pangenome Reference Consortium's public bucket, for
-pangenome-aware DeepVariant (run_local.py --caller pangenome). Only valid with GRCh38 datasets (hg003-chr20).
+pangenome-aware DeepVariant (run_local.py --caller pangenome). Only valid with GRCh38 datasets.
 
   --pangenome / --pangenome chr20  HPRC's chr20 graph (chroms/chr20.vg, 1.28 GB download), converted with vg
                                    (Docker, quay.io/vgteam/vg) to <root>/pangenome/hprc-v1.1-mc-grch38.chr20.gbz
@@ -31,6 +39,11 @@ pangenome-aware DeepVariant (run_local.py --caller pangenome). Only valid with G
   --pangenome full                 the whole-genome graph as published (3.29 GB) to
                                    <root>/pangenome/hprc-v1.1-mc-grch38.gbz. Loaded, it needs ~10.7 GB of shared
                                    memory plus ~2 GB per make_examples worker.
+
+--stratifications (GRCh38 datasets) also gets a few GIAB v3.3 genome stratifications (difficult regions, segmental
+duplications, low mappability), cut down to the dataset's contig, to stratifications/GRCh38_<contig>/ with a hap.py
+TSV at stratifications/GRCh38_<contig>.tsv. benchmark_happy.py --stratification reports accuracy per region type:
+a pangenome should help most where a linear reference does worst.
 """
 
 import argparse
@@ -60,17 +73,36 @@ PANGENOMES = {
         "key": "pangenome/hprc-v1.1-mc-grch38.gbz",
     },
 }
-GRCH38_DATASETS = {"hg003-chr20"}
+GRCH38_DATASETS = {"hg003-chr20", "hg003-30x-chr20", "hg005-chr20"}
 # vg release used by Google's pangenome-aware VG case study.
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"
 # The whole-genome graph marks both references; keep them as references in the chr20 graph too.
 REFERENCE_SAMPLES = ("GRCh38", "CHM13")
 
+# Whole-genome BWA BAMs of the GIAB samples in Google's public bucket (hs38DH, NovaSeq PCR-free), and GIAB's FTP.
+BRAIN_30X = ("https://storage.googleapis.com/brain-genomics-public/research/sequencing/grch38/bam/novaseq/"
+             "wgs_pcr_free/30x/")
+GIAB = "https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/"
+HG005_TRUTH = GIAB + "ChineseTrio/HG005_NA24631_son/NISTv4.2.1/GRCh38/HG005_GRCh38_1_22_v4.2.1_benchmark"
+# samtools with HTTP support, for cutting one contig out of a remote BAM: the pipeline image has it.
+APP_IMAGE = "geyser-app"
+
+# GIAB v3.3 genome stratifications for --stratifications: (hap.py region name, path under STRAT_BASE).
+STRAT_BASE = GIAB + "genome-stratifications/v3.3/GRCh38@all/"
+STRATIFICATIONS = (
+    ("alldifficultregions", "Union/GRCh38_alldifficultregions.bed.gz"),
+    ("notinalldifficultregions", "Union/GRCh38_notinalldifficultregions.bed.gz"),
+    ("alllowmapandsegdupregions", "Union/GRCh38_alllowmapandsegdupregions.bed.gz"),
+    ("segdups", "SegmentalDuplications/GRCh38_segdups.bed.gz"),
+    ("lowmappabilityall", "Mappability/GRCh38_lowmappabilityall.bed.gz"),
+)
+
 # Each file: (remote path, expected bytes or None, local key, how to store it)
-#   copy        store as downloaded
-#   gunzip      decompress
-#   fasta:<ctg> fetch only that contig from an uncompressed FASTA, by HTTP range (size from its .fai)
-#   only:<ctg>  keep only that contig's rows (VCF keeps its header; output re-gzipped if .gz)
+#   copy          store as downloaded
+#   gunzip        decompress
+#   fasta:<ctg>   fetch only that contig from an uncompressed FASTA, by HTTP range (size from its .fai)
+#   only:<ctg>    keep only that contig's rows (VCF keeps its header; gzipped if the local key ends .gz)
+#   region:<ctg>  fetch only that contig's reads from a remote indexed BAM (samtools in Docker)
 DATASETS = {
     "na12878-slice": {
         "sample": "NA12878_S1",
@@ -94,6 +126,30 @@ DATASETS = {
              "truth/HG003_chr20.vcf.gz", "only:chr20"),
             ("case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed", 13219856,
              "truth/HG003_chr20.bed", "only:chr20"),
+        ],
+    },
+    "hg005-chr20": {
+        "sample": "HG005_chr20",
+        "reference": "GRCh38_chr20.fa",
+        "files": [
+            (BRAIN_30X + "HG005.novaseq.pcr-free.30x.dedup.grch38.bam", None, "alignments/HG005_chr20.bam",
+             "region:chr20"),
+            (GRCH38, None, "reference/GRCh38_chr20.fa", "fasta:chr20"),
+            (HG005_TRUTH + ".vcf.gz", 139334496, "truth/HG005_chr20.vcf.gz", "only:chr20"),
+            (HG005_TRUTH + ".bed", 18615340, "truth/HG005_chr20.bed", "only:chr20"),
+        ],
+    },
+    "hg003-30x-chr20": {
+        "sample": "HG003_30x_chr20",
+        "reference": "GRCh38_chr20.fa",
+        "files": [
+            (BRAIN_30X + "HG003.novaseq.pcr-free.30x.dedup.grch38.bam", None, "alignments/HG003_30x_chr20.bam",
+             "region:chr20"),
+            (GRCH38, None, "reference/GRCh38_chr20.fa", "fasta:chr20"),
+            ("case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz", 147212428,
+             "truth/HG003_30x_chr20.vcf.gz", "only:chr20"),
+            ("case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed", 13219856,
+             "truth/HG003_30x_chr20.bed", "only:chr20"),
         ],
     },
 }
@@ -153,12 +209,16 @@ def fetch_fasta_contig(url, contig, dest):
 
 
 def keep_contig(src, dest, contig):
-    """Copy src to dest keeping header lines and rows on one contig. Returns rows kept."""
-    opener = gzip.open if src.endswith(".gz") else open
+    """Copy src to dest keeping header lines and rows on one contig. Returns rows kept.
+
+    Each side is gzip if its name ends .gz, so a .bed.gz can be cut down to a plain .bed.
+    """
+    open_in = gzip.open if src.endswith(".gz") else open
+    open_out = gzip.open if dest.endswith(".gz") else open
     prefix, kept = contig + "\t", 0
     # newline="" keeps line endings byte-for-byte (no \r\n on Windows)
-    with opener(src, "rt", encoding="utf-8", newline="") as fin, \
-            opener(dest + ".part", "wt", encoding="utf-8", newline="") as fout:
+    with open_in(src, "rt", encoding="utf-8", newline="") as fin, \
+            open_out(dest + ".part", "wt", encoding="utf-8", newline="") as fout:
         for line in fin:
             if line.startswith("#") or line.startswith(prefix):
                 fout.write(line)
@@ -172,19 +232,58 @@ def remote_url(remote):
     return remote if remote.startswith(("https://", "http://")) else BASE_URL + remote
 
 
-def dataset_files(name, pangenome=None):
-    """The file entries to fetch for a dataset, plus a pangenome graph ('chr20' or 'full') when asked.
+def dataset_contig(name):
+    """The one contig a GRCh38 dataset covers (from its reference FASTA entry)."""
+    for _, _, _, how in DATASETS[name]["files"]:
+        if how.startswith("fasta:"):
+            return how.split(":", 1)[1]
+    raise ValueError(f"{name} has no single-contig reference")
 
-    Pangenome graphs are on GRCh38, so only GRCh38 datasets accept one.
+
+def stratification_files(contig):
+    """File entries for the GIAB stratification BEDs, cut down to one contig as plain BEDs."""
+    return [(STRAT_BASE + path, None, f"stratifications/GRCh38_{contig}/{name}.bed", f"only:{contig}")
+            for name, path in STRATIFICATIONS]
+
+
+def stratification_tsv(contig):
+    """(key, text) of the hap.py --stratification TSV: region name, then BED path relative to the TSV."""
+    text = "".join(f"{name}\tGRCh38_{contig}/{name}.bed\n" for name, _ in STRATIFICATIONS)
+    return f"stratifications/GRCh38_{contig}.tsv", text
+
+
+def dataset_files(name, pangenome=None, stratifications=False):
+    """The file entries to fetch for a dataset, plus a pangenome graph ('chr20' or 'full') and the GIAB
+    stratification BEDs when asked.
+
+    Pangenome graphs and the stratifications are on GRCh38, so only GRCh38 datasets accept them.
     """
     files = list(DATASETS[name]["files"])
+    if (pangenome or stratifications) and name not in GRCH38_DATASETS:
+        flag = "--pangenome" if pangenome else "--stratifications"
+        raise ValueError(f"{flag} needs a GRCh38 dataset ({', '.join(sorted(GRCH38_DATASETS))}); "
+                         f"{name} is on another reference")
     if pangenome:
-        if name not in GRCH38_DATASETS:
-            raise ValueError(f"--pangenome needs a GRCh38 dataset ({', '.join(sorted(GRCH38_DATASETS))}); "
-                             f"{name} is on another reference")
         graph = PANGENOMES[pangenome]
         files.append((graph["url"], graph["size"], graph["key"], "copy"))
+    if stratifications:
+        files += stratification_files(dataset_contig(name))
     return files
+
+
+def bam_region_command(root, url, key, contig, image=APP_IMAGE):
+    """docker run that copies one contig's reads out of a remote indexed BAM to <root>/<key>.
+
+    samtools reads the remote .bai, then fetches only that contig's byte ranges over HTTP. Reads whose mate maps to
+    another contig are kept, as in Google's own per-chromosome BAMs. The result is checked with samtools quickcheck;
+    a failed fetch (e.g. a dropped connection) removes its partial file.
+    """
+    out = f"/data/{key}"
+    script = (f"set -e; cd /tmp; trap 'rm -f {out}.part' ERR; samtools view -b -o {out}.part {url} {contig}; "
+              f"samtools quickcheck {out}.part; mv {out}.part {out}")
+    return ["docker", "run", "--rm",
+            "--mount", f"type=bind,source={os.path.abspath(root)},target=/data",
+            image, "bash", "-c", script]
 
 
 def vg_build_command(root, vg_key, gbz_key, memory="8g"):
@@ -214,9 +313,9 @@ def build_chr20_gbz(root, force=False):
     print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
 
 
-def fetch_dataset(name, root, force=False, pangenome=None):
+def fetch_dataset(name, root, force=False, pangenome=None, stratifications=False, app_image=APP_IMAGE):
     ds = DATASETS[name]
-    files = dataset_files(name, pangenome)
+    files = dataset_files(name, pangenome, stratifications)
     known = sum(f[1] or 0 for f in files)
     print(f"Dataset {name}: {len(files)} files, {known / 1e6:,.1f} MB plus any contig ranges")
     for remote, size, key, how in files:
@@ -229,6 +328,13 @@ def fetch_dataset(name, root, force=False, pangenome=None):
         print(f"  fetching {remote}", flush=True)
         if how.startswith("fasta:"):
             fetch_fasta_contig(url, how.split(":", 1)[1], dest)
+        elif how.startswith("region:"):
+            contig = how.split(":", 1)[1]
+            print(f"    {contig} only, with samtools in {app_image} (about 1 GB for 30x chr20)", flush=True)
+            if subprocess.run(["docker", "image", "inspect", app_image], capture_output=True).returncode != 0:
+                raise RuntimeError(f"Docker image {app_image} not found: build it first "
+                                   f"(docker build -f Dockerfile -t {app_image} .) or pass --app-image")
+            subprocess.run(bam_region_command(root, url, key, contig, app_image), check=True)
         else:
             raw = dest + ".download"
             download(url, raw, size)
@@ -251,6 +357,11 @@ def fetch_dataset(name, root, force=False, pangenome=None):
         print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
     if pangenome and "build" in PANGENOMES[pangenome]:
         build_chr20_gbz(root, force)
+    if stratifications:
+        tsv_key, text = stratification_tsv(dataset_contig(name))
+        with open(os.path.join(root, *tsv_key.split("/")), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        print(f"  wrote    {tsv_key} (for benchmark_happy.py --stratification {tsv_key})")
     print(f"Done. Sample {ds['sample']}, reference {ds['reference']}.")
 
 
@@ -262,9 +373,13 @@ def main(argv=None):
     p.add_argument("--pangenome", nargs="?", const="chr20", choices=sorted(PANGENOMES),
                    help="also get the HPRC v1.1 GRCh38 pangenome graph for --caller pangenome: chr20 (default; "
                         "built locally with vg, 72 MB) or full (3.29 GB, needs ~11 GB of shared memory)")
+    p.add_argument("--stratifications", action="store_true",
+                   help="also get GIAB v3.3 stratification BEDs (difficult regions, segdups, low mappability) "
+                        "for benchmark_happy.py --stratification")
+    p.add_argument("--app-image", default=APP_IMAGE, help="image with samtools, for datasets cut from remote BAMs")
     a = p.parse_args(argv)
     try:
-        fetch_dataset(a.dataset, a.root, a.force, a.pangenome)
+        fetch_dataset(a.dataset, a.root, a.force, a.pangenome, a.stratifications, a.app_image)
     except ValueError as err:
         p.error(str(err))
 

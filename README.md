@@ -344,9 +344,9 @@ A **pangenome** reference is a graph that combines many people's genomes. The Hu
 
 > [!NOTE]
 > **Where this project is:**
-> - **Done:** pangenome-aware variant calling (Google's pangenome-aware DeepVariant with the HPRC graph) runs **locally on the GPU** and is benchmarked on HG003 chr20 (results below).
+> - **Done:** pangenome-aware variant calling (Google's pangenome-aware DeepVariant with the HPRC graph) runs **locally on the GPU** and is benchmarked on chr20 of HG003 (Ashkenazi) and HG005 (Han Chinese), overall and by GIAB region type (results below).
 > - **Still linear:** reads are aligned to GRCh38 with BWA-MEM (not to the graph).
-> - **Not yet:** whole-genome graphs, other samples, and runs in the cloud. These are next on the [Roadmap](#️-roadmap) (#51).
+> - **Not yet:** whole-genome graphs and runs in the cloud. These are next on the [Roadmap](#️-roadmap) (#51).
 
 #### Running it
 
@@ -375,6 +375,13 @@ python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa \
 
 # Score every caller's VCF with hap.py (vcfeval engine, PASS only, GIAB confident regions)
 python scripts/benchmark_happy.py --sample HG003_chr20 --reference GRCh38_chr20.fa --region chr20
+
+# HG005 (Han Chinese) and an HG003 control from the same 30x BAM set; only chr20 is fetched (~1 GB each).
+# --stratifications adds GIAB region BEDs (difficult regions, segdups, low mappability) for a per-region table.
+python scripts/fetch_dv_testdata.py --dataset hg005-chr20 --stratifications
+python scripts/fetch_dv_testdata.py --dataset hg003-30x-chr20
+python scripts/benchmark_happy.py --sample HG005_chr20 --reference GRCh38_chr20.fa --region chr20 \
+    --stratification stratifications/GRCh38_chr20.tsv
 ```
 
 **Accuracy: HG003 chr20, hap.py.** HG003 is NovaSeq PCR-free 35x, scored against GIAB v4.2.1 confident regions. These are the same settings Google's case studies use (`--engine=vcfeval --pass-only`):
@@ -391,8 +398,35 @@ python scripts/benchmark_happy.py --sample HG003_chr20 --reference GRCh38_chr20.
 - **The setup reproduces Google's published result.** Their pangenome-aware BWA case study on the same BAM reports SNP F1 0.997746 and indel F1 0.996788 (version 1.9, whole-genome graph). Here: 0.997718 and 0.997206, with a chr20-only graph and version 1.10.
 - **The pangenome finds variants the linear reference misses.** Missed SNPs fall by 8% (263 → 242) and missed indels by 13% (48 → 42).
 - **It also makes slightly more false calls** (SNPs 52 → 78). On this one sample the total error count is level: 378 for linear against 380 for pangenome-aware.
-- **HG003 is a hard case for showing a benefit.** It is Ashkenazi Jewish, an ancestry the standard reference already represents well. The preprint reports the largest gains with more diverse samples, whole genomes (most segmental duplications are on other chromosomes) and reads aligned to the graph. Those benchmarks are next.
+- **HG003 is a hard case for showing a benefit.** It is Ashkenazi Jewish, an ancestry the standard reference already represents well. The preprint reports the largest gains with more diverse samples, whole genomes (most segmental duplications are on other chromosomes) and reads aligned to the graph. The HG005 benchmark below tests the first of these.
 - **bcftools is much better than earlier exact-match counts suggested** (SNP F1 0.99, not 0.87). Exact (position, ref, alt) matching without normalisation heavily penalised its indel representation.
+
+**Does ancestry matter? HG005 against HG003, chr20, hap.py.** HG005 is Han Chinese. To isolate ancestry, both samples come from the same Google data set: NovaSeq PCR-free 30x, BWA-MEM to hs38DH, Picard MarkDuplicates. Only chr20 is fetched (`fetch_dv_testdata.py --dataset hg005-chr20` / `hg003-30x-chr20`). Errors are missed + false calls:
+
+| Sample | Caller | SNP FN / FP | SNP F1 | Indel FN / FP | Indel F1 |
+| :--- | :--- | ---: | ---: | ---: | ---: |
+| HG003 30x | DeepVariant (linear) | 273 / 81 | 0.99747 | 63 / 28 | 0.99577 |
+| HG003 30x | Pangenome-aware DeepVariant | **250** / 90 | **0.99757** | **53** / 28 | **0.99623** |
+| HG005 30x | DeepVariant (linear) | **233 / 58** | **0.99788** | 49 / 11 | 0.99646 |
+| HG005 30x | Pangenome-aware DeepVariant | 244 / 95 | 0.99753 | **39 / 10** | **0.99711** |
+
+By GIAB region type (`--stratification`, GIAB v3.3 stratifications), SNP errors as FN / FP, linear → pangenome-aware:
+
+| Region (chr20) | HG003 30x | HG005 30x |
+| :--- | :--- | :--- |
+| Segmental duplications | 30 / 36 → **13 / 25** | 47 / 30 → **30 / 25** |
+| Low mappability (all) | 238 / 48 → **222** / 55 | 205 / 42 → 230 / 73 |
+| Outside all difficult regions | 17 / 23 → **16 / 17** | 10 / 6 → **6 / 2** |
+
+- **The ancestry prediction did not hold here.** On HG005, pangenome-aware DeepVariant made *more* SNP errors than linear (291 → 339), though fewer indel errors (60 → 49). On HG003 from the same data set it improved both (SNPs 354 → 340, indels 91 → 81).
+- **Segmental duplications are where the pangenome helps on both samples.** SNP errors there fall by 42% for HG003 (66 → 38) and 29% for HG005 (77 → 55). chr20 has only 149 segmental-duplication intervals, so a whole-genome run should show more of this gain.
+- **HG005's extra SNP errors are in low-mappability regions outside segmental duplications** (FN 205 → 230, FP 42 → 73). They are not explained yet. Looking at those sites is the next step.
+- **No leakage:** HG005 is not one of the 46 samples in the HPRC v1.1 graph (checked with `vg gbwt -L`; HPRC held out HG002, HG005 and NA19240). The graph does contain several Han Chinese samples (e.g. HG00438, HG00621, HG00673), so HG005's ancestry is represented. HG003 is not in it either.
+- **Caveats:**
+  - One chromosome and one run per caller, so differences of a few dozen variants are small.
+  - The truth regions differ in kind. GIAB v4.2.1 ships only a "noinconsistent" BED for HG003 and only a plain BED for HG005. The plain BED keeps some harder sites the other drops, which could account for part of HG005's extra errors.
+  - The 30x BAMs are aligned to hs38DH (with ALT and decoy contigs), the 35x HG003 BAM to no_alt. Only 0.03% of chr20 reads sit on chr20's ALT contigs (6,011 for HG005, 4,305 for HG003, from the BAM indexes), so dropping them by fetching `chr20` only has a negligible effect. The two 30x samples are aligned identically.
+- **Time:** pangenome-aware DeepVariant took 21.4 min on HG005 and 20.3 min on HG003 30x, with the settings below.
 
 Small datasets (exact-match counts): synthetic data, 10/10 planted SNPs and 0 extra calls for both callers; NA12878 slice, bcftools 45 TP / 4 FN / 4 FP and DeepVariant 49 TP / 0 FN / 0 FP. DeepVariant's accuracy is identical on GPU and CPU.
 
