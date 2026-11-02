@@ -275,7 +275,7 @@ def test_sharded_calling_gives_the_same_calls_as_one_job(tmp_path, capfd, paired
     assert exit_code == 0  # --check: 10/10 planted SNPs from the merged VCF, nothing unexpected
     assert "Merging 8 region parts" in log
     assert _vcf_records(root / "variants" / f"{sample}.vcf.gz") == unsharded and len(unsharded) == 10
-    assert len(list((root / "variants" / sample / "parts").glob("*/*.vcf.gz"))) == 8  # parts/<RUN_NAME>/
+    assert len(list((root / "intermediate" / "variant-parts" / sample).glob("*/*.vcf.gz"))) == 8  # <RUN_NAME>/
     assert (root / "variants" / f"{sample}.vcf.gz.tbi").exists()
     record = json.loads((root / "runs" / f"{sample}.provenance.json").read_text())
     assert record["status"] == "succeeded"  # the variants-only run inherits QC and align (provenance.UPSTREAM)
