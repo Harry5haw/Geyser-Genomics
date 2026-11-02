@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
 from geyser_web.pipeline import (SINGLE, LayoutError, ObjectNotFound, keys_for, keys_of, layout_from_raw,
+                                 legacy_qc_keys, output_present,
                                  parse_raw_key)
 
 from .runs import is_valid_sample_id, read_all_runs, read_run
@@ -152,7 +153,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
     for st in STAGES:
         rec = latest.get(st.metric)
         duration = rec.get("duration_seconds") if rec else None
-        if all(k in present for k in keys_of(keys, st.output)):
+        if output_present(sample_id, layout, st.output, present.__contains__):
             state = "done"
             if rec and rec.get("status") != "Success":
                 duration = None
@@ -228,5 +229,6 @@ def load_one(storage, sample_id: str):
     except LayoutError:
         return None  # never uploaded, or not a complete sample yet
     keys = keys_for(sample_id, layout)
-    present = {k for st in STAGES for k in keys_of(keys, st.output) if storage.exists(k)}
+    candidates = [k for st in STAGES for k in keys_of(keys, st.output)] + legacy_qc_keys(sample_id, layout)
+    present = {k for k in candidates if storage.exists(k)}
     return build_sample(sample_id, present, read_metrics(storage), read_run(storage, sample_id), layout)

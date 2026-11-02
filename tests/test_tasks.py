@@ -261,3 +261,10 @@ def test_qc_command_reports_only_and_never_writes_reads():
         tasks.qc_command(["a", "b", "c"], "r.html", "r.json", 1, "S1")
 
 
+def test_qc_counts_fastqc_reports_from_before_fastp():
+    present = {"qc_reports/S1_fastqc.html", "qc_reports/P1_R1_fastqc.html", "qc_reports/P1_R2_fastqc.html",
+               "qc_reports/H1_R1_fastqc.html", "qc_reports/N1.fastp.html"}
+    done = lambda sample, layout: tasks.output_present(sample, layout, "qc_html", present.__contains__)  # noqa: E731
+    assert done("S1", "single") and done("P1", "paired") and done("N1", "single") and done("N1", "paired")
+    assert not done("H1", "paired")  # only R1's report: QC never finished
+    assert not tasks.output_present("S1", "single", "bam", present.__contains__)  # legacy only applies to QC

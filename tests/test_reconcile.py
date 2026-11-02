@@ -119,7 +119,22 @@ def test_patterns_follow_keys_for():
     assert not any(p.match("alignments/sub/ABC.bam") for p in patterns)
     assert reconcile.match_sample("decompressed/ABC_R2.fastq", patterns) is None  # no longer a stage output
     assert reconcile.match_sample("qc_reports/ABC.fastp.json", patterns) == "ABC"
-    assert reconcile.match_sample("qc_reports/ABC_fastqc.zip", patterns) is None  # FastQC's, before #100
+    assert reconcile.match_sample("qc_reports/ABC_fastqc.html", patterns) == "ABC"  # FastQC's, before #100
+    assert reconcile.match_sample("qc_reports/ABC_R2_fastqc.html", patterns) == "ABC"
+    assert reconcile.match_sample("qc_reports/ABC_fastqc.zip", patterns) is None  # the zip was never an output
+
+
+def test_samples_with_fastqc_reports_from_before_fastp_still_count_as_qc_done():
+    old_single = ["raw_reads/OLD.fastq.gz", "qc_reports/OLD_fastqc.html", "qc_reports/OLD_fastqc.zip",
+                  "alignments/OLD.bam", "variants/OLD.vcf.gz"]
+    old_paired = (["raw_reads/OLDP_R1.fastq.gz", "raw_reads/OLDP_R2.fastq.gz"]
+                  + [f"qc_reports/OLDP_{m}_fastqc.html" for m in ("R1", "R2")]
+                  + ["alignments/OLDP.bam", "variants/OLDP.vcf.gz"])
+    half = ["raw_reads/HALF_R1.fastq.gz", "raw_reads/HALF_R2.fastq.gz", "qc_reports/HALF_R1_fastqc.html"]
+    rows = by_sample(reconcile.reconcile(old_single + old_paired + half))
+    assert rows["OLD"]["status"] == "complete" and rows["OLD"]["outputs"]["qc_html"]
+    assert rows["OLDP"]["status"] == "complete" and rows["OLDP"]["outputs"]["qc_html"]
+    assert rows["HALF"]["outputs"]["qc_html"] is False  # one mate's FastQC report was never a finished QC
 
 
 def paired_sample(sample_id):

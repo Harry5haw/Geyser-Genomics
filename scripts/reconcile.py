@@ -48,7 +48,7 @@ for _sub in ("app", "app-deepvariant"):
         sys.path.insert(0, _path)
 
 from storage import LocalStorage, S3Storage, storage_from_env  # noqa: E402
-from tasks import MATES, PAIRED, PER_MATE_KEYS, SINGLE, keys_for, keys_of  # noqa: E402
+from tasks import MATES, PAIRED, SINGLE, keys_for, legacy_qc_keys, output_present  # noqa: E402
 
 DEFAULT_REGION = "eu-west-2"
 _SENTINEL = "SAMPLEIDSENTINEL"
@@ -82,13 +82,11 @@ def extra_outputs() -> dict:
 def key_patterns(extras: dict) -> list:
     """Regexes that recover a sample ID from any output key, built from keys_for itself.
 
-    Paired-end patterns come first, so raw-derived per-mate keys belong to sample S1, not a single-end
-    sample S1_R1 (which can't exist: the trigger reads a trailing _R1/_R2 as a mate).
+    Only the raw reads differ between layouts; every output is one per sample, so the single-end
+    keys cover both. FastQC reports from before #100 count too (legacy_qc_keys).
     """
-    templates = []
-    for layout in (PAIRED, SINGLE):
-        templates += [v for k, v in keys_for(_SENTINEL, layout).items()
-                      if not k.startswith("raw") and v not in templates]
+    templates = [v for k, v in keys_for(_SENTINEL).items() if k != "raw"]
+    templates += [k for k in legacy_qc_keys(_SENTINEL, PAIRED) + legacy_qc_keys(_SENTINEL)]
     templates += [fn(_SENTINEL) for fn in extras.values()]
     return [re.compile("^" + re.escape(t).replace(_SENTINEL, r"(?P<id>[^/]+)") + "$") for t in templates]
 
@@ -147,13 +145,6 @@ def raw_layout(sample_id: str, keys: set):
     return None, None, ""
 
 
-def output_layout(sample_id: str, keys: set) -> str:
-    """The layout a sample's outputs were written in, for when its raw reads don't say."""
-    paired = keys_for(sample_id, PAIRED)
-    per_mate = [k for name in PER_MATE_KEYS if name != "raw" for k in keys_of(paired, name)]
-    return PAIRED if any(k in keys for k in per_mate) else SINGLE
-
-
 def open_runs(sfn_client, state_machine_arn: str) -> Counter:
     """Number of RUNNING executions per sample ID (from each execution's input)."""
     counts = Counter()
@@ -194,13 +185,12 @@ def reconcile(keys, running: Counter = None) -> dict:
     for sample_id in sorted(samples):
         layout, layout_problem, layout_note = raw_layout(sample_id, keys)
         has_raw = layout is not None or layout_problem is not None
-        expected = keys_for(sample_id, layout or output_layout(sample_id, keys))
-        # A per-mate output (the QC reports) only counts once both mates have it.
-        outputs = {name: all(k in keys for k in keys_of(expected, name)) for name, _ in STAGE_OUTPUTS}
+        # Outputs are one per sample; the layout only matters for FastQC reports from before #100.
+        output_layout = layout or (PAIRED if any(k in keys for k in legacy_qc_keys(sample_id, PAIRED)) else SINGLE)
+        outputs = {name: output_present(sample_id, output_layout, name, keys.__contains__)
+                   for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
-        # But one mate's output still shows the run got that far.
-        reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS
-                   if any(k in keys for k in keys_of(expected, name))]
+        reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS if outputs[name]]
         open_count = running.get(sample_id, 0)
         problem = None
         if layout_problem:

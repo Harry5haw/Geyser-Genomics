@@ -27,7 +27,7 @@ from .vcf import check_truth, planted_positions, read_truth, read_variants, trut
 # Per-read-file kinds (PER_MATE_KEYS) of a paired-end sample are served as <kind>_R1 / <kind>_R2.
 FILE_KINDS = {
     "raw": ("Raw reads", "Gzipped FASTQ as uploaded"),
-    "qc_html": ("fastp report", "HTML (its charts need JavaScript: open the downloaded file)"),
+    "qc_html": ("fastp report", "HTML (its charts load a script from opengene.org, so they need a browser online)"),
     "qc_json": ("fastp data", "JSON: every number in the report"),
     "bam": ("Alignments", "Coordinate-sorted, duplicate-marked BAM"),
     "vcf": ("Variants", "Gzipped VCF"),
@@ -212,7 +212,7 @@ def sample_file(request, sample_id, kind):
     if split[0] == "qc_html" and request.GET.get("inline"):
         # fastp's report is generated HTML: show it in a sandbox (no scripts, opaque origin). Its
         # charts load a script from opengene.org over plain HTTP, so they stay blank here; the
-        # tables show, and the downloaded file has the charts.
+        # tables show. The downloaded file draws them only in a browser that is online.
         response = FileResponse(stream, content_type="text/html; charset=utf-8")
         response["Content-Security-Policy"] = "sandbox"
         return response

@@ -50,6 +50,13 @@ def test_local_run_shows_one_stage_at_a_time(storage):
     assert states(status.load_one(storage, "S1")) == ["running", "pending", "pending"]
 
 
+def test_sample_finished_with_fastqc_before_fastp_is_still_complete(storage):
+    for key in ["raw_reads/OLD.fastq.gz", "qc_reports/OLD_fastqc.html", "alignments/OLD.bam", "variants/OLD.vcf.gz"]:
+        put(storage, key, b"x")
+    assert status.load_one(storage, "OLD").state == "succeeded"
+    assert [s.state for s in status.load_all(storage)[0].stages] == ["done", "done", "done"]
+
+
 def test_all_outputs_present_is_succeeded(storage):
     for key in ["raw_reads/S1.fastq.gz", "qc_reports/S1.fastp.html",
                 "alignments/S1.bam", "variants/S1.vcf.gz"]:

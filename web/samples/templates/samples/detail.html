@@ -56,7 +56,7 @@
     {% if qc_report %}
     <details>
       <summary>fastp report{% if sample.layout == "paired" %} (both mates){% endif %}</summary>
-      <p class="muted">Charts are blank here (the report's scripts are blocked); download the report to see them.</p>
+      <p class="muted">Charts are blank here (the report's scripts are blocked). The downloaded report draws them when opened online: it loads its chart script from opengene.org.</p>
       <iframe class="qc-report" title="fastp report for {{ sample.sample_id }}" sandbox
               src="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1"></iframe>
     </details>

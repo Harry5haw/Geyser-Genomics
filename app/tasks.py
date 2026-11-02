@@ -119,6 +119,24 @@ def keys_of(keys: dict, name: str) -> list:
     return [keys[f"{name}_{m}"] for m in MATES]
 
 
+def legacy_qc_keys(sample_id: str, layout: str = SINGLE) -> list:
+    """FastQC's HTML report(s), from samples run before fastp replaced it (#100): one per read file."""
+    stems = [sample_id] if layout == SINGLE else [f"{sample_id}_{m}" for m in MATES]
+    return [f"qc_reports/{stem}_fastqc.html" for stem in stems]
+
+
+def output_present(sample_id: str, layout: str, name: str, exists) -> bool:
+    """Whether a sample has its `name` output (keys_for name). exists(key) -> bool.
+
+    QC also counts as done when the sample has FastQC's reports from before #100, so samples that
+    finished then don't look unfinished now. Their reports stay where they are; re-running
+    `tasks.py qc <id>` writes the fastp ones.
+    """
+    if all(exists(k) for k in keys_of(keys_for(sample_id, layout), name)):
+        return True
+    return name == "qc_html" and all(exists(k) for k in legacy_qc_keys(sample_id, layout))
+
+
 def all_raw_keys(sample_id: str) -> list:
     """Every raw key a sample ID could use, in either layout: anything here means the ID is taken."""
     return keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
@@ -324,7 +342,7 @@ def qc_command(fastqs, html: str, json_path: str, threads: int, sample_id: str) 
     if len(fastqs) == 2:
         cmd += ["-I", fastqs[1]]
     return cmd + ["--disable_adapter_trimming", "--disable_quality_filtering", "--disable_length_filtering",
-                  "--disable_trim_poly_g", "--overrepresentation_analysis",
+                  "--disable_trim_poly_g",
                   "--thread", str(max(1, min(threads, QC_MAX_THREADS))),
                   "--json", json_path, "--html", html, "--report_title", f"{sample_id} (fastp)"]
 

@@ -7,8 +7,6 @@ page shows these numbers from the JSON as a table above the report.
 import json
 from typing import Optional
 
-from geyser_web.pipeline import ObjectNotFound
-
 MAX_QC_JSON_BYTES = 20 * 1024 * 1024  # a fastp JSON is ~50-100 KB; anything far bigger isn't one
 
 
@@ -17,11 +15,15 @@ def _percent(value) -> str:
 
 
 def read_qc_summary(storage, key: str) -> Optional[list]:
-    """[(label, value), ...] from a fastp JSON report, or None if it is missing or unreadable."""
+    """[(label, value), ...] from a fastp JSON report, or None if it is missing or unreadable.
+
+    Best effort: the table is extra, so any storage error (missing object, AccessDenied, a dropped
+    connection) leaves it out rather than failing the sample page.
+    """
     try:
         with storage.open_read(key) as fh:
             raw = fh.read(MAX_QC_JSON_BYTES + 1)
-    except ObjectNotFound:
+    except Exception:  # noqa: BLE001 - see above
         return None
     if len(raw) > MAX_QC_JSON_BYTES:
         return None

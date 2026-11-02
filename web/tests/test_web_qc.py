@@ -27,6 +27,12 @@ def test_missing_malformed_or_oversized_reports_show_nothing(storage, monkeypatc
     assert qc.read_qc_summary(storage, "qc_reports/BAD.fastp.json") is None
     put(storage, "qc_reports/ODD.fastp.json", json.dumps({"summary": {}}))
     assert qc.read_qc_summary(storage, "qc_reports/ODD.fastp.json") is None
+
+    class Failing:
+        def open_read(self, key):
+            raise RuntimeError("AccessDenied")
+
+    assert qc.read_qc_summary(Failing(), "qc_reports/S1.fastp.json") is None  # never a 500 on the page
     monkeypatch.setattr(qc, "MAX_QC_JSON_BYTES", 10)
     put(storage, "qc_reports/BIG.fastp.json", json.dumps(FASTP_SINGLE))
     assert qc.read_qc_summary(storage, "qc_reports/BIG.fastp.json") is None

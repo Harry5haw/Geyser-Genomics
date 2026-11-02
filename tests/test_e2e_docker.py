@@ -129,6 +129,8 @@ def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
     # leading gap decides which aligner runs (bwa-mem2#262 guard), so both are covered.
     import subprocess
 
+    import tasks
+
     root = tmp_path / "bucket"
     make_test_data.main(["--root", str(root), "--leading-gap", str(leading_gap)])
     raw = root / "raw_reads" / "SYNTH001.fastq.gz"
@@ -142,4 +144,5 @@ def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
         result = subprocess.run(run_local.docker_command(cmd, str(root), image), capture_output=True, text=True)
         assert result.returncode != 0, f"{stage} accepted a truncated upload:\n{result.stdout}{result.stderr}"
     assert not (root / "alignments" / "SYNTH001.bam").exists()
-    assert not list((root / "qc_reports").glob("SYNTH001*")) if (root / "qc_reports").exists() else True
+    keys = tasks.keys_for("SYNTH001")
+    assert not (root / keys["qc_html"]).exists() and not (root / keys["qc_json"]).exists()
