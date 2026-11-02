@@ -247,7 +247,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
         record["stats"].update(p.get("stats") or {})
-        for field in ("reference", "layout", "aligner"):
+        for field in ("reference", "layout", "aligner", "annotation"):
             if p.get(field) is not None:
                 record[field] = p[field]
     return record
@@ -268,6 +268,11 @@ def _union(lists) -> list:
         for entry in entries or []:
             by_key[entry["key"]] = entry
     return [by_key[k] for k in sorted(by_key)]
+
+
+def read_part(storage, sample_id: str, task: str):
+    """One stage's part (the last run of that stage), or None. Each task has exactly one, overwritten per run."""
+    return _read_json(storage, f"{part_prefix(sample_id)}{task}.json")
 
 
 def read_record(storage, sample_id: str, part_keys=None):

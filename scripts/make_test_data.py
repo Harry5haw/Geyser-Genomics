@@ -90,6 +90,38 @@ def add_duplicates(records, rng, rate):
             yield (f"{record[0]}_dup",) + tuple(record[1:])
 
 
+def gene_models(snps, length, offset=0, flank=300):
+    """Two single-exon protein-coding genes for bcftools csq, around planted SNPs 2-3 (+ strand)
+    and 4-5 (- strand); the other SNPs stay intergenic. No randomness: the reads and SNPs are the
+    same with or without --gff. Each CDS is codon-aligned (a multiple of 3 bases). Coordinates are
+    1-based and include `offset` (the leading gap). Returns [] if there are too few SNPs.
+    """
+    genes = []
+    for name, strand, (a, b) in (("SYNTHG1", "+", (1, 2)), ("SYNTHG2", "-", (3, 4))):
+        if len(snps) <= b:
+            continue
+        start = max(1, snps[a]["pos"] - offset - flank)
+        end = min(length, snps[b]["pos"] - offset + flank)
+        end = start + (end - start + 1) // 3 * 3 - 1
+        genes.append({"name": name, "strand": strand, "start": start + offset, "end": end + offset})
+    return genes
+
+
+def write_gff(path, contig, genes):
+    """Ensembl-style GFF3, the layout bcftools csq expects (gene -> mRNA -> CDS, with biotype)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with gzip.open(path, "wt", encoding="ascii", newline="\n") as fh:
+        fh.write("##gff-version 3\n")
+        for g in genes:
+            n, s, e, strand = g["name"], g["start"], g["end"], g["strand"]
+            fh.write(f"{contig}\tgeyser\tgene\t{s}\t{e}\t.\t{strand}\t.\tID=gene:{n};Name={n};biotype=protein_coding\n")
+            fh.write(
+                f"{contig}\tgeyser\tmRNA\t{s}\t{e}\t.\t{strand}\t.\t"
+                f"ID=transcript:{n}T;Parent=gene:{n};Name={n}-201;biotype=protein_coding\n"
+            )
+            fh.write(f"{contig}\tgeyser\tCDS\t{s}\t{e}\t.\t{strand}\t0\tID=CDS:{n}P;Parent=transcript:{n}T\n")
+
+
 def write_fasta(path, name, seq, width=60):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="ascii", newline="\n") as fh:
@@ -123,6 +155,12 @@ def main(argv=None):
     )
     p.add_argument("--insert-size", type=int, default=400, help="mean fragment length for --paired")
     p.add_argument(
+        "--gff",
+        action="store_true",
+        help="also write gene models, reference/<reference>.gff3.gz: two genes around planted SNPs 2-5, "
+        "so the variants stage annotates them with bcftools csq (reads and SNPs unchanged)",
+    )
+    p.add_argument(
         "--leading-gap",
         type=int,
         default=0,
@@ -143,6 +181,12 @@ def main(argv=None):
         snp["pos"] += a.leading_gap
 
     write_fasta(os.path.join(a.root, "reference", a.reference), a.contig, "N" * a.leading_gap + reference)
+    genes = gene_models(snps, a.length, a.leading_gap) if a.gff else []
+    gff_path = os.path.join(a.root, "reference", a.reference + ".gff3.gz")
+    if genes:
+        write_gff(gff_path, a.contig, genes)
+    elif os.path.exists(gff_path):
+        os.remove(gff_path)  # an earlier --gff run's models describe a different genome now
 
     raw_dir = os.path.join(a.root, "raw_reads")
     os.makedirs(raw_dir, exist_ok=True)
@@ -176,6 +220,7 @@ def main(argv=None):
                 "contig": a.contig,
                 "snps": snps,
                 "planted_duplicates": n_dup,
+                **({"genes": genes} if genes else {}),  # --gff only: the default truth file is unchanged
             },
             fh,
             indent=2,
