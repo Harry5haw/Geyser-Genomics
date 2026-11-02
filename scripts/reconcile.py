@@ -177,17 +177,17 @@ def run_records(storage, keys) -> dict:
     A sample has a record if it has parts (runs/<id>.provenance/<Task>.json) or the stored copy
     (runs/<id>.provenance.json): the copy can be missing when the stage that would have written it failed.
     """
-    sample_ids = set()
+    part_keys = {}  # sample -> its part keys (from the listing reconcile already has: no extra LIST)
     for key in keys:
         rest = key[len(provenance.RUN_PREFIX):] if key.startswith(provenance.RUN_PREFIX) else ""
         if rest.endswith(".provenance.json"):
-            sample_ids.add(rest[:-len(".provenance.json")])
+            part_keys.setdefault(rest[:-len(".provenance.json")], [])
         elif ".provenance/" in rest:
-            sample_ids.add(rest.split(".provenance/", 1)[0])
+            part_keys.setdefault(rest.split(".provenance/", 1)[0], []).append(key)
     out = {}
-    for sample_id in sorted(sample_ids):
+    for sample_id in sorted(part_keys):
         try:
-            record = provenance.read_record(storage, sample_id)
+            record = provenance.read_record(storage, sample_id, sorted(part_keys[sample_id]))
         except Exception as err:  # noqa: BLE001 - e.g. S3 AccessDenied or throttling on one record
             print(f"WARNING: could not read the run record of {sample_id}: {err}", file=sys.stderr)
             continue
@@ -252,12 +252,17 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
             note = f"{open_count} runs at once: they overwrite each other's outputs"
             problem = "concurrent runs"
         record = records.get(sample_id)
-        if record and record["status"] == "failed":
-            # The latest run failed, even if an earlier run's outputs are all there.
-            failed_stages = [t for t, st in record["stages"].items() if st != "Success"]
-            note = "; ".join(n for n in (note, f"run record: {', '.join(failed_stages)} failed"
-                                         + (f" in {record['run_name']}" if record["run_name"] else "")) if n)
-            problem = problem or "run failed"
+        failed_stages = [t for t, st in (record or {}).get("stages", {}).items() if st != "Success"]
+        if failed_stages:
+            # Each failed stage with its own run (an inherited upstream stage can come from an older run).
+            runs = record.get("stage_runs") or {}
+            failures = ", ".join(t + (f" in {r}" if (r := runs.get(t) or record.get("run_name")) else "")
+                                 for t in failed_stages)
+            note = "; ".join(n for n in (note, f"run record: {failures} failed") if n)
+            # A core stage failing in the latest run is a problem even if an earlier run's outputs are all
+            # there; not while a retry is open, and not for an extra caller (DeepVariant) alone.
+            if record["status"] == "failed" and not open_count:
+                problem = problem or "run failed"
         rows.append({"sample_id": sample_id, "status": status, "layout": layout, "raw": has_raw,
                      "outputs": outputs, "extra_outputs": extra, "open_runs": open_count, "note": note,
                      "problem": problem, "run_record": record})

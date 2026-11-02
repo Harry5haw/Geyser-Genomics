@@ -128,7 +128,6 @@ class FakePopen:
     # The launcher prints its choice first; the version is the bare line.
     ("bwa-mem2", b'Looking to launch executable "/opt/bwa-mem2/bwa-mem2.avx2", simd = .avx2\n2.2.1\n', "2.2.1"),
     ("bwa", b"\nProgram: bwa (alignment via Burrows-Wheeler transformation)\nVersion: 0.7.18-r1243\n", "0.7.18-r1243"),
-    ("fastqc", b"FastQC v0.12.1\n", "0.12.1"),
     ("fastp", b"fastp 0.24.0\n", "0.24.0"),  # what the geyser-app image's fastp prints (to stderr)
     ("mosdepth", b"mosdepth 0.3.15\n", "0.3.15"),
     ("samtools", b"something else\n", None),
@@ -156,7 +155,36 @@ def test_summary_is_the_short_form():
     record = {"status": "failed", "complete": False, "run_name": "r", "app_version": "v",
               "stages": {"Align": {"status": "Failure", "duration_seconds": 3}}}
     assert provenance.summary(record) == {"status": "failed", "complete": False, "run_name": "r",
-                                          "app_version": "v", "stages": {"Align": "Failure"}}
+                                          "app_version": "v", "stages": {"Align": "Failure"},
+                                          "stage_runs": {"Align": None}}
+
+
+def test_a_deepvariant_only_run_inherits_the_core_run(store):
+    # run_local --caller deepvariant --skip-to-variants after a full bcftools run: an add-on, not a new run.
+    for task in provenance.CORE_STAGES:
+        write_part(store, task, run_name="core", finished="2026-11-02T10:00:00Z")
+    write_part(store, "DeepVariant", run_name="dv", finished="2026-11-02T11:00:00Z")
+    record = provenance.build(store, "S1")
+    assert record["complete"] and record["status"] == "succeeded" and record["run_name"] == "dv"
+    assert set(record["stages"]) == {*provenance.CORE_STAGES, "DeepVariant"}
+
+
+def test_a_failed_extra_caller_does_not_fail_the_core_run(store):
+    for task in provenance.CORE_STAGES:
+        write_part(store, task, run_name="r")
+    write_part(store, "DeepVariant", status="Failure", run_name="r")
+    record = provenance.build(store, "S1")
+    assert record["status"] == "succeeded" and record["stages"]["DeepVariant"]["status"] == "Failure"
+
+
+def test_build_uses_given_part_keys_without_listing(store, monkeypatch):
+    write_part(store, "QualityControl")
+
+    def no_listing(prefix=""):
+        raise AssertionError("listed again")
+
+    monkeypatch.setattr(store, "list_keys", no_listing)
+    assert provenance.build(store, "S1", ["runs/S1.provenance/QualityControl.json"])["stages"]
 
 
 def test_a_variants_only_run_inherits_its_upstream_stages(store):

@@ -44,10 +44,12 @@ CORE_STAGES = ("QualityControl", "Align", "CallVariants")
 # Stages whose outputs a stage builds on. When the latest run starts part-way (run_local
 # --skip-to-variants, a stage re-run by hand), its upstream stages come from the run that last ran
 # them; downstream ones never do, so a run still in progress never borrows an old run's later stages.
+# The extra callers read the same alignment; a run of only them (run_local --caller deepvariant
+# --skip-to-variants) is an add-on to the sample's core run, so they inherit all three core stages.
 UPSTREAM = {
     "CallVariants": ("QualityControl", "Align"),
-    "DeepVariant": ("QualityControl", "Align"),
-    "PangenomeDeepVariant": ("QualityControl", "Align"),
+    "DeepVariant": CORE_STAGES,
+    "PangenomeDeepVariant": CORE_STAGES,
 }
 # name -> (command, regex on its combined output). Run once per process, outside the pipeline's
 # subprocess helpers, so a missing or odd tool can't affect a stage.
@@ -56,7 +58,6 @@ TOOL_VERSION_COMMANDS = {
     "bcftools": (["bcftools", "--version"], r"bcftools (\S+)"),
     "bwa-mem2": (["bwa-mem2", "version"], r"(?m)^(\d+\.\d+[\w.]*)\s*$"),
     "bwa": (["bwa"], r"Version: (\S+)"),
-    "fastqc": (["fastqc", "--version"], r"FastQC v(\S+)"),
     "fastp": (["fastp", "--version"], r"fastp (\S+)"),
     "mosdepth": (["mosdepth", "--version"], r"mosdepth (\S+)"),
 }
@@ -196,10 +197,14 @@ def finish(storage, status: str, duration: float, error: str = None) -> None:
         _warn("write the run record", err)
 
 
-def build(storage, sample_id: str) -> dict:
-    """The record from the parts (see the module docstring), or None if there are none. Doesn't write."""
-    parts = [p for p in (_read_json(storage, k) for k in storage.list_keys(part_prefix(sample_id))
-                         if k.endswith(".json")) if p]
+def build(storage, sample_id: str, part_keys=None) -> dict:
+    """The record from the parts (see the module docstring), or None if there are none. Doesn't write.
+
+    part_keys: the sample's part keys if the caller already listed them (reconcile), saving a LIST.
+    """
+    if part_keys is None:
+        part_keys = storage.list_keys(part_prefix(sample_id))
+    parts = [p for p in (_read_json(storage, k) for k in part_keys if k.endswith(".json")) if p]
     if not parts:
         return None
     latest = max(parts, key=lambda p: p.get("finished") or "")
@@ -212,7 +217,9 @@ def build(storage, sample_id: str) -> dict:
                                                 "run_name")}
               for p in run}
     complete = all(stages.get(t, {}).get("status") == "Success" for t in CORE_STAGES)
-    failed = any(s["status"] != "Success" for s in stages.values())
+    # The status is the core pipeline's; a failed extra caller (DeepVariant) shows in its stage entry
+    # but doesn't make the run failed when QC, align and variants are fine.
+    failed = any(s["status"] != "Success" for t, s in stages.items() if t in CORE_STAGES)
     record = {
         "schema": SCHEMA_VERSION, "sample_id": sample_id, "run_name": latest.get("run_name"),
         "status": "failed" if failed else "succeeded" if complete else "incomplete", "complete": complete,
@@ -246,13 +253,15 @@ def _union(lists) -> list:
     return [by_key[k] for k in sorted(by_key)]
 
 
-def read_record(storage, sample_id: str):
+def read_record(storage, sample_id: str, part_keys=None):
     """The sample's run record, assembled from its parts (or the stored copy if there are none), or None."""
-    return build(storage, sample_id) or _read_json(storage, record_key(sample_id))
+    return build(storage, sample_id, part_keys) or _read_json(storage, record_key(sample_id))
 
 
 def summary(record: dict) -> dict:
-    """The short form reconcile and the web UI show: status, run name, per-stage status."""
+    """The short form reconcile and the web UI show: status, run name, per-stage status and run."""
+    stages = record.get("stages") or {}
     return {"status": record.get("status"), "complete": record.get("complete"), "run_name": record.get("run_name"),
             "app_version": record.get("app_version"),
-            "stages": {task: s.get("status") for task, s in (record.get("stages") or {}).items()}}
+            "stages": {task: s.get("status") for task, s in stages.items()},
+            "stage_runs": {task: s.get("run_name") for task, s in stages.items()}}
