@@ -141,27 +141,60 @@ def _stream_transfer_config():
 ADDRESSING_STYLES = ("auto", "path", "virtual")
 
 
+def s3_endpoint_from_env(env) -> str:
+    """The S3 endpoint the environment asks for, or None for AWS's default.
+
+    ``S3_ENDPOINT_URL`` is this project's variable; boto3's own ``AWS_ENDPOINT_URL_S3`` is honoured too,
+    so either one also switches on the S3-compatible settings below and in metrics.py.
+    """
+    for var in ("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3"):
+        value = (env.get(var) or "").strip()
+        if value:
+            return value
+    return None
+
+
+def is_aws_endpoint(endpoint_url) -> bool:
+    """True for no endpoint (boto3's default) or an AWS one (regional, FIPS, VPC interface endpoint)."""
+    if not endpoint_url:
+        return True
+    from urllib.parse import urlparse
+
+    host = (urlparse(endpoint_url).hostname or "").lower()
+    return host == "amazonaws.com" or host.endswith((".amazonaws.com", ".amazonaws.com.cn"))
+
+
 class S3Storage:
     """Keys are objects in one S3 bucket. boto3 is imported lazily so local runs never need it.
 
     ``endpoint_url`` points the client at an S3-compatible service instead of AWS (OVHcloud Object
     Storage, MinIO, LocalStack); ``addressing_style`` is botocore's ``path`` / ``virtual`` / ``auto``,
     for services that only accept one. Both default to boto3's AWS behaviour.
+
+    Outside AWS, checksums are only sent when an operation requires them: since 1.36 boto3 adds CRC32
+    checksums (and aws-chunked uploads) to every PutObject/UploadPart by default, which many
+    S3-compatible services reject. Sign with the service's own region (``AWS_REGION``, e.g. ``gra``).
     """
 
     def __init__(self, bucket: str, region: str, endpoint_url: str = None, addressing_style: str = None):
         import boto3
+        from botocore.config import Config
 
+        endpoint_url = (endpoint_url or "").strip() or None
+        addressing_style = (addressing_style or "").strip().lower() or None
         if addressing_style and addressing_style not in ADDRESSING_STYLES:
             raise ValueError(f"Unknown S3 addressing style {addressing_style!r} (expected one of {ADDRESSING_STYLES})")
         self.bucket = bucket
         kwargs = {"region_name": region}
+        config = {}
         if endpoint_url:
             kwargs["endpoint_url"] = endpoint_url
+            if not is_aws_endpoint(endpoint_url):
+                config.update(request_checksum_calculation="when_required", response_checksum_validation="when_required")
         if addressing_style:
-            from botocore.config import Config
-
-            kwargs["config"] = Config(s3={"addressing_style": addressing_style})
+            config["s3"] = {"addressing_style": addressing_style}
+        if config:
+            kwargs["config"] = Config(**config)
         self._client = boto3.client("s3", **kwargs)
 
     def describe(self, key: str) -> str:
@@ -225,7 +258,8 @@ def storage_from_env(env=None):
     STORAGE_BACKEND     s3 (default) or local
     BUCKET_NAME         required for s3
     AWS_REGION          s3 region, default eu-west-2 (an S3-compatible service's own region name, e.g. gra)
-    S3_ENDPOINT_URL     s3 only, optional: an S3-compatible endpoint instead of AWS
+    S3_ENDPOINT_URL     s3 only, optional: an S3-compatible endpoint instead of AWS (boto3's
+                        AWS_ENDPOINT_URL_S3 works too; S3_ENDPOINT_URL wins if both are set)
     S3_ADDRESSING_STYLE s3 only, optional: path, virtual or auto (botocore's default)
     LOCAL_STORAGE_DIR   root directory for local, default ./local_bucket
 
@@ -243,7 +277,7 @@ def storage_from_env(env=None):
         return S3Storage(
             bucket,
             env.get("AWS_REGION", "eu-west-2"),
-            endpoint_url=env.get("S3_ENDPOINT_URL") or None,
-            addressing_style=(env.get("S3_ADDRESSING_STYLE") or "").lower() or None,
+            endpoint_url=s3_endpoint_from_env(env),
+            addressing_style=env.get("S3_ADDRESSING_STYLE"),
         )
     raise RuntimeError(f"Unknown STORAGE_BACKEND {backend!r} (expected 's3' or 'local')")

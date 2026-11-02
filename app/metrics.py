@@ -4,7 +4,9 @@
 * ``LocalMetrics``      - appends one JSON line per stage run to a file, for offline runs.
 
 Select with ``METRICS_BACKEND=cloudwatch|local|none``. The default follows STORAGE_BACKEND:
-S3 storage reports to CloudWatch, local storage writes ``<LOCAL_STORAGE_DIR>/metrics/metrics.jsonl``.
+S3 storage on AWS reports to CloudWatch, S3 storage on an S3-compatible service elsewhere
+(``S3_ENDPOINT_URL``, see storage.py) records nothing, and local storage writes
+``<LOCAL_STORAGE_DIR>/metrics/metrics.jsonl``. ``cloudwatch`` always means AWS CloudWatch in AWS_REGION.
 
 Publishing is best effort: a metrics outage must never fail a pipeline stage.
 """
@@ -12,6 +14,8 @@ Publishing is best effort: a metrics outage must never fail a pipeline stage.
 import json
 import os
 import time
+
+from storage import is_aws_endpoint, s3_endpoint_from_env
 
 METRIC_NAMESPACE = "GeyserGenomics"
 
@@ -75,8 +79,8 @@ def metrics_from_env(env=None):
     storage_backend = env.get("STORAGE_BACKEND", "s3").lower()
     if storage_backend != "s3":
         default = "local"
-    elif env.get("S3_ENDPOINT_URL"):
-        default = "none"  # an S3-compatible service elsewhere has no CloudWatch; set METRICS_BACKEND to override
+    elif not is_aws_endpoint(s3_endpoint_from_env(env)):
+        default = "none"  # an S3-compatible service outside AWS has no CloudWatch next to it
     else:
         default = "cloudwatch"
     backend = env.get("METRICS_BACKEND", default).lower()

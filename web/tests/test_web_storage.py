@@ -1,4 +1,17 @@
 """The web UI builds its storage from settings: an S3-compatible endpoint has to reach it too (#80)."""
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def no_ambient_aws_endpoint(monkeypatch, tmp_path):
+    for var in ("AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
+    # boto3 caches one default session (and the config it read) for the process: use a fresh one
+    # here, and monkeypatch puts the old one back afterwards.
+    import boto3
+
+    monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
 
 
 def test_web_storage_passes_the_s3_endpoint_through(settings):
