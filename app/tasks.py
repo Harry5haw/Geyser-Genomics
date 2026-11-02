@@ -184,9 +184,13 @@ def timed_stage(task_name):
 
 def aligner_from_env() -> str:
     """The aligner named by ALIGNER (default bwa-mem2). Unknown names fail before any download."""
-    name = os.environ.get("ALIGNER", "").strip() or DEFAULT_ALIGNER
+    return check_aligner(os.environ.get("ALIGNER", "").strip() or DEFAULT_ALIGNER)
+
+
+def check_aligner(name: str) -> str:
+    """name if it is an aligner the align stage knows (ALIGNER_INDEX_EXTS), else ValueError."""
     if name not in ALIGNER_INDEX_EXTS:
-        raise ValueError(f"ALIGNER={name!r} is not one of {sorted(ALIGNER_INDEX_EXTS)}")
+        raise ValueError(f"Unknown aligner {name!r} (ALIGNER); expected one of {sorted(ALIGNER_INDEX_EXTS)}")
     return name
 
 
@@ -232,9 +236,7 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     fasta_key = f"{REFERENCE_PREFIX}{reference_name}"
     local_ref = os.path.join(dest_dir, reference_name)
     if need_bwa_index:
-        aligner = aligner or aligner_from_env()
-        if aligner not in ALIGNER_INDEX_EXTS:  # fail before the (large) download
-            raise ValueError(f"Unknown aligner {aligner!r}; expected one of {sorted(ALIGNER_INDEX_EXTS)}")
+        aligner = check_aligner(aligner) if aligner else aligner_from_env()  # before the (large) download
 
     try:
         print(f"Fetching reference {storage().describe(fasta_key)}")
@@ -270,14 +272,20 @@ def _ensure_aligner_index(reference_name: str, local_ref: str, aligner: str) -> 
 
 
 def _fetch_or_build(fasta_key: str, local_ref: str, exts, build_cmd, what: str) -> None:
-    for ext in exts:
+    """Download a stored index if every file of it is stored; otherwise build it.
+
+    Checking first avoids downloading part of a set only to overwrite it (the cloud reference/
+    holds bwa's index, whose .amb/.ann/.pac bwa-mem2 index rewrites).
+    """
+    if all(storage().exists(fasta_key + ext) for ext in exts):
         try:
-            storage().download(fasta_key + ext, local_ref + ext)
+            for ext in exts:
+                storage().download(fasta_key + ext, local_ref + ext)
+            return
         except ObjectNotFound:
-            pass  # built below
-    if any(not os.path.exists(local_ref + ext) for ext in exts):
-        print(f"{what} missing; running {' '.join(build_cmd[:2])}")
-        subprocess.run(build_cmd, check=True)
+            pass  # deleted in between: build it
+    print(f"{what} missing; running {' '.join(build_cmd[:2])}")
+    subprocess.run(build_cmd, check=True)
 
 
 def decompress_task(sample_id):
@@ -354,8 +362,7 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
     which fits the 4 GB Fargate job and a shared local Docker VM.
     """
     fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
-    if aligner not in ALIGNER_INDEX_EXTS:
-        raise ValueError(f"Unknown aligner {aligner!r}; expected one of {sorted(ALIGNER_INDEX_EXTS)}")
+    check_aligner(aligner)
     if len(fastqs) not in (1, 2):
         raise ValueError(f"align_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))

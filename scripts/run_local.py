@@ -169,7 +169,7 @@ def run_job(job, runner, root, dv_memory=None):
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
         memory = None
         if job["name"] in ("deepvariant", "pangenome"):
-            extra = {k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)}
+            extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
         return subprocess.run(docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory,
                                              job.get("shm"))).returncode

@@ -102,16 +102,35 @@ def test_missing_indexes_are_built(local_env, tool_calls, tmp_path):
     assert [c[:2] for c in tool_calls] == [["samtools", "faidx"], ["bwa-mem2", "index"]]
 
 
-@pytest.mark.parametrize("missing", INDEX_EXTS)
-def test_one_missing_index_file_triggers_a_rebuild(local_env, tool_calls, tmp_path, missing):
+@pytest.mark.parametrize("aligner, missing", [(a, ext) for a, exts in tasks.ALIGNER_INDEX_EXTS.items() for ext in exts])
+def test_one_missing_index_file_triggers_a_rebuild(local_env, tool_calls, tmp_path, monkeypatch, aligner, missing):
+    monkeypatch.setenv("ALIGNER", aligner)
     put(local_env, f"reference/{REF}", GAPPED_REF)
-    for ext in [".fai"] + [e for e in INDEX_EXTS if e != missing]:
+    for ext in [".fai"] + [e for e in tasks.ALIGNER_INDEX_EXTS[aligner] if e != missing]:
         put(local_env, f"reference/{REF}{ext}")
     dest = tmp_path / "dest"
     dest.mkdir()
 
     tasks.ensure_reference_local(REF, str(dest))
 
+    assert [c[:2] for c in tool_calls] == [[aligner, "index"]]
+    assert all((dest / f"{REF}{ext}").exists() for ext in tasks.ALIGNER_INDEX_EXTS[aligner])
+
+
+def test_a_partly_stored_index_is_not_downloaded(local_env, tool_calls, tmp_path, monkeypatch):
+    # Only bwa's index is stored: bwa-mem2 builds its own without first downloading the shared files.
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+    for ext in [".fai"] + tasks.ALIGNER_INDEX_EXTS["bwa"]:
+        put(local_env, f"reference/{REF}{ext}")
+    downloaded = []
+    real_download = tasks.storage().download
+    monkeypatch.setattr(tasks.storage(), "download", lambda key, path: downloaded.append(key) or real_download(key, path))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    tasks.ensure_reference_local(REF, str(dest))
+
+    assert downloaded == [f"reference/{REF}", f"reference/{REF}.fai"]
     assert [c[:2] for c in tool_calls] == [["bwa-mem2", "index"]]
 
 
@@ -128,6 +147,8 @@ def test_a_stored_bwa_index_is_not_enough_for_bwa_mem2(local_env, tool_calls, tm
 
     assert [c[:2] for c in tool_calls] == [["bwa-mem2", "index"]]
     assert all((dest / f"{REF}{ext}").exists() for ext in INDEX_EXTS)
+
+
 
 
 def test_aligner_env_selects_which_index_is_fetched(local_env, tool_calls, tmp_path, monkeypatch):
