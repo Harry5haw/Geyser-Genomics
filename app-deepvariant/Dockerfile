@@ -23,8 +23,10 @@ RUN apt-get update && \
 
 # Our code gets its own venv so boto3 can never disturb DeepVariant's pinned Python/TensorFlow packages.
 # boto3 is only imported for S3 storage / CloudWatch metrics; local runs never touch it.
+# Same pinned requirements as the geyser-app image.
+COPY app/requirements.txt /tmp/geyser-requirements.txt
 RUN python3 -m venv /opt/geyser-venv && \
-    /opt/geyser-venv/bin/pip install --no-cache-dir "boto3>=1.36"
+    /opt/geyser-venv/bin/pip install --no-cache-dir -r /tmp/geyser-requirements.txt
 
 WORKDIR /app
 COPY app/storage.py app/metrics.py app/tasks.py ./
