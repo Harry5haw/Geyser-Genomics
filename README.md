@@ -349,6 +349,24 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --sha
 >
 > bwa-mem2 has one known bug ([bwa-mem2#262](https://github.com/bwa-mem2/bwa-mem2/issues/262)): it shifts reads that start in the first few bases of the reference's first contig, which shows up as false SNPs. Human chromosomes start with long N gaps, so they are unaffected. For any reference whose first contig doesn't start with at least 1,000 Ns, the align stage uses bwa instead and logs why. The default synthetic genome is such a reference. `make_test_data.py --leading-gap 1000` gives it a human-like gap, and then bwa-mem2 produces the same 10,000 alignments as bwa. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
 >
+> In the cloud, `reference/chr20.fa` holds both aligners' indexes and the FASTA index: bwa's, bwa-mem2's `.0123` and `.bwt.2bit.64` (338 MB), and `chr20.fa.fai` (all uploaded 2 Nov 2026), so no stage rebuilds an index. The two share `.amb`/`.ann`/`.pac`, and bwa-mem2 writes them byte-identical to bwa's. To add an index for another reference, build it with the pipeline image and upload only the files that are missing:
+>
+> ```bash
+> docker run --rm -v "$PWD:/data" -w /data --entrypoint bwa-mem2 geyser-app index <name>.fa   # ~30 s and ~2 GB RAM for chr20
+> aws s3 cp <name>.fa.0123 s3://<data-lake>/reference/ && aws s3 cp <name>.fa.bwt.2bit.64 s3://<data-lake>/reference/
+> ```
+>
+> Effect on the cloud align job (wave-0 sample: 10k single-end reads, chr20; 4 vCPU / 8 GB Fargate):
+>
+> | Run | Aligner | bwa-mem2 index | Align job run time |
+> | :--- | :--- | :--- | ---: |
+> | `CLOUD003-20261102T144231Z-08dc9420` | bwa (image `main-69daa5c`) | n/a (stored bwa index) | 28.1 s |
+> | `CLOUD005-20261102T151205Z-548b7a1b` | bwa-mem2 | built in the job | 45.7 s |
+> | `CLOUD006-20261102T151552Z-7b850912` (paired, 5k pairs) | bwa-mem2 | built in the job | 66.0 s |
+> | `CLOUD007-20261102T152740Z-c8af04a5` | bwa-mem2 | **downloaded** | **29.3 s** |
+>
+> On a sample this small, alignment itself takes a second or two, so bwa-mem2 only matches bwa: it downloads 338 MB of index against bwa's 113 MB. The speed-up shows on real data (table below).
+>
 > **bwa vs bwa-mem2, measured** (`scripts/benchmark_aligners.py`). HG003 chr20: 19.0 M reads, paired FASTQs recovered from the 35x case-study BAM, aligned to chr20 by the real align stage. Each aligner ran once, with 16 threads, on an AMD Ryzen 7 3700X (bwa-mem2 picked its AVX2 build):
 >
 > | | bwa 0.7.18 | bwa-mem2 2.3 |
