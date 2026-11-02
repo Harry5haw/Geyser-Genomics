@@ -33,8 +33,9 @@ def state_machine_stages():
 
 
 def test_state_machine_matches_local_runner():
-    # File order: the QC branch, the align branch, then variants (run_local runs them in that order).
-    assert state_machine_stages() == run_local.STAGES
+    # File order: the QC branch, the align branch, variants, then the quality gate (#144). run_local runs
+    # the core stages in that order and the gate as its last job (pipeline_jobs(gate=True)).
+    assert state_machine_stages() == run_local.STAGES + [("gate", False)]
 
 
 def test_variant_shards_and_merge_use_the_planners_window():
@@ -57,11 +58,10 @@ def test_state_machine_is_rendered_from_the_asl_file():
     assert "States.Array" not in tf  # no second copy of the stage commands
 
 
-def test_the_quality_gate_is_the_only_task_the_state_machine_does_not_run_yet():
-    # The gate stage (#144) runs locally (run_local.py) first; its Step Functions state is a later
-    # infrastructure change. When that lands, this set becomes empty: update tasks, the state machine
-    # and run_local together (the repo rule this test keeps visible).
-    assert set(tasks.TASKS) - {stage for stage, _ in state_machine_stages()} == {"gate"}
+def test_the_state_machine_runs_every_task():
+    # The reverse of test_state_machine_stages_exist_in_tasks: a new tasks.py stage needs its state too
+    # (the repo rule: tasks, state machine and run_local change together). The gate's arrived with #144.
+    assert set(tasks.TASKS) == {stage for stage, _ in state_machine_stages()}
 
 
 def test_state_machine_stages_exist_in_tasks():

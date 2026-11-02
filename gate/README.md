@@ -9,10 +9,10 @@ It doesn't re-run any tool. It only reads the tools' own output files and applie
 small TOML file. It is written in Rust because it is meant to ship as one static binary
 (1 MB, `x86_64-unknown-linux-musl`) that can be copied into the pipeline image without adding a runtime.
 
-> **Status:** in the pipeline image and run by `tasks.py gate <id>` after variant calling (#144), in
-> **warn** mode by default: the verdict is stored and recorded, and a failed verdict doesn't fail the run.
-> `run_local.py` runs it; the cloud's Step Functions state for it is a later infrastructure change. See
-> [In the pipeline](#in-the-pipeline).
+> **Status:** in the pipeline image and run by `tasks.py gate <id>` after variant calling (#144):
+> locally by `run_local.py`, in the cloud by a Step Functions state after either caller. **Warn** mode
+> for now: the verdict is stored and recorded, and a failed verdict doesn't fail the run. See
+> [In the pipeline](#in-the-pipeline) and [Warn now, fail later](#warn-now-fail-later).
 
 ## Inputs
 
@@ -287,12 +287,40 @@ A gate re-run by hand (`tasks.py gate <id>` without `RUN_NAME`) keeps the core s
 not the extra callers': a run still in progress (gate done, DeepVariant running) would otherwise borrow
 an older run's DeepVariant entry.
 
+### In the cloud (Step Functions)
+
+After `Call_Variants` (bcftools, merged) or a successful `DeepVariant`, the state machine runs
+`Prepare_Gate_Command` → **`Quality_Gate`** (a Batch job at QC's size: `tasks.py gate <id>`, 900 s
+attempt limit) → **`Read_Gate_Verdict`** (reads `qc_reports/<id>.gate.json` straight from S3) →
+**`Gate_Decision`**. The job always runs the app's warn mode, so a failed verdict never fails the job;
+the state machine decides with Terraform's **`gate_mode`**:
+
+| Verdict | `gate_mode = "warn"` (default) | `gate_mode = "fail"` |
+| :--- | :--- | :--- |
+| pass | `Pipeline_Succeeded` | `Pipeline_Succeeded` |
+| fail | `Gate_Warned` → `Pipeline_Succeeded` (recorded) | `Notify_Failure` → `Pipeline_Failed`, error `QualityGateFailed`, the cause lists the gate's reasons |
+| none (the job failed, the verdict is missing, or it says `null`) | `Gate_Warned` → `Pipeline_Succeeded` | `Notify_Failure` → `Pipeline_Failed`, error `QualityGateError` |
+
+A stage that fails before the gate (QC, align, variants) ends the run through `Notify_Failure` as before;
+the gate never runs then.
+
+## Warn now, fail later
+
+The user's decision (2 Nov 2026): **warn first, then fail** (#157).
+
+- **Criterion for the switch:** at least **5 real-sample cloud runs** (not the simulated CLOUD00x
+  checkpoints) with the gate, and **no false fails** against the calibrated thresholds: every failed
+  verdict was a really bad run, or the threshold was corrected first. DeepVariant runs need #158 first:
+  until their run record counts a DeepVariant-only run as complete, the gate's `run_status` check fails
+  them.
+- **The switch, one line:** `gate_mode = "fail"` (tfvars, or the default in
+  `infrastructure/variables.tf`), then `terraform plan` (expect only an in-place update of the state
+  machine) and, after review, apply.
+- **Back:** `gate_mode = "warn"`, the same in-place update.
+
 ## Not yet
 
-- **The Step Functions state** that runs `tasks.py gate` after variant calling in the cloud (and, in
-  `fail` mode, ends a failed run through `Notify_Failure` with the gate's reasons). An infrastructure
-  change of its own.
-- **Choosing warn or fail** for the cloud, once there are verdicts from real runs.
+- **The switch to fail** (#157), and **#158** for DeepVariant runs (see above).
 - **Adapter content:** the QC stage runs fastp with adapter trimming disabled (report-only), and then
   fastp doesn't detect adapters, so the report has no adapter numbers. Checking them needs a QC-stage
   change (e.g. let fastp detect adapters without writing trimmed reads).
