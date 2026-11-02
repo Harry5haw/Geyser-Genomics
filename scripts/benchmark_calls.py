@@ -32,7 +32,8 @@ PANGENOME_MQ5 = {
 }
 VG_LINEAR = {"DEEPVARIANT_EXTRA_ARGS": bg.VG_LINEAR_DV_ARGS}
 
-# preset: {"base": truth/<base>.*, "configs": [(label, aligner, sample, alignment sample, caller, env, DV memory)]}
+# preset: {"base": truth/<base>.*, "configs": [(label, aligner, sample, alignment sample, caller, env, DV memory
+# [, pangenome graph under pangenome/; default run_local.DEFAULT_PANGENOME, the HPRC v1.1 chr20 graph])]}
 PRESETS = {
     "google-case-studies": {
         "base": "HG003_chr20",
@@ -78,14 +79,68 @@ PRESETS = {
         ],
     },
 }
+# HPRC release 2 benchmark graph (held out: HG002, HG005, NA19240), chr20 cut out by fetch_dv_testdata --pangenome r2-chr20.
+R2_GRAPH = "hprc-v2.0-mc-grch38-eval.chr20.gbz"
+PRESETS["hprc-r2"] = {
+    "base": "HG003_chr20",
+    "configs": [
+        ("BWA + linear DV", "bwa", "HG003_chr20", "HG003_chr20", "deepvariant", {}, "12g"),
+        ("BWA + pangenome DV, HPRC v1.1", "bwa", "HG003_chr20", "HG003_chr20", "pangenome", bg.PANGENOME_ENV, "14g"),
+        (
+            "BWA + pangenome DV, HPRC r2",
+            "bwa",
+            "HG003_chr20_r2",
+            "HG003_chr20",
+            "pangenome",
+            bg.PANGENOME_ENV,
+            "14g",
+            R2_GRAPH,
+        ),
+        (
+            "giraffe + linear DV (VG flags)",
+            "giraffe",
+            "HG003_chr20_vg",
+            "HG003_chr20_vg",
+            "deepvariant",
+            VG_LINEAR,
+            "12g",
+        ),
+        (
+            "giraffe + pangenome DV, HPRC v1.1",
+            "giraffe",
+            "HG003_chr20_vg",
+            "HG003_chr20_vg",
+            "pangenome",
+            bg.PANGENOME_ENV,
+            "14g",
+        ),
+        (
+            "giraffe + pangenome DV, HPRC r2",
+            "giraffe",
+            "HG003_chr20_vg_r2",
+            "HG003_chr20_vg",
+            "pangenome",
+            bg.PANGENOME_ENV,
+            "14g",
+            R2_GRAPH,
+        ),
+    ],
+}
 ERROR_KEYS = ("snp_fn", "snp_fp", "indel_fn", "indel_fp")
+
+
+def unpack(config):
+    """(label, aligner, sample, source, caller, env, memory, graph): graph is None for the default."""
+    label, aligner, sid, source, caller, env, memory, *rest = config
+    return label, aligner, sid, source, caller, env, memory, (rest[0] if rest else None)
 
 
 def missing_inputs(root, preset, reference, graph=run_local.DEFAULT_PANGENOME):
     """Keys a preset needs that are not under root: alignments, truth, reference, and the graph for pangenome runs."""
     need = [f"truth/{preset['base']}.vcf.gz", f"truth/{preset['base']}.bed", f"reference/{reference}"]
-    if any(c[4] == "pangenome" for c in preset["configs"]):
-        need.append(f"pangenome/{graph}")
+    for _, _, _, _, caller, _, _, config_graph in map(unpack, preset["configs"]):
+        if caller == "pangenome" and f"pangenome/{config_graph or graph}" not in need:
+            need.append(f"pangenome/{config_graph or graph}")
     missing = [k for k in need if not os.path.exists(ba.path_of(root, k))]
     for source in dict.fromkeys(c[3] for c in preset["configs"]):
         if ba.alignment_path(root, source) is None:
@@ -142,7 +197,7 @@ def main(argv=None):
     )
 
     rows = []
-    for label, aligner, sid, source, caller, env, dv_memory in preset["configs"]:
+    for label, aligner, sid, source, caller, env, dv_memory, graph in map(unpack, preset["configs"]):
         if sid != source:
             aln = ba.alignment_path(root, source)
             bg.link_or_copy(aln, ba.path_of(root, f"alignments/{sid}.{aln.rsplit('.', 1)[-1]}"))
@@ -162,6 +217,7 @@ def main(argv=None):
             a.region,
             a.stratification,
             subsets,
+            graph,
         )
         if scored is None:
             return 1

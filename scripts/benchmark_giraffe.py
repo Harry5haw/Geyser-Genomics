@@ -233,9 +233,12 @@ def file_identity(path):
     return [st.st_size, st.st_mtime_ns]
 
 
-def call_settings(caller, env):
-    """What decides a caller's output: the caller and its DeepVariant flags (shard count only changes speed)."""
-    return {"caller": caller, **{k: v for k, v in sorted(env.items()) if k != "DEEPVARIANT_SHARDS"}}
+def call_settings(caller, env, pangenome=None):
+    """What decides a caller's output: the caller, its DeepVariant flags (shard count only changes speed) and, when
+    one is chosen, the pangenome graph. The default graph is left out so records made before graphs could be chosen
+    still match."""
+    settings = {"caller": caller, **{k: v for k, v in sorted(env.items()) if k != "DEEPVARIANT_SHARDS"}}
+    return {**settings, "graph": pangenome} if pangenome else settings
 
 
 def remove_caller_outputs(root, sid, caller):
@@ -264,6 +267,7 @@ def score_config(
     region=None,
     stratification=None,
     subsets=("*",),
+    pangenome=None,
 ):
     """Calls and hap.py for one configuration, each redone only when missing or stale. Returns
     (summary, extended, calls info) or None if a step failed.
@@ -275,13 +279,13 @@ def score_config(
     aln = ba.alignment_path(root, sid)
     vcf = run_local.vcf_path(root, caller, sid)
     saved = ba.load_json(cpath)
-    want = {"settings": call_settings(caller, env), "alignment": file_identity(aln)}
+    want = {"settings": call_settings(caller, env, pangenome), "alignment": file_identity(aln)}
     stale = saved is not None and "settings" in saved and {k: saved.get(k) for k in want} != want
     if not os.path.exists(vcf) or stale:
         print(f">>> calls: {label}" + (" (alignment or settings changed: calling again)" if stale else ""), flush=True)
         remove_caller_outputs(root, sid, caller)
         started = time.monotonic()
-        if run_caller(root, sid, reference, caller, env, dv_memory) != 0:
+        if run_caller(root, sid, reference, caller, env, dv_memory, pangenome) != 0:
             return None
         saved = {
             "calls_wall_s": round(time.monotonic() - started, 1),
@@ -338,8 +342,11 @@ def remove_downstream(root, sid, callers=("deepvariant", "pangenome")):
     shutil.rmtree(ba.path_of(root, f"benchmarks/{sid}"), ignore_errors=True)
 
 
-def run_caller(root, sid, reference, caller, env, dv_memory):
-    """run_local.py --skip-to-variants for one caller, with DeepVariant settings passed through the environment."""
+def run_caller(root, sid, reference, caller, env, dv_memory, pangenome=None):
+    """run_local.py --skip-to-variants for one caller, with DeepVariant settings passed through the environment.
+
+    pangenome: graph under pangenome/ for the pangenome caller (default: run_local's, the HPRC v1.1 chr20 graph).
+    """
     saved = {k: os.environ.get(k) for k in run_local.DEEPVARIANT_ENV_VARS}
     try:
         for k in run_local.DEEPVARIANT_ENV_VARS:
@@ -359,6 +366,7 @@ def run_caller(root, sid, reference, caller, env, dv_memory):
                 "--dv-memory",
                 dv_memory,
             ]
+            + (["--pangenome", pangenome] if pangenome else [])
         )
     finally:
         for k, v in saved.items():

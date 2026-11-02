@@ -531,3 +531,15 @@ def test_stratification_with_missing_bed_stops_before_hap_py(tmp_path, monkeypat
             ]
         )
     assert ran == []
+
+
+def test_r2_graph_is_the_benchmark_build_cut_from_its_gbz(tmp_path):
+    graph = fetch.PANGENOMES["r2-chr20"]
+    assert "benchmark-graphs/hprc-v2.0-mc-grch38-eval/" in graph["url"] and graph["url"].endswith("-eval.gbz")
+    assert graph["size"] == 5386150200 and graph["from"] == "gbz" and graph["path"] == "GRCh38#0#chr20"
+    assert graph["build"] == "pangenome/hprc-v2.0-mc-grch38-eval.chr20.gbz"
+    script = fetch.gbz_chunk_command(str(tmp_path), graph["key"], graph["build"], graph["path"])[-1]
+    assert f"vg chunk -x /data/{graph['key']} -p GRCh38#0#chr20 -C -O gfa" in script
+    assert "--set-reference GRCh38 --set-reference CHM13" in script
+    assert script.index("vg gbwt -G") < script.index(f"mv /data/{graph['build']}.part /data/{graph['build']}")
+    assert fetch.dataset_files("hg003-chr20", pangenome="r2-chr20")[-1][2] == graph["key"]

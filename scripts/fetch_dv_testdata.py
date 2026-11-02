@@ -66,6 +66,10 @@ HPRC_GRCH38 = (
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/minigraph-cactus/"
     "hprc-v1.1-mc-grch38/"
 )
+HPRC_GRCH38_R2_EVAL = (
+    "https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/v2.0/"
+    "benchmark-graphs/hprc-v2.0-mc-grch38-eval/"
+)
 PANGENOMES = {
     "chr20": {
         "url": HPRC_GRCH38 + "hprc-v1.1-mc-grch38.chroms/chr20.vg",
@@ -77,6 +81,18 @@ PANGENOMES = {
         "url": HPRC_GRCH38 + "hprc-v1.1-mc-grch38.gbz",
         "size": 3289083600,
         "key": "pangenome/hprc-v1.1-mc-grch38.gbz",
+    },
+    # HPRC release 2 (v2.0), the benchmark ("-eval") build: HG002, HG005 and NA19240 are held out (HPRC README), so
+    # it is the one to score GIAB samples against. HG002 is HG003's son: the main r2 graph holds one of HG003's own
+    # haplotypes. Its published chroms/chr20.vg is 11 GB (464 haplotypes) and needs ~22 GB to convert, so chr20 is cut
+    # out of the whole-genome GBZ instead (vg chunk -C on the GRCh38 chr20 path, then vg gbwt), see gbz_chunk_command.
+    "r2-chr20": {
+        "url": HPRC_GRCH38_R2_EVAL + "hprc-v2.0-mc-grch38-eval.gbz",
+        "size": 5386150200,
+        "key": "pangenome/hprc-v2.0-mc-grch38-eval.gbz",
+        "build": "pangenome/hprc-v2.0-mc-grch38-eval.chr20.gbz",
+        "from": "gbz",
+        "path": "GRCh38#0#chr20",
     },
 }
 GRCH38_DATASETS = {"hg003-chr20", "hg003-chr20-vg", "hg003-30x-chr20", "hg005-chr20"}
@@ -445,14 +461,49 @@ def vg_build_command(root, vg_key, gbz_key, memory="8g"):
     ]
 
 
-def build_chr20_gbz(root, force=False):
-    graph = PANGENOMES["chr20"]
+def gbz_chunk_command(root, gbz_key, out_key, path, memory="18g"):
+    """docker run that cuts one chromosome out of a whole-genome GBZ, haplotypes included, into its own GBZ.
+
+    vg chunk -C writes the connected component holding the reference path (Minigraph-Cactus graphs have one
+    component per chromosome) as GFA with every haplotype in it; vg gbwt -G indexes those walks into a GBZ, keeping
+    the HPRC reference samples as references, as vg_build_command does for a .vg. The GFA is removed afterwards.
+    """
+    gbz, out = f"/data/{gbz_key}", f"/data/{out_key}"
+    gfa = out + ".gfa"
+    refs = " ".join(f"--set-reference {s}" for s in REFERENCE_SAMPLES)
+    script = (
+        f"set -e; vg chunk -x {gbz} -p {path} -C -O gfa > {gfa}; "
+        f"vg gbwt -G {gfa} --gbz-format -g {out}.part {refs}; mv {out}.part {out}; rm -f {gfa}"
+    )
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--memory",
+        memory,
+        "--mount",
+        f"type=bind,source={os.path.abspath(root)},target=/data",
+        VG_IMAGE,
+        "bash",
+        "-c",
+        script,
+    ]
+
+
+def build_chr20_gbz(root, force=False, pangenome="chr20"):
+    """Build the chromosome GBZ a graph entry names in "build": from a .vg (r1.1) or cut from a whole GBZ (r2)."""
+    graph = PANGENOMES[pangenome]
     dest = os.path.join(root, *graph["build"].split("/"))
     if os.path.exists(dest) and not force:
         print(f"  exists   {dest}")
         return
-    print(f"  building {graph['build']} with {VG_IMAGE} (about 4 minutes, under 3 GB of memory)", flush=True)
-    subprocess.run(vg_build_command(root, graph["key"], graph["build"]), check=True)
+    if graph.get("from") == "gbz":
+        print(f"  building {graph['build']} from {graph['key']} with {VG_IMAGE} (vg chunk + vg gbwt)", flush=True)
+        cmd = gbz_chunk_command(root, graph["key"], graph["build"], graph["path"])
+    else:
+        print(f"  building {graph['build']} with {VG_IMAGE} (about 4 minutes, under 3 GB of memory)", flush=True)
+        cmd = vg_build_command(root, graph["key"], graph["build"])
+    subprocess.run(cmd, check=True)
     print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
 
 
@@ -509,7 +560,7 @@ def fetch_dataset(
                 raise ValueError(how)
         print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
     if pangenome and "build" in PANGENOMES[pangenome]:
-        build_chr20_gbz(root, force)
+        build_chr20_gbz(root, force, pangenome)
     if stratifications:
         tsv_key, text = stratification_tsv(dataset_contig(name))
         with open(os.path.join(root, *tsv_key.split("/")), "w", encoding="utf-8", newline="\n") as fh:
@@ -528,8 +579,9 @@ def main(argv=None):
         nargs="?",
         const="chr20",
         choices=sorted(PANGENOMES),
-        help="also get the HPRC v1.1 GRCh38 pangenome graph for --caller pangenome: chr20 (default; "
-        "built locally with vg, 72 MB) or full (3.29 GB, needs ~11 GB of shared memory)",
+        help="also get an HPRC GRCh38 pangenome graph for --caller pangenome: chr20 (default; v1.1, built "
+        "locally with vg, 72 MB), full (v1.1, 3.29 GB, needs ~11 GB of shared memory) or r2-chr20 (release 2 "
+        "benchmark graph without HG002/HG005, 5.4 GB download, chr20 cut out locally)",
     )
     p.add_argument(
         "--stratifications",

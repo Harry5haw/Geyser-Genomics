@@ -312,7 +312,7 @@ def scoring(tmp_path, monkeypatch):
     (root / "truth").mkdir()
     runs = {"calls": 0, "happy": 0}
 
-    def fake_caller(r, sid, reference, caller, env, memory):
+    def fake_caller(r, sid, reference, caller, env, memory, pangenome=None):
         runs["calls"] += 1
         vcf = run_local.vcf_path(r, caller, sid)
         os.makedirs(os.path.dirname(vcf), exist_ok=True)
@@ -377,3 +377,19 @@ def test_score_config_reuses_an_unrecorded_vcf_and_says_so(scoring):
     open(vcf, "wb").close()
     _, _, info = score()
     assert runs == {"calls": 0, "happy": 1} and info["calls_provenance"] == "unrecorded"
+
+
+def test_call_settings_record_a_chosen_graph_only():
+    assert "graph" not in bg.call_settings("pangenome", bg.PANGENOME_ENV)
+    with_graph = bg.call_settings("pangenome", bg.PANGENOME_ENV, "r2.gbz")
+    assert with_graph["graph"] == "r2.gbz" and with_graph != bg.call_settings("pangenome", bg.PANGENOME_ENV)
+
+
+def test_run_caller_passes_a_chosen_graph(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(run_local, "main", lambda args: seen.setdefault("args", args) and 0)
+    bg.run_caller("/r", "S", "ref.fa", "pangenome", {}, "14g", "hprc-v2.0-mc-grch38-eval.chr20.gbz")
+    assert seen["args"][-2:] == ["--pangenome", "hprc-v2.0-mc-grch38-eval.chr20.gbz"]
+    seen.clear()
+    bg.run_caller("/r", "S", "ref.fa", "pangenome", {}, "14g")
+    assert "--pangenome" not in seen["args"]

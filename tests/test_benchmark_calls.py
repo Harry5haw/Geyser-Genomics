@@ -77,3 +77,32 @@ def test_missing_inputs_lists_everything_up_front(tmp_path):
     assert "truth/HG003_chr20.vcf.gz" in missing and "reference/GRCh38_chr20.fa" in missing
     assert any(m.startswith("pangenome/") for m in missing)
     assert "alignments/HG003_chr20.cram or .bam" in missing and "alignments/HG003_chr20_vg.cram or .bam" in missing
+
+
+def test_r2_preset_compares_graphs_on_both_alignments():
+    configs = [bc.unpack(c) for c in bc.PRESETS["hprc-r2"]["configs"]]
+    r2 = [c for c in configs if c[7] == bc.R2_GRAPH]
+    assert [c[2] for c in r2] == ["HG003_chr20_r2", "HG003_chr20_vg_r2"]  # own sample names: hard links
+    assert all(c[4] == "pangenome" and c[3] + "_r2" == c[2] for c in r2)
+    # each r2 run has its v1.1 counterpart on the same alignment, with the same settings
+    for c in r2:
+        twin = next(o for o in configs if o[3] == c[3] and o[4] == "pangenome" and o[7] is None)
+        assert twin[5] == c[5] and twin[2] == c[3]
+    assert bc.R2_GRAPH == fetch.PANGENOMES["r2-chr20"]["build"].split("/")[-1]
+
+
+def test_unpack_defaults_the_graph():
+    assert bc.unpack(("L", "bwa", "S", "S", "deepvariant", {}, "12g"))[7] is None
+    assert bc.unpack(("L", "bwa", "S", "S", "pangenome", {}, "14g", "g.gbz"))[7] == "g.gbz"
+
+
+def test_missing_inputs_lists_each_graph_once(tmp_path):
+    missing = bc.missing_inputs(str(tmp_path), bc.PRESETS["hprc-r2"], "GRCh38_chr20.fa")
+    graphs = [m for m in missing if m.startswith("pangenome/")]
+    assert sorted(graphs) == sorted([f"pangenome/{bg_default()}", f"pangenome/{bc.R2_GRAPH}"])
+
+
+def bg_default():
+    import run_local
+
+    return run_local.DEFAULT_PANGENOME
