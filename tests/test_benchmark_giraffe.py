@@ -1,0 +1,183 @@
+"""scripts/benchmark_giraffe.py helpers (no Docker needed)."""
+
+import os
+
+import pytest
+
+import benchmark_giraffe as bg
+import run_local
+
+READS = ["raw_reads/S_bwa_R1.fastq.gz", "raw_reads/S_bwa_R2.fastq.gz"]
+KEYS = bg.graph_keys("hprc-v1.1-mc-grch38.chr20.gbz")
+
+
+def test_graph_keys_sit_next_to_the_graph():
+    assert KEYS == {
+        "gbz": "pangenome/hprc-v1.1-mc-grch38.chr20.gbz",
+        "dist": "pangenome/hprc-v1.1-mc-grch38.chr20.dist",
+        "ri": "pangenome/hprc-v1.1-mc-grch38.chr20.ri",
+        "hapl": "pangenome/hprc-v1.1-mc-grch38.chr20.hapl",
+        "paths": "pangenome/hprc-v1.1-mc-grch38.chr20.GRCh38.paths.txt",
+    }
+
+
+def test_index_commands_build_in_order_and_rename_when_complete():
+    cmds = bg.vg_index_commands(KEYS, 8)
+    assert list(cmds) == ["dist", "ri", "hapl", "paths"]  # hapl needs dist and ri
+    for name, cmd in cmds.items():
+        final = f"/data/{KEYS[name]}"
+        assert cmd.endswith(f"mv {final}.part {final}")
+    assert "vg index -t 8 -j" in cmds["dist"]
+    assert "vg gbwt -p --num-threads 8 -r" in cmds["ri"]
+    assert f"-d /data/{KEYS['dist']} -r /data/{KEYS['ri']} -H" in cmds["hapl"]
+    assert "vg paths -x" in cmds["paths"] and "-L -Q GRCh38" in cmds["paths"]
+
+
+def test_kmc_counts_both_mates_with_the_haplotype_kmer_length():
+    script = bg.kmc_command(READS, "pangenome/kmc/S_bwa.kff", 16)[-1]
+    assert "/data/raw_reads/S_bwa_R1.fastq.gz\\n/data/raw_reads/S_bwa_R2.fastq.gz" in script
+    assert f"kmc -k{bg.KMER_LENGTH} -m8 -okff -t16 @/tmp/reads.txt /data/pangenome/kmc/S_bwa.part" in script
+    assert script.endswith("mv /data/pangenome/kmc/S_bwa.part.kff /data/pangenome/kmc/S_bwa.kff")
+    assert bg.KMER_LENGTH == 29
+
+
+def test_giraffe_uses_google_case_study_flags():
+    script = bg.giraffe_command("S_giraffe", READS, KEYS, "pangenome/kmc/S_bwa.kff", "alignments/u.bam", 16)[-1]
+    for part in (
+        "-o BAM",
+        f"--ref-paths /data/{KEYS['paths']}",
+        "-P -L 3000",
+        f"-Z /data/{KEYS['gbz']}",
+        "--kff-name /data/pangenome/kmc/S_bwa.kff",
+        f"--haplotype-name /data/{KEYS['hapl']}",
+        "--sample S_giraffe",
+        "SM:S_giraffe",
+        "-t 16",
+        "-f /data/raw_reads/S_bwa_R1.fastq.gz -f /data/raw_reads/S_bwa_R2.fastq.gz",
+    ):
+        assert part in script
+    # sampled graph files go to a per-sample folder, not next to the shared graph
+    assert "--index-basename /data/pangenome/giraffe_S_giraffe/sampled" in script
+    assert script.endswith("> /data/alignments/u.bam.part; mv /data/alignments/u.bam.part /data/alignments/u.bam")
+
+
+def test_postprocess_renames_contigs_then_matches_the_align_stage():
+    script = bg.postprocess_command("alignments/u.bam", "alignments/S.bam", 16)[-1]
+    order = [
+        "sed -e 's/GRCh38#0#//g'",
+        "samtools fixmate -m -u - -",
+        "samtools sort -u -@ 4 -m 512M",
+        "samtools markdup -s -@ 16",
+        "mv /data/alignments/S.bam.part /data/alignments/S.bam",
+    ]
+    positions = [script.index(part) for part in order]
+    assert positions == sorted(positions)
+
+
+def test_giraffe_mapping_seconds():
+    assert bg.giraffe_mapping_seconds("Mapped 18997779 reads across 16 threads in 1234.5 seconds with ...") == 1234.5
+    assert bg.giraffe_mapping_seconds("nothing") is None
+
+
+def test_configs_compare_like_with_like():
+    labels = [c[0] for c in bg.CONFIGS]
+    assert labels == [
+        "bwa-mem2 + linear DV",
+        "bwa-mem2 + pangenome DV",
+        "giraffe + linear DV",
+        "giraffe + pangenome DV",
+    ]
+    # every pangenome run uses the settings of the earlier benchmarks; MAPQ>=5 runs add only the read filter
+    for _, _, _, caller, env, memory in bg.CONFIGS + bg.MAPQ5_CONFIGS:
+        if caller == "pangenome":
+            assert env["DEEPVARIANT_SHARDS"] == "6" and "batch_size=256" in env["DEEPVARIANT_EXTRA_ARGS"]
+            assert memory == "14g"
+    for _, _, suffix, _, env, _ in bg.MAPQ5_CONFIGS:
+        assert suffix.endswith("_mq5") and env["DEEPVARIANT_EXTRA_ARGS"].endswith("min_mapping_quality=5")
+    assert set(bg.PANGENOME_ENV) <= set(run_local.DEEPVARIANT_ENV_VARS)
+    giraffe_linear = bg.CONFIGS[2][4]["DEEPVARIANT_EXTRA_ARGS"]
+    assert "min_mapping_quality=0,keep_legacy_allele_counter_behavior=true,normalize_reads=true" in giraffe_linear
+
+
+def test_run_caller_sets_and_restores_deepvariant_env(monkeypatch):
+    seen = {}
+    monkeypatch.setenv("DEEPVARIANT_SHARDS", "16")
+    monkeypatch.delenv("DEEPVARIANT_EXTRA_ARGS", raising=False)
+
+    def fake_main(args):
+        seen["args"] = args
+        seen["env"] = {k: os.environ.get(k) for k in run_local.DEEPVARIANT_ENV_VARS}
+        return 0
+
+    monkeypatch.setattr(run_local, "main", fake_main)
+    assert bg.run_caller("/r", "S_giraffe", "ref.fa", "pangenome", bg.PANGENOME_ENV, "14g") == 0
+    assert seen["env"]["DEEPVARIANT_SHARDS"] == "6" and "batch_size=256" in seen["env"]["DEEPVARIANT_EXTRA_ARGS"]
+    assert seen["args"][-4:] == ["--caller", "pangenome", "--skip-to-variants", "--dv-memory", "14g"][-4:]
+    assert os.environ["DEEPVARIANT_SHARDS"] == "16" and "DEEPVARIANT_EXTRA_ARGS" not in os.environ
+
+
+def test_result_row_and_summary():
+    summary = {"SNP": {"fn": 72, "fp": 106, "f1": 0.998732}, "INDEL": {"fn": 34, "fp": 24, "f1": 0.997317}}
+    extended = {("segdups", "SNP"): {"fn": 5, "fp": 6}, ("lowmappabilityall", "SNP"): {"fn": 50, "fp": 10}}
+    row = bg.result_row(
+        "giraffe + pangenome DV",
+        "giraffe",
+        "S_giraffe",
+        "pangenome",
+        summary,
+        extended,
+        {"align_wall_s": 900.0, "align_peak_mib": 6000},
+    )
+    assert row["snp_fn"] == 72 and row["indel_fp"] == 24 and row["segdups_snp_errors"] == 11
+    assert row["lowmappabilityall_snp_errors"] == 60 and row["segdups_indel_errors"] == ""
+    text = bg.summary_markdown("S", [row], {"giraffe": {"wall_s": 800.4, "peak_anon_bytes": 2 * 1024**3}})
+    assert "| giraffe + pangenome DV | 72 / 106 | 0.998732 | 34 / 24 | 0.997317 | 11 | 60 |" in text
+    assert "| giraffe | 800 | 2048 |" in text
+
+
+def test_has_subsets(tmp_path):
+    prefix = str(tmp_path / "pangenome")
+    with open(prefix + ".extended.csv", "w", encoding="utf-8") as fh:
+        fh.write("Type,Subtype,Subset,Filter\nSNP,*,*,PASS\nSNP,*,segdups,PASS\n")
+    assert bg._has_subsets(prefix, ["*", "segdups"])
+    assert not bg._has_subsets(prefix, ["*", "segdups", "lowmappabilityall"])
+
+
+def test_needs_the_bwa_mem2_benchmark_first(tmp_path):
+    with pytest.raises(SystemExit):
+        bg.main(["--root", str(tmp_path), "--base", "S", "--reference", "r.fa"])
+
+
+def test_caller_settings_override_only_pangenome_runs():
+    env, memory = bg.caller_settings("pangenome", bg.PANGENOME_ENV, "14g", 12, "18g")
+    assert env["DEEPVARIANT_SHARDS"] == "12" and memory == "18g"
+    assert env["DEEPVARIANT_EXTRA_ARGS"] == bg.PANGENOME_ENV["DEEPVARIANT_EXTRA_ARGS"]
+    assert bg.PANGENOME_ENV["DEEPVARIANT_SHARDS"] == "6"  # the shared default is not modified
+    linear_env = {"DEEPVARIANT_EXTRA_ARGS": bg.VG_LINEAR_DV_ARGS}
+    assert bg.caller_settings("deepvariant", linear_env, "12g", 12, "18g") == (linear_env, "12g")
+
+
+def test_giraffe_cost_separates_per_sample_and_one_off_steps():
+    gib = 1024**3
+    costs = {
+        "giraffe": {"wall_s": 545.7, "peak_anon_bytes": int(1.5 * gib), "mapping_s": 461.6},
+        "postprocess": {"wall_s": 157.7, "peak_anon_bytes": int(2.3 * gib)},
+        "kmc": {"wall_s": 37.2, "peak_anon_bytes": 7 * gib},
+        "index_dist": {"wall_s": 39.0},
+        "index_ri": {"wall_s": 6.0},
+        "index_hapl": {"wall_s": 297.0},
+        "index_paths": {"wall_s": 3.0},
+    }
+    c = bg.giraffe_cost(costs)
+    assert c["align_wall_s"] == 703.4 and c["align_peak_mib"] == round(2.3 * 1024)
+    assert c["giraffe_mapping_s"] == 461.6 and c["kmc_wall_s"] == 37.2 and c["kmc_peak_mib"] == 7 * 1024
+    assert c["graph_index_wall_s"] == 345.0
+    assert bg.giraffe_cost({})["align_peak_mib"] == ""
+
+
+def test_bwa_mem2_cost():
+    assert bg.bwa_mem2_cost({"wall_s": 521.04, "peak_anon_bytes": 7593 * 1024**2}) == {
+        "align_wall_s": 521.0,
+        "align_peak_mib": 7593,
+    }
+    assert bg.bwa_mem2_cost({}) == {"align_wall_s": "", "align_peak_mib": ""}
