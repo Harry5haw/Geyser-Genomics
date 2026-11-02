@@ -4,7 +4,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "= 5.100.0"
+      version = "= 6.69.0" # 6.x: CUSTOM budget periods (#76); upgrade notes in docs/design/claude-guardrails.md
     }
     random = {
       source  = "hashicorp/random"
