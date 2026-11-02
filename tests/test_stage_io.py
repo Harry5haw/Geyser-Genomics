@@ -71,6 +71,16 @@ def shell_commands(monkeypatch):
     return commands
 
 
+@pytest.fixture
+def uploads(local_env, monkeypatch):
+    """Record the keys uploaded, in order (the real upload still runs)."""
+    keys = []
+    store = tasks.storage()
+    real = store.upload
+    monkeypatch.setattr(store, "upload", lambda path, key: keys.append(key) or real(path, key))
+    return keys
+
+
 def work_dir_is_empty(local_env):
     work = local_env.parent / "work"
     return not work.exists() or not any(work.iterdir())
@@ -229,15 +239,22 @@ def test_qc_timeout_comes_from_environment(local_env, monkeypatch):
     assert work_dir_is_empty(local_env)
 
 
-def test_align_uploads_bam_under_the_stage_key(local_env, tool_calls, shell_commands):
+def test_align_uploads_cram_and_its_index(local_env, tool_calls, shell_commands, uploads):
     put(local_env, "raw_reads/S1.fastq.gz")
     put(local_env, f"reference/{REF}", GAPPED_REF)
 
     tasks.align_task("S1", REF)
 
-    assert len(shell_commands) == 1 and shell_commands[0].startswith("bwa-mem2 mem")
-    assert "S1.fastq.gz" in shell_commands[0].split(" | ")[0]  # the aligner reads the upload, still gzipped
-    assert (local_env / "alignments" / "S1.bam").read_bytes().startswith(b"output of: bwa-mem2 mem")
+    align, index = shell_commands
+    assert align.startswith("bwa-mem2 mem")
+    assert "S1.fastq.gz" in align.split(" | ")[0]  # the aligner reads the upload, still gzipped
+    assert "-O cram" in align.split(" | ")[-1]
+    assert index.startswith("samtools index ")
+    assert (local_env / "alignments" / "S1.cram").read_bytes().startswith(b"output of: bwa-mem2 mem")
+    assert (local_env / "alignments" / "S1.cram.crai").exists()
+    assert not (local_env / "alignments" / "S1.bam").exists()
+    # The CRAM marks the stage done, so its index must already be there when it appears.
+    assert uploads == ["alignments/S1.cram.crai", "alignments/S1.cram"]
     assert work_dir_is_empty(local_env)
 
 
@@ -276,15 +293,20 @@ def test_unknown_aligner_fails_before_any_download(local_env, tool_calls, monkey
     assert work_dir_is_empty(local_env)
 
 
-def test_variants_calls_bcftools_on_the_aligned_bam(local_env, tool_calls, shell_commands):
-    put(local_env, "alignments/S1.bam", b"BAM")
+@pytest.mark.parametrize("stored", ["S1.cram", "S1.bam"])
+def test_variants_calls_bcftools_on_the_alignment_and_indexes_the_vcf(
+        local_env, tool_calls, shell_commands, uploads, stored):
+    put(local_env, f"alignments/{stored}", b"ALN")
     put(local_env, f"reference/{REF}", b">c\nACGT\n")
 
     tasks.variants_task("S1", REF)
 
-    (command,) = shell_commands
-    assert command.startswith("bcftools mpileup") and "bcftools call -mv" in command
+    call, index = shell_commands
+    assert call.startswith("bcftools mpileup") and "bcftools call -mv" in call
+    assert shlex.split(call.split(" | ")[0])[-1].endswith(stored)  # the stored CRAM, or a BAM if that's all
+    assert index.startswith("bcftools index -t ")
     assert (local_env / "variants" / "S1.vcf.gz").exists()
+    assert uploads == ["variants/S1.vcf.gz.tbi", "variants/S1.vcf.gz"]
     # variant calling must not build the (slow) aligner index
     assert [c[:2] for c in tool_calls] == [["samtools", "faidx"]]
     assert work_dir_is_empty(local_env)
@@ -331,8 +353,11 @@ def test_keys_follow_the_documented_layout():
         "raw": "raw_reads/S1.fastq.gz",
         "qc_html": "qc_reports/S1_fastqc.html",
         "qc_zip": "qc_reports/S1_fastqc.zip",
+        "cram": "alignments/S1.cram",
+        "crai": "alignments/S1.cram.crai",
         "bam": "alignments/S1.bam",
         "vcf": "variants/S1.vcf.gz",
+        "tbi": "variants/S1.vcf.gz.tbi",
     }
 
 
@@ -373,3 +398,40 @@ def test_effective_aligner(tmp_path, first_contig, expected):
 
 def test_effective_aligner_leaves_bwa_alone(tmp_path):
     assert tasks.effective_aligner("bwa", write_ref(tmp_path, ">c\nACGT\n")) == "bwa"
+
+
+# --- alignment input (CRAM, else BAM) ------------------------------------------
+
+def test_alignment_input_prefers_the_cram():
+    present = {"alignments/S1.cram", "alignments/S1.bam"}
+    assert tasks.alignment_input("S1", present.__contains__) == ("alignments/S1.cram", "alignments/S1.cram.crai")
+
+
+def test_alignment_input_falls_back_to_a_bam():
+    # fetch_dv_testdata.py writes alignments/<id>.bam, and runs from before CRAM left BAMs.
+    assert tasks.alignment_input("S1", {"alignments/S1.bam"}.__contains__) == (
+        "alignments/S1.bam", "alignments/S1.bam.bai")
+
+
+def test_alignment_input_without_either_names_both(local_env):
+    with pytest.raises(FileNotFoundError, match=r"S1\.cram.*S1\.bam"):
+        tasks.alignment_input("S1")
+
+
+def test_fetch_alignment_uses_a_stored_index(local_env, tool_calls, shell_commands, tmp_path):
+    put(local_env, "alignments/S1.cram", b"CRAM")
+    put(local_env, "alignments/S1.cram.crai", b"CRAI")
+
+    path = tasks.fetch_alignment("S1", str(tmp_path), need_index=True)
+
+    assert path == str(tmp_path / "S1.cram")
+    assert (tmp_path / "S1.cram.crai").read_bytes() == b"CRAI"
+    assert shell_commands == []
+
+
+def test_fetch_alignment_indexes_a_bam_without_one(local_env, tool_calls, shell_commands, tmp_path):
+    put(local_env, "alignments/S1.bam", b"BAM")
+
+    tasks.fetch_alignment("S1", str(tmp_path), need_index=True)
+
+    assert [shlex.split(c) for c in shell_commands] == [["samtools", "index", str(tmp_path / "S1.bam")]]

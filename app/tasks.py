@@ -6,8 +6,8 @@ locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 
 Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> qc_reports/{id}_fastqc.{html,zip}     (qc)
-                            -> alignments/{id}.bam                    (align: sorted, duplicates marked)
-    alignments/{id}.bam     -> variants/{id}.vcf.gz                   (variants)
+                            -> alignments/{id}.cram + .cram.crai     (align: sorted, duplicates marked)
+    alignments/{id}.cram    -> variants/{id}.vcf.gz + .vcf.gz.tbi    (variants)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
 qc and align both read the gzipped upload directly (FastQC, bwa-mem2 and bwa read gzip), so they don't
@@ -105,9 +105,49 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
         keys[f"raw{suffix}"] = f"raw_reads/{stem}.fastq.gz"
         keys[f"qc_html{suffix}"] = f"qc_reports/{stem}_fastqc.html"
         keys[f"qc_zip{suffix}"] = f"qc_reports/{stem}_fastqc.zip"
+    # The align stage writes CRAM (reference-compressed, ~1/3 of a BAM) and its index; readers go
+    # through alignment_input(), which also accepts a BAM: no stage writes one any more, but fetched
+    # benchmark data (fetch_dv_testdata.py) and runs from before CRAM have alignments/{id}.bam.
+    keys["cram"] = f"alignments/{sample_id}.cram"
+    keys["crai"] = f"alignments/{sample_id}.cram.crai"
     keys["bam"] = f"alignments/{sample_id}.bam"
     keys["vcf"] = f"variants/{sample_id}.vcf.gz"
+    keys["tbi"] = f"variants/{sample_id}.vcf.gz.tbi"
     return keys
+
+
+def alignment_input(sample_id: str, exists=None) -> tuple:
+    """(key, index_key) of the alignment a caller should read: the CRAM, else a BAM. exists(key) -> bool.
+
+    CRAM first: it is what the align stage writes. A BAM is legacy or imported input; its index
+    (.bam.bai) may or may not be stored. Neither present is an error naming both keys.
+    """
+    exists = exists or storage().exists
+    keys = keys_for(sample_id)
+    if exists(keys["cram"]):
+        return keys["cram"], keys["crai"]
+    if exists(keys["bam"]):
+        return keys["bam"], keys["bam"] + ".bai"
+    raise FileNotFoundError(f"No alignment for {sample_id}: neither {storage().describe(keys['cram'])} "
+                            f"nor {storage().describe(keys['bam'])}")
+
+
+def fetch_alignment(sample_id: str, wd: str, need_index: bool = False) -> str:
+    """Download the sample's alignment (alignment_input) into wd, keeping its name. Returns the local path.
+
+    need_index: also fetch the stored index, or build it with samtools index if there is none
+    (callers that need random access, e.g. DeepVariant).
+    """
+    key, index_key = alignment_input(sample_id)
+    local = os.path.join(wd, os.path.basename(key))
+    print(f"Fetching alignment {storage().describe(key)}", flush=True)
+    storage().download(key, local)
+    if need_index:
+        try:
+            storage().download(index_key, os.path.join(wd, os.path.basename(index_key)))
+        except ObjectNotFound:
+            run_shell(f"samtools index {shlex.quote(local)}")
+    return local
 
 
 def keys_of(keys: dict, name: str) -> list:
@@ -330,9 +370,13 @@ def qc_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
-def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str,
+def align_command(ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample_id: str,
                   aligner: str = DEFAULT_ALIGNER) -> str:
-    """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates.
+    """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates -> out.
+
+    out ending in .cram makes markdup write CRAM against ref (what the align stage stores);
+    anything else is BAM. CRAM can only be decoded with the same reference, which every reader
+    here passes (bcftools -f, DeepVariant --ref); its header records the reference's MD5s.
 
     fastqs is [reads] for single-end or [R1, R2] for paired-end. aligner is "bwa-mem2" (default)
     or "bwa": both take the same `mem` arguments and write the same records, so everything below
@@ -373,41 +417,51 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
     if len(fastqs) == 2:
         stages.append("samtools fixmate -m -u - -")
     stages.append(f"samtools sort -u -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} -")
-    stages.append(f"samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} - {shlex.quote(bam)}")
+    cram = f"--reference {shlex.quote(ref)} -O cram " if out.endswith(".cram") else ""
+    stages.append(f"samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} {cram}- {shlex.quote(out)}")
     return " | ".join(stages)
 
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked BAM."""
+    """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked CRAM + .crai."""
     aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
     keys = keys_for(sample_id, sample_layout(sample_id))
     wd = work_dir(sample_id)
     try:
         fastqs = download_raw_reads(keys, wd)
-        bam = os.path.join(wd, f"{sample_id}.bam")
+        cram = os.path.join(wd, os.path.basename(keys["cram"]))
+        crai = os.path.join(wd, os.path.basename(keys["crai"]))
+        threads = os.cpu_count() or 1
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         aligner = prepare_aligner(reference_name, ref, aligner)
         print(f"Aligning with {aligner}", flush=True)
-        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id, aligner))
-        storage().upload(bam, keys["bam"])
+        run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
+        run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
+        # Index first: the CRAM is what marks the stage done (web status, reconcile, the variants
+        # stage), so it must never be there without its index.
+        storage().upload(crai, keys["crai"])
+        storage().upload(cram, keys["cram"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
 
 @timed_stage("CallVariants")
 def variants_task(sample_id, reference_name):
+    """bcftools on the sample's CRAM (or BAM) -> variants/{id}.vcf.gz + its tabix index."""
     keys = keys_for(sample_id)
     wd = work_dir(sample_id)
     try:
-        bam = os.path.join(wd, f"{sample_id}.bam")
-        vcf = os.path.join(wd, f"{sample_id}.vcf.gz")
-        storage().download(keys["bam"], bam)
+        alignment = fetch_alignment(sample_id, wd)  # mpileup reads it front to back: no index needed
+        vcf = os.path.join(wd, os.path.basename(keys["vcf"]))
+        tbi = os.path.join(wd, os.path.basename(keys["tbi"]))
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         run_shell(
-            f"bcftools mpileup -f {shlex.quote(ref)} {shlex.quote(bam)} "
+            f"bcftools mpileup -f {shlex.quote(ref)} {shlex.quote(alignment)} "
             f"| bcftools call -mv -Oz -o {shlex.quote(vcf)}"
         )
+        run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
+        storage().upload(tbi, keys["tbi"])  # index first, as in align: the VCF marks the stage done
         storage().upload(vcf, keys["vcf"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)

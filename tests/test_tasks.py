@@ -163,6 +163,18 @@ def test_every_aligner_index_has_the_files_bwa_mem_reads():
     assert {".0123", ".bwt.2bit.64"} <= set(tasks.ALIGNER_INDEX_EXTS["bwa-mem2"])
 
 
+def test_align_command_writes_cram_against_the_reference():
+    markdup = _align_stages(tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.cram", 4, "/w", "S1"))[-1]
+    assert markdup[markdup.index("--reference") + 1] == "/w/ref.fa"
+    assert markdup[markdup.index("-O") + 1] == "cram"
+    assert markdup[-2:] == ["-", "/w/S1.cram"]
+
+
+def test_align_command_writes_bam_for_a_bam_path():
+    markdup = _align_stages(tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.bam", 4, "/w", "S1"))[-1]
+    assert "-O" not in markdup and "--reference" not in markdup
+
+
 def test_align_command_rejects_wrong_number_of_fastqs():
     with pytest.raises(ValueError):
         tasks.align_command("r.fa", [], "o.bam", 1, "/w", "S1")
@@ -178,8 +190,11 @@ def test_single_end_keys_are_unchanged():
         "raw": "raw_reads/S1.fastq.gz",
         "qc_html": "qc_reports/S1_fastqc.html",
         "qc_zip": "qc_reports/S1_fastqc.zip",
+        "cram": "alignments/S1.cram",
+        "crai": "alignments/S1.cram.crai",
         "bam": "alignments/S1.bam",
         "vcf": "variants/S1.vcf.gz",
+        "tbi": "variants/S1.vcf.gz.tbi",
     }
 
 
