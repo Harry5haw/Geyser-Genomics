@@ -76,7 +76,14 @@ DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.chr20.gbz"
 # Google's case studies run the pangenome container with --shm-size 12gb.
 DEFAULT_PANGENOME_SHM = "12g"
 DEEPVARIANT_PYTHON = "/opt/geyser-venv/bin/python"
-DEEPVARIANT_ENV_VARS = ("DEEPVARIANT_EXTRA_ARGS", "DEEPVARIANT_SHARDS", "DEEPVARIANT_MODEL_TYPE")
+DEEPVARIANT_ENV_VARS = (
+    "DEEPVARIANT_EXTRA_ARGS",
+    "DEEPVARIANT_SHARDS",
+    "DEEPVARIANT_MODEL_TYPE",
+    "DEEPVARIANT_TIMEOUT_SECONDS",
+    "DEEPVARIANT_IDLE_TIMEOUT_SECONDS",
+    "DEEPVARIANT_FATAL_GRACE_SECONDS",
+)
 # Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2;
 # ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz).
 PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE")

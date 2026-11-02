@@ -24,17 +24,24 @@ Environment:
     DEEPVARIANT_MODEL_TYPE   default WGS
     DEEPVARIANT_SHARDS       make_examples parallelism, default: CPUs in the container
     DEEPVARIANT_EXTRA_ARGS   extra run_deepvariant flags, e.g. --disable_small_model=true
+    DEEPVARIANT_TIMEOUT_SECONDS       stop the wrapper after this long (default: no limit)
+    DEEPVARIANT_IDLE_TIMEOUT_SECONDS  stop it after this long with no output (default: no limit)
+    DEEPVARIANT_FATAL_GRACE_SECONDS   after a fatal error line (e.g. GPU out of memory), stop it once it has been
+                                      silent this long without exiting (default 120; the wrapper can hang)
     RUN_DEEPVARIANT          path to run_deepvariant (default: the image's copy)
     RUN_PANGENOME_DEEPVARIANT  path to run_pangenome_aware_deepvariant (default: the image's copy)
 """
 
 import argparse
 import os
+import queue
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 
 import provenance
@@ -207,17 +214,175 @@ def parse_example_counts(events):
     return {"examples": examples, "small_model_calls": small}
 
 
-def run_streaming(cmd):
-    """Run cmd, echo its output live, and return (returncode, [(timestamp, line)], end_time)."""
+# A fatal error inside the wrapper's steps. Google's wrappers can hang after one instead of exiting (seen 1 Nov 2026:
+# call_variants ran out of GPU memory at batch 1024 and run_pangenome_aware_deepvariant never returned). TensorFlow's
+# "Allocator (GPU_0_bfc) ran out of memory trying to allocate ..." lines are NOT fatal: they are warnings that also
+# appear in successful runs, so they are deliberately not matched.
+FATAL_RE = re.compile(r"ResourceExhaustedError|RESOURCE_EXHAUSTED")
+
+
+class WrapperStopped(RuntimeError):
+    """The wrapper was stopped by run_streaming: overall timeout, no output for too long, or a fatal error after
+    which it went quiet without exiting."""
+
+
+LIMIT_VARS = {
+    "timeout": "DEEPVARIANT_TIMEOUT_SECONDS",
+    "idle": "DEEPVARIANT_IDLE_TIMEOUT_SECONDS",
+    "fatal_grace": "DEEPVARIANT_FATAL_GRACE_SECONDS",
+}
+
+
+class WrapperLimits:
+    """When run_streaming gives up on the wrapper. Seconds; 0 or None turns a limit off.
+
+    timeout       whole run (DEEPVARIANT_TIMEOUT_SECONDS). Default off: local whole-genome runs take hours, and
+                  the cloud job sets it below its Batch attempt timeout.
+    idle          no output at all (DEEPVARIANT_IDLE_TIMEOUT_SECONDS). Default off: loading a whole-genome graph
+                  or a long sort can be silent for a long time; the cloud job sets it.
+    fatal_grace   after a FATAL_RE line, how long the wrapper may stay silent before it counts as hung
+                  (DEEPVARIANT_FATAL_GRACE_SECONDS, default 120). Still printing means still alive.
+    """
+
+    def __init__(self, timeout=None, idle=None, fatal_grace=120):
+        self.timeout, self.idle, self.fatal_grace = timeout or None, idle or None, fatal_grace or None
+
+    @classmethod
+    def from_env(cls, env=None):
+        """Limits from the environment. ValueError names a variable that is not a non-negative number of seconds."""
+        env = os.environ if env is None else env
+        values = {"timeout": None, "idle": None, "fatal_grace": 120}
+        for field, name in LIMIT_VARS.items():
+            raw = (env.get(name) or "").strip()
+            if not raw:
+                continue
+            try:
+                seconds = float(raw)
+            except ValueError:
+                raise ValueError(f"{name}={raw!r}: expected a number of seconds (0 = no limit)") from None
+            if seconds < 0:
+                raise ValueError(f"{name}={raw!r}: must not be negative (0 = no limit)")
+            values[field] = seconds
+        return cls(**values)
+
+
+def stop_reason(limits, now, started, last_output, fatal_at):
+    """Why the wrapper should be stopped now, or None."""
+    if limits.timeout and now - started > limits.timeout:
+        return f"did not finish within {limits.timeout:.0f} s (DEEPVARIANT_TIMEOUT_SECONDS)"
+    if limits.idle and now - last_output > limits.idle:
+        return f"printed nothing for {limits.idle:.0f} s (DEEPVARIANT_IDLE_TIMEOUT_SECONDS): it looks hung"
+    if fatal_at is not None and limits.fatal_grace and now - last_output > limits.fatal_grace:
+        return (
+            f"reported a fatal error ({FATAL_RE.pattern}; usually out of GPU memory: lower call_variants batch_size) "
+            f"and then printed nothing for {limits.fatal_grace:.0f} s without exiting"
+        )
+    return None
+
+
+def signal_group(proc, sig_name):
+    """Send a signal to the wrapper's whole process group (POSIX), or to the wrapper itself elsewhere.
+    False once there is nothing left to signal."""
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, getattr(signal, sig_name, 9 if sig_name == "SIGKILL" else 15))
+        elif proc.poll() is None:
+            if sig_name == "SIGTERM":
+                proc.terminate()
+            else:
+                proc.kill()
+        else:
+            return False
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def kill_process_group(proc, wait=10):
+    """Stop the wrapper and every step it started (GNU parallel workers, call_variants): TERM to the group, then
+    KILL to the group. The group is signalled even if the wrapper itself has already exited: a stuck step can
+    outlive it and keep holding the GPU."""
+    if not signal_group(proc, "SIGTERM"):
+        return
+    try:
+        proc.wait(timeout=wait)
+    except subprocess.TimeoutExpired:
+        pass
+    signal_group(proc, "SIGKILL")
+
+
+def run_streaming(cmd, limits=None, clock=time.monotonic, poll=1.0, drain=5.0, stop_wait=30.0):
+    """Run cmd, echo its output live, and return (returncode, [(timestamp, line)], end_time).
+
+    The wrapper runs in its own process group, so it can be stopped with everything it started. If it runs past
+    limits (WrapperLimits.from_env() by default), the group is killed and WrapperStopped is raised with the
+    reason. Once the wrapper has exited, output is read for at most `drain` more seconds: a leftover process
+    holding the pipe must not turn a finished run into a hang; any such leftovers are then stopped too.
+    """
+    limits = limits or WrapperLimits.from_env()
     print("$ " + " ".join(shlex.quote(c) for c in cmd), flush=True)
     events = []
     proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding="utf-8", errors="replace"
-    )  # a stray byte in tool logs must not fail the stage
-    for line in proc.stdout:
-        events.append((time.time(), line.rstrip("\n")))
-        print(line, end="", flush=True)
-    return proc.wait(), events, time.time()
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        encoding="utf-8",
+        errors="replace",  # a stray byte in tool logs must not fail the stage
+        start_new_session=True,
+    )
+    lines = queue.Queue()
+
+    def read():
+        for line in proc.stdout:
+            lines.put(line)
+        lines.put(None)
+
+    threading.Thread(target=read, daemon=True).start()
+    started = last_output = clock()
+    fatal_at, reason, exited_at = None, None, None
+    while True:
+        try:
+            line = lines.get(timeout=poll)
+        except queue.Empty:
+            line = ""
+        if line is None:
+            break
+        now = clock()
+        if line:
+            events.append((time.time(), line.rstrip("\n")))
+            print(line, end="", flush=True)
+            last_output = now
+            if fatal_at is None and FATAL_RE.search(line):
+                fatal_at = now
+                if limits.fatal_grace:
+                    print(
+                        f"[geyser] fatal error reported; stopping if it then stays silent for "
+                        f"{limits.fatal_grace:.0f} s",
+                        flush=True,
+                    )
+        if proc.poll() is not None:
+            exited_at = exited_at if exited_at is not None else now
+            if not line and now - exited_at > drain:
+                break  # exited; a leftover process is keeping the pipe open
+            continue
+        reason = stop_reason(limits, now, started, last_output, fatal_at)
+        if reason:
+            print(f"[geyser] stopping {os.path.basename(cmd[0])}: it {reason}", flush=True)
+            kill_process_group(proc)
+            break
+    try:
+        code = proc.wait(timeout=stop_wait)
+    except subprocess.TimeoutExpired:
+        raise WrapperStopped(
+            f"{os.path.basename(cmd[0])} {reason or 'did not exit'}, and could not be stopped within {stop_wait:.0f} s"
+        ) from None
+    if reason:
+        raise WrapperStopped(f"{os.path.basename(cmd[0])} {reason} (exit code {code} after being stopped)")
+    if exited_at is not None:
+        signal_group(proc, "SIGKILL")  # stray leftovers of a finished run (no-op if the group is gone)
+    return code, events, time.time()
 
 
 def index_bam(path):
@@ -246,6 +411,7 @@ def _call_variants(sample_id, reference_name, pangenome=None):
     keys = deepvariant_keys(sample_id, pangenome)
     wd = work_dir(sample_id)
     try:
+        limits = WrapperLimits.from_env()  # a bad value fails here, before any download
         vcf = os.path.join(wd, f"{sample_id}.{'pangenome' if pangenome else 'deepvariant'}.vcf.gz")
         intermediate = os.path.join(wd, "intermediate")
         os.makedirs(intermediate)
@@ -272,7 +438,7 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             extra_args=os.environ.get("DEEPVARIANT_EXTRA_ARGS", ""),
             pangenome=graph,
         )
-        code, events, end_time = run_streaming(cmd)
+        code, events, end_time = run_streaming(cmd, limits=limits)
         if code != 0:
             raise RuntimeError(f"{os.path.basename(cmd[0])} exited with code {code}")
 
