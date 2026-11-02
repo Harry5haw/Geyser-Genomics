@@ -1,4 +1,5 @@
 """scripts/benchmark_aligners.py helpers (no Docker needed)."""
+
 import csv
 import gzip
 
@@ -45,9 +46,15 @@ def test_measured_wraps_the_command_and_reports_memory():
 
 def test_parse_measurements_takes_the_last_aligner_timer():
     m = ba.parse_measurements(MEASURED_OUTPUT)
-    assert m == {"peak_anon_bytes": 7516192768, "cgroup_peak_bytes": 12884901888, "markdup_reads": 33475012,
-                 "markdup_duplicates": 2911218, "aligner_real_s": 812.345, "aligner_cpu_s": 11893.21,
-                 "aligner_used": "bwa-mem2"}
+    assert m == {
+        "peak_anon_bytes": 7516192768,
+        "cgroup_peak_bytes": 12884901888,
+        "markdup_reads": 33475012,
+        "markdup_duplicates": 2911218,
+        "aligner_real_s": 812.345,
+        "aligner_cpu_s": 11893.21,
+        "aligner_used": "bwa-mem2",
+    }
     assert ba.parse_measurements("nothing here") == {}
 
 
@@ -68,8 +75,12 @@ def test_load_measured_refreshes_saved_runs_from_their_logs(tmp_path):
     assert ba.load_measured(str(jpath), str(log)) is None
     ba.save_json(str(jpath), {"wall_s": 521.0, "markdup_reads": 1})
     log.write_text(BWA_MEM2_PROFILE)
-    assert ba.load_measured(str(jpath), str(log)) == {"wall_s": 521.0, "markdup_reads": 1,
-                                                      "aligner_real_s": 459.83, "aligner_write_s": 158.72}
+    assert ba.load_measured(str(jpath), str(log)) == {
+        "wall_s": 521.0,
+        "markdup_reads": 1,
+        "aligner_real_s": 459.83,
+        "aligner_write_s": 158.72,
+    }
 
 
 def test_fastq_from_bam_writes_partial_files_then_renames():
@@ -78,8 +89,9 @@ def test_fastq_from_bam_writes_partial_files_then_renames():
     assert "samtools collate -u -O -@ 4 /data/alignments/X.bam" in script
     assert "samtools fastq -n -F 0x900" in script and "-s /dev/null" in script
     # temporary names keep the .gz suffix (samtools picks compression from it) and are renamed last
-    assert script.index("-1 /data/raw_reads/.partial-A_R1.fastq.gz") < \
-        script.index("mv /data/raw_reads/.partial-A_R1.fastq.gz /data/raw_reads/A_R1.fastq.gz")
+    assert script.index("-1 /data/raw_reads/.partial-A_R1.fastq.gz") < script.index(
+        "mv /data/raw_reads/.partial-A_R1.fastq.gz /data/raw_reads/A_R1.fastq.gz"
+    )
 
 
 def test_index_and_align_commands():
@@ -90,14 +102,26 @@ def test_index_and_align_commands():
 def _happy(snp_fn, snp_fp, indel_fn, indel_fp):
     def row(fn, fp):
         return {"truth": 100, "tp": 100 - fn, "fn": fn, "fp": fp, "recall": 0.9, "precision": 0.9, "f1": 0.99}
+
     return {"SNP": row(snp_fn, snp_fp), "INDEL": row(indel_fn, indel_fp)}
 
 
 def test_csv_rows_one_per_aligner_with_calls_and_concordance(tmp_path):
-    align = {"bwa": {"sample": "S_bwa", "wall_s": 1500.04, "threads": "16", "peak_anon_bytes": 6 * ba.MIB,
-                     "cgroup_peak_bytes": 9 * ba.MIB, "aligner_real_s": 1400.0, "aligner_cpu_s": 20000.0,
-                     "markdup_reads": 10, "markdup_duplicates": 1, "bam_bytes": 123},
-             "bwa-mem2": {"sample": "S_bwamem2", "wall_s": 800.0, "peak_anon_bytes": 12 * ba.MIB}}
+    align = {
+        "bwa": {
+            "sample": "S_bwa",
+            "wall_s": 1500.04,
+            "threads": "16",
+            "peak_anon_bytes": 6 * ba.MIB,
+            "cgroup_peak_bytes": 9 * ba.MIB,
+            "aligner_real_s": 1400.0,
+            "aligner_cpu_s": 20000.0,
+            "markdup_reads": 10,
+            "markdup_duplicates": 1,
+            "bam_bytes": 123,
+        },
+        "bwa-mem2": {"sample": "S_bwamem2", "wall_s": 800.0, "peak_anon_bytes": 12 * ba.MIB},
+    }
     index = {"bwa": {"wall_s": 52.04, "peak_anon_bytes": 5 * ba.MIB}, "bwa-mem2": {}}
     happy = {"bwa": {"deepvariant": _happy(263, 52, 48, 15)}, "bwa-mem2": {"deepvariant": _happy(260, 50, 48, 15)}}
     concord = {"deepvariant": (80000, 30, 25)}
@@ -128,6 +152,7 @@ def test_concordance_compares_pass_calls(tmp_path):
         path.parent.mkdir(exist_ok=True)
         body = "##fileformat=VCFv4.2\n" + "".join(f"chr20\t{p}\t.\t{r}\t{a}\t50\t{f}\t.\n" for p, r, a, f in rows)
         path.write_bytes(gzip.compress(body.encode()))
+
     vcf("A", [(1, "A", "G", "PASS"), (2, "C", "T", "PASS"), (3, "G", "A", "LowQual")])
     vcf("B", [(1, "A", "G", "PASS"), (4, "T", "C", "PASS"), (3, "G", "A", "PASS")])
     assert ba.concordance(str(tmp_path), "bcftools", "A", "B") == (1, 1, 2)
@@ -147,8 +172,9 @@ def test_ensure_truth_copies_and_refreshes_when_the_source_changes(tmp_path):
 
 
 def test_parse_measurements_threads_aligner_used_and_unreadable_memory():
-    m = ba.parse_measurements("GEYSER_THREADS=16\nAligning with bwa\nGEYSER_PEAK_ANON_BYTES=\n"
-                              "GEYSER_CGROUP_PEAK_BYTES=0\nREAD: 0\n")
+    m = ba.parse_measurements(
+        "GEYSER_THREADS=16\nAligning with bwa\nGEYSER_PEAK_ANON_BYTES=\nGEYSER_CGROUP_PEAK_BYTES=0\nREAD: 0\n"
+    )
     assert m == {"threads": 16, "aligner_used": "bwa", "markdup_reads": 0}
 
 
@@ -164,8 +190,10 @@ def test_check_aligner_used_catches_the_bwa_fallback():
 
 
 def test_parse_versions_by_label():
-    assert ba.parse_versions("bwa=0.7.18-r1243-dirty\nbwa-mem2=2.2.1\n") == {"bwa": "0.7.18-r1243-dirty",
-                                                                             "bwa-mem2": "2.2.1"}
+    assert ba.parse_versions("bwa=0.7.18-r1243-dirty\nbwa-mem2=2.2.1\n") == {
+        "bwa": "0.7.18-r1243-dirty",
+        "bwa-mem2": "2.2.1",
+    }
     assert ba.parse_versions("bwa=\nbwa-mem2=2.2.1\n") == {"bwa": "", "bwa-mem2": "2.2.1"}
 
 
@@ -177,13 +205,16 @@ def test_file_digests_skips_missing_files(tmp_path):
 
 def test_downstream_paths_cover_both_callers_and_scores(tmp_path):
     vcfs, happy_dir = ba.downstream_paths(str(tmp_path), "S_bwa")
-    assert [v.replace("\\", "/").split("/")[-2:] for v in vcfs] == [["variants", "S_bwa.vcf.gz"],
-                                                                     ["variants_deepvariant", "S_bwa.vcf.gz"]]
+    assert [v.replace("\\", "/").split("/")[-2:] for v in vcfs] == [
+        ["variants", "S_bwa.vcf.gz"],
+        ["variants_deepvariant", "S_bwa.vcf.gz"],
+    ]
     assert happy_dir.replace("\\", "/").endswith("benchmarks/S_bwa")
 
 
 def test_caller_choices_come_from_run_local():
     import run_local
+
     assert all(ba.CALLER_CHOICES[k] == run_local.CALLER_SETS[k] for k in ba.CALLER_CHOICES)
 
 

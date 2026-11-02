@@ -98,10 +98,12 @@ def fastq_from_bam_command(bam_key, r1_key, r2_key, threads=4):
     """
     r1, r2 = f"/data/{r1_key}", f"/data/{r2_key}"
     t1, t2 = (os.path.dirname(p) + "/.partial-" + os.path.basename(p) for p in (r1, r2))
-    script = (f"set -e -o pipefail; trap 'rm -f {t1} {t2}' ERR; cd /tmp; "
-              f"samtools collate -u -O -@ {threads} /data/{bam_key} /tmp/collate | "
-              f"samtools fastq -n -F 0x900 -@ {threads} -1 {t1} -2 {t2} -0 /dev/null -s /dev/null -; "
-              f"mv {t1} {r1}; mv {t2} {r2}")
+    script = (
+        f"set -e -o pipefail; trap 'rm -f {t1} {t2}' ERR; cd /tmp; "
+        f"samtools collate -u -O -@ {threads} /data/{bam_key} /tmp/collate | "
+        f"samtools fastq -n -F 0x900 -@ {threads} -1 {t1} -2 {t2} -0 /dev/null -s /dev/null -; "
+        f"mv {t1} {r1}; mv {t2} {r2}"
+    )
     return ["bash", "-c", script]
 
 
@@ -133,11 +135,9 @@ def parse_measurements(text):
         out["aligner_used"] = m.group(1)
     # bwa (and bwa index) end with "[main] Real time: X sec; CPU: Y sec" (the last one is mem's). bwa-mem2 prints
     # no CPU total; its "Time taken for main_mem function" is the same span (index load to last record written).
-    m = None
-    for m in re.finditer(r"\[main\] Real time: ([\d.]+) sec; CPU: ([\d.]+) sec", text):
-        pass
-    if m:
-        out["aligner_real_s"], out["aligner_cpu_s"] = float(m.group(1)), float(m.group(2))
+    timers = re.findall(r"\[main\] Real time: ([\d.]+) sec; CPU: ([\d.]+) sec", text)
+    if timers:
+        out["aligner_real_s"], out["aligner_cpu_s"] = float(timers[-1][0]), float(timers[-1][1])
     m = re.search(r"Time taken for main_mem function: ([\d.]+) sec", text)
     if m:
         out["aligner_real_s"] = float(m.group(1))
@@ -163,8 +163,9 @@ def run_measured(cmd, root, image, log_path, extra_env=None):
     started = time.monotonic()
     lines = []
     with open(log_path, "w", encoding="utf-8") as log:
-        proc = subprocess.Popen(full, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                encoding="utf-8", errors="replace")
+        proc = subprocess.Popen(
+            full, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace"
+        )
         for line in proc.stdout:
             log.write(line)
             lines.append(line)
@@ -175,8 +176,10 @@ def run_measured(cmd, root, image, log_path, extra_env=None):
 
 def tool_versions(image):
     """{'bwa': ..., 'bwa-mem2': ...} as the tools report them (bwa-mem2 2.3 reports 2.2.1, see the Dockerfile)."""
-    script = ("echo \"bwa=$(bwa 2>&1 | awk '/^Version/{print $2}')\"; "
-              "echo \"bwa-mem2=$(bwa-mem2 version 2>/dev/null | tail -1)\"")
+    script = (
+        "echo \"bwa=$(bwa 2>&1 | awk '/^Version/{print $2}')\"; "
+        'echo "bwa-mem2=$(bwa-mem2 version 2>/dev/null | tail -1)"'
+    )
     out = subprocess.run(["docker", "run", "--rm", image, "bash", "-c", script], capture_output=True, text=True)
     return parse_versions(out.stdout)
 
@@ -204,8 +207,10 @@ def check_aligner_used(aligner, measurement):
     """Error text if the align stage ran another aligner than asked (its bwa-mem2#262 fallback), else None."""
     used = measurement.get("aligner_used")
     if used and used != aligner:
-        return (f"asked for {aligner} but the align stage ran {used} (bwa-mem2#262 fallback: the reference's first "
-                f"contig does not start with enough Ns), so this would not compare the two aligners")
+        return (
+            f"asked for {aligner} but the align stage ran {used} (bwa-mem2#262 fallback: the reference's first "
+            f"contig does not start with enough Ns), so this would not compare the two aligners"
+        )
     return None
 
 
@@ -263,30 +268,45 @@ def write_csv(path, rows):
 
 
 def summary_markdown(base, rows, concord):
-    lines = [f"# Aligner benchmark: {base}", "",
-             "| Aligner | Version | Align stage (s) | Aligner real (s) | Aligner CPU (s) | Peak memory (MiB) | "
-             "cgroup peak incl. cache (MiB) | Index build (s) |",
-             "| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    lines = [
+        f"# Aligner benchmark: {base}",
+        "",
+        "| Aligner | Version | Align stage (s) | Aligner real (s) | Aligner CPU (s) | Peak memory (MiB) | "
+        "cgroup peak incl. cache (MiB) | Index build (s) |",
+        "| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ]
     for r in rows:
-        lines.append(f"| {r['aligner']} | {r['version']} | {r['align_stage_wall_s']} | {r['aligner_real_s']} | "
-                     f"{r['aligner_cpu_s']} | {r['align_peak_anon_mib']} | {r['align_cgroup_peak_mib']} | "
-                     f"{r['index_build_wall_s']} |")
+        lines.append(
+            f"| {r['aligner']} | {r['version']} | {r['align_stage_wall_s']} | {r['aligner_real_s']} | "
+            f"{r['aligner_cpu_s']} | {r['align_peak_anon_mib']} | {r['align_cgroup_peak_mib']} | "
+            f"{r['index_build_wall_s']} |"
+        )
     callers = sorted({k.split("_snp_f1")[0] for r in rows for k in r if k.endswith("_snp_f1")})
     if callers:
-        lines += ["", "| Aligner | Caller | SNP FN / FP | SNP F1 | Indel FN / FP | Indel F1 |",
-                  "| :--- | :--- | ---: | ---: | ---: | ---: |"]
+        lines += [
+            "",
+            "| Aligner | Caller | SNP FN / FP | SNP F1 | Indel FN / FP | Indel F1 |",
+            "| :--- | :--- | ---: | ---: | ---: | ---: |",
+        ]
         for r in rows:
             for c in callers:
                 if f"{c}_snp_f1" in r:
                     cells = []
                     for kind in ("snp", "indel"):
                         f1 = r.get(f"{c}_{kind}_f1")
-                        cells.append(f"{r.get(f'{c}_{kind}_fn', '')} / {r.get(f'{c}_{kind}_fp', '')} | "
-                                     + (f"{f1:.6f}" if isinstance(f1, float) else ""))
+                        cells.append(
+                            f"{r.get(f'{c}_{kind}_fn', '')} / {r.get(f'{c}_{kind}_fp', '')} | "
+                            + (f"{f1:.6f}" if isinstance(f1, float) else "")
+                        )
                     lines.append(f"| {r['aligner']} | {c} | " + " | ".join(cells) + " |")
     if concord:
-        lines += ["", "PASS calls compared directly (position, REF, ALT), whole contig:", "",
-                  "| Caller | Shared | Only bwa | Only bwa-mem2 |", "| :--- | ---: | ---: | ---: |"]
+        lines += [
+            "",
+            "PASS calls compared directly (position, REF, ALT), whole contig:",
+            "",
+            "| Caller | Shared | Only bwa | Only bwa-mem2 |",
+            "| :--- | ---: | ---: | ---: |",
+        ]
         for c, (shared, a, b) in sorted(concord.items()):
             lines.append(f"| {c} | {shared:,} | {a:,} | {b:,} |")
     return "\n".join(lines) + "\n"
@@ -311,8 +331,10 @@ def ensure_truth(root, base, sid):
     for ext in (".vcf.gz", ".bed"):
         src, dest = path_of(root, f"truth/{base}{ext}"), path_of(root, f"truth/{sid}{ext}")
         st = os.stat(src)
-        if not os.path.exists(dest) or (os.path.getsize(dest), int(os.path.getmtime(dest))) != \
-                (st.st_size, int(st.st_mtime)):
+        if not os.path.exists(dest) or (os.path.getsize(dest), int(os.path.getmtime(dest))) != (
+            st.st_size,
+            int(st.st_mtime),
+        ):
             shutil.copy2(src, dest)  # copy2 keeps the mtime, so an unchanged source is not copied again
         identity.append([st.st_size, int(st.st_mtime)])
     return identity
@@ -354,7 +376,7 @@ def main(argv=None):
         if subprocess.run(cmd).returncode != 0:
             return 1
     for al in ALIGNERS[1:]:
-        for src, dest in zip(first, raw_keys(samples[al])):
+        for src, dest in zip(first, raw_keys(samples[al]), strict=True):
             if not os.path.exists(path_of(root, dest)):
                 try:
                     os.link(path_of(root, src), path_of(root, dest))
@@ -374,16 +396,19 @@ def main(argv=None):
             # aligner's index no longer matches them.
             shared = [ref + ext for ext in SHARED_INDEX_EXTS]
             before = file_digests(shared)
-            rc, wall, m = run_measured(index_command(al, a.reference), root, a.image,
-                                       os.path.join(out_dir, f"index_{SAMPLE_SUFFIX[al]}.log"))
+            rc, wall, m = run_measured(
+                index_command(al, a.reference), root, a.image, os.path.join(out_dir, f"index_{SAMPLE_SUFFIX[al]}.log")
+            )
             if rc != 0:
                 print(f"{al} index failed")
                 return 1
             after = file_digests(shared)
             changed = [os.path.basename(f) for f in before if before[f] != after.get(f)]
             if changed:
-                print(f"{al} index rewrote {', '.join(changed)} differently from the other aligner's index; "
-                      f"build the two indexes in separate folders")
+                print(
+                    f"{al} index rewrote {', '.join(changed)} differently from the other aligner's index; "
+                    f"build the two indexes in separate folders"
+                )
                 return 1
             index[al] = {"wall_s": wall, **m}
             save_json(jpath, index[al])
@@ -402,8 +427,13 @@ def main(argv=None):
                 if os.path.exists(path):
                     os.remove(path)
             shutil.rmtree(happy_dir, ignore_errors=True)
-            rc, wall, m = run_measured(align_command(sid, a.reference), root, a.image,
-                                       os.path.join(out_dir, f"align_{SAMPLE_SUFFIX[al]}.log"), {"ALIGNER": al})
+            rc, wall, m = run_measured(
+                align_command(sid, a.reference),
+                root,
+                a.image,
+                os.path.join(out_dir, f"align_{SAMPLE_SUFFIX[al]}.log"),
+                {"ALIGNER": al},
+            )
             if rc != 0:
                 print(f"align failed with {al}")
                 return 1
@@ -423,8 +453,23 @@ def main(argv=None):
         missing = [c for c in callers if not os.path.exists(run_local.vcf_path(root, c, sid))]
         if missing:
             caller_arg = next(k for k, v in CALLER_CHOICES.items() if v == missing)
-            args = ["--root", root, "--sample", sid, "--reference", a.reference, "--caller", caller_arg,
-                    "--skip-to-variants", "--image", a.image, "--dv-image", a.dv_image, "--dv-memory", a.dv_memory]
+            args = [
+                "--root",
+                root,
+                "--sample",
+                sid,
+                "--reference",
+                a.reference,
+                "--caller",
+                caller_arg,
+                "--skip-to-variants",
+                "--image",
+                a.image,
+                "--dv-image",
+                a.dv_image,
+                "--dv-memory",
+                a.dv_memory,
+            ]
             if a.no_gpu:
                 args.append("--no-gpu")
             if run_local.main(args) != 0:
