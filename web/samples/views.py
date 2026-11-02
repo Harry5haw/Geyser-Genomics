@@ -43,6 +43,10 @@ FILE_KINDS = {
     "bam": ("Alignments (BAM)", "From a run before CRAM, or imported benchmark data"),
     "vcf": ("Variants", "Gzipped VCF"),
     "tbi": ("Variant index", "Tabix index (.tbi) of the VCF"),
+    "csq_vcf": (
+        "Annotated variants",
+        "The VCF with bcftools csq consequences (INFO/BCSQ), when the reference has gene models",
+    ),
     "flagstat": ("Alignment stats", "samtools flagstat: reads, mapped, duplicates, properly paired"),
     "mosdepth_summary": ("Coverage summary", "mosdepth: mean, min and max depth per contig (duplicates excluded)"),
     "mosdepth_dist": ("Coverage distribution", "mosdepth: fraction of bases covered at each depth or more"),
@@ -170,7 +174,9 @@ def sample_detail(request, sample_id):
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
     truth = read_truth(storage, sample_id)
-    variants = read_variants(storage, sample.keys["vcf"], settings.GEYSER_VARIANT_ROWS)
+    # The annotated VCF has the same records plus consequences: show it when it exists.
+    variants_key = sample.keys["csq_vcf"] if storage.exists(sample.keys["csq_vcf"]) else sample.keys["vcf"]
+    variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):

@@ -57,8 +57,8 @@ def test_statuses_and_upload_problems(tmp_path):
         "S9": "orphan",
         "S10": "incomplete",
     }
-    assert rows["S1"]["extra_outputs"] == {"dv": True, "pg": False} and rows["S1"]["problem"] is None
-    assert rows["S9"]["extra_outputs"] == {"dv": False, "pg": True}
+    assert rows["S1"]["extra_outputs"] == {"csq": False, "dv": True, "pg": False} and rows["S1"]["problem"] is None
+    assert rows["S9"]["extra_outputs"] == {"csq": False, "dv": False, "pg": True}
     # qc and align run side by side, so either can be the one missing.
     assert rows["S3"]["note"] == "no VCF; output from qc; none from align, variants"
     assert rows["S10"]["note"] == "no VCF; output from align; none from qc, variants"
@@ -357,3 +357,17 @@ def test_an_unreadable_run_record_is_skipped(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(provenance, "read_record", denied)
     assert reconcile.run_records(store, set(store.list_keys(""))) == {}
     assert "could not read the run record of S1" in capsys.readouterr().err
+
+
+def test_annotated_vcf_shows_as_its_own_column_only_when_present(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    make_bucket(tmp_path, full_sample("S1"))
+    reconcile.main(["--local-dir", str(tmp_path)])
+    assert "csq" not in capsys.readouterr().out  # no sample annotated: no column
+
+    make_bucket(tmp_path, ["variants/S1.csq.vcf.gz"])
+    rows = by_sample(reconcile.reconcile(make_bucket(tmp_path, []).list_keys("")))
+    assert rows["S1"]["extra_outputs"]["csq"] is True and rows["S1"]["status"] == "complete"
+    reconcile.main(["--local-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "csq annotated VCF" in out

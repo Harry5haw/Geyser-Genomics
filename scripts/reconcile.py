@@ -78,17 +78,18 @@ def load_trigger():
 
 
 def extra_outputs() -> dict:
-    """Optional caller outputs beyond bcftools, keyed by column label: DeepVariant (dv) and
-    pangenome-aware DeepVariant (pg), if the DeepVariant module is importable."""
+    """Optional outputs beyond the core stages, keyed by column label: the consequence-annotated VCF
+    (csq, only when the reference has gene models), DeepVariant (dv) and pangenome-aware DeepVariant
+    (pg), the last two if the DeepVariant module is importable."""
+    extras = {"csq": lambda sample_id: keys_for(sample_id)["csq_vcf"]}
     try:
         from deepvariant_task import deepvariant_keys
     except Exception:  # noqa: BLE001 - the DeepVariant module is optional here
-        return {}
+        return extras
     # The pangenome VCF key doesn't depend on which graph was used; any name gives the same key.
-    return {
-        "dv": lambda sample_id: deepvariant_keys(sample_id)["vcf"],
-        "pg": lambda sample_id: deepvariant_keys(sample_id, pangenome="graph.gbz")["vcf"],
-    }
+    extras["dv"] = lambda sample_id: deepvariant_keys(sample_id)["vcf"]
+    extras["pg"] = lambda sample_id: deepvariant_keys(sample_id, pangenome="graph.gbz")["vcf"]
+    return extras
 
 
 def key_patterns(extras: dict) -> list:
@@ -304,7 +305,10 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
 
 def print_report(result: dict) -> None:
     labels = [label for _, label in STAGE_OUTPUTS]
-    extra_labels = sorted({label for r in result["samples"] for label in r["extra_outputs"]})
+    # csq only appears once some sample has an annotated VCF: most references have no gene models.
+    extra_labels = sorted(
+        {label for r in result["samples"] for label, present in r["extra_outputs"].items() if label != "csq" or present}
+    )
     width = 2 * len(labels) + 3 * len(extra_labels) + 2
     print(f"{'Sample':<24} {'Status':<12} {'Outputs':<{width}} Note")
     for r in result["samples"]:
@@ -317,7 +321,8 @@ def print_report(result: dict) -> None:
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{width}} {note}")
     print(
         "Outputs: Q QC report (fastp), A alignment, V VCF"
-        + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
+        + (", csq annotated VCF" if "csq" in extra_labels else "")
+        + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if "dv" in extra_labels else "")
         + ", R run record (r: incomplete or failed)"
     )
     if result["upload_problems"]:
