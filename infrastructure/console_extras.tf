@@ -6,9 +6,12 @@
 
 # Cost Anomaly Detection: AWS learns the account's normal daily spend per service and emails when a day
 # looks unusual, usually well before the $10 monthly budget alert would fire. Free.
-# AWS allows one DIMENSIONAL/SERVICE monitor per account: if the console already created one (it may
-# exist as "Default-Services-Monitor"), import it instead of creating a second.
+# AWS allows one DIMENSIONAL/SERVICE monitor per account. If the account already has one (the console
+# may have created "Default-Services-Monitor"), set var.existing_anomaly_monitor_arn to its ARN: then no
+# monitor is created and the subscription attaches to that one. Check before the first apply:
+#   AWS_PROFILE=default aws ce get-anomaly-monitors --query "AnomalyMonitors[].[MonitorName,MonitorType,MonitorDimension,MonitorArn]"
 resource "aws_ce_anomaly_monitor" "services" {
+  count             = var.existing_anomaly_monitor_arn == "" ? 1 : 0
   name              = "${var.project_name}-services"
   monitor_type      = "DIMENSIONAL"
   monitor_dimension = "SERVICE"
@@ -17,7 +20,7 @@ resource "aws_ce_anomaly_monitor" "services" {
 resource "aws_ce_anomaly_subscription" "daily_email" {
   name             = "${var.project_name}-anomaly-email"
   frequency        = "DAILY"
-  monitor_arn_list = [aws_ce_anomaly_monitor.services.arn]
+  monitor_arn_list = [var.existing_anomaly_monitor_arn != "" ? var.existing_anomaly_monitor_arn : aws_ce_anomaly_monitor.services[0].arn]
 
   subscriber {
     type    = "EMAIL"

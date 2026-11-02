@@ -174,3 +174,9 @@ variable "aws_application_tag" {
   type        = map(string)
   default     = {}
 }
+
+variable "existing_anomaly_monitor_arn" {
+  description = "ARN of an existing DIMENSIONAL/SERVICE Cost Anomaly monitor to reuse (AWS allows one per account). Empty: console_extras.tf creates one."
+  type        = string
+  default     = ""
+}
