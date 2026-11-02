@@ -48,7 +48,15 @@ Settings you can change. Set these on the host; `run_local.py` passes them into 
 |---|---|---|
 | `DEEPVARIANT_EXTRA_ARGS` | (none) | extra `run_deepvariant` flags, for example `--disable_small_model=true` |
 | `DEEPVARIANT_SHARDS` | CPUs in the container | `make_examples` parallelism |
+| `DEEPVARIANT_TIMEOUT_SECONDS` | no limit | stop the wrapper and fail the stage after this long |
+| `DEEPVARIANT_IDLE_TIMEOUT_SECONDS` | no limit | stop it after this long with no output at all (it looks hung) |
+| `DEEPVARIANT_FATAL_GRACE_SECONDS` | 120 | after a fatal error line (`ResourceExhaustedError` / `RESOURCE_EXHAUSTED`, usually out of GPU memory), stop it once it has been silent this long without exiting |
 | `DEEPVARIANT_MODEL_TYPE` | `WGS` | |
+
+**A hung wrapper no longer blocks the stage.** On 1 Nov 2026, `call_variants` ran out of GPU memory and `run_pangenome_aware_deepvariant` never exited. The stage now runs the wrapper in its own process group and watches its output. When a limit is reached, it stops the wrapper's whole group (including steps that outlive the wrapper) and fails with the reason (`WrapperStopped`).
+- **Fatal errors:** a wrapper still printing after a fatal line counts as alive. TensorFlow's `Allocator (GPU_0_bfc) ran out of memory trying to allocate ...` lines are warnings that also appear in successful runs, so they don't count.
+- **Defaults:** the overall and idle limits are off by default, because whole-genome steps can be long and silent. The cloud job sets `DEEPVARIANT_TIMEOUT_SECONDS=3300` (below its 3600 s Batch attempt timeout) and `DEEPVARIANT_IDLE_TIMEOUT_SECONDS=900`.
+- **Settings:** a value that isn't a non-negative number fails the stage before any download. `run_local.py` passes all three variables through.
 
 There is no GPU? Build the CPU variant (`--build-arg DV_TAG=1.10.0 -t geyser-deepvariant-cpu`) and pass `--dv-image geyser-deepvariant-cpu --no-gpu`.
 

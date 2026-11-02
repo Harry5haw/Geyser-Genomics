@@ -324,6 +324,7 @@ def test_keys_follow_the_documented_layout():
         "mosdepth_summary": "stats/S1/mosdepth.summary.txt",
         "mosdepth_dist": "stats/S1/mosdepth.global.dist.txt",
         "bcftools_stats": "stats/S1/bcftools.stats.txt",
+        "gate_verdict": "qc_reports/S1.gate.json",
     }
 
 

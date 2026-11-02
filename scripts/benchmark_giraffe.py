@@ -31,8 +31,13 @@ import time
 
 import benchmark_aligners as ba
 import benchmark_happy
+import benchmark_history
 import run_local
 
+# Benchmark aligner keys -> the aligner's name in the benchmark history.
+ALIGNER_NAMES = {"giraffe": "vg giraffe"}
+# score_config(history=...) keys: benchmark_happy's history flags.
+HISTORY_FLAGS = ("aligner", "alignment", "coverage", "graph")
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"  # the vg release Google's VG case study uses
 KMC_IMAGE = "quay.io/biocontainers/kmc:3.2.4--h5814d7d_6"
 KMER_LENGTH = 29  # vg haplotypes' default minimizer k; the KFF counts must use the same k
@@ -264,14 +269,22 @@ def score_config(
     region=None,
     stratification=None,
     subsets=("*",),
+    *,
+    history=None,
 ):
     """Calls and hap.py for one configuration, each redone only when missing or stale. Returns
     (summary, extended, calls info) or None if a step failed.
+
+    history: what produced the calls, for the benchmark history: HISTORY_FLAGS keys (benchmark_happy's history
+    flags; "graph" is the pangenome caller's graph). Keyword-only, so a new positional parameter can't land in it.
 
     Calls are redone when the alignment file or the caller settings differ from those recorded in cpath. A VCF with
     no record is reused and reported as calls_provenance 'unrecorded' ('legacy' for records from before settings were
     kept). hap.py is redone when the VCF, region or stratification differ from its own record.
     """
+    unknown = set(history or {}) - set(HISTORY_FLAGS)
+    if unknown:
+        raise ValueError(f"not benchmark history fields: {sorted(unknown)}")
     aln = ba.alignment_path(root, sid)
     vcf = run_local.vcf_path(root, caller, sid)
     saved = ba.load_json(cpath)
@@ -302,6 +315,9 @@ def score_config(
         or (stratification and not benchmark_happy.has_subsets(extended_csv, subsets))
     ):
         args = ["--root", root, "--sample", sid, "--reference", reference, "--callers", caller]
+        args += ["--caller-settings", benchmark_history.settings_tag(env.get("DEEPVARIANT_EXTRA_ARGS", ""))]
+        for field, value in (history or {}).items():
+            args += [f"--{field.replace('_', '-')}", value] if value else []
         args += ["--region", region] if region else []
         args += ["--stratification", stratification] if stratification else []
         if benchmark_happy.main(args) != 0:
@@ -519,6 +535,11 @@ def main(argv=None):
             a.region,
             a.stratification,
             subsets,
+            history={
+                "aligner": ALIGNER_NAMES.get(aligner, aligner),
+                # the graph giraffe aligned to (the pangenome caller's own graph is run_local's default)
+                **({"alignment": f"vg giraffe to pangenome/{a.graph}"} if aligner == "giraffe" else {}),
+            },
         )
         if scored is None:
             return 1
