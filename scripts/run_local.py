@@ -88,6 +88,7 @@ DEEPVARIANT_ENV_VARS = (
     "DEEPVARIANT_TIMEOUT_SECONDS",
     "DEEPVARIANT_IDLE_TIMEOUT_SECONDS",
     "DEEPVARIANT_FATAL_GRACE_SECONDS",
+    "DEEPVARIANT_CHECKPOINT",
 )
 # Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2;
 # ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz);
