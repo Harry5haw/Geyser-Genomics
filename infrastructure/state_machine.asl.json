@@ -34,7 +34,8 @@
                 "JobDefinition": "${job_definition}",
                 "JobQueue": "${job_queue}",
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-                "Timeout": { "AttemptDurationSeconds": 3600 }
+                "Timeout": { "AttemptDurationSeconds": 3600 },
+                "Tags": { "Stage": "qc" }
               },
               "Retry": [
                 {
@@ -77,7 +78,8 @@
                 "JobDefinition": "${job_definition}",
                 "JobQueue": "${job_queue}",
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-                "Timeout": { "AttemptDurationSeconds": 14400 }
+                "Timeout": { "AttemptDurationSeconds": 14400 },
+                "Tags": { "Stage": "align" }
               },
               "Retry": [
                 {
@@ -128,7 +130,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 7200 }
+        "Timeout": { "AttemptDurationSeconds": 7200 },
+        "Tags": { "Stage": "variants" }
       },
       "Retry": [
         {
