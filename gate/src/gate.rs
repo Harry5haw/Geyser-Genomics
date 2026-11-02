@@ -55,28 +55,59 @@ enum Observed {
 }
 
 impl Metric {
-    pub fn input(self) -> Input {
+    /// The inputs the metric is computed from (one, except reads_in_alignment_pct).
+    pub fn inputs(self) -> &'static [Input] {
         match self {
-            Metric::Reads | Metric::MappedPct | Metric::DuplicatePct | Metric::ProperlyPairedPct => Input::Flagstat,
-            Metric::MeanDepth => Input::Mosdepth,
-            Metric::Variants | Metric::Snps | Metric::Indels | Metric::Tstv => Input::Bcftools,
+            Metric::Q30Pct | Metric::GcPct | Metric::FastpDuplicatePct => &[Input::Fastp],
+            Metric::ReadsInAlignmentPct => &[Input::Flagstat, Input::Fastp],
+            Metric::Reads | Metric::MappedPct | Metric::DuplicatePct | Metric::ProperlyPairedPct => &[Input::Flagstat],
+            Metric::MeanDepth => &[Input::Mosdepth],
+            Metric::Breadth1xPct | Metric::Breadth10xPct | Metric::Breadth20xPct => &[Input::MosdepthDist],
+            Metric::Variants | Metric::Snps | Metric::Indels | Metric::Tstv => &[Input::Bcftools],
         }
     }
 
+    /// The input keys, comma-separated: the check's `source`.
+    pub fn source(self, sample_id: &str) -> String {
+        self.inputs().iter().map(|i| i.key(sample_id)).collect::<Vec<_>>().join(", ")
+    }
+
     fn observe(self, inputs: &Inputs) -> Observed {
-        match inputs.problem(self.input()) {
-            Some(Problem::Missing(why)) => return Observed::Missing(why.to_string()),
-            Some(Problem::Invalid(why)) => {
-                return Observed::Invalid(format!("could not use {}: {why}", self.input().key(&inputs.sample_id)));
-            }
-            None => {}
+        // An invalid input wins over a missing one: it always fails.
+        let problems: Vec<(Input, Problem)> =
+            self.inputs().iter().filter_map(|i| inputs.problem(*i).map(|p| (*i, p))).collect();
+        if let Some((input, Problem::Invalid(why))) = problems.iter().find(|(_, p)| matches!(p, Problem::Invalid(_))) {
+            return Observed::Invalid(format!("could not use {}: {why}", input.key(&inputs.sample_id)));
+        }
+        if let Some((_, Problem::Missing(why))) = problems.first() {
+            return Observed::Missing(why.to_string());
         }
         let undefined = |why: &str| Observed::Undefined(format!("{self} is undefined: {why}"));
         let ratio = |v: Option<f64>, why: &str| v.map_or_else(|| undefined(why), |v| Observed::Value(Value::ratio(v)));
-        // problem() is None, so the input's value is there.
+        let breadth = |depth: u64| {
+            let dist = inputs.mosdepth_dist.ok().unwrap();
+            dist.breadth_pct(depth).map_or_else(
+                || {
+                    let key = Input::MosdepthDist.key(&inputs.sample_id);
+                    Observed::Invalid(format!("could not use {key}: no 'total' row for depth {depth}"))
+                },
+                |v| Observed::Value(Value::ratio(v)),
+            )
+        };
+        // No problems, so every input the metric needs is there.
+        let fastp = inputs.fastp.ok();
         let (f, m, b) = (inputs.flagstat.ok(), inputs.mosdepth.ok(), inputs.bcftools.ok());
         match self {
+            Metric::Q30Pct => Observed::Value(Value::ratio(fastp.unwrap().q30_rate * 100.0)),
+            Metric::GcPct => Observed::Value(Value::ratio(fastp.unwrap().gc_content * 100.0)),
+            Metric::FastpDuplicatePct => {
+                ratio(fastp.unwrap().duplication_rate.map(|r| r * 100.0), "the report has no duplication section")
+            }
             Metric::Reads => Observed::Value(Value::Count(f.unwrap().reads())),
+            Metric::ReadsInAlignmentPct => {
+                let (aligned, uploaded) = (f.unwrap().reads(), fastp.unwrap().total_reads);
+                ratio((uploaded > 0).then(|| aligned as f64 * 100.0 / uploaded as f64), "fastp saw no reads")
+            }
             Metric::MappedPct => ratio(f.unwrap().mapped_pct(), "no reads"),
             Metric::DuplicatePct => ratio(f.unwrap().duplicate_pct(), "no reads"),
             Metric::ProperlyPairedPct if !f.unwrap().is_paired() => {
@@ -84,6 +115,9 @@ impl Metric {
             }
             Metric::ProperlyPairedPct => ratio(f.unwrap().properly_paired_pct(), "no paired reads"),
             Metric::MeanDepth => ratio(m.unwrap().mean_depth(), "the reference length is 0"),
+            Metric::Breadth1xPct => breadth(1),
+            Metric::Breadth10xPct => breadth(10),
+            Metric::Breadth20xPct => breadth(20),
             Metric::Variants => Observed::Value(Value::Count(b.unwrap().records)),
             Metric::Snps => Observed::Value(Value::Count(b.unwrap().snps)),
             Metric::Indels => Observed::Value(Value::Count(b.unwrap().indels)),
@@ -196,7 +230,7 @@ fn metric_check(metric: Metric, observed: Observed, b: &Bounds, sample_id: &str,
         min: b.min,
         max: b.max,
         expected: None,
-        source: metric.input().key(sample_id),
+        source: metric.source(sample_id),
         reason,
     }
 }
@@ -285,7 +319,7 @@ pub fn evaluate(config: &Config, config_source: &str, inputs: &Inputs) -> Verdic
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inputs::{BcftoolsStats, Flagstat, Loaded, MosdepthSummary, RunRecord};
+    use crate::inputs::{BcftoolsStats, Fastp, Flagstat, Loaded, MosdepthDist, MosdepthSummary, RunRecord};
 
     fn flagstat(reads: u64, mapped: u64, dups: u64, paired: u64, proper: u64) -> Flagstat {
         Flagstat {
@@ -300,11 +334,25 @@ mod tests {
         }
     }
 
+    /// A mosdepth global distribution: 100% at 0x, falling by 1% per depth to 60% at 40x.
+    fn dist() -> MosdepthDist {
+        let rows: String = (0..=40).rev().map(|d| format!("total\t{d}\t{:.2}\n", 1.0 - d as f64 / 100.0)).collect();
+        MosdepthDist::parse(&rows).unwrap()
+    }
+
     fn inputs() -> Inputs {
         Inputs {
             sample_id: "S1".into(),
+            fastp: Loaded::Ok(Fastp {
+                total_reads: 1000,
+                q30_rate: 0.9,
+                gc_content: 0.41,
+                duplication_rate: Some(0.05),
+                paired: true,
+            }),
             flagstat: Loaded::Ok(flagstat(1000, 990, 50, 1000, 980)),
             mosdepth: Loaded::Ok(MosdepthSummary { length: 100, bases: 3000 }),
+            mosdepth_dist: Loaded::Ok(dist()),
             bcftools: Loaded::Ok(BcftoolsStats {
                 records: 12,
                 snps: 10,
@@ -336,11 +384,18 @@ mod tests {
         [run_record]
         statuses = ["succeeded"]
         [checks]
+        q30_pct = { min = 90.0 }
+        gc_pct = { min = 41, max = 41 }
+        fastp_duplicate_pct = { max = 5 }
         reads = { min = 1000 }
+        reads_in_alignment_pct = { min = 100, max = 100 }
         mapped_pct = { min = 99.0 }
         duplicate_pct = { max = 5.0 }
         properly_paired_pct = { min = 98.0 }
         mean_depth = { min = 30, max = 30 }
+        breadth_1x_pct = { min = 99 }
+        breadth_10x_pct = { min = 90, max = 90 }
+        breadth_20x_pct = { max = 80 }
         variants = { min = 1 }
         snps = { min = 10, max = 10 }
         indels = { max = 2 }
@@ -351,7 +406,7 @@ mod tests {
     fn values_on_the_bounds_pass() {
         let v = evaluate(&config(ALL_CHECKS), "test", &inputs());
         assert!(v.passed(), "{:?}", v.reasons);
-        assert_eq!(v.checks.len(), 10);
+        assert_eq!(v.checks.len(), 17);
         assert!(v.checks.iter().all(|c| c.status == Status::Pass && c.reason.is_none()));
         assert_eq!(v.run_name.as_deref(), Some("S1-20261102T100000Z-abc"));
         assert_eq!(v.layout.as_deref(), Some("paired"));
@@ -471,7 +526,7 @@ reads = { min = 1 }",
         assert_eq!(json["metrics"]["reads"], 1000, "counts stay integers");
         assert_eq!(json["metrics"]["mean_depth"], 30.0);
         assert_eq!(json["checks"][0]["name"], "run_status");
-        assert_eq!(json["checks"][1]["name"], "reads", "metric checks in declaration order");
+        assert_eq!(json["checks"][1]["name"], "q30_pct", "metric checks in declaration order (by stage)");
         assert!(json["checks"][1].get("expected").is_none());
         assert_eq!(json["inputs"]["run_record"]["key"], "runs/S1.provenance.json");
     }
@@ -488,6 +543,8 @@ reads = { min = 1 }",
         i.flagstat = Loaded::Missing("stats/S1/flagstat.txt not found".into());
         i.mosdepth = Loaded::Missing("stats/S1/mosdepth.summary.txt not found".into());
         i.bcftools = Loaded::Missing("stats/S1/bcftools.stats.txt not found".into());
+        i.fastp = Loaded::Missing("qc_reports/S1.fastp.json not found".into());
+        i.mosdepth_dist = Loaded::Missing("stats/S1/mosdepth.global.dist.txt not found".into());
         i.record = Loaded::Missing("runs/S1.provenance.json not found".into());
         let v = evaluate(
             &config(&format!(
@@ -500,5 +557,35 @@ reads = { min = 1 }",
         assert!(v.checks.iter().all(|c| c.status == Status::Skipped));
         assert_eq!(v.reasons, ["no check passed: every check was skipped or not applicable"]);
         assert!(!v.passed());
+    }
+
+    #[test]
+    fn reads_lost_in_alignment_fail_and_name_both_inputs() {
+        let mut i = inputs();
+        i.flagstat = Loaded::Ok(flagstat(990, 990, 50, 990, 980)); // fastp saw 1000
+        let v = evaluate(&config("[checks]\nreads_in_alignment_pct = { min = 100, max = 100 }"), "test", &i);
+        assert_eq!(v.reasons, ["reads_in_alignment_pct 99 is below the minimum 100"]);
+        assert_eq!(check(&v, "reads_in_alignment_pct").source, "stats/S1/flagstat.txt, qc_reports/S1.fastp.json");
+    }
+
+    #[test]
+    fn an_invalid_input_wins_over_a_missing_one() {
+        let mut i = inputs();
+        i.flagstat = Loaded::Missing("stats/S1/flagstat.txt not found".into());
+        i.fastp = Loaded::Invalid("not a fastp JSON report".into());
+        let text = "on_missing = \"skip\"\n[checks]\nreads_in_alignment_pct = { min = 100 }\nsnps = { min = 1 }";
+        let v = evaluate(&config(text), "test", &i);
+        assert_eq!(v.reasons, ["could not use qc_reports/S1.fastp.json: not a fastp JSON report"]);
+    }
+
+    #[test]
+    fn breadth_deeper_than_any_base_is_zero_and_a_gap_in_the_distribution_is_invalid() {
+        let v = evaluate(&config("[checks]\nbreadth_1x_pct = { min = 0 }"), "test", &inputs());
+        assert_eq!(v.metrics[&Metric::Breadth20xPct], Some(Value::Ratio(80.0)));
+        let mut i = inputs();
+        i.mosdepth_dist = Loaded::Ok(MosdepthDist::parse("total\t5\t0.10\ntotal\t0\t1.00\n").unwrap());
+        let v = evaluate(&config("[checks]\nbreadth_10x_pct = { min = 0 }\nbreadth_1x_pct = { min = 0 }"), "test", &i);
+        assert_eq!(check(&v, "breadth_10x_pct").value, Some(serde_json::json!(0.0)), "max depth 5: nothing at 10x");
+        assert_eq!(v.reasons, ["could not use stats/S1/mosdepth.global.dist.txt: no 'total' row for depth 1"]);
     }
 }

@@ -10,12 +10,22 @@ use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_TOML: &str = include_str!("../thresholds/default.toml");
 
-/// A number the gate can check. Declaration order is the order of the verdict's checks and metrics.
+/// A number the gate can check. Declaration order (by pipeline stage) is the order of the verdict's
+/// checks and metrics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Metric {
+    /// Bases with quality >= 30, % of bases. fastp (before filtering; the QC stage filters nothing).
+    Q30Pct,
+    /// GC content of the reads, %. fastp.
+    GcPct,
+    /// fastp's duplication estimate from the raw reads (sequence-based, before alignment), %. fastp.
+    FastpDuplicatePct,
     /// Reads (each mate counts), primary records, QC-passed. flagstat.
     Reads,
+    /// Reads in the alignment, % of the reads fastp saw in the upload. Below 100 the align stage lost
+    /// reads. flagstat + fastp.
+    ReadsInAlignmentPct,
     /// Mapped reads, % of reads. flagstat.
     MappedPct,
     /// Reads marked as duplicates, % of reads. flagstat.
@@ -24,6 +34,13 @@ pub enum Metric {
     ProperlyPairedPct,
     /// Mean depth over the whole reference (duplicates excluded). mosdepth summary.
     MeanDepth,
+    /// % of the reference covered at >= 1x / 10x / 20x. mosdepth global distribution (2 decimals).
+    #[serde(rename = "breadth_1x_pct")]
+    Breadth1xPct,
+    #[serde(rename = "breadth_10x_pct")]
+    Breadth10xPct,
+    #[serde(rename = "breadth_20x_pct")]
+    Breadth20xPct,
     /// VCF records. bcftools stats.
     Variants,
     /// SNPs. bcftools stats.
@@ -35,12 +52,19 @@ pub enum Metric {
 }
 
 impl Metric {
-    pub const ALL: [Metric; 9] = [
+    pub const ALL: [Metric; 16] = [
+        Metric::Q30Pct,
+        Metric::GcPct,
+        Metric::FastpDuplicatePct,
         Metric::Reads,
+        Metric::ReadsInAlignmentPct,
         Metric::MappedPct,
         Metric::DuplicatePct,
         Metric::ProperlyPairedPct,
         Metric::MeanDepth,
+        Metric::Breadth1xPct,
+        Metric::Breadth10xPct,
+        Metric::Breadth20xPct,
         Metric::Variants,
         Metric::Snps,
         Metric::Indels,
@@ -49,11 +73,18 @@ impl Metric {
 
     pub fn name(self) -> &'static str {
         match self {
+            Metric::Q30Pct => "q30_pct",
+            Metric::GcPct => "gc_pct",
+            Metric::FastpDuplicatePct => "fastp_duplicate_pct",
             Metric::Reads => "reads",
+            Metric::ReadsInAlignmentPct => "reads_in_alignment_pct",
             Metric::MappedPct => "mapped_pct",
             Metric::DuplicatePct => "duplicate_pct",
             Metric::ProperlyPairedPct => "properly_paired_pct",
             Metric::MeanDepth => "mean_depth",
+            Metric::Breadth1xPct => "breadth_1x_pct",
+            Metric::Breadth10xPct => "breadth_10x_pct",
+            Metric::Breadth20xPct => "breadth_20x_pct",
             Metric::Variants => "variants",
             Metric::Snps => "snps",
             Metric::Indels => "indels",
