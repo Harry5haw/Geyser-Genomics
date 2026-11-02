@@ -79,12 +79,25 @@ def mate_key(object_key: str) -> str:
     return f"{directory}/{renamed}" if directory else renamed
 
 
+CALLERS = ("bcftools", "deepvariant")  # state_machine.asl.json Choose_Caller
+
+
 def build_pipeline_input(object_key: str, reference_name: str = None) -> dict:
-    """The exact input document the state machine expects (the same for single- and paired-end)."""
-    return {
+    """The exact input document the state machine expects (the same for single- and paired-end).
+
+    "caller" is added only when the CALLER environment variable is set (Terraform: default_caller).
+    Without it the state machine runs bcftools, as before.
+    """
+    pipeline_input = {
         "srr_id": parse_sample_id(object_key),
         "reference_name": reference_name or os.environ.get("REFERENCE_NAME", DEFAULT_REFERENCE_GENOME),
     }
+    caller = os.environ.get("CALLER")
+    if caller:
+        if caller not in CALLERS:
+            raise ValueError(f"CALLER must be one of {CALLERS}, got {caller!r}")
+        pipeline_input["caller"] = caller
+    return pipeline_input
 
 
 def build_execution_name(sample_id: str, event_time: str = None, event_key: str = None) -> str:

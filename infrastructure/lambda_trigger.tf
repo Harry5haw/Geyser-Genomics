@@ -120,6 +120,7 @@ resource "aws_lambda_function" "geyser_sfn_trigger" {
   environment {
     variables = {
       STATE_MACHINE_ARN = aws_sfn_state_machine.geyser_pipeline_state_machine.id
+      CALLER            = var.default_caller
     }
   }
 

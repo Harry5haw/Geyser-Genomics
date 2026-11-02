@@ -10,6 +10,11 @@ This plays the part of the cloud orchestration:
   * AWS Batch       -> each stage runs in a fresh container from the same image.
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 
+After variant calling, the quality gate (tasks.py gate, #144) checks the run's QC statistics and
+writes qc_reports/<id>.gate.json; it isn't a Step Functions state yet. GATE_MODE=warn (default) only
+warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
+it uses the synthetic thresholds unless GATE_CONFIG is set; --no-gate skips it.
+
 Typical use:
     docker build -f Dockerfile -t geyser-app .
     python scripts/make_test_data.py
@@ -83,10 +88,17 @@ DEEPVARIANT_ENV_VARS = (
     "DEEPVARIANT_TIMEOUT_SECONDS",
     "DEEPVARIANT_IDLE_TIMEOUT_SECONDS",
     "DEEPVARIANT_FATAL_GRACE_SECONDS",
+    "DEEPVARIANT_CHECKPOINT",
 )
 # Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2;
-# ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz).
-PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE")
+# ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz);
+# GATE_MODE (warn | fail) and GATE_CONFIG (a thresholds file) set up the quality gate.
+PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE", "GATE_MODE", "GATE_CONFIG")
+# The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
+SYNTHETIC_GATE_CONFIG = {
+    "docker": "/opt/geyser-gate/thresholds/synthetic.toml",
+    "host": os.path.join(REPO_ROOT, "gate", "thresholds", "synthetic.toml"),
+}
 # ALTs that are not real variants (gVCF-style placeholders, DeepVariant RefCall rows).
 NON_VARIANT_ALTS = {".", "<*>", "<NON_REF>"}
 
@@ -139,11 +151,16 @@ def pipeline_jobs(
     pg_shm=DEFAULT_PANGENOME_SHM,
     regions=None,
     shard_window=None,
+    gate=False,
+    gate_config=None,
 ):
-    """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome).
+    """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome, env).
 
     regions + shard_window: scatter-gather variant calling, as the Map state will run it (#108): one
     'variants --region' job per region, then 'variants --window' merging them into the usual VCF.
+    gate: the quality gate, last, when the run made the sample's stats (bcftools, or a DeepVariant-only
+    run's PASS-call stats, #147; not a caller added with skip_to_variants); gate_config: its
+    GATE_CONFIG for this sample (None: the host's GATE_CONFIG, else the built-in thresholds).
     """
     if caller not in CALLERS:
         raise ValueError(f"unknown caller {caller!r}")
@@ -174,7 +191,8 @@ def pipeline_jobs(
         )
     # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
     # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
-    caller_env = {} if "bcftools" in sets or skip_to_variants else {"PIPELINE_CALLER": sets[0]}
+    caller_owns_stats = "bcftools" not in sets and not skip_to_variants
+    caller_env = {"PIPELINE_CALLER": sets[0]} if caller_owns_stats else {}
     if "deepvariant" in sets:
         jobs.append(
             {
@@ -198,6 +216,19 @@ def pipeline_jobs(
                 "env": caller_env if sets == ["pangenome"] else {},
             }
         )
+    # The gate judges the sample's stats: bcftools', or a DeepVariant-only run's (#147), as in the cloud. Not
+    # an add-on caller (--skip-to-variants without bcftools): the stats it would judge are an earlier run's.
+    if gate and ("bcftools" in sets or caller_owns_stats):
+        # Last, so a failed gate (GATE_MODE=fail) can't keep DeepVariant or --check from running.
+        job = {
+            "name": "gate",
+            "cmd": stage_command("gate", sample_id, None, False),
+            "image": app_image,
+            "gpus": False,
+        }
+        if gate_config:
+            job["env"] = {"GATE_CONFIG": gate_config}
+        jobs.append(job)
     return jobs
 
 
@@ -209,6 +240,35 @@ def local_regions(root, reference_name, window):
     import tasks  # noqa: PLC0415 - only for --shard-window; tasks.py imports nothing AWS-specific at import time
 
     return tasks.reference_regions(os.path.join(root, "reference", reference_name), window)
+
+
+def gate_config_for(root, sample_id, runner):
+    """GATE_CONFIG for the gate job: the host's if set (for docker, a host file in the repo's
+    gate/thresholds/ or under the storage root becomes its path in the container), else the synthetic
+    thresholds for a make_test_data.py sample (it has truth/<id>.json), else None (built-in thresholds)."""
+    host = os.environ.get("GATE_CONFIG")
+    if host:
+        return container_path(host, root) if runner == "docker" else None
+    if os.path.exists(os.path.join(root, "truth", f"{sample_id}.json")):
+        return SYNTHETIC_GATE_CONFIG[runner]
+    return None
+
+
+def container_path(host_path, root):
+    """Where a host file is inside the stage container: the repo's gate/thresholds/ files are in the
+    image, the storage root is mounted at /data. Anything else (a container path already) as it is."""
+    if not os.path.isfile(host_path):
+        return host_path
+    path = os.path.abspath(host_path)
+    bases = (
+        (os.path.join(REPO_ROOT, "gate", "thresholds"), "/opt/geyser-gate/thresholds"),
+        (root, "/data"),
+    )
+    for base, target in bases:
+        base = os.path.abspath(base)
+        if os.path.commonpath([path, base]) == base:
+            return target + "/" + os.path.relpath(path, base).replace(os.sep, "/")
+    return host_path
 
 
 def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None):
@@ -262,6 +322,7 @@ def run_job(job, runner, root, dv_memory=None, env=None):
     host_env = {
         **os.environ,
         **(env or {}),
+        **(job.get("env") or {}),
         "STORAGE_BACKEND": "local",
         "METRICS_BACKEND": "local",
         "LOCAL_STORAGE_DIR": os.path.abspath(root),
@@ -427,6 +488,7 @@ def main(argv=None):
         "usual VCF (what the Map state will run; #108). Default: one variants job",
     )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
+    p.add_argument("--no-gate", action="store_true", help="skip the quality gate after variant calling")
     a = p.parse_args(argv)
     if a.shard_window is not None and a.shard_window < 1:
         p.error("--shard-window must be >= 1")
@@ -460,6 +522,8 @@ def main(argv=None):
             if a.shard_window and "bcftools" in CALLER_SETS[a.caller]
             else None,
             shard_window=a.shard_window,
+            gate=not a.no_gate,
+            gate_config=gate_config_for(a.root, sample_id, a.runner),
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:

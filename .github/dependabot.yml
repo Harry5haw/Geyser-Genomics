@@ -49,6 +49,10 @@ updates:
       # (security rebuilds). A Python minor upgrade is a decision of its own.
       - dependency-name: python
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # The gate's build stage: its Rust version is bumped by hand together with gate/rust-toolchain.toml
+      # (CI's clippy runs on that one). New digests of the same version still come through.
+      - dependency-name: rust
+        update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
     labels: ["dependencies", "docker"]
     commit-message:
       prefix: "Docker"
