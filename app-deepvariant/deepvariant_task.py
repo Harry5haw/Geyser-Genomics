@@ -34,6 +34,8 @@ Environment:
 """
 
 import argparse
+import hashlib
+import io
 import json
 import os
 import queue
@@ -414,19 +416,26 @@ def gpu_name():
 
 # ---- resuming after make_examples (#51) ----
 # Neither wrapper can skip a step, and make_examples is most of the run (936 of 1,241 s for pangenome on HG003
-# chr20). So when the wrapper fails or is stopped after make_examples finished, its outputs and the remaining step
-# commands, exactly as the wrapper printed them, are kept under CHECKPOINT_PREFIX. The next run of the same stage on
-# the same inputs and settings replays only call_variants and postprocess_variants. The prefix is under
-# intermediate/, which the data lake's lifecycle rule expires. The cloud role cannot delete objects, so a used
-# checkpoint is marked consumed by overwriting its manifest.
+# chr20). So when the wrapper fails or is stopped after make_examples finished, the intermediate files it made and
+# the remaining step commands, exactly as the wrapper printed them, are kept under CHECKPOINT_PREFIX. The next run of
+# the same stage on the same inputs and settings replays only call_variants and postprocess_variants. The prefix is
+# under intermediate/, which the data lake's lifecycle rule expires. The cloud role cannot delete objects, so a used
+# (or broken, or superseded) checkpoint is retired by overwriting its manifest.
 CHECKPOINT_PREFIX = "intermediate/deepvariant-checkpoints/{sample_id}/{caller}/"
 MANIFEST = "manifest.json"
 CHECKPOINT_VERSION = 1
-# Every step a wrapper can print, in run order (the pangenome wrapper loads the graph first).
+# Every step a wrapper can print, in run order (the pangenome wrapper loads the graph first): STEP_RE's steps plus
+# the graph loader, also matching a step binary followed by a quote.
 STEP_NAME_RE = re.compile(
     r"/(load_gbz_into_shared_memory|make_examples|call_variants|postprocess_variants)\w*(?:\s|\"|$)"
 )
 RESUME_FROM = "call_variants"
+# call_variants' own output is redone on a retry; every other intermediate file (examples, small-model calls,
+# gVCF records, ...) comes from make_examples and is kept.
+REDONE_PREFIX = "call_variants_output"
+# How much of each end of an input file goes into its fingerprint (with its size): a re-aligned CRAM or a patched
+# reference differs in its header or tail, without hashing a whole 30 GB alignment.
+SAMPLE_BYTES = 64 * 1024 * 1024
 
 
 def checkpoints_enabled():
@@ -439,18 +448,19 @@ def checkpoint_prefix(sample_id, pangenome=None):
 
 
 def step_commands(events):
-    """[(step, command)] the wrapper started, in order: the line after each banner, without the leading 'time '."""
+    """[(step, command)] the wrapper started, in order: after each banner, the first line naming a step, without
+    a leading 'time ' (a stray log line between banner and command is skipped, as in parse_step_timings)."""
     steps, after_banner = [], False
     for _, line in events:
         if BANNER in line:
             after_banner = True
             continue
         if after_banner:
-            after_banner = False
             command = line.strip()
             match = STEP_NAME_RE.search(command)
             if match:
                 steps.append((match.group(1), command[5:] if command.startswith("time ") else command))
+                after_banner = False
     return steps
 
 
@@ -461,7 +471,8 @@ def make_examples_finished(steps):
 
 
 def wrapper_version(wrapper):
-    """'1.10.0' from `<wrapper> --version`, or None if it cannot be told (then no checkpoint is saved or used)."""
+    """'1.10.0' from `<wrapper> --version` (both wrappers print 'DeepVariant version 1.10.0' in 1.10.0), or None if
+    it cannot be told: then no checkpoint is saved or used."""
     try:
         out = subprocess.run([wrapper, "--version"], capture_output=True, text=True, timeout=180)
     except (OSError, subprocess.SubprocessError):
@@ -470,8 +481,18 @@ def wrapper_version(wrapper):
     return match.group(1) if match else None
 
 
-def file_size(path):
-    return os.path.getsize(path) if path and os.path.exists(path) else None
+def file_identity(path):
+    """[name, size, sha256 of the first and last SAMPLE_BYTES], or None for no file."""
+    if not path or not os.path.exists(path):
+        return None
+    size = os.path.getsize(path)
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        digest.update(fh.read(SAMPLE_BYTES))
+        if size > SAMPLE_BYTES:
+            fh.seek(max(SAMPLE_BYTES, size - SAMPLE_BYTES))
+            digest.update(fh.read(SAMPLE_BYTES))
+    return [os.path.basename(path), size, digest.hexdigest()]
 
 
 def run_fingerprint(wrapper, alignment, ref, graph, shards, model_type, extra_args):
@@ -483,45 +504,71 @@ def run_fingerprint(wrapper, alignment, ref, graph, shards, model_type, extra_ar
     return {
         "wrapper": os.path.basename(wrapper),
         "version": version,
-        "alignment": [os.path.basename(alignment), file_size(alignment)],
-        "reference": [os.path.basename(ref), file_size(ref)],
-        "graph": [os.path.basename(graph), file_size(graph)] if graph else None,
+        "alignment": file_identity(alignment),
+        "reference": file_identity(ref),
+        "graph": file_identity(graph),
         "shards": shards,
         "model_type": model_type,
         "extra_args": extra_args or "",
     }
 
 
+def write_manifest(prefix, manifest):
+    storage().upload_stream(io.BytesIO(json.dumps(manifest, indent=2).encode("utf-8")), prefix + MANIFEST)
+
+
+def read_manifest(prefix):
+    if not storage().exists(prefix + MANIFEST):
+        return None
+    with storage().open_read(prefix + MANIFEST) as fh:
+        return json.load(fh)
+
+
+def retire(prefix, why):
+    """Overwrite a checkpoint's manifest so no run uses it (the cloud role cannot delete objects). Best effort."""
+    try:
+        if storage().exists(prefix + MANIFEST):
+            write_manifest(prefix, {"checkpoint_version": CHECKPOINT_VERSION, "consumed": True, "retired": why})
+    except Exception as err:  # noqa: BLE001 - best effort
+        print(f"[geyser] WARNING: could not retire the checkpoint: {err}", flush=True)
+
+
 def save_checkpoint(prefix, events, wd, intermediate, fingerprint):
-    """Keep make_examples' outputs and the remaining steps, if the wrapper got past make_examples. Best effort:
-    never hides the original failure. Returns True if a checkpoint was saved."""
+    """Keep make_examples' intermediate files and the remaining steps, if the wrapper got past make_examples.
+    Best effort: never hides the original failure. Returns True if a checkpoint was saved."""
     steps = step_commands(events)
     if not make_examples_finished(steps):
         print("[geyser] no checkpoint: the run failed before make_examples finished", flush=True)
         return False
+    if fingerprint is None:
+        print("[geyser] no checkpoint: could not tell the DeepVariant version", flush=True)
+        return False
     try:
-        fp = fingerprint()
-        if fp is None:
-            print("[geyser] no checkpoint: could not tell the DeepVariant version", flush=True)
-            return False
+        retire(prefix, "being replaced")  # first: an older manifest must never describe the files about to be written
         names = [n for n, _ in steps]
         remaining = steps[names.index(RESUME_FROM) :]
-        files = sorted(f for f in os.listdir(intermediate) if f.startswith("make_examples"))
+        files = sorted(
+            f
+            for f in os.listdir(intermediate)
+            if os.path.isfile(os.path.join(intermediate, f)) and not f.startswith(REDONE_PREFIX)
+        )
         size = sum(os.path.getsize(os.path.join(intermediate, f)) for f in files)
+        started = time.monotonic()
         for name in files:
             storage().upload(os.path.join(intermediate, name), prefix + name)
         manifest = {
             "checkpoint_version": CHECKPOINT_VERSION,
-            "fingerprint": fp,
+            "fingerprint": fingerprint,
             "work_dir": wd,
             "steps": remaining,
             "files": files,
             "consumed": False,
         }
-        write_manifest(prefix, manifest, wd)  # last: a manifest means the files are all there
+        write_manifest(prefix, manifest)  # last: a manifest means its files are all there
         print(
-            f"[geyser] saved a checkpoint after make_examples: {len(files)} files ({size / 1e6:,.0f} MB) under "
-            f"{storage().describe(prefix)}; the next run on the same inputs resumes at {RESUME_FROM}",
+            f"[geyser] saved a checkpoint after make_examples: {len(files)} files ({size / 1e6:,.0f} MB, "
+            f"{time.monotonic() - started:.0f} s) under {storage().describe(prefix)}; the next run on the same inputs "
+            f"resumes at {RESUME_FROM}",
             flush=True,
         )
         return True
@@ -530,37 +577,29 @@ def save_checkpoint(prefix, events, wd, intermediate, fingerprint):
         return False
 
 
-def write_manifest(prefix, manifest, wd):
-    path = os.path.join(wd, MANIFEST)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(manifest, fh, indent=2)
-    storage().upload(path, prefix + MANIFEST)
-
-
-def read_manifest(prefix, wd):
-    if not storage().exists(prefix + MANIFEST):
-        return None
-    path = os.path.join(wd, MANIFEST + ".in")
-    storage().download(prefix + MANIFEST, path)
-    with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
-
-
 def load_checkpoint(prefix, wd, intermediate, fingerprint):
-    """The remaining [(step, command)] with paths moved to this run's work dir, after downloading make_examples'
-    outputs, or None if there is no usable checkpoint (missing, consumed, or made for other inputs/settings)."""
-    manifest = read_manifest(prefix, wd)
-    if not manifest or manifest.get("consumed") or manifest.get("checkpoint_version") != CHECKPOINT_VERSION:
+    """The remaining [(step, command)] with paths moved to this run's work dir, after downloading the kept files,
+    or None to run in full: no checkpoint, a used one, one made for other inputs/settings, or a broken one (which
+    is then retired, so it is not tried again)."""
+    try:
+        manifest = read_manifest(prefix)
+        if not manifest or manifest.get("consumed") or manifest.get("checkpoint_version") != CHECKPOINT_VERSION:
+            return None
+        if fingerprint is None or manifest.get("fingerprint") != fingerprint:
+            old = manifest.get("fingerprint") or {}
+            changed = sorted(k for k in fingerprint or {} if old.get(k) != fingerprint[k]) or ["version unknown"]
+            print(f"[geyser] checkpoint under {storage().describe(prefix)} not used: {', '.join(changed)} differ")
+            return None
+        for name in manifest["files"]:
+            storage().download(prefix + name, os.path.join(intermediate, name))
+        old_wd = manifest["work_dir"]
+        steps = [(name, command.replace(old_wd, wd)) for name, command in manifest["steps"]]
+    except Exception as err:  # noqa: BLE001 - a broken checkpoint must not block the stage
+        print(f"[geyser] checkpoint under {storage().describe(prefix)} could not be used ({err}); running in full")
+        for name in os.listdir(intermediate):
+            os.remove(os.path.join(intermediate, name))
+        retire(prefix, f"unusable: {err}")
         return None
-    fp = fingerprint()
-    if fp is None or manifest.get("fingerprint") != fp:
-        changed = sorted(k for k in fp or {} if (manifest.get("fingerprint") or {}).get(k) != fp[k])
-        print(f"[geyser] checkpoint under {storage().describe(prefix)} not used: {changed or 'version unknown'} differ")
-        return None
-    for name in manifest["files"]:
-        storage().download(prefix + name, os.path.join(intermediate, name))
-    old = manifest["work_dir"]
-    steps = [(name, command.replace(old, wd)) for name, command in manifest["steps"]]
     print(
         f"[geyser] resuming from the checkpoint under {storage().describe(prefix)}: make_examples skipped, "
         f"running {', '.join(n for n, _ in steps)}",
@@ -569,26 +608,25 @@ def load_checkpoint(prefix, wd, intermediate, fingerprint):
     return steps
 
 
-def mark_consumed(prefix, wd):
-    """Overwrite a checkpoint's manifest so no later run uses it (the cloud role cannot delete objects)."""
-    try:
-        manifest = read_manifest(prefix, wd)
-        if manifest and not manifest.get("consumed"):
-            manifest["consumed"] = True
-            write_manifest(prefix, manifest, wd)
-    except Exception as err:  # noqa: BLE001 - best effort
-        print(f"[geyser] WARNING: could not mark the checkpoint used: {err}", flush=True)
-
-
 def run_steps(steps, limits):
-    """Run the remaining steps one by one, each under the same stop limits as the wrapper. Returns what
-    run_streaming returns, with a banner and the command before each step so parse_step_timings sees them."""
-    events, code = [], 0
+    """Run the remaining steps one by one under the stop limits, sharing one overall time budget between them.
+    Returns what run_streaming returns, with a banner and the command before each step so parse_step_timings and
+    step_commands see them."""
+    events, code, started = [], 0, time.monotonic()
     for _, command in steps:
+        step_limits = limits
+        if limits.timeout:
+            left = limits.timeout - (time.monotonic() - started)
+            if left <= 0:
+                raise WrapperStopped(
+                    f"resumed steps did not finish within {limits.timeout:.0f} s (DEEPVARIANT_TIMEOUT_SECONDS)",
+                    events,
+                )
+            step_limits = WrapperLimits(timeout=left, idle=limits.idle, fatal_grace=limits.fatal_grace)
         now = time.time()
         events += [(now, BANNER), (now, "time " + command)]
         try:
-            code, step_events, _ = run_streaming(["bash", "-o", "pipefail", "-c", command], limits=limits)
+            code, step_events, _ = run_streaming(["bash", "-o", "pipefail", "-c", command], limits=step_limits)
         except WrapperStopped as err:
             raise WrapperStopped(str(err), events + err.events) from None
         events += step_events
@@ -620,6 +658,8 @@ def _call_variants(sample_id, reference_name, pangenome=None):
 
         shards = int(os.environ.get("DEEPVARIANT_SHARDS") or os.cpu_count() or 1)
         gpu = gpu_name()
+        model_type = os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS")
+        extra_args = os.environ.get("DEEPVARIANT_EXTRA_ARGS", "")
         cmd = build_run_deepvariant_cmd(
             ref,
             bam,
@@ -627,20 +667,15 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             intermediate,
             sample_id,
             shards,
-            model_type=os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS"),
-            extra_args=os.environ.get("DEEPVARIANT_EXTRA_ARGS", ""),
+            model_type=model_type,
+            extra_args=extra_args,
             pangenome=graph,
         )
         prefix = checkpoint_prefix(sample_id, pangenome)
-        model_type = os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS")
-        extra_args = os.environ.get("DEEPVARIANT_EXTRA_ARGS", "")
-        cache = {}
-
-        def fingerprint():
-            if "fp" not in cache:
-                cache["fp"] = run_fingerprint(cmd[0], bam, ref, graph, shards, model_type, extra_args)
-            return cache["fp"]
-
+        # Before the run: a timed-out run must not spend its last minutes asking the wrapper for its version.
+        fingerprint = (
+            run_fingerprint(cmd[0], bam, ref, graph, shards, model_type, extra_args) if checkpoints_enabled() else None
+        )
         resumed = load_checkpoint(prefix, wd, intermediate, fingerprint) if checkpoints_enabled() else None
         try:
             code, events, end_time = run_steps(resumed, limits) if resumed else run_streaming(cmd, limits=limits)
@@ -677,7 +712,7 @@ def _call_variants(sample_id, reference_name, pangenome=None):
         upload_output(vcf, keys["vcf"])
         print(f"Uploaded {storage().describe(keys['vcf'])}")
         if resumed:
-            mark_consumed(prefix, wd)
+            retire(prefix, "used")
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 

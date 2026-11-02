@@ -678,3 +678,94 @@ def test_a_failed_replay_keeps_the_checkpoint_for_another_try(dv_inputs, local_e
     with pytest.raises(RuntimeError, match="resumed steps exited with code 1"):
         dv.deepvariant_task("S1", "ref.fa")
     assert not manifest(local_env)["consumed"]
+
+
+def test_step_commands_skip_a_stray_line_after_the_banner():
+    events = [
+        (0.0, dv.BANNER),
+        (0.0, ""),
+        (0.0, "I1102 late log"),
+        (0.0, "time /opt/deepvariant/bin/call_variants --x"),
+    ]
+    assert dv.step_commands(events) == [("call_variants", "/opt/deepvariant/bin/call_variants --x")]
+
+
+def test_file_identity_tells_same_size_files_apart(tmp_path):
+    a, b = tmp_path / "a.cram", tmp_path / "b.cram"
+    a.write_bytes(b"x" * 100)
+    b.write_bytes(b"y" * 100)
+    ia, ib = dv.file_identity(str(a)), dv.file_identity(str(b))
+    assert ia[1] == ib[1] == 100 and ia[2] != ib[2]
+    assert dv.file_identity(str(tmp_path / "missing")) is None
+
+
+def test_checkpoint_keeps_every_make_examples_file_but_not_call_variants_output(
+    dv_inputs, local_env, versioned, monkeypatch
+):
+    wrapper = failing_wrapper()
+
+    def run(cmd, **kw):
+        inter = option(cmd, "intermediate_results_dir")
+        for name in ("gvcf.tfrecord-00000-of-00002.gz", "call_variants_output.tfrecord.gz"):
+            with open(f"{inter}/{name}", "wb") as fh:
+                fh.write(b"x")
+        return wrapper(cmd, **kw)
+
+    monkeypatch.setattr(dv, "run_streaming", run)
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    files = manifest(local_env)["files"]
+    assert "gvcf.tfrecord-00000-of-00002.gz" in files  # postprocess reads it with --output_gvcf
+    assert not any(f.startswith("call_variants_output") for f in files)
+
+
+def test_a_broken_checkpoint_falls_back_to_a_full_run_and_is_retired(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    ckpt = local_env / "intermediate" / "deepvariant-checkpoints" / "S1" / "deepvariant"
+    (ckpt / manifest(local_env)["files"][0]).unlink()  # e.g. expired by the lifecycle rule
+    full = []
+    monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: full.append(cmd) or fake_run(b"x")(cmd))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert full[0][0] == dv.RUN_DEEPVARIANT
+    retired = manifest(local_env)
+    assert retired["consumed"] and retired["retired"].startswith("unusable")
+
+
+def test_a_new_checkpoint_retires_the_old_manifest_before_writing_files(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    order = []
+    real_write, real_upload = dv.write_manifest, dv.storage().upload
+    monkeypatch.setattr(
+        dv, "write_manifest", lambda prefix, m: order.append(m.get("retired", "new")) or real_write(prefix, m)
+    )
+    monkeypatch.setattr(dv.storage(), "upload", lambda local, key: order.append("file") or real_upload(local, key))
+    monkeypatch.setenv("DEEPVARIANT_EXTRA_ARGS", "--other")  # other settings: a full run that fails again
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert order[0] == "being replaced" and order[-1] == "new" and "file" in order[1:-1]
+    assert manifest(local_env)["fingerprint"]["extra_args"] == "--other"
+
+
+def test_replayed_steps_share_one_overall_time_budget(monkeypatch):
+    import time as _time
+
+    seen = []
+
+    def run(cmd, limits=None, **_):
+        seen.append(limits.timeout)
+        _time.sleep(1.2)
+        return 0, [], 0.0
+
+    monkeypatch.setattr(dv, "run_streaming", run)
+    steps = [("call_variants", "cv"), ("postprocess_variants", "pp")]
+    with pytest.raises(dv.WrapperStopped, match="resumed steps did not finish within 1 s"):
+        dv.run_steps(steps, dv.WrapperLimits(timeout=1))
+    assert len(seen) == 1 and seen[0] <= 1  # the second step got no fresh budget
+    seen.clear()
+    code, events, _ = dv.run_steps(steps, dv.WrapperLimits(timeout=10))
+    assert code == 0 and seen[0] <= 10 and seen[1] < seen[0] - 1  # each step gets what is left
+    assert [n for n, _ in dv.step_commands(events)] == []  # 'cv'/'pp' are not step binaries: nothing parsed
