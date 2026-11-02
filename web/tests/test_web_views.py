@@ -4,7 +4,9 @@ from .web_helpers import fastq_gz, metric, put, vcf_gz, write_metrics
 from samples.runs import write_run
 
 FINISHED = ["qc_reports/S1_fastqc.html", "qc_reports/S1_fastqc.zip",
-            "alignments/S1.cram", "alignments/S1.cram.crai", "variants/S1.vcf.gz.tbi"]
+            "alignments/S1.cram", "alignments/S1.cram.crai", "variants/S1.vcf.gz.tbi",
+            "stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt", "stats/S1/mosdepth.global.dist.txt",
+            "stats/S1/bcftools.stats.txt"]
 
 
 def finished_sample(storage, truth=True):
@@ -51,7 +53,8 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert body.count('class="planted"') == 2
     assert "Variants" in body and "3 calls" in body
     assert 'src="/samples/S1/files/qc_html/?inline=1"' in body
-    for kind in ("raw", "qc_html", "qc_zip", "cram", "crai", "vcf", "tbi", "truth"):
+    for kind in ("raw", "qc_html", "qc_zip", "cram", "crai", "vcf", "tbi", "truth",
+                 "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats"):
         assert f"/samples/S1/files/{kind}/" in body
     assert "/samples/S1/files/bam/" not in body  # only offered when a BAM exists (older runs)
     assert "/samples/S1/files/log/" not in body  # no run log for this sample

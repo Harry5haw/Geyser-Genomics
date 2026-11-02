@@ -33,6 +33,10 @@ FILE_KINDS = {
     "bam": ("Alignments (BAM)", "From a run before CRAM, or imported benchmark data"),
     "vcf": ("Variants", "Gzipped VCF"),
     "tbi": ("Variant index", "Tabix index (.tbi) of the VCF"),
+    "flagstat": ("Alignment stats", "samtools flagstat: reads, mapped, duplicates, properly paired"),
+    "mosdepth_summary": ("Coverage summary", "mosdepth: mean, min and max depth per contig (duplicates excluded)"),
+    "mosdepth_dist": ("Coverage distribution", "mosdepth: fraction of bases covered at each depth or more"),
+    "bcftools_stats": ("Variant stats", "bcftools stats: SNP and indel counts, Ti/Tv, quality distributions"),
     "truth": ("Planted SNPs", "Truth file for demo samples (JSON)"),
     "log": ("Run log", "Output of the local pipeline run"),
 }
