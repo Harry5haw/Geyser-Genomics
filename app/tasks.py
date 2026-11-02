@@ -8,7 +8,7 @@ Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> decompressed/{id}.fastq
         -> qc_reports/{id}_fastqc.{html,zip}
         -> alignments/{id}.bam (sorted, duplicates marked) -> variants/{id}.vcf.gz
-    reference/{reference_name} (+ optional .fai / bwa indexes)
+    reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
 Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
 every per-read key before alignment comes in an _R1/_R2 pair (see keys_for). Each stage detects
@@ -35,7 +35,16 @@ from metrics import metrics_from_env
 from storage import ForwardOnlyStream, ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
-BWA_INDEX_EXTS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+# Aligners the align stage can run, chosen by the ALIGNER env var. bwa-mem2 is the default: the
+# same algorithm and alignments as bwa mem, about 2x faster on AVX2/AVX-512 CPUs. bwa stays for
+# comparisons (the pangenome benchmark, #51). Each needs its own index next to the FASTA, built
+# by `<aligner> index` and stored under reference/ with these extensions (.amb/.ann/.pac are
+# shared; bwa-mem2's .0123 and .bwt.2bit.64 replace bwa's .bwt and .sa).
+ALIGNER_INDEX_EXTS = {
+    "bwa-mem2": [".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"],
+    "bwa": [".amb", ".ann", ".bwt", ".pac", ".sa"],
+}
+DEFAULT_ALIGNER = "bwa-mem2"
 # samtools sort RAM budget in the align stage (see align_command).
 SORT_MAX_THREADS = 4
 SORT_MEMORY_PER_THREAD = "512M"
@@ -169,13 +178,30 @@ def timed_stage(task_name):
     return decorator
 
 
-def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True) -> str:
+def aligner_from_env() -> str:
+    """The aligner named by ALIGNER (default bwa-mem2). Unknown names fail before any download."""
+    name = os.environ.get("ALIGNER", "").strip() or DEFAULT_ALIGNER
+    if name not in ALIGNER_INDEX_EXTS:
+        raise ValueError(f"ALIGNER={name!r} is not one of {sorted(ALIGNER_INDEX_EXTS)}")
+    return name
+
+
+def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True,
+                           aligner: str = None) -> str:
     """Fetch reference/<name> and any stored indexes; build missing indexes. Returns the local FASTA path.
 
-    Variant calling only needs the .fai; skipping the BWA index there saves minutes on a full chromosome.
+    need_bwa_index: also fetch (or build) the aligner's index; aligner defaults to aligner_from_env().
+    Variant calling only needs the .fai; skipping the aligner index there saves minutes on a full
+    chromosome. A stored index is only used if every file of it is there; otherwise it is rebuilt
+    in the job (bwa-mem2 index takes ~28 bytes of RAM per reference base: fine for one chromosome,
+    ~90 GB for a whole genome, so build that once elsewhere and upload it under reference/).
     """
     fasta_key = f"{REFERENCE_PREFIX}{reference_name}"
     local_ref = os.path.join(dest_dir, reference_name)
+    index_exts = []
+    if need_bwa_index:
+        aligner = aligner or aligner_from_env()
+        index_exts = ALIGNER_INDEX_EXTS[aligner]
 
     try:
         print(f"Fetching reference {storage().describe(fasta_key)}")
@@ -183,15 +209,15 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     except ObjectNotFound as err:
         raise FileNotFoundError(f"Reference FASTA missing: {storage().describe(fasta_key)}") from err
 
-    for ext in [".fai"] + (BWA_INDEX_EXTS if need_bwa_index else []):
+    for ext in [".fai"] + index_exts:
         try:
             storage().download(fasta_key + ext, local_ref + ext)
         except ObjectNotFound:
             pass  # built below
 
-    if need_bwa_index and any(not os.path.exists(local_ref + ext) for ext in BWA_INDEX_EXTS):
-        print("BWA index missing; running bwa index")
-        subprocess.run(["bwa", "index", local_ref], check=True)
+    if any(not os.path.exists(local_ref + ext) for ext in index_exts):
+        print(f"{aligner} index missing; running {aligner} index")
+        subprocess.run([aligner, "index", local_ref], check=True)
     if not os.path.exists(local_ref + ".fai"):
         print("FASTA index missing; running samtools faidx")
         subprocess.run(["samtools", "faidx", local_ref], check=True)
@@ -239,10 +265,13 @@ def qc_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
-def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str) -> str:
+def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str,
+                  aligner: str = DEFAULT_ALIGNER) -> str:
     """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates.
 
-    fastqs is [reads] for single-end or [R1, R2] for paired-end.
+    fastqs is [reads] for single-end or [R1, R2] for paired-end. aligner is "bwa-mem2" (default)
+    or "bwa": both take the same `mem` arguments and write the same records, so everything below
+    applies to either.
 
     Paired-end: bwa mem gets both files and writes each pair's records together (name-grouped),
     which is what `samtools fixmate -m` needs. fixmate adds the mate tags (MC, ms) that markdup
@@ -268,12 +297,14 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
     which fits the 4 GB Fargate job and a shared local Docker VM.
     """
     fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    if aligner not in ALIGNER_INDEX_EXTS:
+        raise ValueError(f"Unknown aligner {aligner!r}; expected one of {sorted(ALIGNER_INDEX_EXTS)}")
     if len(fastqs) not in (1, 2):
         raise ValueError(f"align_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))
     tmp = os.path.join(tmp_dir, "tmp")
     read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
-    stages = [f"bwa mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+    stages = [f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
               + " ".join(shlex.quote(f) for f in fastqs)]
     if len(fastqs) == 2:
         stages.append("samtools fixmate -m -u - -")
@@ -284,7 +315,9 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa mem -> coordinate-sorted, duplicate-marked BAM, single- or paired-end (see align_command)."""
+    """bwa-mem2 (or ALIGNER=bwa) -> coordinate-sorted, duplicate-marked BAM, single- or paired-end."""
+    aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
+    print(f"Aligner: {aligner}", flush=True)
     keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
     wd = work_dir(sample_id)
     try:
@@ -293,8 +326,8 @@ def align_task(sample_id, reference_name):
             fastqs.append(os.path.join(wd, os.path.basename(key)))
             storage().download(key, fastqs[-1])
         bam = os.path.join(wd, f"{sample_id}.bam")
-        ref = ensure_reference_local(reference_name, wd)
-        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id))
+        ref = ensure_reference_local(reference_name, wd, aligner=aligner)
+        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id, aligner))
         storage().upload(bam, keys["bam"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
