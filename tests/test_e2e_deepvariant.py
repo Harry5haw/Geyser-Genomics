@@ -89,6 +89,8 @@ def test_a_deepvariant_only_run_is_complete(tmp_path):
     verdict = json.loads((root / "qc_reports" / "SYNTH001.gate.json").read_text())
     run_status = next(c for c in verdict["checks"] if c["name"] == "run_status")
     assert run_status["status"] == "pass", run_status
+    # DeepVariant's PASS calls are the 10 planted SNPs: the synthetic thresholds pass the whole run.
+    assert verdict["verdict"] == "pass", verdict["reasons"]
 
 
 def test_image_bcftools_counts_pass_calls_only(tmp_path):

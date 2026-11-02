@@ -335,7 +335,7 @@ def test_an_earlier_runs_call_variants_does_not_complete_a_failed_deepvariant_ru
     write_part(store, "CallVariants", run_name="R0", finished="2026-11-01T09:00:00Z")
     dv_only_run(store, dv_status="Failure", run="R1")
     record = provenance.build(store, "S1")
-    assert record["stages"]["CallVariants"]["run_name"] == "R0"  # inherited (UPSTREAM), shown as before
+    assert "CallVariants" not in record["stages"], "a run with its own caller inherits no CallVariants"
     assert (record["status"], record["complete"]) == ("failed", False)
 
 
@@ -371,3 +371,31 @@ def test_begin_records_the_runs_caller(store, monkeypatch):
     monkeypatch.delenv("PIPELINE_CALLER")
     provenance.begin("CallVariants", "S1")
     assert provenance._current["caller"] is None
+
+
+def test_without_run_names_the_latest_variant_attempt_decides(store):
+    # Manual runs set no RUN_NAME: every part counts as one run. An old successful bcftools call must not
+    # rescue a later failed DeepVariant-only run...
+    write_part(store, "QualityControl", finished="2026-11-02T09:00:00Z")
+    write_part(store, "Align", finished="2026-11-02T09:01:00Z")
+    write_part(store, "CallVariants", finished="2026-11-02T09:02:00Z")
+    write_part(store, "DeepVariant", status="Failure", finished="2026-11-02T10:00:00Z", caller="deepvariant")
+    assert provenance.build(store, "S1")["status"] == "failed"
+    # ...and an old successful DeepVariant-only run must not rescue a later failed bcftools call.
+    write_part(store, "DeepVariant", finished="2026-11-02T10:00:00Z", caller="deepvariant")
+    write_part(store, "CallVariants", status="Failure", finished="2026-11-02T11:00:00Z")
+    assert provenance.build(store, "S1")["status"] == "failed"
+
+
+def test_a_gate_rerun_keeps_a_deepvariant_only_runs_caller(store):
+    dv_only_run(store, run="R1")
+    write_part(store, "QualityGate", run_name="R2", finished="2026-11-02T12:00:00Z")
+    record = provenance.build(store, "S1")
+    assert (record["status"], record["caller"]) == ("succeeded", "deepvariant")
+    assert record["stages"]["DeepVariant"]["run_name"] == "R1"
+
+
+def test_the_record_names_only_a_known_caller(store):
+    dv_only_run(store, caller="bcftools")  # not a caller with a stage of its own: the bcftools rule
+    record = provenance.build(store, "S1")
+    assert "caller" not in record and record["status"] == "incomplete"
