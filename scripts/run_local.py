@@ -213,7 +213,9 @@ def pipeline_jobs(
                 "env": caller_env if sets == ["pangenome"] else {},
             }
         )
-    if gate and "bcftools" in sets:
+    # The gate judges the sample's stats: bcftools', or a DeepVariant-only run's (#147), as in the cloud. Not
+    # an add-on caller (--skip-to-variants without bcftools): the stats it would judge are an earlier run's.
+    if gate and ("bcftools" in sets or not skip_to_variants):
         # Last, so a failed gate (GATE_MODE=fail) can't keep DeepVariant or --check from running.
         job = {
             "name": "gate",
