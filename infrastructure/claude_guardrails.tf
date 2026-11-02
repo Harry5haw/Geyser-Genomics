@@ -212,8 +212,9 @@ resource "aws_iam_role_policy" "budget_action" {
 # Account-wide (no cost filters), so it also counts the idle teraflow stack and S3 storage:
 # conservative on purpose. CUSTOM period (provider 6.x, #76): counts only spend from the start date,
 # never resets. ANNUALLY (the first version) counted the whole calendar year, incl. Jan-Apr 2026's $352,
-# and fired the kill switch on creation. A CUSTOM COST period may be at most 38 months (AWS rejects longer),
-# and AWS deletes a budget after its end date: renew this before 31 Dec 2029.
+# and fired the kill switch on creation. AWS limits CUSTOM COST periods: at most 38 months, and over ~14 months
+# only with Cost Explorer multi-year data enabled; 12 months needs neither. AWS deletes a budget after its end
+# date: renew this before 1 Nov 2027.
 resource "aws_budgets_budget" "claude_project_cap" {
   name              = local.claude_project_cap_name
   budget_type       = "COST"
@@ -221,7 +222,7 @@ resource "aws_budgets_budget" "claude_project_cap" {
   limit_unit        = "USD"
   time_unit         = "CUSTOM"
   time_period_start = var.claude_project_cap_start
-  time_period_end   = "2029-12-31_00:00"
+  time_period_end   = "2027-11-01_00:00"
 
   notification {
     comparison_operator        = "GREATER_THAN"
