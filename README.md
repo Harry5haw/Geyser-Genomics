@@ -250,18 +250,12 @@ flowchart TB
     end
 
     SFN ==>|"submitJob.sync, one job per stage<br/>Batch API errors retried"| BATCH["🐳 AWS Batch on Fargate<br/>one geyser-app image · max 8 vCPUs<br/>infrastructure failures retried"]
-    ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
-    BATCH <-->|"inputs, outputs, stats,<br/>run record"| S3
     SFN -.->|"any failure"| SNS["📣 SNS: Notify_Failure<br/>then the run ends Failed"]
+    ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
+    BATCH -->|"outputs, stats,<br/>run record"| OUT[("🪣 S3: qc_reports/, alignments/,<br/>variants/, stats/, runs/")]
     BATCH -.->|"Duration, FailureCount<br/>logs kept 30 days"| CW["📈 CloudWatch"]
     CW -.-> DASH["Dashboard + alarm<br/>scripted, not deployed"]
-    BUD["🛡️ Budgets: $10/month alert<br/>$20 project cap → automatic deny-all"] -.- BATCH
-
-    subgraph GHA ["🔧 GitHub Actions: no AWS credentials for tests"]
-        direction LR
-        PUSH["push / pull request"] --> TESTS["✅ lint · unit · Docker E2E<br/>Step Functions Local · DeepVariant CPU"]
-        MAN["manual run"] -.-> PLAN["📝 terraform plan<br/>OIDC · read-only role"]
-    end
+    BUD["🛡️ Budgets: $10/month alert<br/>$20 project cap → automatic deny-all"]
 
     classDef user fill:#2E7D32,stroke:#1B5E20,color:#fff
     classDef store fill:#6A1B9A,stroke:#4A148C,color:#fff
@@ -269,9 +263,9 @@ flowchart TB
     classDef obs fill:#1565C0,stroke:#0D47A1,color:#fff
     classDef pending fill:#9E9E9E,stroke:#616161,color:#fff,stroke-dasharray: 4 3
     class U user
-    class S3,ECR store
+    class S3,ECR,OUT store
     class L,SF1,SF2,SF3,BATCH,SNS aws
-    class CW,TESTS,PLAN,BUD obs
+    class CW,BUD obs
     class DASH pending
 ```
 
