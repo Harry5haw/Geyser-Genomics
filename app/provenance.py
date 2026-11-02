@@ -192,13 +192,16 @@ def _read_json(storage, key):
         return None
 
 
-def finish(storage, status: str, duration: float, error: str = None) -> None:
-    """Close the current part: write it, then re-assemble the record. Never raises."""
+def finish(storage, status: str, duration: float, error: str = None, usage: dict = None) -> None:
+    """Close the current part: write it, then re-assemble the record. Never raises.
+
+    usage: the stage's resource use (metrics.usage_since), stored as the part's "resources".
+    """
     global _current
     part, _current = _current, None
     if part is None:
         return
-    part.update(status=status, finished=_now(), duration_seconds=round(duration, 2), error=error)
+    part.update(status=status, finished=_now(), duration_seconds=round(duration, 2), error=error, resources=usage)
     try:
         _put_json(storage, f"{part_prefix(part['sample_id'])}{part['task']}.json", part)
         assemble(storage, part["sample_id"])
@@ -223,7 +226,9 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     upstream = {u for task in in_run for u in UPSTREAM.get(task, ())} - in_run
     run += [p for p in parts if p["task"] in upstream]
     stages = {
-        p["task"]: {k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error", "run_name")}
+        p["task"]: {
+            k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error", "run_name", "resources")
+        }
         for p in run
     }
     complete = all(stages.get(t, {}).get("status") == "Success" for t in CORE_STAGES)

@@ -16,6 +16,11 @@ Cost is an estimate: run seconds x (vCPU x vCPU-hour price + GB x GB-hour price)
 little higher. GPU jobs run on EC2, priced per instance, so their cost is left blank.
 Prices are arguments; the defaults are Fargate Linux/x86 on-demand list prices for eu-west-2, to be
 checked against https://aws.amazon.com/fargate/pricing/ .
+
+Resource use (#59) comes from the job itself: every stage logs one ``stage-usage: {json}`` line
+(app/metrics.py) with its CPU seconds and peak memory, read here from the job's own log stream. Against
+the job's vCPU and memory that gives how much of what was paid for was used (cpu_use, memory_use), the
+input for right-sizing ``stage_resources``. Jobs from before the line existed show none.
 """
 
 import json
@@ -27,6 +32,10 @@ DEFAULT_GB_HOUR_USD = 0.00511
 DEFAULT_STORAGE_GB_HOUR_USD = 0.000111
 FARGATE_FREE_STORAGE_GB = 20
 FARGATE_MINIMUM_SECONDS = 60
+USAGE_LOG_PREFIX = "stage-usage: "  # app/metrics.py USAGE_LOG_PREFIX
+DEFAULT_JOB_LOG_GROUP = "/aws/batch/job"  # Batch's group when a job definition names none
+USAGE_FIELDS = ("cpu_seconds", "peak_memory_mib", "container_peak_memory_mib")
+MAX_LOG_PAGES = 20
 BATCH_TASK_EVENTS = {
     "TaskSubmitted": ("taskSubmittedEventDetails", "output"),
     "TaskSucceeded": ("taskSucceededEventDetails", "output"),
@@ -174,6 +183,57 @@ def failure_reason(job: dict):
     return reason
 
 
+def job_log_group(job: dict) -> str:
+    container = _get(job, "Container", {})
+    options = _get(_get(container, "LogConfiguration", {}), "Options", {}) or {}
+    return _get(options, "awslogs-group") or DEFAULT_JOB_LOG_GROUP
+
+
+def parse_usage_line(message: str):
+    """The usage dict from one ``stage-usage:`` log line, or None."""
+    at = str(message).find(USAGE_LOG_PREFIX)
+    if at < 0:
+        return None
+    value = _json(str(message)[at + len(USAGE_LOG_PREFIX) :].strip())
+    return {k: value[k] for k in USAGE_FIELDS if isinstance(value.get(k), (int, float))} or None
+
+
+def stage_usage(logs_client, job: dict):
+    """The job's logged resource use (its last usage line), or None: no client, no stream, no line."""
+    stream = _get(_get(job, "Container", {}), "LogStreamName")
+    if logs_client is None or not stream:
+        return None
+    kwargs = {"logGroupName": job_log_group(job), "logStreamNames": [stream], "filterPattern": '"stage-usage"'}
+    found = None
+    try:
+        for _ in range(MAX_LOG_PAGES):
+            page = logs_client.filter_log_events(**kwargs)
+            for event in page.get("events", []):
+                found = parse_usage_line(event.get("message", "")) or found
+            if not page.get("nextToken"):
+                break
+            kwargs["nextToken"] = page["nextToken"]
+    except Exception:  # noqa: BLE001 - logs expired (30 days) or no access: no usage, the rest still shows
+        return found
+    return found
+
+
+def _share(used, available):
+    return None if used is None or not available else round(used / available, 3)
+
+
+def add_usage(row: dict, usage) -> dict:
+    """row plus the usage fields and cpu_use/memory_use: the share of the job's vCPU-time and memory used."""
+    usage = usage or {}
+    for key in USAGE_FIELDS:
+        row[key] = usage.get(key)
+    run, vcpu, memory_gb = row.get("run_seconds"), row.get("vcpu"), row.get("memory_gb")
+    row["cpu_use"] = _share(row["cpu_seconds"], run * vcpu if run and vcpu else None)
+    peak = row["container_peak_memory_mib"] or row["peak_memory_mib"]
+    row["memory_use"] = _share(peak, memory_gb * 1024 if memory_gb else None)
+    return row
+
+
 def stage_row(stage: str, job: dict, prices: Prices = DEFAULT_PRICES) -> dict:
     created, started, stopped = (_get(job, k) for k in ("CreatedAt", "StartedAt", "StoppedAt"))
     vcpu, memory_gb, gpus = resources(job)
@@ -195,7 +255,10 @@ def stage_row(stage: str, job: dict, prices: Prices = DEFAULT_PRICES) -> dict:
     }
 
 
-def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = DEFAULT_PRICES) -> list:
+def execution_stages(
+    sfn_client, batch_client, execution_arn, prices: Prices = DEFAULT_PRICES, logs_client=None
+) -> list:
+    """One row per Batch task. With logs_client, rows also carry the job's logged resource use."""
     tasks = batch_tasks(sfn_client, execution_arn)
     live = {}
     if batch_client is not None:
@@ -203,7 +266,11 @@ def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = D
             live = describe_jobs(batch_client, [t["job_id"] for t in tasks])
         except Exception:  # noqa: BLE001 - fall back to the copies in the history
             live = {}
-    return [stage_row(t["stage"], live.get(t["job_id"]) or t["job"] or {"JobId": t["job_id"]}, prices) for t in tasks]
+    rows = []
+    for t in tasks:
+        job = live.get(t["job_id"]) or t["job"] or {"JobId": t["job_id"]}
+        rows.append(add_usage(stage_row(t["stage"], job, prices), stage_usage(logs_client, job)))
+    return rows
 
 
 def totals(rows: list) -> dict:
