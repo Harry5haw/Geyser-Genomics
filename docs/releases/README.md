@@ -10,6 +10,7 @@ maintainer's decision. Each page ends with what is still open before it can be t
 | [v0.35](v0.35.md) | Refactor Legacy Code | Code side done (#49); waits for the legacy AWS stack teardown (#46) |
 | [v0.4](v0.4.md) | Google DeepVariant Integration | Local GPU and pangenome-aware calling done and benchmarked; cloud DeepVariant drafted (#125), not applied |
 | [v1.0](v1.0.md) | Public Release | Pipeline and infrastructure done and cloud-verified; the public-release checklist (#47) is the remaining work |
+| [v2.0 "XLR8"](v2.0.md) | Architecture | The speed release: three stages, bwa-mem2, slim image, Spot, sharded calling, quality gate. In progress: cloud DeepVariant (#125), the gate in the pipeline (#148). Overlaps v1.0's milestone: see its page |
 
 The [changelog](../../changelog.md) lists the same changes by date. These pages group them by version.
 Some early pull requests have no milestone; they are listed under the version their content belongs
