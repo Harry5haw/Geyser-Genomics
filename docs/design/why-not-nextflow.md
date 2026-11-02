@@ -24,15 +24,15 @@ meant to make that trade visible, not to argue that the choice was free.
 | Executors (`local`, `awsbatch`, `k8s`, `slurm`, ...) and profiles | Same pipeline on a laptop, a cluster or a cloud | `STORAGE_BACKEND=s3\|local` and `METRICS_BACKEND` in `app/storage.py` / `app/metrics.py`, plus `scripts/run_local.py`, which plays the part of Step Functions and Batch offline |
 | `publishDir` | Copies final outputs to a results location | Each stage uploads its own outputs to S3 under the conventional keys |
 | `-resume` | Skips tasks whose inputs, script and container are unchanged (content-hashed cache) | None. A failed run starts again from the first stage. Step Functions *redrive* can restart a failed execution from the failed state, but it is not a cache: it doesn't notice changed inputs or code. `run_local.py --skip-to-variants` is a manual shortcut |
-| `errorStrategy`, `maxRetries`, `memory { 4.GB * task.attempt }` | Retry with more resources | None yet: every stage catches `States.ALL` and fails the run. Per-stage retries and sizing are planned work in the state machine |
+| `errorStrategy`, `maxRetries`, `memory { 4.GB * task.attempt }` | Retry with more resources | Retries, but not with more resources: the Batch job definition retries infrastructure failures only (3 attempts), the state machine retries Batch API errors with back-off, and every stage has a fixed size set in Terraform (`stage_resources`). An application failure fails the run at once. Nothing grows memory per attempt |
 | `-with-trace`, `-with-report`, `-with-timeline` | Per-task duration, CPU, peak memory, I/O, exit status | The `@timed_stage` decorator (CloudWatch `Duration` / `FailureCount`), `scripts/query_pipeline_duration.py --stages` (queue wait, run time, cost, attempts, failure reason) and the dashboard scripts |
-| Scatter/gather over intervals | Split calling by region, merge the results | Not built. Planned as a Step Functions `Map` state over regions |
+| Scatter/gather over intervals | Split calling by region, merge the results | The stages exist (`tasks.py`: split calling by region, then merge); the Step Functions `Map` state that fans them out is the infra half, in progress |
 | nf-core modules and pipelines (e.g. nf-core/sarek) | Reviewed, versioned wrappers for hundreds of tools; complete germline pipelines including BWA-MEM2, duplicate marking, DeepVariant and HaplotypeCaller | Hand-written tool commands in `tasks.py` and `app-deepvariant/` |
 
 ## What Nextflow would have replaced
 
 The state machine definition, the S3 key conventions and the code that keeps them in agreement, most of the
-storage backend, `run_local.py`'s orchestration, the timing metrics, and the planned retry, resume and
+storage backend, `run_local.py`'s orchestration, the timing metrics, the retry policy, and the resume and
 scatter/gather work. In this repository that is roughly `infrastructure/step_functions.tf` (115 lines), the
 key-convention and layout code in `app/tasks.py`, most of `app/storage.py`, the orchestration half of
 `scripts/run_local.py` (337 lines in all), and the standing rule that a renamed stage or S3 prefix must be
