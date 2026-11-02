@@ -3,6 +3,7 @@
 The tools themselves (bwa, samtools, bcftools, fastqc) are faked, so these run anywhere.
 The Docker end-to-end test covers the real tools.
 """
+import gzip
 import os
 import shlex
 import subprocess
@@ -34,10 +35,11 @@ def tool_calls(monkeypatch):
         elif tool == "samtools" and cmd[1] == "faidx":
             open(cmd[2] + ".fai", "wb").close()
         elif tool == "fastqc":
-            # Inputs are the .fastq arguments, wherever they sit among the flags (-t, -o ...).
+            # Inputs are the gzipped FASTQ arguments, wherever they sit among the flags (-t, -o ...).
+            # Like FastQC, name the report after the file with .fastq.gz stripped.
             out_dir = cmd[cmd.index("-o") + 1]
-            for fastq in (arg for arg in cmd if arg.endswith(".fastq")):
-                stem = os.path.basename(fastq).rsplit(".", 1)[0]
+            for fastq in (arg for arg in cmd if arg.endswith(".fastq.gz")):
+                stem = os.path.basename(fastq)[:-len(".fastq.gz")]
                 for ext in ("html", "zip"):
                     with open(os.path.join(out_dir, f"{stem}_fastqc.{ext}"), "w") as fh:
                         fh.write(ext)
@@ -127,7 +129,7 @@ def test_missing_reference_fasta_is_a_clear_error(local_env, tool_calls, tmp_pat
 # --- stages -------------------------------------------------------------------
 
 def test_qc_uploads_both_reports_and_cleans_up(local_env, tool_calls):
-    put(local_env, "decompressed/S1.fastq", b"@r\nA\n+\nI\n")
+    put(local_env, "raw_reads/S1.fastq.gz", gzip.compress(b"@r\nA\n+\nI\n"))
 
     tasks.qc_task("S1")
 
@@ -138,7 +140,7 @@ def test_qc_uploads_both_reports_and_cleans_up(local_env, tool_calls):
 
 
 def test_qc_timeout_comes_from_environment(local_env, monkeypatch):
-    put(local_env, "decompressed/S1.fastq")
+    put(local_env, "raw_reads/S1.fastq.gz")
     seen = {}
 
     def fake_run(cmd, check=False, timeout=None, **kwargs):
@@ -155,12 +157,13 @@ def test_qc_timeout_comes_from_environment(local_env, monkeypatch):
 
 
 def test_align_uploads_bam_under_the_stage_key(local_env, tool_calls, shell_commands):
-    put(local_env, "decompressed/S1.fastq")
+    put(local_env, "raw_reads/S1.fastq.gz")
     put(local_env, f"reference/{REF}", b">c\nACGT\n")
 
     tasks.align_task("S1", REF)
 
     assert len(shell_commands) == 1 and shell_commands[0].startswith("bwa mem")
+    assert "S1.fastq.gz" in shell_commands[0].split(" | ")[0]  # bwa reads the upload, still gzipped
     assert (local_env / "alignments" / "S1.bam").read_bytes().startswith(b"output of: bwa mem")
     assert work_dir_is_empty(local_env)
 
@@ -180,7 +183,7 @@ def test_variants_calls_bcftools_on_the_aligned_bam(local_env, tool_calls, shell
 
 
 def test_failed_tool_fails_the_stage_and_still_cleans_up(local_env, tool_calls, monkeypatch):
-    put(local_env, "decompressed/S1.fastq")
+    put(local_env, "raw_reads/S1.fastq.gz")
     put(local_env, f"reference/{REF}", b">c\nACGT\n")
 
     def failing(command):
@@ -218,7 +221,6 @@ def test_main_rejects_unknown_stage():
 def test_keys_follow_the_documented_layout():
     assert tasks.keys_for("S1") == {
         "raw": "raw_reads/S1.fastq.gz",
-        "fastq": "decompressed/S1.fastq",
         "qc_html": "qc_reports/S1_fastqc.html",
         "qc_zip": "qc_reports/S1_fastqc.zip",
         "bam": "alignments/S1.bam",

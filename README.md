@@ -73,9 +73,8 @@ In the cloud design, uploading a file to S3 starts the run. AWS Step Functions t
 
 ```mermaid
 flowchart LR
-    IN(["🧬 FASTQ.gz<br/>millions of raw reads"]) --> D["📦 Decompress"]
-    D --> Q["🔍 Quality control<br/>FastQC"]
-    Q --> A["🧭 Align to reference<br/>BWA-MEM + samtools sort + markdup"]
+    IN(["🧬 FASTQ.gz<br/>millions of raw reads"]) --> Q["🔍 Quality control<br/>FastQC"]
+    IN --> A["🧭 Align to reference<br/>BWA-MEM + samtools sort + markdup"]
     A --> V["🧪 Call variants<br/>bcftools"]
     V --> OUT(["📄 VCF.gz<br/>list of variants"])
     A -.->|"alternative caller"| DV["🧠 DeepVariant<br/>GPU"]
@@ -86,7 +85,7 @@ flowchart LR
     classDef stage fill:#E65100,stroke:#BF360C,color:#fff
     classDef alt fill:#2E7D32,stroke:#1B5E20,color:#fff
     class IN,OUT,OUT2,R io
-    class D,Q,A,V stage
+    class Q,A,V stage
     class DV alt
 ```
 
@@ -200,7 +199,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → BWA-MEM alignment (sorted, duplicate-marked BAM) → bcftools variant calling. |
+| **Bioinformatics Pipeline** | ✅ Verified locally | FastQC and BWA-MEM alignment (sorted, duplicate-marked BAM), both straight from the gzipped upload so they can run side by side, then bcftools variant calling. |
 | **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
 | **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
 | **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs the four stages in order on AWS Batch (Fargate), with failure notifications via SNS. |
@@ -287,7 +286,7 @@ docker build -f Dockerfile -t geyser-app .
 # 2. Create a synthetic genome and 30x reads with 10 known mutations planted in them
 python scripts/make_test_data.py
 
-# 3. Run all four stages in order, just as Step Functions would, then check the VCF against the truth
+# 3. Run all three stages (QC and alignment one after the other here), just as Step Functions would, then check the VCF against the truth
 python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --check
 
 # Paired-end instead: writes PAIRED001_R1.fastq.gz and PAIRED001_R2.fastq.gz
@@ -527,7 +526,6 @@ Once deployed, a run is started by uploading a file.
 
 | Stage | Output |
 | :--- | :--- |
-| Decompress | `decompressed/<id>.fastq` (paired-end: `<id>_R1.fastq` and `<id>_R2.fastq`) |
 | Quality control | `qc_reports/<id>_fastqc.html` and `.zip` (paired-end: one report per mate, `<id>_R1_fastqc.html` ...) |
 | Alignment | `alignments/<id>.bam`, one per sample (coordinate-sorted, duplicates marked with samtools markdup; paired-end runs `samtools fixmate -m` first) |
 | Variant calling | `variants/<id>.vcf.gz` |

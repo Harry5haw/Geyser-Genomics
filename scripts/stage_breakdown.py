@@ -73,12 +73,21 @@ def history_events(sfn_client, execution_arn):
 
 def batch_tasks(sfn_client, execution_arn) -> list:
     """[{"stage", "job_id", "job"}] for each Batch task state, in execution order.
-    "job" is the latest job description found in the history (may be empty)."""
-    tasks, by_state, state = [], {}, None
+    "job" is the latest job description found in the history (may be empty).
+
+    Each event is credited to the state its previousEventId chain leads back to, not just the last
+    state entered: inside a Parallel state, QC's and align's events interleave."""
+    tasks, by_state, last_state = [], {}, None
+    state_of = {}  # event id -> state name
     for event in history_events(sfn_client, execution_arn):
         kind = event.get("type")
         if kind == "TaskStateEntered":
-            state = event.get("stateEnteredEventDetails", {}).get("name")
+            state = last_state = event.get("stateEnteredEventDetails", {}).get("name")
+        else:
+            state = state_of.get(event.get("previousEventId"), last_state)
+        if event.get("id") is not None:
+            state_of[event["id"]] = state
+        if kind == "TaskStateEntered":
             continue
         if kind not in BATCH_TASK_EVENTS or state is None:
             continue

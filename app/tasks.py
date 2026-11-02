@@ -1,19 +1,23 @@
 # app/tasks.py
-"""Pipeline stages: decompress -> qc -> align -> variants.
+"""Pipeline stages: (qc and align, side by side) -> variants.
 
 Each stage is run as its own container job (AWS Batch in the cloud, `docker run`
 locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 
 Stages communicate only through storage keys:
-    raw_reads/{id}.fastq.gz -> decompressed/{id}.fastq
-        -> qc_reports/{id}_fastqc.{html,zip}
-        -> alignments/{id}.bam (sorted, duplicates marked) -> variants/{id}.vcf.gz
+    raw_reads/{id}.fastq.gz -> qc_reports/{id}_fastqc.{html,zip}     (qc)
+                            -> alignments/{id}.bam                    (align: sorted, duplicates marked)
+    alignments/{id}.bam     -> variants/{id}.vcf.gz                   (variants)
     reference/{reference_name} (+ optional .fai / bwa indexes)
 
+qc and align both read the gzipped upload directly (FastQC and bwa mem read gzip), so they don't
+depend on each other and can run in parallel (the three-stage state machine, #84). There is no
+decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
+
 Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
-every per-read key before alignment comes in an _R1/_R2 pair (see keys_for). Each stage detects
-the layout from which of its input keys exist (sample_layout), so the CLI and the Step Functions
-input are the same for both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
+the QC reports come in an _R1/_R2 pair too (see keys_for). qc and align detect the layout from
+which raw keys exist (sample_layout), so the CLI and the Step Functions input are the same for
+both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
 METRICS_BACKEND (see metrics.py). If you rename a stage or key, update the Step
@@ -21,7 +25,6 @@ Functions definition (infrastructure/step_functions.tf) and scripts/run_local.py
 """
 
 import argparse
-import gzip
 import os
 import shlex
 import shutil
@@ -32,7 +35,7 @@ import time
 from functools import wraps
 
 from metrics import metrics_from_env
-from storage import ForwardOnlyStream, ObjectNotFound, storage_from_env
+from storage import ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
 BWA_INDEX_EXTS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
@@ -62,7 +65,7 @@ def metrics():
 SINGLE, PAIRED = "single", "paired"
 MATES = ("R1", "R2")
 # Keys that exist once per read file: plain for single-end, <name>_R1/<name>_R2 for paired-end.
-PER_MATE_KEYS = ("raw", "fastq", "qc_html", "qc_zip")
+PER_MATE_KEYS = ("raw", "qc_html", "qc_zip")
 
 
 class LayoutError(ValueError):
@@ -72,8 +75,8 @@ class LayoutError(ValueError):
 def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     """Single source of truth for every storage key a sample touches.
 
-    Paired-end samples get raw_R1/raw_R2, fastq_R1/fastq_R2, ... instead of raw, fastq, ...
-    (FastQC names its reports after the input file, so {id}_R1.fastq -> {id}_R1_fastqc.html).
+    Paired-end samples get raw_R1/raw_R2, qc_html_R1/qc_html_R2, ... instead of raw, qc_html, ...
+    (FastQC names its reports after the input file, so {id}_R1.fastq.gz -> {id}_R1_fastqc.html).
     Use keys_of() to get a stage's keys without caring about the layout.
     """
     if layout not in (SINGLE, PAIRED):
@@ -83,7 +86,6 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     for mate, stem in stems.items():
         suffix = f"_{mate}" if mate else ""
         keys[f"raw{suffix}"] = f"raw_reads/{stem}.fastq.gz"
-        keys[f"fastq{suffix}"] = f"decompressed/{stem}.fastq"
         keys[f"qc_html{suffix}"] = f"qc_reports/{stem}_fastqc.html"
         keys[f"qc_zip{suffix}"] = f"qc_reports/{stem}_fastqc.zip"
     keys["bam"] = f"alignments/{sample_id}.bam"
@@ -103,35 +105,29 @@ def all_raw_keys(sample_id: str) -> list:
     return keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
 
 
-def layout_from_keys(sample_id: str, exists, name: str = "raw") -> str:
-    """'single' or 'paired', from which of a sample's `name` keys exist ('raw' or 'fastq'). exists(key) -> bool.
+def layout_from_raw(sample_id: str, exists) -> str:
+    """'single' or 'paired', from which raw reads exist. exists(key) -> bool.
 
-    Each stage asks about its own inputs (decompress: raw, qc/align: fastq), so it never depends
-    on an earlier stage's files still being there. Fails loudly rather than guessing: a lone mate
-    (its partner not uploaded yet) or a sample present both ways is an error, not a silent
+    What qc, align, the trigger and the web UI all go by. Fails loudly rather than guessing: a lone
+    mate (its partner not uploaded yet) or a sample present both ways is an error, not a silent
     single-end run.
     """
-    single = exists(keys_for(sample_id, SINGLE)[name])
-    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"{name}_{m}"])]
+    single = exists(keys_for(sample_id, SINGLE)["raw"])
+    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"raw_{m}"])]
     if single and mates:
-        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) {name} files")
+        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) raw files")
     if single:
         return SINGLE
     if len(mates) == len(MATES):
         return PAIRED
     if mates:
         missing = [m for m in MATES if m not in mates][0]
-        raise LayoutError(f"{sample_id}: {name} {mates[0]} exists but {missing} is missing")
-    raise LayoutError(f"{sample_id}: no {name} files ({keys_for(sample_id)[name]} or _R1/_R2)")
+        raise LayoutError(f"{sample_id}: raw {mates[0]} exists but {missing} is missing")
+    raise LayoutError(f"{sample_id}: no raw files ({keys_for(sample_id)['raw']} or _R1/_R2)")
 
 
-def layout_from_raw(sample_id: str, exists) -> str:
-    """The layout a sample was uploaded with (what the trigger and the web UI go by)."""
-    return layout_from_keys(sample_id, exists, "raw")
-
-
-def sample_layout(sample_id: str, name: str = "raw") -> str:
-    return layout_from_keys(sample_id, storage().exists, name)
+def sample_layout(sample_id: str) -> str:
+    return layout_from_raw(sample_id, storage().exists)
 
 
 def run_shell(command: str) -> None:
@@ -198,39 +194,40 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     return local_ref
 
 
-@timed_stage("Decompress")
 def decompress_task(sample_id):
-    """Stream-decompress each raw_reads/ file (one, or R1 and R2) to decompressed/ without staging on disk."""
-    keys = keys_for(sample_id, sample_layout(sample_id))
-    for raw, fastq in zip(keys_of(keys, "raw"), keys_of(keys, "fastq")):
-        print(f"Decompressing {storage().describe(raw)} -> {storage().describe(fastq)}")
-        source = storage().open_read(raw)
-        try:
-            with gzip.GzipFile(fileobj=source, mode="rb") as unzipped:
-                # GzipFile claims it can seek even over a forward-only S3 body; uploaders that
-                # believe it rewind the body and fail (#71). ForwardOnlyStream stops that.
-                storage().upload_stream(ForwardOnlyStream(unzipped), fastq)
-        finally:
-            source.close()
+    """No-op, kept so a new image still works under the old four-stage state machine.
+
+    qc and align now read raw_reads/ directly. Remove this (and its TASKS entry) once the
+    three-stage state machine is applied; it records no metric, so dashboards never show it.
+    """
+    print(f"'decompress' is no longer a stage: qc and align read raw_reads/ directly. "
+          f"Nothing to do for '{sample_id}'.", flush=True)
+
+
+def download_raw_reads(keys: dict, wd: str) -> list:
+    """Download the sample's gzipped read file(s) as-is into wd; returns the local paths (R1 first)."""
+    paths = []
+    for key in keys_of(keys, "raw"):
+        paths.append(os.path.join(wd, os.path.basename(key)))
+        storage().download(key, paths[-1])
+    return paths
 
 
 @timed_stage("QualityControl")
 def qc_task(sample_id):
-    """FastQC on each read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
-    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
+    """FastQC on each gzipped read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
+    keys = keys_for(sample_id, sample_layout(sample_id))
     wd = work_dir(sample_id)
     try:
         out_dir = os.path.join(wd, "qc")
         os.makedirs(out_dir)
-        fastqs = []
-        for key in keys_of(keys, "fastq"):
-            fastqs.append(os.path.join(wd, os.path.basename(key)))
-            storage().download(key, fastqs[-1])
-        # FastQC can hang (not exit) if its report thread crashes, so bound it. Matches the
-        # Step Functions timeout for this stage. One thread per file (-t) processes R1 and R2 at
+        fastqs = download_raw_reads(keys, wd)
+        # FastQC can hang (not exit) if its report thread crashes, so bound it. It now also
+        # decompresses the reads itself, so it gets the hour the decompress stage used to have
+        # (keep in step with the stage's Step Functions timeout). One thread per file (-t) processes R1 and R2 at
         # the same time, so a paired sample fits the same timeout as a single-end one
         # (FastQC reserves ~250 MB per thread; 2 fit the 4 GB job easily).
-        timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "1800"))
+        timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "3600"))
         subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
         for name in ("qc_html", "qc_zip"):
             for key in keys_of(keys, name):
@@ -284,14 +281,11 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa mem -> coordinate-sorted, duplicate-marked BAM, single- or paired-end (see align_command)."""
-    keys = keys_for(sample_id, sample_layout(sample_id, "fastq"))
+    """bwa mem on the gzipped reads -> coordinate-sorted, duplicate-marked BAM (see align_command)."""
+    keys = keys_for(sample_id, sample_layout(sample_id))
     wd = work_dir(sample_id)
     try:
-        fastqs = []
-        for key in keys_of(keys, "fastq"):
-            fastqs.append(os.path.join(wd, os.path.basename(key)))
-            storage().download(key, fastqs[-1])
+        fastqs = download_raw_reads(keys, wd)
         bam = os.path.join(wd, f"{sample_id}.bam")
         ref = ensure_reference_local(reference_name, wd)
         run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id))
@@ -319,7 +313,7 @@ def variants_task(sample_id, reference_name):
 
 
 TASKS = {
-    "decompress": (decompress_task, False),
+    "decompress": (decompress_task, False),  # no-op until the three-stage state machine is applied
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),

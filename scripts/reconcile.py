@@ -6,13 +6,13 @@ using the pipeline's own key conventions (tasks.keys_for) and the trigger's own 
 it cannot drift from them.
 
 Single-end samples are raw_reads/<id>.fastq.gz; paired-end samples are raw_reads/<id>_R1.fastq.gz plus
-raw_reads/<id>_R2.fastq.gz, and their per-read-file outputs (decompressed/, qc_reports/) come per mate.
+raw_reads/<id>_R2.fastq.gz, and their QC reports (qc_reports/) come per mate.
 
 Upload problems
   ignored        in raw_reads/ but not .gz: the S3 trigger never fires, so nothing happens at all
   refused        a mate not named exactly <id>_R1.fastq.gz / <id>_R2.fastq.gz (e.g. S1_R1.fq.gz): the
                  trigger raises an error (trigger Lambda Errors) and no run starts
-  will fail      .gz, so a run starts, but decompress reads raw_reads/<id>.fastq.gz (or <id>_R1/_R2) and
+  will fail      .gz, so a run starts, but the stages read raw_reads/<id>.fastq.gz (or <id>_R1/_R2) and
                  won't find it (e.g. S1.fq.gz, sub/S1.fastq.gz, S1.v2.fastq.gz)
 
 Sample status
@@ -20,7 +20,7 @@ Sample status
   both layouts   <id>.fastq.gz and <id>_R1/_R2 both uploaded: every stage fails rather than guess
   complete       the bcftools VCF exists
   running        an open Step Functions run (needs --state-machine-arn)
-  incomplete     some outputs exist but no VCF: failed (or stopped) after the last stage shown
+  incomplete     some outputs exist but no VCF: a stage failed or stopped (the note says which wrote output)
   not started    raw reads only: the trigger didn't fire, or the run failed before writing anything
   orphan         outputs but no raw reads (raw deleted)
 With --state-machine-arn, more than one open run for a sample is flagged: they write the same keys.
@@ -53,8 +53,9 @@ from tasks import MATES, PAIRED, PER_MATE_KEYS, SINGLE, keys_for, keys_of  # noq
 DEFAULT_REGION = "eu-west-2"
 _SENTINEL = "SAMPLEIDSENTINEL"
 # Pipeline outputs in stage order (keys of tasks.keys_for), with a short column label.
-STAGE_OUTPUTS = (("fastq", "D"), ("qc_html", "Q"), ("bam", "A"), ("vcf", "V"))
-STAGE_NAMES = {"fastq": "decompress", "qc_html": "qc", "bam": "align", "vcf": "variants"}
+# qc and align run side by side, so a sample can have A without Q (or the other way round).
+STAGE_OUTPUTS = (("qc_html", "Q"), ("bam", "A"), ("vcf", "V"))
+STAGE_NAMES = {"qc_html": "qc", "bam": "align", "vcf": "variants"}
 
 
 def load_trigger():
@@ -81,7 +82,7 @@ def extra_outputs() -> dict:
 def key_patterns(extras: dict) -> list:
     """Regexes that recover a sample ID from any output key, built from keys_for itself.
 
-    Paired-end patterns come first, so decompressed/S1_R1.fastq is sample S1, not a single-end
+    Paired-end patterns come first, so qc_reports/S1_R1_fastqc.html is sample S1, not a single-end
     sample S1_R1 (which can't exist: the trigger reads a trailing _R1/_R2 as a mate).
     """
     templates = []
@@ -125,7 +126,7 @@ def raw_upload_problem(trigger, key: str):
                                     f"but the stages read {expected}"}
     if key != expected:
         return None, {"key": key, "problem": "will fail",
-                      "detail": f"starts a run for '{sample_id}', but decompress reads {expected}"}
+                      "detail": f"starts a run for '{sample_id}', but the stages read {expected}"}
     return sample_id, None
 
 
@@ -194,10 +195,10 @@ def reconcile(keys, running: Counter = None) -> dict:
         layout, layout_problem, layout_note = raw_layout(sample_id, keys)
         has_raw = layout is not None or layout_problem is not None
         expected = keys_for(sample_id, layout or output_layout(sample_id, keys))
-        # A per-mate output (decompressed, QC report) only counts once both mates have it.
+        # A per-mate output (the QC reports) only counts once both mates have it.
         outputs = {name: all(k in keys for k in keys_of(expected, name)) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
-        # But one mate's output still shows the run got that far (e.g. decompress failed on R2).
+        # But one mate's report still shows the run got that far (e.g. FastQC failed on R2).
         reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS
                    if any(k in keys for k in keys_of(expected, name))]
         open_count = running.get(sample_id, 0)
@@ -211,7 +212,8 @@ def reconcile(keys, running: Counter = None) -> dict:
         elif outputs["vcf"]:
             status, note = "complete", ""
         elif reached:
-            status, note = "incomplete", f"no VCF; last output from '{reached[-1]}'"
+            missing = [STAGE_NAMES[n] for n, _ in STAGE_OUTPUTS if STAGE_NAMES[n] not in reached]
+            status, note = "incomplete", f"no VCF; output from {', '.join(reached)}; none from {', '.join(missing)}"
             problem = "incomplete"
         else:
             status, note = "not started", "raw reads only: no run, or it failed before writing any output"
@@ -238,9 +240,9 @@ def print_report(result: dict) -> None:
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} "
               f"{note}")
-    print("Outputs: D decompressed, Q QC report, A alignment, V VCF"
+    print("Outputs: Q QC report, A alignment, V VCF"
           + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
-          + " (paired-end: D and Q need both mates)")
+          + " (paired-end: Q needs both mates)")
     if result["upload_problems"]:
         print("\nUpload problems:")
         for p in result["upload_problems"]:

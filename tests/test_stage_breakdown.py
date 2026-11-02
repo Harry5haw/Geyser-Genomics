@@ -197,3 +197,26 @@ def test_fargate_cost_counts_ephemeral_storage_above_the_free_20_gib():
     assert sb.fargate_cost(3600, 1, 1, prices, storage_gb=200) == pytest.approx(1.5 + 180 * 0.01)
     job = {"Container": {"ResourceRequirements": FARGATE, "EphemeralStorage": {"SizeInGiB": 120}}}
     assert sb.ephemeral_storage_gb(job) == 120 and sb.ephemeral_storage_gb({"Container": {}}) is None
+
+
+def test_parallel_branches_are_credited_by_event_chain_not_order():
+    # QC and align run in a Parallel state: both enter before either submits, and their events
+    # interleave. Each event points back (previousEventId) to its own branch's earlier events.
+    def ev(eid, prev, event):
+        return {**event, "id": eid, "previousEventId": prev}
+
+    events = [
+        ev(1, 0, {"type": "ExecutionStarted"}),
+        ev(2, 1, {"type": "ParallelStateEntered", "stateEnteredEventDetails": {"name": "QC_and_Align"}}),
+        ev(3, 2, entered("Quality_Control")),
+        ev(4, 2, entered("Align_Genome")),
+        ev(5, 3, {"type": "TaskScheduled", "taskScheduledEventDetails": {"resourceType": "batch"}}),
+        ev(6, 4, {"type": "TaskScheduled", "taskScheduledEventDetails": {"resourceType": "batch"}}),
+        ev(7, 5, task_event("TaskSubmitted", {"JobId": "qc-job"})),
+        ev(8, 6, task_event("TaskSubmitted", {"JobId": "align-job"})),
+        ev(9, 7, task_event("TaskSucceeded", sfn_job("qc-job", "SUCCEEDED", T0, T0 + 1000, T0 + 61_000))),
+        ev(10, 8, task_event("TaskSucceeded", sfn_job("align-job", "SUCCEEDED", T0, T0 + 2000, T0 + 92_000))),
+    ]
+    tasks = sb.batch_tasks(paged_sfn(events), "exec-1")
+    assert [(t["stage"], t["job_id"], t["job"]["JobId"]) for t in tasks] == [
+        ("Quality_Control", "qc-job", "qc-job"), ("Align_Genome", "align-job", "align-job")]
