@@ -73,7 +73,8 @@ resource "aws_batch_compute_environment" "gpu_env" {
     instance_type = ["g4dn.xlarge", "g5.xlarge", "g5.2xlarge"]
 
     min_vcpus = 0
-    max_vcpus = 64
+    # Spend-rate cap (#73): 8 vCPUs = at most two g5.xlarge or one g5.2xlarge. Changes in place.
+    max_vcpus = var.gpu_max_vcpus
 
     security_group_ids = [
       aws_security_group.batch_gpu_compute.id
