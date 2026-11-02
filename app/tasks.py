@@ -32,7 +32,7 @@ import time
 from functools import wraps
 
 from metrics import metrics_from_env
-from storage import ObjectNotFound, storage_from_env
+from storage import ForwardOnlyStream, ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
 BWA_INDEX_EXTS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
@@ -207,7 +207,9 @@ def decompress_task(sample_id):
         source = storage().open_read(raw)
         try:
             with gzip.GzipFile(fileobj=source, mode="rb") as unzipped:
-                storage().upload_stream(unzipped, fastq)
+                # GzipFile claims it can seek even over a forward-only S3 body; uploaders that
+                # believe it rewind the body and fail (#71). ForwardOnlyStream stops that.
+                storage().upload_stream(ForwardOnlyStream(unzipped), fastq)
         finally:
             source.close()
 
