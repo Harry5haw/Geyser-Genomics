@@ -6,7 +6,7 @@ using the pipeline's own key conventions (tasks.keys_for) and the trigger's own 
 it cannot drift from them.
 
 Single-end samples are raw_reads/<id>.fastq.gz; paired-end samples are raw_reads/<id>_R1.fastq.gz plus
-raw_reads/<id>_R2.fastq.gz, and their QC reports (qc_reports/) come per mate.
+raw_reads/<id>_R2.fastq.gz; every output after them is one per sample (one fastp report for both mates).
 
 Upload problems
   ignored        in raw_reads/ but not .gz: the S3 trigger never fires, so nothing happens at all
@@ -82,7 +82,7 @@ def extra_outputs() -> dict:
 def key_patterns(extras: dict) -> list:
     """Regexes that recover a sample ID from any output key, built from keys_for itself.
 
-    Paired-end patterns come first, so qc_reports/S1_R1_fastqc.html is sample S1, not a single-end
+    Paired-end patterns come first, so raw-derived per-mate keys belong to sample S1, not a single-end
     sample S1_R1 (which can't exist: the trigger reads a trailing _R1/_R2 as a mate).
     """
     templates = []
@@ -198,7 +198,7 @@ def reconcile(keys, running: Counter = None) -> dict:
         # A per-mate output (the QC reports) only counts once both mates have it.
         outputs = {name: all(k in keys for k in keys_of(expected, name)) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
-        # But one mate's report still shows the run got that far (e.g. FastQC failed on R2).
+        # But one mate's output still shows the run got that far.
         reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS
                    if any(k in keys for k in keys_of(expected, name))]
         open_count = running.get(sample_id, 0)
@@ -240,9 +240,8 @@ def print_report(result: dict) -> None:
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} "
               f"{note}")
-    print("Outputs: Q QC report, A alignment, V VCF"
-          + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
-          + " (paired-end: Q needs both mates)")
+    print("Outputs: Q QC report (fastp), A alignment, V VCF"
+          + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else ""))
     if result["upload_problems"]:
         print("\nUpload problems:")
         for p in result["upload_problems"]:

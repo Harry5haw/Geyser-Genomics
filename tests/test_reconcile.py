@@ -18,13 +18,13 @@ def make_bucket(tmp_path, keys):
 
 def full_sample(sample_id):
     return [f"raw_reads/{sample_id}.fastq.gz",
-            f"qc_reports/{sample_id}_fastqc.html", f"qc_reports/{sample_id}_fastqc.zip",
+            f"qc_reports/{sample_id}.fastp.html", f"qc_reports/{sample_id}.fastp.json",
             f"alignments/{sample_id}.bam", f"variants/{sample_id}.vcf.gz"]
 
 
 KEYS = (full_sample("S1") + ["variants_deepvariant/S1.vcf.gz"]
         + ["raw_reads/S2.fastq.gz"]                                                    # not started
-        + ["raw_reads/S3.fastq.gz", "qc_reports/S3_fastqc.html"]                     # align failed
+        + ["raw_reads/S3.fastq.gz", "qc_reports/S3.fastp.html"]                      # align failed
         + ["raw_reads/S10.fastq.gz", "alignments/S10.bam"]                            # qc failed, align ran
         + ["decompressed/OLD.fastq"]                       # left over from the four-stage layout: ignored
         + ["raw_reads/S4.fq.gz", "raw_reads/notes.txt", "raw_reads/sub/S5.fastq.gz", "raw_reads/S7.v2.fastq.gz"]
@@ -118,23 +118,23 @@ def test_patterns_follow_keys_for():
     assert not any(p.match("raw_reads/ABC_R1.fastq.gz") for p in patterns)
     assert not any(p.match("alignments/sub/ABC.bam") for p in patterns)
     assert reconcile.match_sample("decompressed/ABC_R2.fastq", patterns) is None  # no longer a stage output
-    assert reconcile.match_sample("qc_reports/ABC_R1_fastqc.zip", patterns) == "ABC"
-    assert reconcile.match_sample("qc_reports/ABC_fastqc.zip", patterns) == "ABC"
+    assert reconcile.match_sample("qc_reports/ABC.fastp.json", patterns) == "ABC"
+    assert reconcile.match_sample("qc_reports/ABC_fastqc.zip", patterns) is None  # FastQC's, before #100
 
 
 def paired_sample(sample_id):
     return ([f"raw_reads/{sample_id}_{m}.fastq.gz" for m in ("R1", "R2")]
-            + [f"qc_reports/{sample_id}_{m}_fastqc.{ext}" for m in ("R1", "R2") for ext in ("html", "zip")]
+            + [f"qc_reports/{sample_id}.fastp.{ext}" for ext in ("html", "json")]  # one report for the pair
             + [f"alignments/{sample_id}.bam", f"variants/{sample_id}.vcf.gz"])
 
 
 PAIRED_KEYS = (paired_sample("P1")
                + ["raw_reads/P2_R1.fastq.gz"]                                           # lone mate
                + ["raw_reads/P3_R1.fastq.gz", "raw_reads/P3_R2.fastq.gz",
-                  "qc_reports/P3_R1_fastqc.html"]                                       # QC for R1 only
+                  "qc_reports/P3.fastp.html"]                                           # align failed
                + ["raw_reads/P4.fastq.gz", "raw_reads/P4_R1.fastq.gz", "raw_reads/P4_R2.fastq.gz"]
                + ["raw_reads/P5_R1.fq.gz", "raw_reads/sub/P6_R1.fastq.gz"]
-               + ["qc_reports/P7_R1_fastqc.html", "qc_reports/P7_R2_fastqc.html"]       # orphan, paired
+               + ["qc_reports/P7.fastp.html", "alignments/P7.bam"]                     # orphan
                + full_sample("run_1"))  # SRA-style _1 is not a mate: run_1 is a single-end sample
 
 
@@ -148,11 +148,10 @@ def test_paired_end_samples(tmp_path):
     assert all(rows["P1"]["outputs"].values())
     assert rows["run_1"]["layout"] == "single"
     assert rows["P2"]["problem"] == "lone mate" and "R2 missing" in rows["P2"]["note"]
-    # One mate's QC report is not a QC output, but it does show the run reached qc.
-    assert rows["P3"]["outputs"] == {"qc_html": False, "bam": False, "vcf": False}
+    assert rows["P3"]["outputs"] == {"qc_html": True, "bam": False, "vcf": False}
     assert "output from qc; none from align, variants" in rows["P3"]["note"]
     assert rows["P4"]["problem"] == "both layouts" and rows["P4"]["layout"] is None
-    assert rows["P7"]["raw"] is False and rows["P7"]["outputs"]["qc_html"] is True
+    assert rows["P7"]["raw"] is False and rows["P7"]["outputs"]["qc_html"] is True and rows["P7"]["outputs"]["bam"]
     # Per-mate keys never show up as samples of their own.
     assert not any(s.endswith(("_R1", "_R2")) for s in rows)
 
@@ -187,10 +186,3 @@ def test_warns_when_open_runs_are_not_checked(tmp_path, capsys, monkeypatch):
     assert "open runs aren't checked" in capsys.readouterr().err
     reconcile.main(["--local-dir", str(tmp_path), "--state-machine-arn", SFN_ARN], sfn_client=fake_sfn(["S8", "S8"]))
     assert "open runs aren't checked" not in capsys.readouterr().err
-
-
-def test_one_mates_report_is_incomplete_not_unstarted():
-    rows = by_sample(reconcile.reconcile(["raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz",
-                                          "qc_reports/S1_R1_fastqc.html"]))
-    assert rows["S1"]["status"] == "incomplete" and rows["S1"]["outputs"]["qc_html"] is False
-    assert "output from qc" in rows["S1"]["note"]
