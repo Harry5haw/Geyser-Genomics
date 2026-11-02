@@ -517,7 +517,7 @@ Once deployed, a run is started by uploading a file.
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
     *   **Paired-end:** upload both mates as `raw_reads/<id>_R1.fastq.gz` and `raw_reads/<id>_R2.fastq.gz`, in either order. The run starts once both are there, and only once. Only `_R1`/`_R2` mark mates: rename SRA-style `_1`/`_2` files before uploading. The stages detect the layout from these keys.
-    *   The trigger Lambda needs `s3:GetObject` on `raw_reads/*` and `s3:ListBucket` to check for the other mate. That IAM change is not applied yet (see [#57](https://github.com/Harry5haw/Geyser-Genomics/issues/57)). Until it is, paired-end uploads fail in the cloud, while single-end works as before.
+    *   The trigger Lambda checks for the other mate with `s3:GetObject` on `raw_reads/*` and `s3:ListBucket` (added in [#69](https://github.com/Harry5haw/Geyser-Genomics/pull/69)).
 3.  **Monitor the Execution:** The upload automatically starts the Step Functions state machine. You can follow its progress in the AWS Step Functions console, where each run is named after its sample and upload time, e.g. `SRR062634-20261101T123456Z-1a2b3c4d`. The same name appears in the Batch job names. If S3 delivers the same upload event twice, it still starts only one run. A paired-end run is named after the later of its two uploads.
 4.  **Retrieve Results:** When the run succeeds, the outputs are in the same bucket:
 
@@ -541,7 +541,7 @@ Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWat
 | `scripts/deploy_alarms.py` | Alarm `geyser-dev-trigger-lambda-errors`: the trigger Lambda failing, the one failure that leaves no trace in the pipeline's own metrics because no run starts. Its state shows on the dashboard |
 | `scripts/runtime_deploy_pipeline_dashboard.py` | Optional dashboard with only the Step Functions widgets |
 | `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only). With `--stages`: for each stage, how long the Batch job queued vs ran, its vCPU/memory, attempts, why it failed (e.g. out of memory), and an estimated Fargate cost per stage and per run (`--stages-csv` to export) |
-| `scripts/reconcile.py` | Compares uploads, runs and outputs to find what the pipeline silently missed: uploads the trigger ignores (not `.gz`) or that start a run which will fail (anything but `raw_reads/<id>.fastq.gz`), samples with no VCF, orphan outputs, and (with `--state-machine-arn`) two runs of one sample at once. Works offline: `--local-dir local_bucket` |
+| `scripts/reconcile.py` | Compares uploads, runs and outputs to find what the pipeline silently missed: uploads the trigger ignores (not `.gz`), refuses (a mate not named `<id>_R1.fastq.gz`/`_R2.fastq.gz`) or that start a run which will fail (anything but `raw_reads/<id>.fastq.gz` or `<id>_R1`/`_R2`), paired-end samples with only one mate or uploaded both ways, samples with no VCF, orphan outputs, and (with `--state-machine-arn`) two runs of one sample at once. Works offline: `--local-dir local_bucket` |
 
 **Preview without AWS:** `--dry-run` prints the JSON and makes no AWS calls. No ARNs are needed.
 ```bash

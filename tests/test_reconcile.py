@@ -108,4 +108,62 @@ def test_patterns_follow_keys_for():
     patterns = reconcile.key_patterns(reconcile.extra_outputs())
     assert any(p.match("alignments/ABC.bam") for p in patterns)
     assert not any(p.match("raw_reads/ABC.fastq.gz") for p in patterns)
+    assert not any(p.match("raw_reads/ABC_R1.fastq.gz") for p in patterns)
     assert not any(p.match("alignments/sub/ABC.bam") for p in patterns)
+    assert reconcile.match_sample("decompressed/ABC_R2.fastq", patterns) == "ABC"
+    assert reconcile.match_sample("qc_reports/ABC_R1_fastqc.zip", patterns) == "ABC"
+    assert reconcile.match_sample("qc_reports/ABC_fastqc.zip", patterns) == "ABC"
+
+
+def paired_sample(sample_id):
+    return ([f"raw_reads/{sample_id}_{m}.fastq.gz" for m in ("R1", "R2")]
+            + [f"decompressed/{sample_id}_{m}.fastq" for m in ("R1", "R2")]
+            + [f"qc_reports/{sample_id}_{m}_fastqc.{ext}" for m in ("R1", "R2") for ext in ("html", "zip")]
+            + [f"alignments/{sample_id}.bam", f"variants/{sample_id}.vcf.gz"])
+
+
+PAIRED_KEYS = (paired_sample("P1")
+               + ["raw_reads/P2_R1.fastq.gz"]                                           # lone mate
+               + ["raw_reads/P3_R1.fastq.gz", "raw_reads/P3_R2.fastq.gz",
+                  "decompressed/P3_R1.fastq", "decompressed/P3_R2.fastq",
+                  "qc_reports/P3_R1_fastqc.html"]                                       # QC for R1 only
+               + ["raw_reads/P4.fastq.gz", "raw_reads/P4_R1.fastq.gz", "raw_reads/P4_R2.fastq.gz"]
+               + ["raw_reads/P5_R1.fq.gz", "raw_reads/sub/P6_R1.fastq.gz"]
+               + ["decompressed/P7_R1.fastq", "decompressed/P7_R2.fastq"]               # orphan, paired
+               + full_sample("run_1"))  # SRA-style _1 is not a mate: run_1 is a single-end sample
+
+
+def test_paired_end_samples(tmp_path):
+    result = reconcile.reconcile(make_bucket(tmp_path, PAIRED_KEYS).list_keys(""))
+    rows = by_sample(result)
+    assert {s: r["status"] for s, r in rows.items()} == {
+        "P1": "complete", "P2": "lone mate", "P3": "incomplete", "P4": "both layouts", "P7": "orphan",
+        "run_1": "complete"}
+    assert rows["P1"]["layout"] == "paired" and rows["P1"]["problem"] is None
+    assert all(rows["P1"]["outputs"].values())
+    assert rows["run_1"]["layout"] == "single"
+    assert rows["P2"]["problem"] == "lone mate" and "R2 missing" in rows["P2"]["note"]
+    # One mate's QC report is not a QC output: P3 last finished decompress.
+    assert rows["P3"]["outputs"] == {"fastq": True, "qc_html": False, "bam": False, "vcf": False}
+    assert "last output from 'decompress'" in rows["P3"]["note"]
+    assert rows["P4"]["problem"] == "both layouts" and rows["P4"]["layout"] is None
+    assert rows["P7"]["raw"] is False and rows["P7"]["outputs"]["fastq"] is True
+    # Per-mate keys never show up as samples of their own.
+    assert not any(s.endswith(("_R1", "_R2")) for s in rows)
+
+    problems = {p["key"]: p for p in result["upload_problems"]}
+    assert set(problems) == {"raw_reads/P5_R1.fq.gz", "raw_reads/sub/P6_R1.fastq.gz"}
+    assert problems["raw_reads/P5_R1.fq.gz"]["problem"] == "refused"
+    assert "_R1.fastq.gz" in problems["raw_reads/P5_R1.fq.gz"]["detail"]
+    assert problems["raw_reads/sub/P6_R1.fastq.gz"]["problem"] == "will fail"
+    assert "decompress reads raw_reads/P6_R1.fastq.gz" in problems["raw_reads/sub/P6_R1.fastq.gz"]["detail"]
+    assert result["problem_count"] == 2 + 3  # 2 upload problems + P2, P3, P4
+
+
+def test_paired_end_report(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    make_bucket(tmp_path, paired_sample("P1"))
+    assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 0
+    out = capsys.readouterr().out
+    assert " P1                      complete     D Q A V ..  paired-end" in out
+    assert "1 complete; 0 problem(s)" in out

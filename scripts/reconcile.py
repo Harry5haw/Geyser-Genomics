@@ -5,12 +5,19 @@ Compares the objects in the data lake (S3, or local_bucket/ offline) with what t
 using the pipeline's own key conventions (tasks.keys_for) and the trigger's own sample ID parsing, so
 it cannot drift from them.
 
+Single-end samples are raw_reads/<id>.fastq.gz; paired-end samples are raw_reads/<id>_R1.fastq.gz plus
+raw_reads/<id>_R2.fastq.gz, and their per-read-file outputs (decompressed/, qc_reports/) come per mate.
+
 Upload problems
   ignored        in raw_reads/ but not .gz: the S3 trigger never fires, so nothing happens at all
-  will fail      .gz, so a run starts, but decompress reads raw_reads/<id>.fastq.gz and won't find it
-                 (e.g. S1.fq.gz, sub/S1.fastq.gz, S1.v2.fastq.gz)
+  refused        a mate not named exactly <id>_R1.fastq.gz / <id>_R2.fastq.gz (e.g. S1_R1.fq.gz): the
+                 trigger raises an error (trigger Lambda Errors) and no run starts
+  will fail      .gz, so a run starts, but decompress reads raw_reads/<id>.fastq.gz (or <id>_R1/_R2) and
+                 won't find it (e.g. S1.fq.gz, sub/S1.fastq.gz, S1.v2.fastq.gz)
 
 Sample status
+  lone mate      one paired-end mate uploaded, the other missing: the trigger waits, no run starts
+  both layouts   <id>.fastq.gz and <id>_R1/_R2 both uploaded: every stage fails rather than guess
   complete       the bcftools VCF exists
   running        an open Step Functions run (needs --state-machine-arn)
   incomplete     some outputs exist but no VCF: failed (or stopped) after the last stage shown
@@ -39,7 +46,7 @@ for _sub in ("app", "app-deepvariant"):
         sys.path.insert(0, _path)
 
 from storage import LocalStorage, S3Storage, storage_from_env  # noqa: E402
-from tasks import keys_for  # noqa: E402
+from tasks import MATES, PAIRED, PER_MATE_KEYS, SINGLE, keys_for, keys_of  # noqa: E402
 
 DEFAULT_REGION = "eu-west-2"
 _SENTINEL = "SAMPLEIDSENTINEL"
@@ -67,10 +74,73 @@ def extra_outputs() -> dict:
 
 
 def key_patterns(extras: dict) -> list:
-    """Regexes that recover a sample ID from any output key, built from keys_for itself."""
-    templates = [v for k, v in keys_for(_SENTINEL).items() if k != "raw"]
+    """Regexes that recover a sample ID from any output key, built from keys_for itself.
+
+    Paired-end patterns come first, so decompressed/S1_R1.fastq is sample S1, not a single-end
+    sample S1_R1 (which can't exist: the trigger reads a trailing _R1/_R2 as a mate).
+    """
+    templates = []
+    for layout in (PAIRED, SINGLE):
+        templates += [v for k, v in keys_for(_SENTINEL, layout).items()
+                      if not k.startswith("raw") and v not in templates]
     templates += [fn(_SENTINEL) for fn in extras.values()]
     return [re.compile("^" + re.escape(t).replace(_SENTINEL, r"(?P<id>[^/]+)") + "$") for t in templates]
+
+
+def match_sample(key: str, patterns) -> str:
+    """The sample ID an output key belongs to (first matching pattern), or None."""
+    for pattern in patterns:
+        match = pattern.match(key)
+        if match:
+            return match.group("id")
+    return None
+
+
+def raw_upload_problem(trigger, key: str):
+    """(sample_id, None) for a raw key the stages will read, else (None, problem)."""
+    if not key.endswith(".gz"):
+        return None, {"key": key, "problem": "ignored",
+                      "detail": "not .gz, so the S3 trigger never fires and no run starts"}
+    try:
+        sample_id, mate = trigger.parse_raw_key(key)
+    except ValueError:
+        return None, {"key": key, "problem": "will fail", "detail": "no sample ID in the file name"}
+    if mate is None:
+        expected = keys_for(sample_id, SINGLE)["raw"]
+    else:
+        try:
+            trigger.mate_key(key)
+        except ValueError as err:
+            return None, {"key": key, "problem": "refused", "detail": f"the trigger raises: {err}"}
+        expected = keys_for(sample_id, PAIRED)[f"raw_{mate}"]
+    if key != expected:
+        return None, {"key": key, "problem": "will fail",
+                      "detail": f"starts a run for '{sample_id}', but decompress reads {expected}"}
+    return sample_id, None
+
+
+def raw_layout(sample_id: str, keys: set):
+    """(layout, problem, note) from which raw reads exist. layout is None if they don't form one sample."""
+    single = keys_for(sample_id, SINGLE)["raw"] in keys
+    mates = [m for m in MATES if keys_for(sample_id, PAIRED)[f"raw_{m}"] in keys]
+    if single and mates:
+        return None, "both layouts", (f"{sample_id}.fastq.gz and _{'/_'.join(mates)} both uploaded: "
+                                      "every stage fails rather than guess")
+    if len(mates) == 1:
+        missing = next(m for m in MATES if m not in mates)
+        return None, "lone mate", f"{mates[0]} uploaded, {missing} missing: the trigger waits, no run starts"
+    if single:
+        return SINGLE, None, ""
+    if mates:
+        return PAIRED, None, ""
+    return None, None, ""
+
+
+def output_layout(sample_id: str, keys: set) -> str:
+    """The layout a sample's outputs were written in, for when its raw reads don't say."""
+    paired = keys_for(sample_id, PAIRED)
+    per_mate = [k for name in PER_MATE_KEYS if name != "raw" for k in keys_of(paired, name)]
+    return PAIRED if any(k in keys for k in per_mate) else SINGLE
 
 
 def open_runs(sfn_client, state_machine_arn: str) -> Counter:
@@ -98,39 +168,30 @@ def reconcile(keys, running: Counter = None) -> dict:
 
     upload_problems, samples = [], set()
     for key in sorted(k for k in keys if k.startswith("raw_reads/")):
-        if not key.endswith(".gz"):
-            upload_problems.append({"key": key, "problem": "ignored",
-                                    "detail": "not .gz, so the S3 trigger never fires and no run starts"})
-            continue
-        try:
-            sample_id = trigger.parse_sample_id(key)
-        except ValueError:
-            upload_problems.append({"key": key, "problem": "will fail", "detail": "no sample ID in the file name"})
-            continue
-        expected = keys_for(sample_id)["raw"]
-        if key != expected:
-            upload_problems.append({"key": key, "problem": "will fail",
-                                    "detail": f"starts a run for '{sample_id}', but decompress reads {expected}"})
-            continue
-        samples.add(sample_id)
+        sample_id, problem = raw_upload_problem(trigger, key)
+        if problem:
+            upload_problems.append(problem)
+        else:
+            samples.add(sample_id)
 
-    for pattern in key_patterns(extras):
-        for key in keys:
-            match = pattern.match(key)
-            if match:
-                samples.add(match.group("id"))
+    patterns = key_patterns(extras)
+    samples |= {s for s in (match_sample(k, patterns) for k in keys) if s}
     samples |= {s for s in running if s != "Unknown"}
 
     rows = []
     for sample_id in sorted(samples):
-        expected = keys_for(sample_id)
-        outputs = {name: expected[name] in keys for name, _ in STAGE_OUTPUTS}
+        layout, layout_problem, layout_note = raw_layout(sample_id, keys)
+        has_raw = layout is not None or layout_problem is not None
+        expected = keys_for(sample_id, layout or output_layout(sample_id, keys))
+        # A per-mate output (decompressed, QC report) only counts once both mates have it.
+        outputs = {name: all(k in keys for k in keys_of(expected, name)) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
-        has_raw = expected["raw"] in keys
         reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS if outputs[name]]
         open_count = running.get(sample_id, 0)
         problem = None
-        if not has_raw and (reached or any(extra.values())):
+        if layout_problem:
+            status, note, problem = layout_problem, layout_note, layout_problem
+        elif not has_raw and (reached or any(extra.values())):
             status, note = "orphan", "outputs exist but the raw reads are gone"
         elif open_count:
             status, note = "running", f"{open_count} open run(s)"
@@ -145,8 +206,9 @@ def reconcile(keys, running: Counter = None) -> dict:
         if open_count > 1:
             note = f"{open_count} runs at once: they overwrite each other's outputs"
             problem = "concurrent runs"
-        rows.append({"sample_id": sample_id, "status": status, "raw": has_raw, "outputs": outputs,
-                     "extra_outputs": extra, "open_runs": open_count, "note": note, "problem": problem})
+        rows.append({"sample_id": sample_id, "status": status, "layout": layout, "raw": has_raw,
+                     "outputs": outputs, "extra_outputs": extra, "open_runs": open_count, "note": note,
+                     "problem": problem})
 
     return {"samples": rows, "upload_problems": upload_problems,
             "problem_count": len(upload_problems) + sum(1 for r in rows if r["problem"])}
@@ -160,9 +222,11 @@ def print_report(result: dict) -> None:
         marks = " ".join(label if r["outputs"][name] else "." for name, label in STAGE_OUTPUTS)
         marks += "".join(f" {label if r['extra_outputs'].get(label) else '.' * len(label)}" for label in extra_labels)
         flag = "!" if r["problem"] else " "
+        note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} "
-              f"{r['note']}")
-    print("Outputs: D decompressed, Q QC report, A alignment, V VCF" + (", dv DeepVariant VCF" if extra_labels else ""))
+              f"{note}")
+    print("Outputs: D decompressed, Q QC report, A alignment, V VCF" + (", dv DeepVariant VCF" if extra_labels else "")
+          + " (paired-end: D and Q need both mates)")
     if result["upload_problems"]:
         print("\nUpload problems:")
         for p in result["upload_problems"]:
