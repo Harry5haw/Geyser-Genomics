@@ -474,7 +474,13 @@ python scripts/fetch_dv_testdata.py --dataset hg005-chr20 --stratifications
 python scripts/fetch_dv_testdata.py --dataset hg003-30x-chr20
 python scripts/benchmark_happy.py --sample HG005_chr20 --reference GRCh38_chr20.fa --region chr20 \
     --stratification stratifications/GRCh38_chr20.tsv
+
+# Every scored caller is appended to the benchmark history with the commit (--aligner / --caller-settings say
+# what produced the calls). Regenerate the report and commit both:
+python scripts/benchmark_history.py report
 ```
+
+**Benchmark history:** every hap.py result so far, 22 configurations across HG003 and HG005, is in one tracked series, [`docs/benchmarks/history.csv`](docs/benchmarks/history.csv), with the [report](docs/benchmarks/README.md) and a figure-ready CSV. The tables below are excerpts.
 
 **Accuracy: HG003 chr20, hap.py.** HG003 is NovaSeq PCR-free 35x, scored against GIAB v4.2.1 confident regions. These are the same settings Google's case studies use (`--engine=vcfeval --pass-only`):
 
