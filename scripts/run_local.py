@@ -165,6 +165,9 @@ def pipeline_jobs(
                 "gpus": False,
             }
         )
+    # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
+    # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
+    caller_env = {} if "bcftools" in sets or skip_to_variants else {"PIPELINE_CALLER": sets[0]}
     if "deepvariant" in sets:
         jobs.append(
             {
@@ -172,6 +175,7 @@ def pipeline_jobs(
                 "cmd": deepvariant_command(sample_id, reference_name),
                 "image": dv_image,
                 "gpus": gpus,
+                "env": caller_env if sets == ["deepvariant"] else {},
             }
         )
     if "pangenome" in sets:
@@ -184,6 +188,7 @@ def pipeline_jobs(
                 "image": pg_image,
                 "gpus": gpus,
                 "shm": pg_shm,
+                "env": caller_env if sets == ["pangenome"] else {},
             }
         )
     return jobs
@@ -233,6 +238,7 @@ def run_job(job, runner, root, dv_memory=None, env=None):
         # Pipeline and DeepVariant knobs are passed through to the container when set on the host
         # (the host runner inherits the whole environment anyway).
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
+        extra.update(job.get("env") or {})
         extra.update(env or {})
         memory = None
         if job["name"] in ("deepvariant", "pangenome"):

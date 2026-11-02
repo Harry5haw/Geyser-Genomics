@@ -37,14 +37,19 @@ import subprocess
 import sys
 import time
 
+import provenance
 from tasks import (
+    _log_summary,
+    _run_stats_tool,
     ensure_reference_local,
     fetch_alignment,
     index_alignment,
     keys_for,
     metrics,
+    parse_bcftools_stats,
     storage,
     timed_stage,
+    upload_output,
     work_dir,
 )
 
@@ -64,6 +69,8 @@ STEP_SUFFIXES = {
     "postprocess_variants": "PostprocessVariants",
 }
 STAGE_NAME = {False: "DeepVariant", True: "PangenomeDeepVariant"}
+# The caller names a run is started with (the state machine's "caller", run_local.py --caller).
+CALLER_NAME = {False: "deepvariant", True: "pangenome"}
 STEP_METRICS = {step: f"{STAGE_NAME[False]}.{suffix}" for step, suffix in STEP_SUFFIXES.items()}
 PANGENOME_STEP_METRICS = {step: f"{STAGE_NAME[True]}.{suffix}" for step, suffix in STEP_SUFFIXES.items()}
 
@@ -71,13 +78,61 @@ PANGENOME_STEP_METRICS = {step: f"{STAGE_NAME[True]}.{suffix}" for step, suffix 
 def deepvariant_keys(sample_id: str, pangenome: str = None) -> dict:
     # "bam" is kept for callers that list a sample's keys; the stage itself reads whatever
     # tasks.alignment_input() resolves (the align stage's CRAM, else a BAM).
-    keys = {"bam": keys_for(sample_id)["bam"]}
+    sample_keys = keys_for(sample_id)
+    keys = {"bam": sample_keys["bam"]}
     if pangenome:
         keys["vcf"] = f"variants_pangenome/{sample_id}.vcf.gz"
         keys["pangenome"] = f"pangenome/{pangenome}"
     else:
         keys["vcf"] = f"variants_deepvariant/{sample_id}.vcf.gz"
+    # This caller's PASS-call stats, always; and the sample's own stats file when this is the run's caller.
+    keys["caller_stats"] = f"stats/{sample_id}/bcftools.stats.{CALLER_NAME[bool(pangenome)]}.txt"
+    keys["bcftools_stats"] = sample_keys["bcftools_stats"]
     return keys
+
+
+def pass_stats_command(ref: str, vcf: str, out: str) -> str:
+    """bcftools stats over the PASS calls only.
+
+    DeepVariant's VCF also keeps the candidates it rejected (FILTER=RefCall), mostly sequencing errors.
+    Counted with the calls they would swamp the numbers: on HG003 chr20 Ti/Tv is 0.86 over all records
+    and 1.96 over PASS calls, and the quality gate would fail every good run (gate/README.md).
+    """
+    q = shlex.quote
+    return f"bcftools stats -f PASS -F {q(ref)} -s - {q(vcf)} > {q(out)}"
+
+
+def pipeline_caller() -> str:
+    """The caller this run was started with (PIPELINE_CALLER, set by the state machine and run_local.py), or ''."""
+    return os.environ.get("PIPELINE_CALLER", "").strip().lower()
+
+
+# Written as the sample's stats when the run's caller couldn't produce any: an earlier run's file would
+# otherwise stay in place (no s3:DeleteObject) and, inherited through the run record, pass for this run's.
+NO_STATS_NOTE = "# No bcftools stats: {caller} was this run's caller and its stats step failed (see the job log).\n"
+
+
+def caller_stats(ref: str, vcf: str, wd: str, keys: dict, pangenome=None) -> list:
+    """(local file, key) pairs to upload: PASS-call stats as stats/{id}/bcftools.stats.<caller>.txt, and,
+    when this is the run's caller (pipeline_caller), also as the sample's stats/{id}/bcftools.stats.txt,
+    which the quality gate and the dashboard's quality widgets read. Otherwise the bcftools stage owns
+    that file, so a benchmark running both callers never overwrites it. Best effort, like all stats:
+    if they fail for the run's caller, the sample's file becomes NO_STATS_NOTE, which the gate rejects
+    as not bcftools output instead of accepting an earlier run's numbers."""
+    caller = CALLER_NAME[bool(pangenome)]
+    primary = pipeline_caller() == caller
+    provenance.note_tool_as("bcftools (DeepVariant image)", "bcftools")
+    out = os.path.join(wd, os.path.basename(keys["caller_stats"]))
+    if not _run_stats_tool(f"bcftools stats ({caller}, PASS calls)", pass_stats_command(ref, vcf, out)):
+        if not primary:
+            return []
+        note = os.path.join(wd, "bcftools.stats.none.txt")
+        with open(note, "w") as fh:
+            fh.write(NO_STATS_NOTE.format(caller=caller))
+        return [(note, keys["bcftools_stats"])]
+    # "bcftools stats: ..." is the line the quality widgets parse (scripts/monitoring.py QUALITY_PARSE).
+    _log_summary("bcftools stats" if primary else f"bcftools stats {caller}", parse_bcftools_stats, out)
+    return [(out, keys["caller_stats"])] + ([(out, keys["bcftools_stats"])] if primary else [])
 
 
 def build_run_deepvariant_cmd(
@@ -240,7 +295,9 @@ def _call_variants(sample_id, reference_name, pangenome=None):
 
         if not os.path.isfile(vcf) or os.path.getsize(vcf) == 0:
             raise RuntimeError(f"{label} produced no VCF at {vcf}")
-        storage().upload(vcf, keys["vcf"])
+        for local, key in caller_stats(ref, vcf, wd, keys, pangenome):  # before the VCF, which marks the stage done
+            upload_output(local, key)
+        upload_output(vcf, keys["vcf"])
         print(f"Uploaded {storage().describe(keys['vcf'])}")
     finally:
         shutil.rmtree(wd, ignore_errors=True)
