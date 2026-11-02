@@ -28,7 +28,7 @@ import make_test_data  # noqa: E402
 import run_local  # noqa: E402
 from storage import LocalStorage, ObjectNotFound, storage_from_env  # noqa: E402
 from tasks import (ALIGNMENT_FORMS, MATES, PAIRED, PER_MATE_KEYS, SINGLE, LayoutError, all_raw_keys,  # noqa: E402
-                   keys_for, keys_of, layout_from_raw)
+                   keys_for, keys_of, layout_from_raw, legacy_qc_keys, output_present)
 
 RUN_LOCAL_PATH = os.path.join(REPO_ROOT, "scripts", "run_local.py")
 
@@ -69,6 +69,6 @@ def get_storage():
 
 __all__ = [
     "ALIGNMENT_FORMS", "LayoutError", "LocalStorage", "all_raw_keys", "MATES", "ObjectNotFound", "PAIRED", "PER_MATE_KEYS", "RUN_LOCAL_PATH",
-    "REPO_ROOT", "SINGLE", "get_storage", "keys_for", "keys_of", "layout_from_raw", "make_test_data",
+    "REPO_ROOT", "SINGLE", "get_storage", "keys_for", "keys_of", "layout_from_raw", "legacy_qc_keys", "output_present", "make_test_data",
     "parse_raw_key", "parse_sample_id", "run_local",
 ]

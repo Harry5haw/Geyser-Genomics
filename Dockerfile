@@ -1,18 +1,18 @@
 # ./Dockerfile
 
 # Debian 13 (trixie). Debian 11 (bullseye) security updates were removed from the mirrors,
-# so fresh builds on it fail with 404s. FastQC needs fontconfig, a font and libharfbuzz (for
-# Java's font manager) to draw its report charts; without them it throws inside a worker
-# thread and hangs instead of exiting.
+# so fresh builds on it fail with 404s. QC is fastp from Debian (0.24.0 in trixie): a C++
+# binary, so the image needs no Java, fonts or FastQC download any more.
 # Pinned by digest so builds are reproducible; Dependabot proposes the new digest when the tag is rebuilt
 # (Debian and Python security patches). The tag stays for readers and for Dependabot.
 FROM python:3.11-slim-trixie@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-    openjdk-21-jre-headless fontconfig fonts-dejavu-core libharfbuzz0b wget unzip bzip2 bwa samtools bcftools perl sra-toolkit curl openssl \
+    fastp unzip bzip2 bwa samtools bcftools perl sra-toolkit curl openssl \
     && apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    fastp --version
 
 RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip" && \
     unzip awscliv2.zip && \
@@ -20,12 +20,6 @@ RUN curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2
     rm -rf awscliv2.zip ./aws
 
 RUN mkdir -p /root/.ncbi && chmod -R 777 /root/.ncbi
-
-RUN wget -q https://www.bioinformatics.babraham.ac.uk/projects/fastqc/fastqc_v0.12.1.zip -O /tmp/fastqc.zip && \
-    unzip /tmp/fastqc.zip -d /opt/ && \
-    rm /tmp/fastqc.zip && \
-    chmod +x /opt/FastQC/fastqc && \
-    ln -s /opt/FastQC/fastqc /usr/local/bin/fastqc
 
 # bwa-mem2, the default aligner (ALIGNER=bwa switches back to the apt bwa above). Debian has no
 # package, so this is the upstream release, checksum-pinned. It ships one binary per instruction

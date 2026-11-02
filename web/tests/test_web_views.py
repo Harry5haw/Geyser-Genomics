@@ -1,9 +1,9 @@
 import json
 
-from .web_helpers import fastq_gz, metric, put, vcf_gz, write_metrics
+from .web_helpers import FASTP_SINGLE, fastq_gz, metric, put, vcf_gz, write_metrics
 from samples.runs import write_run
 
-FINISHED = ["qc_reports/S1_fastqc.html", "qc_reports/S1_fastqc.zip",
+FINISHED = ["qc_reports/S1.fastp.html",
             "alignments/S1.cram", "alignments/S1.cram.crai", "variants/S1.vcf.gz.tbi",
             "stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt", "stats/S1/mosdepth.global.dist.txt",
             "stats/S1/bcftools.stats.txt"]
@@ -12,7 +12,8 @@ FINISHED = ["qc_reports/S1_fastqc.html", "qc_reports/S1_fastqc.zip",
 def finished_sample(storage, truth=True):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     for key in FINISHED:
-        put(storage, key, b"<html><body>FastQC report</body></html>" if key.endswith(".html") else b"data")
+        put(storage, key, b"<html><body>fastp report</body></html>" if key.endswith(".html") else b"data")
+    put(storage, "qc_reports/S1.fastp.json", json.dumps(FASTP_SINGLE))
     put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G"), (300, "C", "T"), (500, "G", "A")]))
     write_metrics(storage, [metric("QualityControl", "S1", duration=7.2),
                             metric("Align", "S1", duration=2.5), metric("CallVariants", "S1", duration=1.1)])
@@ -53,7 +54,8 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert body.count('class="planted"') == 2
     assert "Variants" in body and "3 calls" in body
     assert 'src="/samples/S1/files/qc_html/?inline=1"' in body
-    for kind in ("raw", "qc_html", "qc_zip", "cram", "crai", "vcf", "tbi", "truth",
+    assert "Bases ≥ Q30" in body and "93.4%" in body and "Duplication (fastp estimate)" in body
+    for kind in ("raw", "qc_html", "qc_json", "cram", "crai", "vcf", "tbi", "truth",
                  "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats"):
         assert f"/samples/S1/files/{kind}/" in body
     assert "/samples/S1/files/bam/" not in body  # only offered when a BAM exists (older runs)
@@ -97,7 +99,7 @@ def test_downloads_are_whitelisted(client, storage):
     assert client.get("/samples/S1/files/log/").status_code == 404  # allowed kind, but doesn't exist
 
 
-def test_fastqc_report_is_sandboxed_and_frameable_only_by_us(client, storage):
+def test_qc_report_is_sandboxed_and_frameable_only_by_us(client, storage):
     finished_sample(storage)
     resp = client.get("/samples/S1/files/qc_html/?inline=1")
     assert resp.status_code == 200

@@ -24,10 +24,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configure AWS Credentials (Terraform role)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.TERRAFORM_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
@@ -38,7 +38,7 @@ jobs:
           aws sts get-caller-identity
 
       - name: Configure AWS Credentials (ECR role)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ secrets.ECR_IAM_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
