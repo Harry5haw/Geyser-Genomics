@@ -1,0 +1,66 @@
+# Dependency updates, one grouped PR per ecosystem: weekly, Terraform monthly. Each PR runs tests.yml like any other.
+# Terraform updates touch infrastructure/, so they follow the infrastructure rules: a reviewed
+# `terraform plan` before merge, never merged on CI alone. boto3 is also installed in the DeepVariant
+# image (Python 3.10): the PR's DeepVariant CI job catches a release that drops 3.10.
+version: 2
+updates:
+  # "/" only: requirements-dev.txt includes app/ and web/requirements.txt with -r, and Dependabot
+  # follows the includes. Listing those directories too would open overlapping PRs for one bump.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python:
+        patterns: ["*"]
+    ignore:
+      # 6.x needs Python 3.12; the image and CI run 3.11.
+      - dependency-name: django
+        update-types: ["version-update:semver-major"]
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "Deps"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["dependencies", "ci-cd"]
+    commit-message:
+      prefix: "CI"
+
+  # Root Dockerfile only: app-deepvariant/Dockerfile takes its base image from an ARG (DV_TAG),
+  # which is chosen deliberately against the GPU and benchmark results, not bumped automatically.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
+        patterns: ["*"]
+    ignore:
+      # The FROM line is pinned by digest: Dependabot proposes new digests of python:3.11-slim-trixie
+      # (security rebuilds). A Python minor upgrade is a decision of its own.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "Docker"
+
+  # Monthly: every Terraform update needs a reviewed plan, and the AWS provider is pinned on purpose.
+  - package-ecosystem: terraform
+    directory: "/infrastructure"
+    schedule:
+      interval: monthly
+    groups:
+      terraform:
+        patterns: ["*"]
+    labels: ["dependencies", "infrastructure"]
+    commit-message:
+      prefix: "Terraform"

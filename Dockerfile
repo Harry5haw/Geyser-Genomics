@@ -4,7 +4,9 @@
 # so fresh builds on it fail with 404s. FastQC needs fontconfig, a font and libharfbuzz (for
 # Java's font manager) to draw its report charts; without them it throws inside a worker
 # thread and hangs instead of exiting.
-FROM python:3.11-slim-trixie
+# Pinned by digest so builds are reproducible; Dependabot proposes the new digest when the tag is rebuilt
+# (Debian and Python security patches). The tag stays for readers and for Dependabot.
+FROM python:3.11-slim-trixie@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -41,6 +43,16 @@ RUN curl -fsSL "https://github.com/bwa-mem2/bwa-mem2/releases/download/v${BWA_ME
     rm /tmp/bwa-mem2.tar.bz2 && \
     /opt/bwa-mem2/bwa-mem2 version
 ENV PATH="/opt/bwa-mem2:${PATH}"
+
+# mosdepth: coverage statistics after align (stats/{id}/mosdepth.*.txt). Not packaged in Debian 13;
+# the upstream release is a single static binary, checksum-pinned like bwa-mem2.
+ARG MOSDEPTH_VERSION=0.3.15
+ARG MOSDEPTH_SHA256=8abd890f5ceeddebc10315cfdef5b909713be4fb67610b7d089f4dc25cf0cde2
+RUN curl -fsSL "https://github.com/brentp/mosdepth/releases/download/v${MOSDEPTH_VERSION}/mosdepth" \
+        -o /usr/local/bin/mosdepth && \
+    echo "${MOSDEPTH_SHA256}  /usr/local/bin/mosdepth" | sha256sum -c - && \
+    chmod +x /usr/local/bin/mosdepth && \
+    mosdepth --version
 
 WORKDIR /app
 

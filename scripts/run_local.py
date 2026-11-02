@@ -301,7 +301,7 @@ def main(argv=None):
                    help="memory cap for the DeepVariant and pangenome containers, e.g. 12g. A whole chromosome can "
                         "otherwise take most of the Docker VM; 16 make_examples shards thrashed under 8g")
     p.add_argument("--skip-to-variants", action="store_true",
-                   help="start at variant calling, using an existing alignments/<sample>.bam")
+                   help="start at variant calling, using an existing alignments/<sample>.cram (or .bam)")
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     a = p.parse_args(argv)
 

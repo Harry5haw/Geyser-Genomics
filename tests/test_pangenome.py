@@ -288,3 +288,173 @@ def test_write_fai_matches_samtools_layout(tmp_path):
     fasta.write_bytes(b">chr20 description\nACGTACGTAC\nACGTAC\n>chrM\nGGGG\n")
     benchmark_happy.write_fai(str(fasta))
     assert (tmp_path / "ref.fa.fai").read_text() == "chr20\t16\t19\t10\t11\nchrM\t4\t43\t4\t5\n"
+
+
+# ---- HG005 / HG003 30x datasets and GIAB stratifications (#51 next steps) ----
+
+def test_hg005_and_its_hg003_control_come_from_the_same_bam_set():
+    hg005 = fetch.DATASETS["hg005-chr20"]["files"]
+    control = fetch.DATASETS["hg003-30x-chr20"]["files"]
+    (url5, size5, key5, how5), (url3, _, key3, how3) = hg005[0], control[0]
+    assert url5.startswith(fetch.BRAIN_30X) and url3.startswith(fetch.BRAIN_30X)
+    assert url5.endswith("HG005.novaseq.pcr-free.30x.dedup.grch38.bam") and size5 is None
+    assert url3.endswith("HG003.novaseq.pcr-free.30x.dedup.grch38.bam")
+    assert (key5, key3) == ("alignments/HG005_chr20.bam", "alignments/HG003_30x_chr20.bam")
+    assert how5 == how3 == "region:chr20"
+    # same reference FASTA as hg003-chr20, so the chr20 graph and existing .fai are shared
+    for name in ("hg005-chr20", "hg003-30x-chr20"):
+        ds = fetch.DATASETS[name]
+        assert ds["reference"] == "GRCh38_chr20.fa" and name in fetch.GRCH38_DATASETS
+        assert [k for _, _, k, _ in ds["files"]][1:] == [
+            "reference/GRCh38_chr20.fa", f"truth/{ds['sample']}.vcf.gz", f"truth/{ds['sample']}.bed"]
+    assert hg005[2][0].startswith(fetch.GIAB) and hg005[2][0].endswith("HG005_GRCh38_1_22_v4.2.1_benchmark.vcf.gz")
+    # the control's truth is the HG003 truth hg003-chr20 uses
+    assert [f[0] for f in control[2:]] == [f[0] for f in fetch.DATASETS["hg003-chr20"]["files"][2:]]
+
+
+def test_pangenome_accepted_for_new_grch38_datasets():
+    files = fetch.dataset_files("hg005-chr20", pangenome="chr20")
+    assert files[-1][2] == "pangenome/chroms/chr20.vg"
+
+
+def test_bam_region_command_fetches_one_contig_atomically(tmp_path):
+    cmd = fetch.bam_region_command(str(tmp_path), "https://h/x.bam", "alignments/S.bam", "chr20")
+    assert cmd[:3] == ["docker", "run", "--rm"] and fetch.APP_IMAGE in cmd
+    script = cmd[-1]
+    assert "samtools view -b -o /data/alignments/S.bam.part https://h/x.bam chr20" in script
+    assert script.index("samtools quickcheck /data/alignments/S.bam.part") < \
+        script.index("mv /data/alignments/S.bam.part /data/alignments/S.bam")
+    assert script.startswith("set -e; cd /tmp")  # the downloaded remote .bai lands outside /data
+    assert fetch.bam_region_command(str(tmp_path), "u", "k", "c", image="other")[-4] == "other"
+
+
+def test_stratifications_only_on_request_and_only_for_grch38():
+    plain = fetch.dataset_files("hg005-chr20")
+    strat = fetch.dataset_files("hg005-chr20", stratifications=True)
+    added = strat[len(plain):]
+    assert len(added) == len(fetch.STRATIFICATIONS)
+    for (name, path), (url, size, key, how) in zip(fetch.STRATIFICATIONS, added):
+        assert url == fetch.STRAT_BASE + path and size is None
+        assert key == f"stratifications/GRCh38_chr20/{name}.bed" and how == "only:chr20"
+    with pytest.raises(ValueError, match="--stratifications needs a GRCh38"):
+        fetch.dataset_files("na12878-slice", stratifications=True)
+
+
+def test_stratification_tsv_paths_are_relative_to_the_tsv():
+    key, text = fetch.stratification_tsv("chr20")
+    assert key == "stratifications/GRCh38_chr20.tsv"
+    lines = text.splitlines()
+    assert lines[0] == "alldifficultregions\tGRCh38_chr20/alldifficultregions.bed"
+    assert len(lines) == len(fetch.STRATIFICATIONS)
+
+
+def test_dataset_contig_from_reference_entry():
+    assert fetch.dataset_contig("hg005-chr20") == "chr20"
+    with pytest.raises(ValueError):
+        fetch.dataset_contig("na12878-slice")
+
+
+def test_keep_contig_gunzips_a_bed_gz_to_plain_bed(tmp_path):
+    src = tmp_path / "in.bed.gz"
+    src.write_bytes(gzip.compress(b"chr1\t0\t5\nchr20\t10\t20\n"))
+    assert fetch.keep_contig(str(src), str(tmp_path / "out.bed"), "chr20") == 1
+    assert (tmp_path / "out.bed").read_bytes() == b"chr20\t10\t20\n"
+
+
+def test_happy_command_adds_stratification():
+    cmd = benchmark_happy.happy_command("S", "r.fa", "v.vcf.gz", "o",
+                                        stratification="stratifications/GRCh38_chr20.tsv")
+    assert cmd[cmd.index("--stratification") + 1] == "/data/stratifications/GRCh38_chr20.tsv"
+    assert "--stratification" not in benchmark_happy.happy_command("S", "r.fa", "v.vcf.gz", "o")
+
+
+EXTENDED_CSV = (
+    "Type,Subtype,Subset,Filter,METRIC.F1_Score,TRUTH.TOTAL,TRUTH.FN,QUERY.FP\n"
+    "SNP,*,*,PASS,0.997746,70166.0,240.0,76.0\n"
+    "SNP,*,*,ALL,0.99,70166.0,240.0,99.0\n"
+    "SNP,ti,*,PASS,0.998,47000.0,100.0,40.0\n"
+    "SNP,*,segdups,PASS,0.9812,1500.0,30.0,27.0\n"
+    "SNP,*,TS_contained,PASS,0.997,70000.0,239.0,70.0\n"
+    "INDEL,*,segdups,PASS,,0.0,0.0,2.0\n"
+)
+
+
+def test_read_extended_keeps_pass_all_subtypes_for_named_regions(tmp_path):
+    path = tmp_path / "x.extended.csv"
+    path.write_text(EXTENDED_CSV)
+    r = benchmark_happy.read_extended(str(path), ["*", "segdups"])
+    assert set(r) == {("*", "SNP"), ("segdups", "SNP"), ("segdups", "INDEL")}
+    assert r[("segdups", "SNP")] == {"truth": 1500, "fn": 30, "fp": 27, "f1": 0.9812}
+    assert r[("segdups", "INDEL")] == {"truth": 0, "fn": 0, "fp": 2, "f1": None}
+
+
+def test_stratified_table_one_row_per_region_and_type(tmp_path):
+    path = tmp_path / "x.extended.csv"
+    path.write_text(EXTENDED_CSV)
+    r = benchmark_happy.read_extended(str(path), ["*", "segdups"])
+    table = benchmark_happy.stratified_table({"pangenome": r, "deepvariant": r}, ["*", "segdups"])
+    lines = table.splitlines()
+    assert "DeepVariant (linear) FN / FP (F1)" in lines[0]
+    assert lines[0].index("DeepVariant (linear)") < lines[0].index("Pangenome-aware")
+    assert lines[2].startswith("| all confident regions | SNP | 70,166 | 240 / 76 (0.99775)")
+    assert lines[3].startswith("| segdups | SNP | 1,500 | 30 / 27 (0.98120)")
+    assert lines[4] == "| segdups | INDEL | 0 | 0 / 2 | 0 / 2 |"
+    assert len(lines) == 5
+
+
+def test_read_stratification_names(tmp_path):
+    tsv = tmp_path / "s.tsv"
+    tsv.write_text("segdups\tGRCh38_chr20/segdups.bed\n\nlowmap\tGRCh38_chr20/lowmap.bed\n")
+    assert benchmark_happy.read_stratification_names(str(tsv)) == ["segdups", "lowmap"]
+
+
+def test_bam_region_command_removes_partial_file_on_failure(tmp_path):
+    script = fetch.bam_region_command(str(tmp_path), "https://h/x.bam", "alignments/S.bam", "chr20")[-1]
+    assert "trap 'rm -f /data/alignments/S.bam.part' ERR" in script
+    assert script.index("trap") < script.index("samtools view")
+
+
+def test_region_fetch_needs_the_app_image(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 1})()
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    monkeypatch.setattr(fetch, "dataset_files", lambda *a: [("https://h/x.bam", None, "alignments/S.bam", "region:chr20")])
+    with pytest.raises(RuntimeError, match="docker build"):
+        fetch.fetch_dataset("hg005-chr20", str(tmp_path), app_image="missing-image")
+    assert calls == [["docker", "image", "inspect", "missing-image"]]
+
+
+def test_number_treats_nan_as_missing():
+    assert benchmark_happy._number("nan", int) is None
+    assert benchmark_happy._number("NaN") is None
+    assert benchmark_happy._number("12.0", int) == 12
+
+
+def test_read_stratification_rejects_a_line_without_a_tab(tmp_path):
+    tsv = tmp_path / "s.tsv"
+    tsv.write_text("segdups GRCh38_chr20/segdups.bed\n")
+    with pytest.raises(ValueError, match="expected '<name><TAB><bed>'"):
+        benchmark_happy.read_stratification(str(tsv))
+
+
+def test_read_stratification_resolves_beds_next_to_the_tsv(tmp_path):
+    tsv = tmp_path / "s.tsv"
+    tsv.write_text("segdups\tGRCh38_chr20/segdups.bed\r\n")
+    [(name, bed)] = benchmark_happy.read_stratification(str(tsv))
+    assert name == "segdups"
+    assert bed == str(tmp_path / "GRCh38_chr20" / "segdups.bed")
+
+
+def test_stratification_with_missing_bed_stops_before_hap_py(tmp_path, monkeypatch):
+    (tmp_path / "stratifications").mkdir()
+    (tmp_path / "stratifications" / "GRCh38_chr20.tsv").write_text("segdups\tGRCh38_chr20/segdups.bed\n")
+    ran = []
+    monkeypatch.setattr(benchmark_happy.subprocess, "run", lambda *a, **k: ran.append(a))
+    with pytest.raises(SystemExit):
+        benchmark_happy.main(["--root", str(tmp_path), "--sample", "S", "--reference", "r.fa",
+                              "--stratification", r"stratifications\GRCh38_chr20.tsv"])
+    assert ran == []

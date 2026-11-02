@@ -19,13 +19,14 @@ def make_bucket(tmp_path, keys):
 def full_sample(sample_id):
     return [f"raw_reads/{sample_id}.fastq.gz",
             f"qc_reports/{sample_id}_fastqc.html", f"qc_reports/{sample_id}_fastqc.zip",
-            f"alignments/{sample_id}.bam", f"variants/{sample_id}.vcf.gz"]
+            f"alignments/{sample_id}.cram", f"alignments/{sample_id}.cram.crai",
+            f"variants/{sample_id}.vcf.gz", f"variants/{sample_id}.vcf.gz.tbi"]
 
 
 KEYS = (full_sample("S1") + ["variants_deepvariant/S1.vcf.gz"]
         + ["raw_reads/S2.fastq.gz"]                                                    # not started
         + ["raw_reads/S3.fastq.gz", "qc_reports/S3_fastqc.html"]                     # align failed
-        + ["raw_reads/S10.fastq.gz", "alignments/S10.bam"]                            # qc failed, align ran
+        + ["raw_reads/S10.fastq.gz", "alignments/S10.bam"]          # qc failed, align ran (BAM: before CRAM)
         + ["decompressed/OLD.fastq"]                       # left over from the four-stage layout: ignored
         + ["raw_reads/S4.fq.gz", "raw_reads/notes.txt", "raw_reads/sub/S5.fastq.gz", "raw_reads/S7.v2.fastq.gz"]
         + ["variants/S6.vcf.gz", "variants_pangenome/S9.vcf.gz"]                       # orphans
@@ -125,7 +126,7 @@ def test_patterns_follow_keys_for():
 def paired_sample(sample_id):
     return ([f"raw_reads/{sample_id}_{m}.fastq.gz" for m in ("R1", "R2")]
             + [f"qc_reports/{sample_id}_{m}_fastqc.{ext}" for m in ("R1", "R2") for ext in ("html", "zip")]
-            + [f"alignments/{sample_id}.bam", f"variants/{sample_id}.vcf.gz"])
+            + [f"alignments/{sample_id}.cram", f"alignments/{sample_id}.cram.crai", f"variants/{sample_id}.vcf.gz"])
 
 
 PAIRED_KEYS = (paired_sample("P1")
@@ -149,7 +150,7 @@ def test_paired_end_samples(tmp_path):
     assert rows["run_1"]["layout"] == "single"
     assert rows["P2"]["problem"] == "lone mate" and "R2 missing" in rows["P2"]["note"]
     # One mate's QC report is not a QC output, but it does show the run reached qc.
-    assert rows["P3"]["outputs"] == {"qc_html": False, "bam": False, "vcf": False}
+    assert rows["P3"]["outputs"] == {"qc_html": False, "cram": False, "vcf": False}
     assert "output from qc; none from align, variants" in rows["P3"]["note"]
     assert rows["P4"]["problem"] == "both layouts" and rows["P4"]["layout"] is None
     assert rows["P7"]["raw"] is False and rows["P7"]["outputs"]["qc_html"] is True
@@ -194,3 +195,20 @@ def test_one_mates_report_is_incomplete_not_unstarted():
                                           "qc_reports/S1_R1_fastqc.html"]))
     assert rows["S1"]["status"] == "incomplete" and rows["S1"]["outputs"]["qc_html"] is False
     assert "output from qc" in rows["S1"]["note"]
+
+
+def test_indexes_belong_to_their_sample_but_are_not_outputs():
+    patterns = reconcile.key_patterns(reconcile.extra_outputs())
+    assert reconcile.match_sample("alignments/ABC.cram", patterns) == "ABC"
+    assert reconcile.match_sample("alignments/ABC.cram.crai", patterns) == "ABC"
+    assert reconcile.match_sample("variants/ABC.vcf.gz.tbi", patterns) == "ABC"
+    expected = reconcile.keys_for("ABC")
+    assert reconcile.output_keys(expected, "cram") == [["alignments/ABC.cram"], ["alignments/ABC.bam"]]
+    assert reconcile.output_keys(expected, "vcf") == [["variants/ABC.vcf.gz"]]
+
+
+def test_stats_files_belong_to_their_sample():
+    patterns = reconcile.key_patterns(reconcile.extra_outputs())
+    for name in ("flagstat.txt", "mosdepth.summary.txt", "mosdepth.global.dist.txt", "bcftools.stats.txt"):
+        assert reconcile.match_sample(f"stats/ABC/{name}", patterns) == "ABC"
+    assert reconcile.match_sample("stats/ABC/other.txt", patterns) is None
