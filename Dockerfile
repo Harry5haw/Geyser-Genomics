@@ -3,7 +3,8 @@
 # The pipeline image: every stage (qc, align, variants) runs in it, locally and on AWS Batch (Fargate).
 # Kept to what the stages run, because each Fargate task pulls the whole image before it starts (#141):
 # fastp, bwa, samtools, bcftools (Debian), bwa-mem2 and mosdepth (upstream, checksum-pinned), Python
-# with boto3. Everything only needed to fetch those (curl, bzip2) stays in the download stage.
+# with boto3, and the quality gate (gate/, built from source in its own stage). Everything only needed
+# to fetch or build those (curl, bzip2, the Rust toolchain) stays in the earlier stages.
 #
 # Debian 13 (trixie). Debian 11 (bullseye) security updates were removed from the mirrors, so fresh
 # builds on it fail with 404s. Base pinned by digest so builds are reproducible; Dependabot proposes the
@@ -40,6 +41,20 @@ RUN curl -fsSL "https://github.com/brentp/mosdepth/releases/download/v${MOSDEPTH
     echo "${MOSDEPTH_SHA256}  /opt/mosdepth" | sha256sum -c - && \
     chmod +x /opt/mosdepth
 
+# ---------------------------------------------------------------------------------------------- gate
+# The quality gate (gate/, #144): one static binary (musl), so the final image gets the binary and no
+# Rust toolchain. The Rust version must match gate/rust-toolchain.toml (bump both together; Dependabot
+# ignores this tag for that reason). RUSTUP_TOOLCHAIN uses the image's toolchain as it is, instead of
+# letting the toolchain file download clippy and rustfmt, which a build doesn't need.
+FROM rust:1.99.1-slim-trixie@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247 AS gate
+ENV RUSTUP_TOOLCHAIN=1.99.1
+RUN rustup target add x86_64-unknown-linux-musl
+WORKDIR /gate
+COPY gate/ .
+RUN cargo build --release --locked --target x86_64-unknown-linux-musl && \
+    cp target/x86_64-unknown-linux-musl/release/geyser-gate /usr/local/bin/geyser-gate && \
+    geyser-gate --version
+
 # ---------------------------------------------------------------------------------------------- final
 FROM python:3.11-slim-trixie@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
 
@@ -56,11 +71,15 @@ ARG BWA_MEM2_VERSION=2.3
 ARG MOSDEPTH_VERSION=0.3.15
 COPY --from=download /opt/bwa-mem2 /opt/bwa-mem2
 COPY --from=download /opt/mosdepth /usr/local/bin/mosdepth
+# The gate and its shipped thresholds (GATE_CONFIG=$GATE_THRESHOLDS_DIR/synthetic.toml for the test data).
+COPY --from=gate /usr/local/bin/geyser-gate /usr/local/bin/geyser-gate
+COPY --from=gate /gate/thresholds /opt/geyser-gate/thresholds
 # The run record (app/provenance.py) shows the pinned releases next to the versions the binaries report.
 ENV PATH="/opt/bwa-mem2:${PATH}" \
     GEYSER_BWA_MEM2_RELEASE=${BWA_MEM2_VERSION} \
-    GEYSER_MOSDEPTH_RELEASE=${MOSDEPTH_VERSION}
-RUN bwa-mem2 version && mosdepth --version
+    GEYSER_MOSDEPTH_RELEASE=${MOSDEPTH_VERSION} \
+    GATE_THRESHOLDS_DIR=/opt/geyser-gate/thresholds
+RUN bwa-mem2 version && mosdepth --version && geyser-gate --version
 
 WORKDIR /app
 

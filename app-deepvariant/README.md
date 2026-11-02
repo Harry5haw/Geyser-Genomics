@@ -48,7 +48,23 @@ Settings you can change. Set these on the host; `run_local.py` passes them into 
 |---|---|---|
 | `DEEPVARIANT_EXTRA_ARGS` | (none) | extra `run_deepvariant` flags, for example `--disable_small_model=true` |
 | `DEEPVARIANT_SHARDS` | CPUs in the container | `make_examples` parallelism |
+| `DEEPVARIANT_TIMEOUT_SECONDS` | no limit | stop the wrapper and fail the stage after this long |
+| `DEEPVARIANT_IDLE_TIMEOUT_SECONDS` | no limit | stop it after this long with no output at all (it looks hung) |
+| `DEEPVARIANT_FATAL_GRACE_SECONDS` | 120 | after a fatal error line (`ResourceExhaustedError` / `RESOURCE_EXHAUSTED`, usually out of GPU memory), stop it once it has been silent this long without exiting |
 | `DEEPVARIANT_MODEL_TYPE` | `WGS` | |
+| `DEEPVARIANT_CHECKPOINT` | on | `0` turns off keeping `make_examples` output for a retry (below) |
+
+**A hung wrapper no longer blocks the stage.** On 1 Nov 2026, `call_variants` ran out of GPU memory and `run_pangenome_aware_deepvariant` never exited. The stage now runs the wrapper in its own process group and watches its output. When a limit is reached, it stops the wrapper's whole group (including steps that outlive the wrapper) and fails with the reason (`WrapperStopped`).
+- **Fatal errors:** a wrapper still printing after a fatal line counts as alive. TensorFlow's `Allocator (GPU_0_bfc) ran out of memory trying to allocate ...` lines are warnings that also appear in successful runs, so they don't count.
+- **Defaults:** the overall and idle limits are off by default, because whole-genome steps can be long and silent. The cloud job sets `DEEPVARIANT_TIMEOUT_SECONDS=3300` (below its 3600 s Batch attempt timeout) and `DEEPVARIANT_IDLE_TIMEOUT_SECONDS=900`.
+- **Settings:** a value that isn't a non-negative number fails the stage before any download. `run_local.py` passes all three variables through.
+
+**A retry skips `make_examples`.** `make_examples` is most of the run: 936 of 1,241 s for pangenome-aware DeepVariant on HG003 chr20. Neither Google wrapper can skip a step, so the stage keeps what it needs for a retry itself:
+- **When:** the wrapper fails or is stopped after `make_examples` has finished, i.e. after the wrapper has started `call_variants`.
+- **What is kept:** `make_examples`' output files and the remaining step commands, exactly as the wrapper printed them, under `intermediate/deepvariant-checkpoints/<sample>/<caller>/`. The data lake's lifecycle rule expires that prefix.
+- **On the next run:** if the inputs and settings match, the stage downloads those files and runs only `call_variants` and `postprocess_variants` (moved to the new work directory), each under the same stop limits. Matching means the same DeepVariant version, alignment and reference (name and size), graph, shard count, model type and `DEEPVARIANT_EXTRA_ARGS`. The stop limits are not part of the match.
+- **After use:** a used checkpoint is marked consumed by overwriting its manifest, because the cloud role cannot delete objects. A checkpoint made with other settings is ignored, and the stage runs in full.
+- **Off switch:** `DEEPVARIANT_CHECKPOINT=0`.
 
 There is no GPU? Build the CPU variant (`--build-arg DV_TAG=1.10.0 -t geyser-deepvariant-cpu`) and pass `--dv-image geyser-deepvariant-cpu --no-gpu`.
 
@@ -118,6 +134,7 @@ is, and so are the pipeline's own BAMs: the `align` stage marks duplicates with 
   - `GEYSER_GPU_E2E=1` uses the GPU image;
   - `GEYSER_DV_E2E=1` uses the CPU image;
   - `GEYSER_DV_TESTDATA=<root>` also runs the real-data slice.
+- `tests/test_e2e_pangenome.py` is opt-in (`GEYSER_PG_E2E=1`): the real pangenome-aware image on synthetic data. `make_test_data.py --pangenome` builds a small graph of the synthetic reference (vg in Docker): the reference as the `GRCh38` path, plus six panel haplotypes. Most of them carry each planted SNP, and half of them carry five decoy SNPs the sample does not have. The test requires exactly the 10 planted SNPs, so a decoy called from the graph alone fails it. It takes about a minute on an RTX 3080. The image is 38 GB, so it is not run in CI.
 - In CI, the CPU-image E2E runs only on pull requests and when started manually. GitHub runners have no GPU. The CPU image runs the same commands and wiring, so CI still catches integration breakage. The GPU path is tested locally before merging.
 
 ## Cloud: what the infrastructure work will need (not done here)

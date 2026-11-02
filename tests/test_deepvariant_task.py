@@ -116,7 +116,7 @@ def dv_inputs(local_env, monkeypatch):
 
 
 def fake_run(vcf_bytes=None, code=0):
-    def run(cmd):
+    def run(cmd, **_):
         out = next(c.split("=", 1)[1] for c in cmd if c.startswith("--output_vcf="))
         if vcf_bytes is not None:
             with open(out, "wb") as fh:
@@ -175,7 +175,7 @@ def test_stage_reads_the_cram_and_indexes_it_itself(local_env, dv_inputs, monkey
     (local_env / "alignments" / "S1.cram.crai").write_bytes(b"STALE")
     seen = []
 
-    def run(cmd):
+    def run(cmd, **_):
         seen.extend(c for c in cmd if c.startswith("--reads="))
         return fake_run(b"x")(cmd)
 
@@ -321,3 +321,504 @@ def test_the_images_bcftools_is_recorded_under_its_own_name(local_env, dv_inputs
     dv.deepvariant_task("S1", "ref.fa")
     tools = provenance.read_record(tasks.storage(), "S1")["tools"]
     assert tools["bcftools (DeepVariant image)"] == "1.13" and "bcftools" not in tools
+
+
+# ---- stopping a hung or failed wrapper (run_streaming limits) ----
+
+
+def py(code):
+    import sys
+
+    return [sys.executable, "-c", code]
+
+
+def test_limits_from_env_defaults_and_overrides():
+    d = dv.WrapperLimits.from_env({})
+    assert (d.timeout, d.idle, d.fatal_grace) == (None, None, 120)  # whole-genome steps can be long and silent
+    o = dv.WrapperLimits.from_env(
+        {
+            "DEEPVARIANT_TIMEOUT_SECONDS": "3300",
+            "DEEPVARIANT_IDLE_TIMEOUT_SECONDS": "900",
+            "DEEPVARIANT_FATAL_GRACE_SECONDS": "0",
+        }
+    )
+    assert (o.timeout, o.idle, o.fatal_grace) == (3300, 900, None)  # 0 = off, for every limit
+
+
+@pytest.mark.parametrize("value", ["2h", "-5"])
+def test_limits_reject_bad_values_by_name(value):
+    with pytest.raises(ValueError, match="DEEPVARIANT_TIMEOUT_SECONDS"):
+        dv.WrapperLimits.from_env({"DEEPVARIANT_TIMEOUT_SECONDS": value})
+
+
+def test_stop_reason_checks_each_limit():
+    limits = dv.WrapperLimits(timeout=100, idle=10, fatal_grace=5)
+    assert dv.stop_reason(limits, now=50, started=0, last_output=45, fatal_at=None) is None
+    assert "within 100 s" in dv.stop_reason(limits, now=101, started=0, last_output=100, fatal_at=None)
+    assert "printed nothing for 10 s" in dv.stop_reason(limits, now=60, started=0, last_output=49, fatal_at=None)
+    # after a fatal line: stopped only once it has also gone quiet for the grace period
+    assert dv.stop_reason(limits, now=60, started=0, last_output=59, fatal_at=40) is None  # still printing
+    assert "fatal error" in dv.stop_reason(limits, now=66, started=0, last_output=60, fatal_at=40)
+    off = dv.WrapperLimits(fatal_grace=0)
+    assert dv.stop_reason(off, now=10_000, started=0, last_output=0, fatal_at=1) is None
+
+
+def test_fatal_pattern_ignores_tensorflow_allocator_warnings():
+    warning = (
+        "W external/local_tsl/tsl/framework/bfc_allocator.cc:296] Allocator (GPU_0_bfc) ran out of memory trying "
+        "to allocate 2.68GiB with freed_by_count=0. The caller indicates that this is not a failure"
+    )
+    assert not dv.FATAL_RE.search(warning)  # seen in successful runs
+    assert dv.FATAL_RE.search("tensorflow.python.framework.errors_impl.ResourceExhaustedError: OOM when allocating")
+    assert dv.FATAL_RE.search("RESOURCE_EXHAUSTED: Out of memory while trying to allocate")
+
+
+def test_run_streaming_stops_a_silent_wrapper():
+    import time as _time
+
+    started = _time.monotonic()
+    with pytest.raises(dv.WrapperStopped, match="printed nothing"):
+        dv.run_streaming(
+            py("import time; print('start', flush=True); time.sleep(60)"),
+            limits=dv.WrapperLimits(idle=1),
+            poll=0.2,
+        )
+    assert _time.monotonic() - started < 30  # killed, not waited out
+
+
+def test_run_streaming_stops_a_wrapper_that_goes_quiet_after_a_fatal_error():
+    with pytest.raises(dv.WrapperStopped, match="fatal error"):
+        dv.run_streaming(
+            py("import time; print('ResourceExhaustedError: OOM', flush=True); time.sleep(60)"),
+            limits=dv.WrapperLimits(fatal_grace=1),
+            poll=0.2,
+        )
+
+
+def test_run_streaming_keeps_a_wrapper_that_still_prints_after_a_fatal_line():
+    code, events, _ = dv.run_streaming(
+        py(
+            "import time\nprint('RESOURCE_EXHAUSTED (autotuning, recovered)', flush=True)\n"
+            "for _ in range(12):\n    time.sleep(0.25); print('progress', flush=True)"
+        ),
+        limits=dv.WrapperLimits(fatal_grace=1),
+        poll=0.1,
+    )
+    assert code == 0 and len(events) == 13  # 3 s of progress, well past the 1 s grace: still alive
+
+
+def test_run_streaming_lets_a_wrapper_exit_by_itself_after_a_fatal_error():
+    code, events, _ = dv.run_streaming(
+        py("import sys; print('RESOURCE_EXHAUSTED', flush=True); sys.exit(1)"),
+        limits=dv.WrapperLimits(fatal_grace=30),
+        poll=0.2,
+    )
+    assert code == 1 and events[0][1] == "RESOURCE_EXHAUSTED"  # its own exit code, no WrapperStopped
+
+
+def test_run_streaming_overall_timeout_even_while_printing():
+    with pytest.raises(dv.WrapperStopped, match="did not finish within 1 s"):
+        dv.run_streaming(
+            py("import time\nwhile True:\n    print('tick', flush=True); time.sleep(0.1)"),
+            limits=dv.WrapperLimits(timeout=1),
+            poll=0.2,
+        )
+
+
+def test_run_streaming_returns_when_a_leftover_process_holds_the_pipe():
+    import time as _time
+
+    started = _time.monotonic()
+    code, events, _ = dv.run_streaming(
+        py(
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])\n"
+            "print('done', flush=True)"
+        ),
+        limits=dv.WrapperLimits(),
+        poll=0.2,
+        drain=1.0,
+    )
+    assert code == 0 and [line for _, line in events] == ["done"]
+    assert _time.monotonic() - started < 15  # not stuck waiting for the leftover's 20 s
+
+
+class FakeProc:
+    def __init__(self, exited):
+        self.pid, self.exited, self.waits = 4242, exited, 0
+
+    def poll(self):
+        return 0 if self.exited else None
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        return 0
+
+
+def test_kill_process_group_signals_the_group_even_after_the_wrapper_exited(monkeypatch):
+    sent = []
+    monkeypatch.setattr(dv.os, "killpg", lambda pid, sig: sent.append((pid, sig)), raising=False)
+    dv.kill_process_group(FakeProc(exited=True))
+    assert [pid for pid, _ in sent] == [4242, 4242]  # TERM and KILL to the group: a stuck step may outlive it
+
+
+def test_kill_process_group_stops_when_the_group_is_gone(monkeypatch):
+    def gone(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(dv.os, "killpg", gone, raising=False)
+    proc = FakeProc(exited=True)
+    dv.kill_process_group(proc)
+    assert proc.waits == 0
+
+
+def test_stage_checks_limits_before_downloading(dv_inputs, monkeypatch):
+    monkeypatch.setenv("DEEPVARIANT_IDLE_TIMEOUT_SECONDS", "soon")
+    fetched = []
+    monkeypatch.setattr(dv, "fetch_alignment", lambda *a, **k: fetched.append(a))
+    with pytest.raises(ValueError, match="DEEPVARIANT_IDLE_TIMEOUT_SECONDS"):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert fetched == []
+
+
+def test_stage_fails_with_the_reason_when_the_wrapper_is_stopped(dv_inputs, monkeypatch):
+    def stopped(cmd, **_):
+        raise dv.WrapperStopped("run_deepvariant printed nothing for 900 s")
+
+    monkeypatch.setattr(dv, "run_streaming", stopped)
+    with pytest.raises(dv.WrapperStopped, match="printed nothing"):
+        dv.deepvariant_task("S1", "ref.fa")
+
+
+def test_run_local_passes_the_limits_through():
+    import run_local
+
+    for name in dv.LIMIT_VARS.values():
+        assert name in run_local.DEEPVARIANT_ENV_VARS
+
+
+def test_run_streaming_cleans_up_the_group_after_a_normal_exit(monkeypatch):
+    sent = []
+    monkeypatch.setattr(dv.os, "killpg", lambda pid, sig: sent.append(pid), raising=False)
+    code, _, _ = dv.run_streaming(py("print('ok', flush=True)"), limits=dv.WrapperLimits(), poll=0.2)
+    assert code == 0 and len(sent) == 1  # stray steps of a finished run do not keep the GPU
+
+
+# ---- resuming after make_examples (checkpoints) ----
+
+PANGENOME_STEPS_OUTPUT = [
+    (0.0, dv.BANNER),
+    (0.0, 'time /opt/deepvariant/bin/load_gbz_into_shared_memory --pangenome_gbz "/w/g.gbz" --num_shards "6"'),
+    (1.0, dv.BANNER),
+    (1.0, "time seq 0 5 | parallel -q /opt/deepvariant/bin/make_examples_pangenome_aware_dv --examples /w/i/x@6.gz"),
+    (9.0, dv.BANNER),
+    (9.0, 'time /opt/deepvariant/bin/call_variants --outfile "/w/i/cvo.gz" --examples "/w/i/x@6.gz"'),
+]
+
+
+def test_step_commands_reads_each_step_after_its_banner():
+    steps = dv.step_commands(SAMPLE_OUTPUT)
+    assert [n for n, _ in steps] == ["make_examples", "call_variants", "postprocess_variants"]
+    assert steps[1][1].startswith("/opt/deepvariant/bin/call_variants --outfile")  # 'time ' removed
+    pg = dv.step_commands(PANGENOME_STEPS_OUTPUT)
+    assert [n for n, _ in pg] == ["load_gbz_into_shared_memory", "make_examples", "call_variants"]
+
+
+def test_make_examples_counts_as_finished_only_once_the_next_step_started():
+    assert dv.make_examples_finished(dv.step_commands(SAMPLE_OUTPUT))
+    assert dv.make_examples_finished(dv.step_commands(PANGENOME_STEPS_OUTPUT))
+    assert not dv.make_examples_finished(dv.step_commands(SAMPLE_OUTPUT[:3]))  # still in make_examples
+
+
+def test_checkpoints_can_be_turned_off(monkeypatch):
+    assert dv.checkpoints_enabled()
+    monkeypatch.setenv("DEEPVARIANT_CHECKPOINT", "0")
+    assert not dv.checkpoints_enabled()
+
+
+def option(cmd, name):
+    """Value of --name=value in a wrapper command list."""
+    return next(c.split("=", 1)[1] for c in cmd if c.startswith(f"--{name}="))
+
+
+def wrapper_events(cmd):
+    """Everything a wrapper prints for its three steps, with this run's paths (what --dry_run=true lists)."""
+    inter, vcf = option(cmd, "intermediate_results_dir"), option(cmd, "output_vcf")
+    return [
+        (0.0, dv.BANNER),
+        (0.0, f"time seq 0 1 | parallel /opt/deepvariant/bin/make_examples --examples {inter}/make_examples@2.gz"),
+        (9.0, dv.BANNER),
+        (9.0, f"time /opt/deepvariant/bin/call_variants --outfile {inter}/cvo.gz --examples {inter}/x@2.gz"),
+        (10.0, dv.BANNER),
+        (10.0, f"time /opt/deepvariant/bin/postprocess_variants --infile {inter}/cvo.gz --outfile {vcf}"),
+    ]
+
+
+def failing_wrapper(stopped=False, reach_call_variants=True):
+    """A fake wrapper that writes make_examples' outputs, then fails or is stopped inside call_variants, as a real
+    one does: so it never prints the postprocess_variants command (that comes from the --dry_run plan)."""
+
+    def run(cmd, **_):
+        inter = option(cmd, "intermediate_results_dir")
+        for name in ("make_examples.tfrecord-00000-of-00002.gz", "make_examples.tfrecord-00001-of-00002.gz"):
+            with open(f"{inter}/{name}", "wb") as fh:
+                fh.write(b"examples")
+        events = wrapper_events(cmd)[: 4 if reach_call_variants else 2]
+        if reach_call_variants:
+            events.append((9.5, "ResourceExhaustedError: OOM"))
+        if stopped:
+            raise dv.WrapperStopped("run_deepvariant reported a fatal error", events)
+        return 1, events, 11.0
+
+    return run
+
+
+def replaying_steps(seen):
+    """A fake run_streaming for the replayed steps: records each command; postprocess writes the VCF."""
+
+    def run(cmd, **_):
+        seen.append(cmd)
+        assert cmd[:4] == ["bash", "-o", "pipefail", "-c"]
+        if "postprocess_variants" in cmd[-1]:
+            out = cmd[-1].split("--outfile ", 1)[1].split()[0]
+            with open(out, "wb") as fh:
+                fh.write(gzip.compress(b"##fileformat=VCFv4.2\n"))
+        return 0, [(0.0, "step log")], 1.0
+
+    return run
+
+
+@pytest.fixture
+def versioned(monkeypatch):
+    """A known DeepVariant version, and the wrapper's --dry_run plan for the fake wrapper's steps."""
+    monkeypatch.setattr(dv, "wrapper_version", lambda wrapper: "1.10.0")
+    monkeypatch.setattr(dv, "planned_steps", lambda cmd: dv.step_commands(wrapper_events(cmd)))
+
+
+def manifest(root, caller="deepvariant"):
+    path = root / "intermediate" / "deepvariant-checkpoints" / "S1" / caller / "manifest.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def test_failure_after_make_examples_saves_a_checkpoint(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError, match="exited with code 1"):
+        dv.deepvariant_task("S1", "ref.fa")
+    m = manifest(local_env)
+    assert m and not m["consumed"] and m["fingerprint"]["version"] == "1.10.0"
+    assert [n for n, _ in m["steps"]] == ["call_variants", "postprocess_variants"]
+    assert m["files"] == ["make_examples.tfrecord-00000-of-00002.gz", "make_examples.tfrecord-00001-of-00002.gz"]
+    ckpt = local_env / "intermediate" / "deepvariant-checkpoints" / "S1" / "deepvariant"
+    assert (ckpt / m["files"][0]).read_bytes() == b"examples"
+
+
+def test_next_run_replays_only_the_remaining_steps_in_its_own_work_dir(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    old_wd = manifest(local_env)["work_dir"]
+
+    seen = []
+    monkeypatch.setattr(dv, "run_streaming", replaying_steps(seen))
+    dv.deepvariant_task("S1", "ref.fa")
+
+    assert len(seen) == 2 and "call_variants" in seen[0][-1] and "postprocess_variants" in seen[1][-1]
+    assert all(old_wd not in cmd[-1] for cmd in seen)  # paths moved to this run's work dir
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz").exists()
+    assert manifest(local_env)["consumed"]  # used once only
+
+    # a third run starts from scratch: the consumed checkpoint is ignored
+    full = []
+    monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: full.append(cmd) or fake_run(b"x")(cmd))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert full and full[0][0] == dv.RUN_DEEPVARIANT
+
+
+def test_a_wrapper_stopped_after_make_examples_also_saves_a_checkpoint(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper(stopped=True))
+    with pytest.raises(dv.WrapperStopped):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert manifest(local_env) is not None
+
+
+def test_no_checkpoint_when_make_examples_had_not_finished(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper(reach_call_variants=False))
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert manifest(local_env) is None
+
+
+def test_no_checkpoint_when_the_version_is_unknown(dv_inputs, local_env, monkeypatch):
+    monkeypatch.setattr(dv, "wrapper_version", lambda wrapper: None)
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert manifest(local_env) is None
+
+
+def test_no_checkpoint_when_turned_off(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setenv("DEEPVARIANT_CHECKPOINT", "0")
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert manifest(local_env) is None
+
+
+def test_a_checkpoint_for_other_settings_is_not_used(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    monkeypatch.setenv("DEEPVARIANT_EXTRA_ARGS", "--call_variants_extra_args=batch_size=256")
+    full = []
+    monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: full.append(cmd) or fake_run(b"x")(cmd))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert full[0][0] == dv.RUN_DEEPVARIANT  # full run: the examples were made with other settings
+    assert not manifest(local_env)["consumed"]
+
+
+def test_a_failed_replay_keeps_the_checkpoint_for_another_try(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: (1, [], 0.0))
+    with pytest.raises(RuntimeError, match="resumed steps exited with code 1"):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert not manifest(local_env)["consumed"]
+
+
+def test_step_commands_skip_a_stray_line_after_the_banner():
+    events = [
+        (0.0, dv.BANNER),
+        (0.0, ""),
+        (0.0, "I1102 late log"),
+        (0.0, "time /opt/deepvariant/bin/call_variants --x"),
+    ]
+    assert dv.step_commands(events) == [("call_variants", "/opt/deepvariant/bin/call_variants --x")]
+
+
+def test_file_identity_tells_same_size_files_apart(tmp_path):
+    a, b = tmp_path / "a.cram", tmp_path / "b.cram"
+    a.write_bytes(b"x" * 100)
+    b.write_bytes(b"y" * 100)
+    ia, ib = dv.file_identity(str(a)), dv.file_identity(str(b))
+    assert ia[1] == ib[1] == 100 and ia[2] != ib[2]
+    assert dv.file_identity(str(tmp_path / "missing")) is None
+
+
+def test_checkpoint_keeps_every_make_examples_file_but_not_call_variants_output(
+    dv_inputs, local_env, versioned, monkeypatch
+):
+    wrapper = failing_wrapper()
+
+    def run(cmd, **kw):
+        inter = option(cmd, "intermediate_results_dir")
+        for name in ("gvcf.tfrecord-00000-of-00002.gz", "call_variants_output.tfrecord.gz"):
+            with open(f"{inter}/{name}", "wb") as fh:
+                fh.write(b"x")
+        return wrapper(cmd, **kw)
+
+    monkeypatch.setattr(dv, "run_streaming", run)
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    files = manifest(local_env)["files"]
+    assert "gvcf.tfrecord-00000-of-00002.gz" in files  # postprocess reads it with --output_gvcf
+    assert not any(f.startswith("call_variants_output") for f in files)
+
+
+def test_a_broken_checkpoint_falls_back_to_a_full_run_and_is_retired(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    ckpt = local_env / "intermediate" / "deepvariant-checkpoints" / "S1" / "deepvariant"
+    (ckpt / manifest(local_env)["files"][0]).unlink()  # e.g. expired by the lifecycle rule
+    full = []
+    monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: full.append(cmd) or fake_run(b"x")(cmd))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert full[0][0] == dv.RUN_DEEPVARIANT
+    retired = manifest(local_env)
+    assert retired["consumed"] and retired["retired"].startswith("unusable")
+
+
+def test_a_new_checkpoint_retires_the_old_manifest_before_writing_files(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    order = []
+    real_write, real_upload = dv.write_manifest, dv.storage().upload
+    monkeypatch.setattr(
+        dv, "write_manifest", lambda prefix, m: order.append(m.get("retired", "new")) or real_write(prefix, m)
+    )
+    monkeypatch.setattr(dv.storage(), "upload", lambda local, key: order.append("file") or real_upload(local, key))
+    monkeypatch.setenv("DEEPVARIANT_EXTRA_ARGS", "--other")  # other settings: a full run that fails again
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert order[0] == "being replaced" and order[-1] == "new" and "file" in order[1:-1]
+    assert manifest(local_env)["fingerprint"]["extra_args"] == "--other"
+
+
+def test_replayed_steps_share_one_overall_time_budget(monkeypatch):
+    import time as _time
+
+    seen = []
+
+    def run(cmd, limits=None, **_):
+        seen.append(limits.timeout)
+        _time.sleep(1.2)
+        return 0, [], 0.0
+
+    monkeypatch.setattr(dv, "run_streaming", run)
+    steps = [("call_variants", "cv"), ("postprocess_variants", "pp")]
+    with pytest.raises(dv.WrapperStopped, match="resumed steps did not finish within 1 s"):
+        dv.run_steps(steps, dv.WrapperLimits(timeout=1))
+    assert len(seen) == 1 and seen[0] <= 1  # the second step got no fresh budget
+    seen.clear()
+    code, events, _ = dv.run_steps(steps, dv.WrapperLimits(timeout=10))
+    assert code == 0 and seen[0] <= 10 and seen[1] < seen[0] - 1  # each step gets what is left
+    assert [n for n, _ in dv.step_commands(events)] == []  # 'cv'/'pp' are not step binaries: nothing parsed
+
+
+def test_remaining_steps_come_from_the_plan_when_the_run_matches_it():
+    plan = [("make_examples", "me"), ("call_variants", "cv"), ("postprocess_variants", "pp")]
+    started = plan[:2]  # stopped inside call_variants: postprocess never printed
+    assert dv.remaining_steps(started, plan) == plan[1:]
+    assert dv.remaining_steps(started, []) is None  # no plan: commands unknown
+    assert dv.remaining_steps([("make_examples", "other"), ("call_variants", "cv")], plan) is None  # plan differs
+    assert dv.remaining_steps(plan, []) == plan[1:]  # the run itself got to postprocess
+
+
+def test_no_checkpoint_without_a_plan_when_stopped_in_call_variants(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "planned_steps", lambda cmd: [])
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper(stopped=True))
+    with pytest.raises(dv.WrapperStopped):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert manifest(local_env) is None  # a checkpoint without postprocess_variants could never finish
+
+
+def test_planned_steps_parse_a_dry_run(monkeypatch):
+    class Done:
+        returncode = 0
+        stdout = (
+            "I1102 ... intermediate\n\n***** Running the command:*****\ntime /opt/deepvariant/bin/call_variants --x\n"
+        )
+        stderr = ""
+
+    seen = []
+    monkeypatch.setattr(dv.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or Done())
+    assert dv.planned_steps(["/opt/deepvariant/bin/run_deepvariant", "--ref=r"]) == [
+        ("call_variants", "/opt/deepvariant/bin/call_variants --x")
+    ]
+    assert seen[0][-1] == "--dry_run=true"
+
+
+def test_a_checkpoint_without_postprocess_is_retired_not_replayed(dv_inputs, local_env, versioned, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", failing_wrapper())
+    with pytest.raises(RuntimeError):
+        dv.deepvariant_task("S1", "ref.fa")
+    path = local_env / "intermediate" / "deepvariant-checkpoints" / "S1" / "deepvariant" / "manifest.json"
+    m = json.loads(path.read_text())
+    m["steps"] = m["steps"][:1]  # only call_variants: what the first version saved for a run stopped in it
+    path.write_text(json.dumps(m))
+    full = []
+    monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: full.append(cmd) or fake_run(b"x")(cmd))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert full[0][0] == dv.RUN_DEEPVARIANT and manifest(local_env)["retired"].startswith("unusable")

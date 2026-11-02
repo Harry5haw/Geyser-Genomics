@@ -19,6 +19,9 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
         Sid = "AWSBatchPermissions", Effect = "Allow", Action = ["batch:SubmitJob", "batch:DescribeJobs", "batch:TerminateJob"],
         Resource = [
           aws_batch_job_queue.geyser_queue.arn,
+          aws_batch_job_queue.gpu_queue.arn,
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_job_def.name}:*",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*"
         ]
@@ -56,19 +59,21 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   # The definition lives in state_machine.asl.json so that tests/test_state_machine_local.py can run
   # the very same file in Step Functions Local (Docker, no AWS). Only these values are filled in.
   definition = templatefile("${path.module}/state_machine.asl.json", {
-    job_definition           = aws_batch_job_definition.geyser_app_job_def.name
-    job_queue                = aws_batch_job_queue.geyser_queue.name
-    sns_topic_arn            = aws_sns_topic.geyser_pipeline_status_topic.arn
-    pipeline_timeout_seconds = var.pipeline_timeout_hours * 3600
-    qc_vcpu                  = var.stage_resources["qc"].vcpu
-    qc_memory_mb             = var.stage_resources["qc"].memory_mb
-    align_vcpu               = var.stage_resources["align"].vcpu
-    align_memory_mb          = var.stage_resources["align"].memory_mb
-    variants_vcpu            = var.stage_resources["variants"].vcpu
-    variants_memory_mb       = var.stage_resources["variants"].memory_mb
-    bucket                   = aws_s3_bucket.data_lake.bucket
-    variant_region_window    = var.variant_region_window
-    variants_max_concurrency = var.variants_max_concurrency
+    job_definition             = aws_batch_job_definition.geyser_app_job_def.name
+    job_queue                  = aws_batch_job_queue.geyser_queue.name
+    deepvariant_job_definition = aws_batch_job_definition.geyser_deepvariant_job_def.name
+    gpu_job_queue              = aws_batch_job_queue.gpu_queue.name
+    sns_topic_arn              = aws_sns_topic.geyser_pipeline_status_topic.arn
+    pipeline_timeout_seconds   = var.pipeline_timeout_hours * 3600
+    qc_vcpu                    = var.stage_resources["qc"].vcpu
+    qc_memory_mb               = var.stage_resources["qc"].memory_mb
+    align_vcpu                 = var.stage_resources["align"].vcpu
+    align_memory_mb            = var.stage_resources["align"].memory_mb
+    variants_vcpu              = var.stage_resources["variants"].vcpu
+    variants_memory_mb         = var.stage_resources["variants"].memory_mb
+    bucket                     = aws_s3_bucket.data_lake.bucket
+    variant_region_window      = var.variant_region_window
+    variants_max_concurrency   = var.variants_max_concurrency
   })
 
   lifecycle {
