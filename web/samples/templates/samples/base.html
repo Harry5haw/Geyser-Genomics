@@ -27,7 +27,7 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="site container">
-    Each upload runs FastQC and BWA-MEM on the gzipped reads, then bcftools, the same containers AWS Batch runs in the cloud.
+    Each upload runs fastp and BWA-MEM on the gzipped reads, then bcftools, the same containers AWS Batch runs in the cloud.
     Storage: <code>{{ storage_backend }}</code>.
   </footer>
   <script>

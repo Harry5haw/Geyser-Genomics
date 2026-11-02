@@ -43,16 +43,24 @@
   </section>
 {% endif %}
 
-{% if qc_reports %}
+{% if qc_summary or qc_report %}
   <section class="panel">
     <h2>Quality control</h2>
-    {% for qc in qc_reports %}
-    <details{% if forloop.first %} open{% endif %}>
-      <summary>{{ qc.label }}</summary>
-      <iframe class="fastqc" title="{{ qc.label }} for {{ sample.sample_id }}" sandbox
-              src="{% url 'samples:file' sample.sample_id qc.kind %}?inline=1"></iframe>
+    {% if qc_summary %}
+    <table class="qc-summary">
+      <tbody>
+      {% for label, value in qc_summary %}<tr><th scope="row">{{ label }}</th><td>{{ value }}</td></tr>{% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if qc_report %}
+    <details>
+      <summary>fastp report{% if sample.layout == "paired" %} (both mates){% endif %}</summary>
+      <p class="muted">Charts are blank here (the report's scripts are blocked). The downloaded report draws them when opened online: it loads its chart script from opengene.org.</p>
+      <iframe class="qc-report" title="fastp report for {{ sample.sample_id }}" sandbox
+              src="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1"></iframe>
     </details>
-    {% endfor %}
+    {% endif %}
   </section>
 {% endif %}
 
