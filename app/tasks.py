@@ -962,9 +962,24 @@ def finalize_main(argv) -> int:
     parser.add_argument("--status", choices=["failed"], required=True)
     parser.add_argument("--error", help="the error name, e.g. States.TaskFailed")
     parser.add_argument("--cause", help="the error's cause (a failed Batch job's description, as JSON)")
+    parser.add_argument(
+        "--caught",
+        help="the Catch output as JSON ({Error, Cause}: States.JsonToString($.error)); --error/--cause override it. "
+        "The state machine passes this one: a Pass state reading $.error.Cause would itself fail if Cause were absent",
+    )
     args = parser.parse_args(argv)
+    caught = {}
+    if args.caught:
+        try:
+            caught = json.loads(args.caught)
+        except ValueError:
+            caught = {"Cause": args.caught}  # not JSON: keep it as the cause
+        if not isinstance(caught, dict):
+            caught = {"Cause": args.caught}
+    error = args.error if args.error is not None else caught.get("Error")
+    cause = args.cause if args.cause is not None else caught.get("Cause")
     try:
-        record = provenance.close_run(storage(), args.srr_id, args.status, args.error, args.cause)
+        record = provenance.close_run(storage(), args.srr_id, args.status, error, cause)
     except Exception as err:  # noqa: BLE001 - close_run never raises; storage() itself might
         print(f"WARNING: could not close the run record for {args.srr_id}: {err}", flush=True)
         return 0

@@ -169,6 +169,21 @@ def test_tasks_finalize_closes_the_record_and_always_exits_0(store, monkeypatch,
     assert tasks.main(["finalize", "S1", "--status", "failed"]) == 0  # best effort: the failure path goes on
 
 
+def test_tasks_finalize_reads_the_whole_catch_output(store, monkeypatch):
+    # What the state machine passes: States.JsonToString($.error), i.e. {"Error": ..., "Cause": ...} as one string.
+    monkeypatch.setenv("RUN_NAME", "run-1")
+    caught = json.dumps(batch_failure())
+    assert tasks.main(["finalize", "S1", "--status", "failed", "--caught", caught]) == 0
+    failure = stored_record(store)["failure"]
+    assert failure["stage"] == "QualityControl" and failure["error"] == "States.TaskFailed"
+    # Explicit flags win; a Catch output that isn't a JSON object is kept as the cause.
+    assert tasks.main(["finalize", "S1", "--status", "failed", "--caught", caught, "--error", "Custom"]) == 0
+    assert stored_record(store)["failure"]["error"] == "Custom"
+    for odd in ("not json", "[1, 2]"):
+        assert tasks.main(["finalize", "S1", "--status", "failed", "--caught", odd]) == 0
+        assert stored_record(store)["failure"]["reason"] == odd
+
+
 def test_tasks_finalize_needs_a_status():
     with pytest.raises(SystemExit):
         tasks.main(["finalize", "S1"])
