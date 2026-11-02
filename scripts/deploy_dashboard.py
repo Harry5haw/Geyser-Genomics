@@ -117,7 +117,7 @@ def main(argv=None, client=None, sts_client=None) -> int:
                 trigger_function_name=args.trigger_function_name,
                 sfn_log_group=args.sfn_log_group))
     except ValueError as err:
-        raise SystemExit(f"FATAL: {err}")
+        raise SystemExit(f"FATAL: {err}") from err
     if not args.state_machine_arn:
         print("NOTE: no --state-machine-arn/SFN_ARN, so the Step Functions widgets are left out.", file=sys.stderr)
 

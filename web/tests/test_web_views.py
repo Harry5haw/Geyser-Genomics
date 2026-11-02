@@ -1,7 +1,8 @@
 import json
 
-from .web_helpers import FASTP_SINGLE, fastq_gz, metric, put, vcf_gz, write_metrics
 from samples.runs import write_run
+
+from .web_helpers import FASTP_SINGLE, fastq_gz, metric, put, vcf_gz, write_metrics
 
 FINISHED = ["qc_reports/S1.fastp.html",
             "alignments/S1.cram", "alignments/S1.cram.crai", "variants/S1.vcf.gz.tbi",

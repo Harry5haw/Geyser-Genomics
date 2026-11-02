@@ -13,14 +13,14 @@ Query Step Functions executions and calculate total pipeline duration.
   per stage and per run (see stage_breakdown.py); --stages-csv to export it
 """
 
-import os
-import json
-import csv
 import argparse
+import csv
+import json
+import os
 import shutil
 from collections import defaultdict
+from datetime import UTC
 from statistics import mean, median
-from datetime import timezone
 
 import stage_breakdown
 
@@ -59,7 +59,7 @@ def fmt_ts(dt):
     """UTC compact timestamp YYYY-MM-DD HH:MM:SS."""
     if not dt:
         return '---'
-    return dt.astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+    return dt.astimezone(UTC).strftime('%Y-%m-%d %H:%M:%S')
 
 def trunc(s: str, width: int) -> str:
     if width <= 3:
@@ -97,7 +97,8 @@ def compute_layout():
         # we’re too wide; shrink some earlier columns down to their mins until it fits
         deficit = mins["exec"] - max(remaining, 0)
         for key in ["start", "stop", "sample", "secs", "status", "runtime"]:
-            if deficit <= 0: break
+            if deficit <= 0:
+                break
             reducible = w[key] - mins[key]
             take = min(reducible, deficit)
             w[key] -= take
@@ -256,7 +257,7 @@ def main(argv=None, sfn_client=None, batch_client=None):
         min_dur = min(durations)
         max_dur = max(durations)
         med_dur = median(durations)
-        print("\nOverall Summary ({} runs with status={}):".format(len(durations), args.status))
+        print(f"\nOverall Summary ({len(durations)} runs with status={args.status}):")
         print(f"  Average: {smart_format(avg_dur)} ({avg_dur:.2f}s)")
         print(f"  Median:  {smart_format(med_dur)} ({med_dur:.2f}s)")
         print(f"  Min:     {smart_format(min_dur)} ({min_dur:.2f}s)")

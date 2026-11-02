@@ -13,10 +13,20 @@
 
 import json
 from dataclasses import dataclass, field
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
-from geyser_web.pipeline import (ALIGNMENT_FORMS, SINGLE, LayoutError, ObjectNotFound, keys_for, keys_of,
-                                 layout_from_raw, legacy_qc_keys, output_present, parse_raw_key)
+from geyser_web.pipeline import (
+    ALIGNMENT_FORMS,
+    SINGLE,
+    LayoutError,
+    ObjectNotFound,
+    keys_for,
+    keys_of,
+    layout_from_raw,
+    legacy_qc_keys,
+    output_present,
+    parse_raw_key,
+)
 
 from .runs import is_valid_sample_id, read_all_runs, read_run
 
@@ -56,7 +66,7 @@ class StageView:
     name: str
     label: str
     state: str  # done | running | failed | pending
-    duration: Optional[float] = None
+    duration: float | None = None
 
 
 @dataclass
@@ -64,9 +74,9 @@ class SampleView:
     sample_id: str
     state: str  # queued | running | succeeded | failed
     stages: list
-    run: Optional[dict] = None
-    updated: Optional[float] = None
-    duration: Optional[float] = None
+    run: dict | None = None
+    updated: float | None = None
+    duration: float | None = None
     keys: dict = field(default_factory=dict)
     layout: str = SINGLE
 
@@ -132,7 +142,7 @@ def read_metrics(storage) -> list:
     return records
 
 
-def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict], layout: str = SINGLE) -> SampleView:
+def build_sample(sample_id: str, present: set, metrics: list, run: dict | None, layout: str = SINGLE) -> SampleView:
     keys = keys_for(sample_id, layout)
     since = None
     if run and run.get("started"):
@@ -167,7 +177,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
     done = {s.name for s in stages if s.state == "done"}
     # Pending stages whose inputs exist: qc and align from the start (they run side by side in the
     # cloud), variants once both are done.
-    ready = [view for view, st in zip(stages, STAGES)
+    ready = [view for view, st in zip(stages, STAGES, strict=True)
              if view.state == "pending" and all(dep in done for dep in st.after)]
     first_pending = ready[0] if ready else None
     if all(s.state == "done" for s in stages):

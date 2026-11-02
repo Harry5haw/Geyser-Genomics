@@ -3,9 +3,10 @@ import json
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from .web_helpers import FASTP_PAIRED, fastq_gz, put, vcf_gz
 from samples import status
 from samples.worker import Worker
+
+from .web_helpers import FASTP_PAIRED, fastq_gz, put, vcf_gz
 
 R1, R2 = "raw_reads/P1_R1.fastq.gz", "raw_reads/P1_R2.fastq.gz"
 

@@ -4,9 +4,10 @@ import sys
 import pytest
 from django.core.management import CommandError, call_command
 
-from .web_helpers import fastq_gz, put
 from samples.runs import read_run, read_text, write_run
 from samples.worker import RunLocalRunner, Worker
+
+from .web_helpers import fastq_gz, put
 
 
 class FakeRunner:

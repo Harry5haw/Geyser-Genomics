@@ -8,6 +8,7 @@ import benchmark_happy
 import deepvariant_task as dv
 import fetch_dv_testdata as fetch
 import run_local
+from storage import ObjectNotFound
 
 GRAPH = "hprc-v1.1-mc-grch38.gbz"
 
@@ -108,7 +109,7 @@ def test_pangenome_stage_uploads_vcf_and_records_its_own_metrics(pg_inputs, monk
 def test_pangenome_stage_fails_without_graph(pg_inputs, monkeypatch):
     (pg_inputs / "pangenome" / GRAPH).unlink()
     monkeypatch.setattr(dv, "run_streaming", fake_pangenome_run([], b"x"))
-    with pytest.raises(Exception):
+    with pytest.raises(ObjectNotFound):
         dv.pangenome_deepvariant_task("S1", "ref.fa", GRAPH)
     last = metrics_lines(pg_inputs)[-1]
     assert (last["task"], last["status"]) == ("PangenomeDeepVariant", "Failure")
@@ -333,7 +334,7 @@ def test_stratifications_only_on_request_and_only_for_grch38():
     strat = fetch.dataset_files("hg005-chr20", stratifications=True)
     added = strat[len(plain):]
     assert len(added) == len(fetch.STRATIFICATIONS)
-    for (name, path), (url, size, key, how) in zip(fetch.STRATIFICATIONS, added):
+    for (name, path), (url, size, key, how) in zip(fetch.STRATIFICATIONS, added, strict=True):
         assert url == fetch.STRAT_BASE + path and size is None
         assert key == f"stratifications/GRCh38_chr20/{name}.bed" and how == "only:chr20"
     with pytest.raises(ValueError, match="--stratifications needs a GRCh38"):

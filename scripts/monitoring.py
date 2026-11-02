@@ -23,8 +23,8 @@ No account IDs or ARNs live in this file: ARNs and the account ID are always arg
 
 import json
 import re
-from urllib.parse import quote
 from dataclasses import dataclass
+from urllib.parse import quote
 
 DEFAULT_REGION = "eu-west-2"
 DEFAULT_NAMESPACE = "GeyserGenomics"  # app/metrics.py METRIC_NAMESPACE

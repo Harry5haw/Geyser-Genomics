@@ -2,14 +2,14 @@
 import json
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import pytest
 
+import deepvariant_task
 import deploy_alarms
 import deploy_dashboard
-import deepvariant_task
 import monitoring
 import query_pipeline_duration
 import runtime_deploy_pipeline_dashboard
@@ -336,7 +336,7 @@ def test_query_pipeline_duration_is_importable_and_uses_given_client(capsys, mon
     monkeypatch.delenv("SFN_ARN", raising=False)
     with pytest.raises(SystemExit):
         query_pipeline_duration.main([])
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     client = mock.Mock()
     client.list_executions.return_value = {"executions": [{"executionArn": "e1", "name": "run-1"}]}
     client.describe_execution.return_value = {

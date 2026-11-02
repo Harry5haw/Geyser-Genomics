@@ -1,8 +1,9 @@
 """The fastp summary on the sample page (samples/qc.py)."""
 import json
 
-from .web_helpers import FASTP_PAIRED, FASTP_SINGLE, put
 from samples import qc
+
+from .web_helpers import FASTP_PAIRED, FASTP_SINGLE, put
 
 
 def test_single_end_summary(storage):

@@ -37,8 +37,16 @@ import subprocess
 import sys
 import time
 
-from tasks import (ensure_reference_local, fetch_alignment, index_alignment, keys_for, metrics, storage,
-                   timed_stage, work_dir)
+from tasks import (
+    ensure_reference_local,
+    fetch_alignment,
+    index_alignment,
+    keys_for,
+    metrics,
+    storage,
+    timed_stage,
+    work_dir,
+)
 
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
 RUN_PANGENOME_DEEPVARIANT = os.environ.get("RUN_PANGENOME_DEEPVARIANT",

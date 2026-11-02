@@ -42,6 +42,9 @@ class Prices:
     storage_gb_hour: float = DEFAULT_STORAGE_GB_HOUR_USD
 
 
+DEFAULT_PRICES = Prices()
+
+
 def _get(d, name, default=None):
     """Case-insensitive key lookup: Step Functions copies use PascalCase, describe_jobs camelCase."""
     if not isinstance(d, dict):
@@ -139,7 +142,7 @@ def ephemeral_storage_gb(job: dict):
         return None
 
 
-def fargate_cost(run_seconds, vcpu, memory_gb, prices: Prices = Prices(), storage_gb=None):
+def fargate_cost(run_seconds, vcpu, memory_gb, prices: Prices = DEFAULT_PRICES, storage_gb=None):
     """vCPU + memory, plus ephemeral storage beyond the free 20 GiB, for the billed time (1 min minimum)."""
     if run_seconds is None or vcpu is None or memory_gb is None:
         return None
@@ -170,7 +173,7 @@ def failure_reason(job: dict):
     return reason
 
 
-def stage_row(stage: str, job: dict, prices: Prices = Prices()) -> dict:
+def stage_row(stage: str, job: dict, prices: Prices = DEFAULT_PRICES) -> dict:
     created, started, stopped = (_get(job, k) for k in ("CreatedAt", "StartedAt", "StoppedAt"))
     vcpu, memory_gb, gpus = resources(job)
     run = _seconds(started, stopped)
@@ -191,7 +194,7 @@ def stage_row(stage: str, job: dict, prices: Prices = Prices()) -> dict:
     }
 
 
-def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = Prices()) -> list:
+def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = DEFAULT_PRICES) -> list:
     tasks = batch_tasks(sfn_client, execution_arn)
     live = {}
     if batch_client is not None:

@@ -21,7 +21,7 @@ import os
 import re
 import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -100,7 +100,7 @@ def build_execution_name(sample_id: str, event_time: str = None, event_key: str 
         when = datetime.strptime(event_time[:19], "%Y-%m-%dT%H:%M:%S") if event_time else None
     except ValueError:
         when = None
-    stamp = (when or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    stamp = (when or datetime.now(UTC)).strftime("%Y%m%dT%H%M%SZ")
     suffix = hashlib.sha1(event_key.encode("utf-8")).hexdigest()[:8] if event_key else uuid.uuid4().hex[:8]
     return f"{sample}-{stamp}-{suffix}"
 

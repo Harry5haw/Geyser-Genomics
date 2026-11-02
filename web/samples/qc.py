@@ -5,7 +5,6 @@ page shows these numbers from the JSON as a table above the report.
 """
 
 import json
-from typing import Optional
 
 MAX_QC_JSON_BYTES = 20 * 1024 * 1024  # a fastp JSON is ~50-100 KB; anything far bigger isn't one
 
@@ -14,7 +13,7 @@ def _percent(value) -> str:
     return f"{100 * float(value):.1f}%"
 
 
-def read_qc_summary(storage, key: str) -> Optional[list]:
+def read_qc_summary(storage, key: str) -> list | None:
     """[(label, value), ...] from a fastp JSON report, or None if it is missing or unreadable.
 
     Best effort: the table is extra, so any storage error (missing object, AccessDenied, a dropped

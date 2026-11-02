@@ -1,5 +1,6 @@
 """Paired-end handling in the trigger Lambda: wait for both mates, then start exactly one run."""
 import json
+from datetime import UTC
 
 import pytest
 from botocore.exceptions import ClientError
@@ -55,9 +56,9 @@ def test_paired_name_uses_the_same_format_as_single_end(trigger):
 
 
 def test_paired_name_accepts_headobject_datetimes(trigger):
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    when = datetime(2026, 11, 1, 20, 0, 5, tzinfo=timezone.utc)
+    when = datetime(2026, 11, 1, 20, 0, 5, tzinfo=UTC)
     assert trigger.paired_execution_name("S1", [('"abc"', when), ('"def"', when)]).split("-")[1] == "20261101T200005Z"
 
 

@@ -155,7 +155,7 @@ def test_stage_reads_the_cram_and_indexes_it_itself(local_env, dv_inputs, monkey
 def test_stage_fails_without_bam(local_env, dv_inputs, monkeypatch):
     (local_env / "alignments" / "S1.bam").unlink()
     monkeypatch.setattr(dv, "run_streaming", fake_run(b"x"))
-    with pytest.raises(Exception):
+    with pytest.raises(FileNotFoundError, match="No alignment for S1"):
         dv.deepvariant_task("S1", "ref.fa")
 
 

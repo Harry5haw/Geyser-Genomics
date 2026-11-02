@@ -4,7 +4,6 @@ import gzip
 import io
 import json
 from dataclasses import dataclass, field
-from typing import Optional
 
 from geyser_web.pipeline import ObjectNotFound
 
@@ -15,8 +14,8 @@ class Variant:
     pos: int
     ref: str
     alt: str
-    qual: Optional[float]
-    depth: Optional[int]
+    qual: float | None
+    depth: int | None
     genotype: str
     kind: str  # SNP | Indel | MNP
 

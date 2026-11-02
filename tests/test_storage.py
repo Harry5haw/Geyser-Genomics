@@ -228,7 +228,7 @@ def test_forward_only_stream_fills_each_read():
 
 class _BrokenStream(io.RawIOBase):
     def readinto(self, buf):
-        raise IOError("connection dropped")
+        raise OSError("connection dropped")
 
 
 def test_failed_write_leaves_no_key_and_no_temp_file(tmp_path):

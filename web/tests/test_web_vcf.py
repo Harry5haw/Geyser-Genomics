@@ -1,5 +1,6 @@
-from .web_helpers import put, vcf_gz
 from samples.vcf import check_truth, parse_vcf, read_variants
+
+from .web_helpers import put, vcf_gz
 
 
 def test_parse_vcf_rows_and_fields(storage):

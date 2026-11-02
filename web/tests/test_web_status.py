@@ -1,6 +1,7 @@
-from .web_helpers import fastq_gz, metric, put, write_metrics
 from samples import status
 from samples.runs import write_run
+
+from .web_helpers import fastq_gz, metric, put, write_metrics
 
 
 def states(sample):

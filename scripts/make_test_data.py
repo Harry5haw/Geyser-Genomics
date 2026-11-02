@@ -149,7 +149,7 @@ def main(argv=None):
     handles = [gzip.open(path, "wt", encoding="ascii", newline="\n") for path in fastq_paths]
     try:
         for name, *seqs, qual in records:
-            for fh, seq in zip(handles, seqs):
+            for fh, seq in zip(handles, seqs, strict=True):
                 fh.write(f"@{name}\n{seq}\n+\n{qual}\n")
             n += 1
             n_dup += name.endswith("_dup")

@@ -13,8 +13,17 @@ from django.shortcuts import redirect, render
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.http import require_GET, require_POST
 
-from geyser_web.pipeline import (MATES, PAIRED, PER_MATE_KEYS, LayoutError, ObjectNotFound, get_storage, keys_for,
-                                 keys_of, layout_from_raw)
+from geyser_web.pipeline import (
+    MATES,
+    PAIRED,
+    PER_MATE_KEYS,
+    LayoutError,
+    ObjectNotFound,
+    get_storage,
+    keys_for,
+    keys_of,
+    layout_from_raw,
+)
 
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
@@ -114,7 +123,7 @@ def upload(request):
     sample_id, layout = form.cleaned_data["sample_id"], form.cleaned_data["layout"]
     files = [form.cleaned_data["reads"]] + ([form.cleaned_data["reads_r2"]] if layout == PAIRED else [])
     # R2 first: the trigger starts a paired-end sample once both mates exist, whichever lands last.
-    for f, key in reversed(list(zip(files, keys_of(keys_for(sample_id, layout), "raw")))):
+    for f, key in reversed(list(zip(files, keys_of(keys_for(sample_id, layout), "raw"), strict=True))):
         f.seek(0)
         storage.upload_stream(f, key)
     kind = "paired-end reads" if layout == PAIRED else "reads"

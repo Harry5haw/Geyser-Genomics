@@ -2,7 +2,7 @@
 Uses fake Step Functions / Batch clients; nothing reaches AWS."""
 import csv
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import pytest
@@ -120,7 +120,7 @@ def test_describe_jobs_batches_of_100():
 
 
 def test_query_cli_stage_breakdown_and_csv(tmp_path, capsys):
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     sfn = paged_sfn(history(), page_size=100)
     sfn.list_executions.return_value = {"executions": [{"executionArn": "exec-1", "name": "run-1"}]}
     sfn.describe_execution.return_value = {"startDate": start, "stopDate": start + timedelta(minutes=17),
@@ -140,7 +140,7 @@ def test_query_cli_stage_breakdown_and_csv(tmp_path, capsys):
 
 
 def test_query_cli_without_stages_does_not_touch_batch(capsys):
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     sfn = mock.Mock()
     sfn.list_executions.return_value = {"executions": [{"executionArn": "exec-1", "name": "run-1"}]}
     sfn.describe_execution.return_value = {"startDate": start, "stopDate": start + timedelta(minutes=2),
@@ -179,7 +179,7 @@ def test_query_cli_prints_failure_reason(capsys):
     failed.update({"StatusReason": "Essential container in task exited",
                    "Attempts": [{"Container": {"ExitCode": 1, "Reason": None}}]})
     events[8] = task_event("TaskFailed", failed)
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     sfn = paged_sfn(events, page_size=100)
     sfn.list_executions.return_value = {"executions": [{"executionArn": "exec-1", "name": "run-1"}]}
     sfn.describe_execution.return_value = {"startDate": start, "stopDate": start + timedelta(minutes=17),

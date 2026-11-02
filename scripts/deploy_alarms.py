@@ -55,7 +55,7 @@ def main(argv=None, client=None) -> int:
         alarms = monitoring.build_alarms(args.sns_topic_arn, trigger_function_name=args.trigger_function_name,
                                          prefix=args.prefix)
     except ValueError as err:
-        raise SystemExit(f"FATAL: {err}")
+        raise SystemExit(f"FATAL: {err}") from err
 
     if args.dry_run:
         print(monitoring.to_json(alarms))

@@ -93,7 +93,7 @@ def test_paired_writes_matching_mates_from_one_fragment(tmp_path):
     # planted SNP inside a read stops it matching the reference exactly.
     genome = read_fasta(tmp_path / "reference" / "synthetic_ref.fa")
     strands, inserts = [], []
-    for (_, a), (_, b) in zip(r1, r2):
+    for (_, a), (_, b) in zip(r1, r2, strict=True):
         for strand, left, right in (("+", a, revcomp(b)), ("-", b, revcomp(a))):
             p_left, p_right = genome.find(left), genome.find(right)
             if p_left >= 0 and p_right >= 0:

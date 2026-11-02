@@ -47,7 +47,7 @@ def write_fai(fasta):
     """
     fai = fasta + ".fai"
     rows = []
-    name = None
+    name = length = start = line_bases = line_bytes = None  # set at each header line
     with open(fasta, "rb") as fh:
         offset = 0
         for raw in fh:

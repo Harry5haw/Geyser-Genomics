@@ -333,7 +333,7 @@ def main(argv=None):
             if a.check:
                 for caller in callers:
                     ok = check_against_truth(a.root, sample_id, caller) and ok
-            for first, second in zip(callers, callers[1:]):
+            for first, second in zip(callers, callers[1:], strict=False):
                 compare_callers(a.root, sample_id, first, second)
     return 0 if ok else 1
 

@@ -27,8 +27,20 @@ for _sub in ("app", "scripts"):
 import make_test_data  # noqa: E402
 import run_local  # noqa: E402
 from storage import LocalStorage, ObjectNotFound, storage_from_env  # noqa: E402
-from tasks import (ALIGNMENT_FORMS, MATES, PAIRED, PER_MATE_KEYS, SINGLE, LayoutError, all_raw_keys,  # noqa: E402
-                   keys_for, keys_of, layout_from_raw, legacy_qc_keys, output_present)
+from tasks import (  # noqa: E402
+    ALIGNMENT_FORMS,
+    MATES,
+    PAIRED,
+    PER_MATE_KEYS,
+    SINGLE,
+    LayoutError,
+    all_raw_keys,
+    keys_for,
+    keys_of,
+    layout_from_raw,
+    legacy_qc_keys,
+    output_present,
+)
 
 RUN_LOCAL_PATH = os.path.join(REPO_ROOT, "scripts", "run_local.py")
 
