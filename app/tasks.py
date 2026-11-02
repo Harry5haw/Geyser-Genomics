@@ -454,7 +454,11 @@ def align_command(ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample
 
 
 def parse_flagstat(text: str) -> dict:
-    """samtools flagstat (default text output) -> counts and percentages (None where flagstat says N/A)."""
+    """samtools flagstat (default text output) -> QC-passed counts, plus <name>_pct where flagstat gives one.
+
+    Keys: in_total, mapped, primary_mapped, duplicates, paired_in_sequencing, properly_paired. A
+    percentage flagstat prints as N/A (e.g. properly paired for single-end reads) has no _pct key.
+    """
     out = {}
     for line in text.splitlines():
         m = re.match(r"^(\d+) \+ \d+ (in total|mapped|primary mapped|duplicates|paired in sequencing|properly paired)"
@@ -468,7 +472,7 @@ def parse_flagstat(text: str) -> dict:
 
 
 def parse_mosdepth_summary(text: str) -> dict:
-    """mosdepth's <prefix>.mosdepth.summary.txt -> the 'total' row (length, bases, mean, min, max)."""
+    """mosdepth's <prefix>.mosdepth.summary.txt -> length, bases and mean_depth of its 'total' row."""
     rows = [line.split("\t") for line in text.splitlines() if line.strip()]
     header, total = rows[0], next(r for r in rows[1:] if r[0] == "total")
     return {"length": int(total[header.index("length")]), "bases": int(total[header.index("bases")]),
@@ -476,7 +480,11 @@ def parse_mosdepth_summary(text: str) -> dict:
 
 
 def parse_bcftools_stats(text: str) -> dict:
-    """bcftools stats -> record/SNP/indel counts and Ti/Tv (None when there are no SNPs)."""
+    """bcftools stats -> record/SNP/indel counts and Ti/Tv.
+
+    Ti/Tv is computed from the TSTV row's counts (bcftools prints 0.00 when there are no
+    transversions); it is None when there are no transversions, i.e. undefined.
+    """
     out = {}
     for line in text.splitlines():
         cols = line.split("\t")
@@ -487,7 +495,8 @@ def parse_bcftools_stats(text: str) -> dict:
                 if label == name:
                     out[key] = int(cols[3])
         elif cols[0] == "TSTV" and len(cols) >= 5:
-            out["tstv"] = float(cols[4]) if out.get("snps") else None
+            ts, tv = int(cols[2]), int(cols[3])
+            out["tstv"] = round(ts / tv, 2) if tv else None
     return out
 
 
@@ -501,19 +510,37 @@ def _log_summary(label, parse, path):
         print(f"WARNING: could not summarise {os.path.basename(path)}: {err}", flush=True)
 
 
+def _run_stats_tool(label: str, command: str) -> bool:
+    """Run one QC statistics command. Best effort: its failure warns, never fails the stage, because
+    the stage's real output (CRAM, VCF) is already built and worth more than a side report."""
+    try:
+        run_shell(command)
+        return True
+    except subprocess.CalledProcessError as err:
+        print(f"WARNING: {label} failed (exit {err.returncode}); its stats are skipped for this run", flush=True)
+        return False
+
+
 def alignment_stats(ref: str, cram: str, wd: str, threads: int, keys: dict) -> list:
-    """samtools flagstat + mosdepth (no per-base output; duplicates excluded) -> [(local path, key)]."""
+    """samtools flagstat + mosdepth (no per-base output; duplicates excluded) -> [(local path, key)] produced.
+
+    mosdepth runs in its default mode, not --fast-mode: that corrects for overlapping mates of a
+    pair (counted once, not twice) and counts deletions, so paired-end depth is not overstated.
+    """
     flagstat = os.path.join(wd, STATS_FILES["flagstat"])
     prefix = os.path.join(wd, "stats")
-    run_shell(f"samtools flagstat -@ {threads} --input-fmt-option reference={shlex.quote(ref)} "
-              f"{shlex.quote(cram)} > {shlex.quote(flagstat)}")
-    run_shell(f"mosdepth -n --fast-mode -t {min(threads, MOSDEPTH_MAX_THREADS)} -f {shlex.quote(ref)} "
-              f"{shlex.quote(prefix)} {shlex.quote(cram)}")
-    files = [(flagstat, keys["flagstat"]),
-             (f"{prefix}.mosdepth.summary.txt", keys["mosdepth_summary"]),
-             (f"{prefix}.mosdepth.global.dist.txt", keys["mosdepth_dist"])]
-    _log_summary("flagstat", parse_flagstat, flagstat)
-    _log_summary("mosdepth", parse_mosdepth_summary, files[1][0])
+    summary, dist = f"{prefix}.mosdepth.summary.txt", f"{prefix}.mosdepth.global.dist.txt"
+    files = []
+    if _run_stats_tool("samtools flagstat",
+                       f"samtools flagstat -@ {threads} --input-fmt-option reference={shlex.quote(ref)} "
+                       f"{shlex.quote(cram)} > {shlex.quote(flagstat)}"):
+        files.append((flagstat, keys["flagstat"]))
+        _log_summary("flagstat", parse_flagstat, flagstat)
+    if _run_stats_tool("mosdepth",
+                       f"mosdepth -n -t {min(threads, MOSDEPTH_MAX_THREADS)} -f {shlex.quote(ref)} "
+                       f"{shlex.quote(prefix)} {shlex.quote(cram)}"):
+        files += [(summary, keys["mosdepth_summary"]), (dist, keys["mosdepth_dist"])]
+        _log_summary("mosdepth", parse_mosdepth_summary, summary)
     return files
 
 
@@ -562,9 +589,10 @@ def variants_task(sample_id, reference_name):
         )
         run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
         stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
-        run_shell(f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}")
-        _log_summary("bcftools stats", parse_bcftools_stats, stats)
-        storage().upload(stats, keys["bcftools_stats"])
+        if _run_stats_tool("bcftools stats",
+                           f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}"):
+            _log_summary("bcftools stats", parse_bcftools_stats, stats)
+            storage().upload(stats, keys["bcftools_stats"])
         storage().upload(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
         storage().upload(vcf, keys["vcf"])
     finally:

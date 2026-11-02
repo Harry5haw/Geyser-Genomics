@@ -525,6 +525,34 @@ def test_parse_bcftools_stats():
         "records": 10, "snps": 10, "indels": 0, "tstv": 1.5}
 
 
+def test_failed_stats_tools_warn_but_the_alignment_is_still_uploaded(local_env, tool_calls, monkeypatch,
+                                                                   capsys, uploads):
+    put(local_env, "raw_reads/S1.fastq.gz")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+
+    def run_shell(command):
+        words = shlex.split(command)
+        if words[0] in ("mosdepth",) or words[:2] == ["samtools", "flagstat"]:
+            raise subprocess.CalledProcessError(1, command)
+        out = words[words.index("-o") + 1] if "-o" in words else words[-1]
+        with open(out, "wb") as fh:
+            fh.write(b"data")
+
+    monkeypatch.setattr(tasks, "run_shell", run_shell)
+
+    tasks.align_task("S1", REF)
+
+    assert uploads == ["alignments/S1.cram.crai", "alignments/S1.cram"]  # no stats, but the alignment
+    out = capsys.readouterr().out
+    assert "WARNING: samtools flagstat failed" in out and "WARNING: mosdepth failed" in out
+
+
+def test_parse_bcftools_stats_all_transitions_has_no_tstv():
+    # 3 transitions, 0 transversions: bcftools prints ts/tv 0.00, but the ratio is undefined.
+    text = "SN\t0\tnumber of SNPs:\t3\nTSTV\t0\t3\t0\t0.00\t3\t0\t0.00\n"
+    assert tasks.parse_bcftools_stats(text)["tstv"] is None
+
+
 def test_parse_bcftools_stats_without_snps_has_no_tstv():
     text = "SN\t0\tnumber of records:\t0\nSN\t0\tnumber of SNPs:\t0\nTSTV\t0\t0\t0\t0.00\t0\t0\t0.00\n"
     assert tasks.parse_bcftools_stats(text)["tstv"] is None
@@ -541,7 +569,8 @@ def test_alignment_stats_commands(shell_commands, tmp_path):
     files = tasks.alignment_stats("/w/ref.fa", "/w/S1.cram", str(tmp_path), 16, tasks.keys_for("S1"))
     flagstat, mosdepth = (shlex.split(c) for c in shell_commands)
     assert flagstat[:2] == ["samtools", "flagstat"] and "reference=/w/ref.fa" in flagstat  # CRAM needs it
-    assert mosdepth[:3] == ["mosdepth", "-n", "--fast-mode"]  # summary only: no per-base bedGraph
+    assert mosdepth[:2] == ["mosdepth", "-n"]  # summary only: no per-base bedGraph
+    assert "--fast-mode" not in mosdepth  # it would count overlapping mates twice (paired-end depth too high)
     assert mosdepth[mosdepth.index("-t") + 1] == str(tasks.MOSDEPTH_MAX_THREADS)
     assert mosdepth[mosdepth.index("-f") + 1] == "/w/ref.fa" and mosdepth[-1] == "/w/S1.cram"
     assert [key for _, key in files] == ["stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt",
