@@ -57,6 +57,7 @@ TOOL_VERSION_COMMANDS = {
     "bwa-mem2": (["bwa-mem2", "version"], r"(?m)^(\d+\.\d+[\w.]*)\s*$"),
     "bwa": (["bwa"], r"Version: (\S+)"),
     "fastqc": (["fastqc", "--version"], r"FastQC v(\S+)"),
+    "fastp": (["fastp", "--version"], r"fastp (\S+)"),
     "mosdepth": (["mosdepth", "--version"], r"mosdepth (\S+)"),
 }
 # The image exports the release it pinned where the binary reports something else (bwa-mem2 2.3

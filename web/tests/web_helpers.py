@@ -42,3 +42,17 @@ def metric(task, sample_id, status="Success", duration=1.5, timestamp=1000.0):
 
 def write_metrics(storage, records):
     put(storage, "metrics/metrics.jsonl", "".join(json.dumps(r) + "\n" for r in records))
+
+
+# Trimmed-down fastp JSON reports, shaped like fastp 0.24.0's (summary / duplication / insert_size).
+FASTP_SINGLE = {
+    "summary": {"before_filtering": {"total_reads": 10000, "total_bases": 1500000, "q20_rate": 0.991,
+                                     "q30_rate": 0.934, "read1_mean_length": 150, "gc_content": 0.495339}},
+    "duplication": {"rate": 0.0361},
+}
+FASTP_PAIRED = {
+    "summary": {"before_filtering": {"total_reads": 10000, "total_bases": 1500000, "q20_rate": 1, "q30_rate": 1,
+                                     "read1_mean_length": 150, "read2_mean_length": 150, "gc_content": 0.4952}},
+    "duplication": {"rate": 0.0012},
+    "insert_size": {"peak": 218, "unknown": 12},
+}

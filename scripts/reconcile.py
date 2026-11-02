@@ -6,7 +6,7 @@ using the pipeline's own key conventions (tasks.keys_for) and the trigger's own 
 it cannot drift from them.
 
 Single-end samples are raw_reads/<id>.fastq.gz; paired-end samples are raw_reads/<id>_R1.fastq.gz plus
-raw_reads/<id>_R2.fastq.gz, and their QC reports (qc_reports/) come per mate.
+raw_reads/<id>_R2.fastq.gz; every output after them is one per sample (one fastp report for both mates).
 
 Upload problems
   ignored        in raw_reads/ but not .gz: the S3 trigger never fires, so nothing happens at all
@@ -49,7 +49,7 @@ for _sub in ("app", "app-deepvariant"):
 
 import provenance  # noqa: E402
 from storage import LocalStorage, S3Storage, storage_from_env  # noqa: E402
-from tasks import ALIGNMENT_FORMS, MATES, PAIRED, PER_MATE_KEYS, SINGLE, keys_for, keys_of  # noqa: E402
+from tasks import ALIGNMENT_FORMS, MATES, PAIRED, SINGLE, keys_for, keys_of, legacy_qc_keys  # noqa: E402
 
 DEFAULT_REGION = "eu-west-2"
 _SENTINEL = "SAMPLEIDSENTINEL"
@@ -91,13 +91,11 @@ def extra_outputs() -> dict:
 def key_patterns(extras: dict) -> list:
     """Regexes that recover a sample ID from any output key, built from keys_for itself.
 
-    Paired-end patterns come first, so qc_reports/S1_R1_fastqc.html is sample S1, not a single-end
-    sample S1_R1 (which can't exist: the trigger reads a trailing _R1/_R2 as a mate).
+    Only the raw reads differ between layouts; every output is one per sample, so the single-end
+    keys cover both. FastQC reports from before #100 count too (legacy_qc_keys).
     """
-    templates = []
-    for layout in (PAIRED, SINGLE):
-        templates += [v for k, v in keys_for(_SENTINEL, layout).items()
-                      if not k.startswith("raw") and v not in templates]
+    templates = [v for k, v in keys_for(_SENTINEL).items() if k != "raw"]
+    templates += [k for k in legacy_qc_keys(_SENTINEL, PAIRED) + legacy_qc_keys(_SENTINEL)]
     templates += [fn(_SENTINEL) for fn in extras.values()]
     return [re.compile("^" + re.escape(t).replace(_SENTINEL, r"(?P<id>[^/]+)") + "$") for t in templates]
 
@@ -154,13 +152,6 @@ def raw_layout(sample_id: str, keys: set):
     if mates:
         return PAIRED, None, ""
     return None, None, ""
-
-
-def output_layout(sample_id: str, keys: set) -> str:
-    """The layout a sample's outputs were written in, for when its raw reads don't say."""
-    paired = keys_for(sample_id, PAIRED)
-    per_mate = [k for name in PER_MATE_KEYS if name != "raw" for k in keys_of(paired, name)]
-    return PAIRED if any(k in keys for k in per_mate) else SINGLE
 
 
 def open_runs(sfn_client, state_machine_arn: str) -> Counter:
@@ -230,14 +221,16 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
     for sample_id in sorted(samples):
         layout, layout_problem, layout_note = raw_layout(sample_id, keys)
         has_raw = layout is not None or layout_problem is not None
-        expected = keys_for(sample_id, layout or output_layout(sample_id, keys))
-        # A per-mate output (the QC reports) only counts once both mates have it.
-        outputs = {name: any(all(k in keys for k in form) for form in output_keys(expected, name))
-                   for name, _ in STAGE_OUTPUTS}
+        # Outputs are one per sample; the layout only matters for FastQC reports from before #100.
+        output_layout = layout or (PAIRED if any(k in keys for k in legacy_qc_keys(sample_id, PAIRED)) else SINGLE)
+        forms = {name: output_keys(keys_for(sample_id, output_layout), name) for name, _ in STAGE_OUTPUTS}
+        forms["qc_html"].append(legacy_qc_keys(sample_id, output_layout))  # QC done by FastQC before #100
+        # A multi-key form (paired-end FastQC: one report per mate) only counts once it is complete.
+        outputs = {name: any(all(k in keys for k in form) for form in forms[name]) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
-        # But one mate's report still shows the run got that far (e.g. FastQC failed on R2).
+        # But one mate's FastQC report still shows the run got that far (e.g. FastQC failed on R2).
         reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS
-                   if any(k in keys for form in output_keys(expected, name) for k in form)]
+                   if any(k in keys for form in forms[name] for k in form)]
         open_count = running.get(sample_id, 0)
         problem = None
         if layout_problem:
@@ -286,9 +279,9 @@ def print_report(result: dict) -> None:
         flag = "!" if r["problem"] else " "
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{width}} {note}")
-    print("Outputs: Q QC report, A alignment, V VCF"
+    print("Outputs: Q QC report (fastp), A alignment, V VCF"
           + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
-          + ", R run record (r: incomplete or failed) (paired-end: Q needs both mates)")
+          + ", R run record (r: incomplete or failed)")
     if result["upload_problems"]:
         print("\nUpload problems:")
         for p in result["upload_problems"]:

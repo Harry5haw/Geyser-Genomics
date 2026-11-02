@@ -37,7 +37,7 @@ def test_a_stage_writes_its_part_and_the_record(store, tmp_path, monkeypatch):
     provenance.begin("QualityControl", "S1")
     provenance.note(layout="single")
     provenance.note_input("raw_reads/S1.fastq.gz", str(reads))
-    provenance.note_output("qc_reports/S1_fastqc.html", str(reads))
+    provenance.note_output("qc_reports/S1.fastp.html", str(reads))
     provenance.note_stats("flagstat", {"mapped_pct": 100.0})
     provenance.finish(store, "Success", 1.234)
 
@@ -129,6 +129,7 @@ class FakePopen:
     ("bwa-mem2", b'Looking to launch executable "/opt/bwa-mem2/bwa-mem2.avx2", simd = .avx2\n2.2.1\n', "2.2.1"),
     ("bwa", b"\nProgram: bwa (alignment via Burrows-Wheeler transformation)\nVersion: 0.7.18-r1243\n", "0.7.18-r1243"),
     ("fastqc", b"FastQC v0.12.1\n", "0.12.1"),
+    ("fastp", b"fastp 0.24.0\n", "0.24.0"),  # what the geyser-app image's fastp prints (to stderr)
     ("mosdepth", b"mosdepth 0.3.15\n", "0.3.15"),
     ("samtools", b"something else\n", None),
 ])

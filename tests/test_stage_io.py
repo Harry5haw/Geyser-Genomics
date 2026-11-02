@@ -1,6 +1,6 @@
 """Stage plumbing around the bioinformatics tools: what each stage downloads, uploads and cleans up.
 
-The tools themselves (bwa-mem2, bwa, samtools, bcftools, fastqc) are faked, so these run anywhere.
+The tools themselves (bwa-mem2, bwa, samtools, bcftools, fastp) are faked, so these run anywhere.
 The Docker end-to-end test covers the real tools.
 """
 import gzip
@@ -35,7 +35,7 @@ def put(root, key, data=b"x"):
 
 @pytest.fixture
 def tool_calls(monkeypatch):
-    """Fake subprocess.run for index builders and fastqc; each fake writes the files the real tool would."""
+    """Fake subprocess.run for index builders and fastp; each fake writes the files the real tool would."""
     calls = []
 
     def fake_run(cmd, check=False, timeout=None, **kwargs):
@@ -46,15 +46,11 @@ def tool_calls(monkeypatch):
                 open(cmd[2] + ext, "wb").close()
         elif tool == "samtools" and cmd[1] == "faidx":
             open(cmd[2] + ".fai", "wb").close()
-        elif tool == "fastqc":
-            # Inputs are the gzipped FASTQ arguments, wherever they sit among the flags (-t, -o ...).
-            # Like FastQC, name the report after the file with .fastq.gz stripped.
-            out_dir = cmd[cmd.index("-o") + 1]
-            for fastq in (arg for arg in cmd if arg.endswith(".fastq.gz")):
-                stem = os.path.basename(fastq)[:-len(".fastq.gz")]
-                for ext in ("html", "zip"):
-                    with open(os.path.join(out_dir, f"{stem}_fastqc.{ext}"), "w") as fh:
-                        fh.write(ext)
+        elif tool == "fastp":
+            # One report per run, at the paths given by --html and --json.
+            for flag, text in (("--html", "html"), ("--json", '{"summary": {}}')):
+                with open(cmd[cmd.index(flag) + 1], "w") as fh:
+                    fh.write(text)
         else:
             raise AssertionError(f"unexpected command {cmd}")
         return subprocess.CompletedProcess(cmd, 0)
@@ -238,9 +234,9 @@ def test_qc_uploads_both_reports_and_cleans_up(local_env, tool_calls):
 
     tasks.qc_task("S1")
 
-    assert (local_env / "qc_reports" / "S1_fastqc.html").read_text() == "html"
-    assert (local_env / "qc_reports" / "S1_fastqc.zip").read_text() == "zip"
-    assert [c[0] for c in tool_calls] == ["fastqc"]
+    assert (local_env / "qc_reports" / "S1.fastp.html").read_text() == "html"
+    assert (local_env / "qc_reports" / "S1.fastp.json").read_text() == '{"summary": {}}'
+    assert [c[0] for c in tool_calls] == ["fastp"]
     assert work_dir_is_empty(local_env)
 
 
@@ -378,8 +374,8 @@ def test_main_rejects_unknown_stage():
 def test_keys_follow_the_documented_layout():
     assert tasks.keys_for("S1") == {
         "raw": "raw_reads/S1.fastq.gz",
-        "qc_html": "qc_reports/S1_fastqc.html",
-        "qc_zip": "qc_reports/S1_fastqc.zip",
+        "qc_html": "qc_reports/S1.fastp.html",
+        "qc_json": "qc_reports/S1.fastp.json",
         "cram": "alignments/S1.cram",
         "crai": "alignments/S1.cram.crai",
         "bam": "alignments/S1.bam",
@@ -656,4 +652,4 @@ def test_a_broken_run_record_never_fails_the_stage(local_env, tool_calls, monkey
 
     tasks.qc_task("S1")  # must not raise
 
-    assert (local_env / "qc_reports" / "S1_fastqc.html").exists()
+    assert (local_env / tasks.keys_for("S1")["qc_html"]).exists()

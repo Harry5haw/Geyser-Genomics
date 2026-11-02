@@ -19,6 +19,7 @@ from geyser_web.pipeline import (MATES, PAIRED, PER_MATE_KEYS, LayoutError, Obje
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
+from .qc import read_qc_summary
 from .runs import is_valid_sample_id, log_key, read_text
 from .vcf import check_truth, planted_positions, read_truth, read_variants, truth_key
 
@@ -26,8 +27,8 @@ from .vcf import check_truth, planted_positions, read_truth, read_variants, trut
 # Per-read-file kinds (PER_MATE_KEYS) of a paired-end sample are served as <kind>_R1 / <kind>_R2.
 FILE_KINDS = {
     "raw": ("Raw reads", "Gzipped FASTQ as uploaded"),
-    "qc_html": ("FastQC report", "HTML"),
-    "qc_zip": ("FastQC data", "ZIP"),
+    "qc_html": ("fastp report", "HTML (its charts load a script from opengene.org, so they need a browser online)"),
+    "qc_json": ("fastp data", "JSON: every number in the report"),
     "cram": ("Alignments", "Coordinate-sorted, duplicate-marked CRAM (decode with the same reference)"),
     "crai": ("Alignment index", "CRAM index (.crai), for region queries and genome browsers"),
     "bam": ("Alignments (BAM)", "From a run before CRAM, or imported benchmark data"),
@@ -155,10 +156,6 @@ def _status_context(storage, sample):
     }
 
 
-def _qc_kinds(keys):
-    return ["qc_html"] if "qc_html" in keys else [f"qc_html_{m}" for m in MATES]
-
-
 @require_GET
 def sample_detail(request, sample_id):
     storage = get_storage()
@@ -178,10 +175,8 @@ def sample_detail(request, sample_id):
         "truth_result": truth_result,
         "planted": planted_positions(truth),
         "variants": variants,
-        "qc_reports": [
-            {"kind": kind, "label": f"FastQC report ({kind.rsplit('_', 1)[1]})" if kind != "qc_html" else "FastQC report"}
-            for kind, key in zip(_qc_kinds(sample.keys), keys_of(sample.keys, "qc_html")) if storage.exists(key)
-        ],
+        "qc_report": storage.exists(sample.keys["qc_html"]),
+        "qc_summary": read_qc_summary(storage, sample.keys["qc_json"]),
         "downloads": downloads,
     }
     return render(request, "samples/detail.html", context)
@@ -222,7 +217,9 @@ def sample_file(request, sample_id, kind):
         raise Http404("No such file") from None
     filename = os.path.basename(key)
     if split[0] == "qc_html" and request.GET.get("inline"):
-        # FastQC's report is generated HTML: show it in a sandbox (no scripts, opaque origin).
+        # fastp's report is generated HTML: show it in a sandbox (no scripts, opaque origin). Its
+        # charts load a script from opengene.org over plain HTTP, so they stay blank here; the
+        # tables show. The downloaded file draws them only in a browser that is online.
         response = FileResponse(stream, content_type="text/html; charset=utf-8")
         response["Content-Security-Policy"] = "sandbox"
         return response
