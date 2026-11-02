@@ -12,8 +12,9 @@ The same steps as the local benchmark (`scripts/benchmark_giraffe.py`), as one a
 2. **Haplotype sampling:** `vg haplotypes` builds a per-sample graph from the pangenome GBZ, its `.hapl` index and the k-mer counts. It keeps the haplotypes closest to the sample, so mapping runs against a small, sample-specific graph.
 3. **Mapping:** `vg giraffe` against the sampled graph. It builds that graph's distance and minimizer indexes in memory, then surjects the alignments onto GRCh38 paths (`--ref-paths`, BAM out).
 4. **Post-processing, unchanged from today's align stage, in our image:** contig rename (`GRCh38#0#chr20` → `chr20`), `samtools fixmate -m | sort | markdup`, then CRAM + `.crai`. vg bundles samtools 1.10, which is too old for our CRAM/markdup flags, so this stays outside vg.
+   - The rename only touches `@SQ` names, so it can be `samtools reheader` on the header alone. `benchmark_giraffe.py` keeps Google's `samtools view -h | sed` over the whole SAM, on purpose, so its timing matches the case study.
 
-**Once per graph, not per sample:** the `.hapl` (built from the GBZ, its distance index and r-index) and the GRCh38 path list. HPRC publishes a `.hapl` for v1.1, which saves building it. For a graph without one (r2), it's a one-off job.
+**Once per graph, not per sample:** the `.hapl` (built from the GBZ, its distance index and r-index) and the GRCh38 path list. HPRC publishes a `.hapl` for v1.1, and for **release 2** too: `hprc-v2.0-mc-grch38.hapl` (21.4 GB) and the benchmark graph's `hprc-v2.0-mc-grch38-eval.hapl` (21.1 GB). So neither needs a build here. For a graph without one, it's a one-off job.
 
 The align stage writes the **same keys as today**: `alignments/{id}.cram` + `.crai`, the stats under `stats/{id}/`, and the run-record part with `aligner: "vg giraffe"`. Nothing downstream changes, except how the variants stage picks its flags (§5).
 
@@ -26,7 +27,7 @@ From `geyser-data/benchmarks/giraffe_HG003_chr20/*.json` (wall time and cgroup p
 | kmc k-mer count (`-m8`) | 37 s | 7.4 GiB (set by `-m`) | sample |
 | haplotype sampling + giraffe mapping | 546 s (mapping 462 s) | 1.5 GiB | sample |
 | rename + fixmate \| sort \| markdup | 158 s | 2.3 GiB | sample |
-| distance index | 39 s | 1.6 GiB | graph |
+| distance index | 39 s | 1.45 GiB | graph |
 | r-index | 6 s | 0.5 GiB | graph |
 | `.hapl` | 297 s | 0.9 GiB | graph |
 | *for comparison:* bwa-mem2 align stage, same reads | 521 s | 7.4 GiB | sample |
@@ -40,8 +41,9 @@ From `geyser-data/benchmarks/giraffe_HG003_chr20/*.json` (wall time and cgroup p
 | HPRC v2.0 MC GRCh38 eval, whole genome | 5.39 GB | held out: HG002, HG005, NA19240 |
 
 **Reported by the benchmark terminal:**
-- the v1.1 whole-genome GBZ takes **~10.7 GB in memory**; it ran out of memory for pangenome DeepVariant locally;
-- the r2 eval graph peaked at **~18 GB** while being cut into chromosomes.
+- the v1.1 whole-genome GBZ takes **~10.7 GB of shared memory** in pangenome-aware DeepVariant (its `load_gbz_into_shared_memory` layout); it ran out of memory locally. vg giraffe or `vg haplotypes` holding the same GBZ may use a different amount;
+- cutting chromosomes out of the r2 eval graph (`vg chunk`) reached **at least 12.9 GB and was still loading** when it was stopped, twice. The real peak is unknown; about 18 GB was an estimate.
+- **Published file sizes:** the whole-genome `.hapl` is 21.4 GB (r2) and 21.1 GB (r2 eval). That's far above the ~5.7 GB scaled from chr20 below (r2 has about 5× v1.1's haplotypes), and it is the upper anchor for the sampling memory.
 
 ## 3. Estimated: whole genome, one 30-35x sample
 
@@ -54,8 +56,8 @@ From `geyser-data/benchmarks/giraffe_HG003_chr20/*.json` (wall time and cgroup p
 | Step | Estimated wall at 16 vCPU | Estimated peak memory | Basis |
 | :--- | ---: | ---: | :--- |
 | kmc | ~30 min | 8-16 GiB (`-m`, configurable) | 37 s × 48 reads |
-| haplotype sampling (v1.1) | ~1 h | **~20-30 GiB** | full GBZ in memory (~10.7 GB) + `.hapl` (~5.7 GB est.) + k-mer table |
-| haplotype sampling (r2 eval) | ~1.5 h | **~35-45 GiB** | GBZ 1.6× v1.1, ~18 GB measured just to cut it |
+| haplotype sampling (v1.1) | ~1 h | **~20-30 GiB** | full GBZ in memory (~10.7 GB in DeepVariant's layout) + `.hapl` (~5.7 GB est.) + k-mer table |
+| haplotype sampling (r2 eval) | ~1.5 h | **~35-45 GiB** | GBZ 1.6× v1.1; cutting it reached ≥ 12.9 GB (measured, still loading); published `.hapl` 21.1 GB |
 | giraffe mapping | ~6 h | ~15-30 GiB | 462 s × 48 reads; the sampled graph's indexes in memory |
 | rename + fixmate \| sort \| markdup | ~2 h | 8-16 GiB (sort cap) | 158 s × 48; I/O-bound |
 | **align stage total** | **~9.5-10 h** | **peak ~30 GiB (v1.1), ~45 GiB (r2)** | vs bwa-mem2 ≈ 7 h (521 s × 48) |
@@ -145,7 +147,7 @@ A whole-genome cloud run is therefore **a budget decision for the user**: spot o
   - `ALIGNER=giraffe` in `prepare_aligner` / `align_command`: kmc → `vg haplotypes` → `vg giraffe` → rename → the existing fixmate | sort | markdup;
   - its index files in `ALIGNER_INDEX_EXTS`;
   - the variants-stage flag rule;
-  - tests with a tiny graph (`vg construct` from the synthetic reference + planted variants) for the Docker E2E.
+  - tests with a tiny graph for the Docker E2E. `make_test_data.py --pangenome` (#167) already builds one: the synthetic reference as the `GRCh38` walk plus six panel haplotypes. The giraffe test additionally needs its `.dist`/`.min` (and a `.hapl` for sampling), which take seconds on that graph.
 - **Infra** (a separate PR, reviewed plan): a giraffe job definition, its `stage_resources` entry, and either `fargate_spot_max_vcpus` / `fargate_max_vcpus` ≥ 16 or the EC2 environment from §4. Raising those caps raises the worst-case spend rate the guardrails were sized for (`docs/design/claude-guardrails.md`), so it's the user's call too. The state machine is unchanged unless the scattered mapping (§4) is built.
 
 ## Open questions
@@ -153,4 +155,4 @@ A whole-genome cloud run is therefore **a budget decision for the user**: spot o
 - The measured whole-genome peak for v1.1 and r2 (§6) decides Fargate against EC2.
 - Is HPRC's published v1.1 `.hapl` compatible with vg 1.55.0, or must it be rebuilt? The `.hapl` format changed across vg releases.
 - bcftools accuracy on giraffe reads.
-- Paired-end handling in `vg giraffe` (`-f R1 -f R2`) needs a test with `make_test_data --paired`.
+- Paired-end handling in `vg giraffe` (`-f R1 -f R2`) is already exercised: every run in #129 was paired (9.5 M HG003 pairs, `-L 3000`, Google's flags). A synthetic `--paired` E2E is still worth adding.
