@@ -55,7 +55,7 @@ def caller_stages(prefix: str) -> tuple:
 
 # To add a stage or caller, add it here: dashboards, alarms and tests pick it up.
 STAGE_GROUPS = {
-    "core": (Stage("Decompress"), Stage("QualityControl"), Stage("Align"), Stage("CallVariants")),
+    "core": (Stage("QualityControl"), Stage("Align"), Stage("CallVariants")),
     "deepvariant": caller_stages("DeepVariant"),
     "pangenome": caller_stages("PangenomeDeepVariant"),
 }

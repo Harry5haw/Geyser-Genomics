@@ -163,7 +163,7 @@ def test_pipeline_widgets_use_step_functions_metrics():
 def test_without_state_machine_runs_per_day_falls_back_to_stage_metrics():
     body = monitoring.build_dashboard()
     assert "AWS/States" not in json.dumps(body)
-    assert any("Runs per day (from Decompress" in w["properties"].get("title", "") for w in body["widgets"])
+    assert any("Runs per day (from QualityControl" in w["properties"].get("title", "") for w in body["widgets"])
 
 
 def test_runtime_dashboard_needs_arn():
@@ -250,7 +250,7 @@ def test_dashboard_groups_option(capsys, monkeypatch):
     monkeypatch.delenv("SFN_ARN", raising=False)
     deploy_dashboard.main(["--dry-run", "--groups", "core"])
     text = capsys.readouterr().out
-    assert "Decompress" in text and "DeepVariant" not in text
+    assert "QualityControl" in text and "Decompress" not in text and "DeepVariant" not in text
 
 
 def test_dashboard_rejects_bad_arn():

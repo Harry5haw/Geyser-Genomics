@@ -3,7 +3,7 @@ import json
 from .web_helpers import fastq_gz, metric, put, vcf_gz, write_metrics
 from samples.runs import write_run
 
-FINISHED = ["decompressed/S1.fastq", "qc_reports/S1_fastqc.html", "qc_reports/S1_fastqc.zip",
+FINISHED = ["qc_reports/S1_fastqc.html", "qc_reports/S1_fastqc.zip",
             "alignments/S1.bam"]
 
 
@@ -12,7 +12,7 @@ def finished_sample(storage, truth=True):
     for key in FINISHED:
         put(storage, key, b"<html><body>FastQC report</body></html>" if key.endswith(".html") else b"data")
     put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G"), (300, "C", "T"), (500, "G", "A")]))
-    write_metrics(storage, [metric("Decompress", "S1", duration=1.2), metric("QualityControl", "S1", duration=6.0),
+    write_metrics(storage, [metric("QualityControl", "S1", duration=7.2),
                             metric("Align", "S1", duration=2.5), metric("CallVariants", "S1", duration=1.1)])
     if truth:
         put(storage, "truth/S1.json", json.dumps({"snps": [{"pos": 100, "ref": "A", "alt": "G"},
@@ -51,7 +51,7 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert body.count('class="planted"') == 2
     assert "Variants" in body and "3 calls" in body
     assert 'src="/samples/S1/files/qc_html/?inline=1"' in body
-    for kind in ("raw", "fastq", "qc_html", "qc_zip", "bam", "vcf", "truth"):
+    for kind in ("raw", "qc_html", "qc_zip", "bam", "vcf", "truth"):
         assert f"/samples/S1/files/{kind}/" in body
     assert "/samples/S1/files/log/" not in body  # no run log for this sample
     assert "10.8 s" in body  # total of the stage durations
@@ -60,10 +60,10 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
 def test_detail_page_for_running_sample_polls_and_shows_live_log(client, storage):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     write_run(storage, "S1", {"state": "running", "started": 1})
-    put(storage, "runs/S1.log", ">>> python tasks.py decompress S1\n")
+    put(storage, "runs/S1.log", ">>> python tasks.py qc S1\n")
     body = client.get("/samples/S1/").content.decode()
     assert "?was_active=1" in body
-    assert "python tasks.py decompress S1" in body
+    assert "python tasks.py qc S1" in body
     assert "Variants" not in body
 
 
@@ -105,6 +105,6 @@ def test_fastqc_report_is_sandboxed_and_frameable_only_by_us(client, storage):
 
 def test_list_handles_failure_metric(client, storage):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
-    write_metrics(storage, [metric("Decompress", "S1", "Failure")])
+    write_metrics(storage, [metric("QualityControl", "S1", "Failure")])
     body = client.get("/").content.decode()
     assert "Failed" in body

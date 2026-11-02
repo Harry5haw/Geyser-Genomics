@@ -1,7 +1,7 @@
 """Work out each sample's progress from storage alone.
 
-* A stage is done when all its output keys exist (keys_for/keys_of in app/tasks.py: one per
-  read file before alignment, so two for a paired-end sample).
+* A stage is done when all its output keys exist (keys_for/keys_of in app/tasks.py: QC writes
+  one report per read file, so two for a paired-end sample).
 * A paired-end sample only appears once both mates are uploaded, as the trigger only starts it then.
 * A stage failed when its latest metric (metrics/metrics.jsonl, written by app/metrics.py
   LocalMetrics) says Failure and its output is missing. Durations come from the same file.
@@ -34,7 +34,6 @@ class Stage(NamedTuple):
 
 
 STAGES = (
-    Stage("decompress", "Decompress", "Decompress", "fastq"),
     Stage("qc", "QualityControl", "Quality control", "qc_html"),
     Stage("align", "Align", "Alignment", "bam"),
     Stage("variants", "CallVariants", "Variant calling", "vcf"),

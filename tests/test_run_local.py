@@ -19,7 +19,7 @@ def test_default_caller_runs_exactly_the_state_machine_stages():
 
 def test_deepvariant_caller_replaces_variants_stage_and_uses_gpu():
     jobs = run_local.pipeline_jobs("S1", "ref.fa", caller="deepvariant")
-    assert names(jobs) == ["decompress", "qc", "align", "deepvariant"]
+    assert names(jobs) == ["qc", "align", "deepvariant"]
     dv = jobs[-1]
     assert dv["image"] == "geyser-deepvariant" and dv["gpus"]
     assert dv["cmd"] == ["/opt/geyser-venv/bin/python", "deepvariant_task.py", "S1", "ref.fa"]
@@ -27,7 +27,7 @@ def test_deepvariant_caller_replaces_variants_stage_and_uses_gpu():
 
 def test_both_callers_run_bcftools_then_deepvariant():
     assert names(run_local.pipeline_jobs("S1", "ref.fa", caller="both")) == [
-        "decompress", "qc", "align", "variants", "deepvariant"]
+        "qc", "align", "variants", "deepvariant"]
 
 
 def test_skip_to_variants_starts_at_variant_calling():
