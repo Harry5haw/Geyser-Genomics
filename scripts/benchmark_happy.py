@@ -99,7 +99,10 @@ def read_stratification(path):
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             if line.strip() and not line.startswith("#"):
-                name, bed = line.rstrip("\r\n").split("\t")[:2]
+                cols = line.rstrip("\r\n").split("\t")
+                if len(cols) < 2:
+                    raise ValueError(f"{path}: expected '<name><TAB><bed>', got {line.strip()!r}")
+                name, bed = cols[:2]
                 entries.append((name, os.path.join(os.path.dirname(path), *bed.split("/"))))
     return entries
 
@@ -211,7 +214,10 @@ def main(argv=None):
         tsv = os.path.join(root, *a.stratification.split("/"))
         if not os.path.exists(tsv):
             p.error(f"no {tsv}: run fetch_dv_testdata.py --stratifications first")
-        entries = read_stratification(tsv)
+        try:
+            entries = read_stratification(tsv)
+        except ValueError as err:
+            p.error(str(err))
         missing = [bed for _, bed in entries if not os.path.exists(bed)]
         if missing:
             p.error(f"{len(missing)} BED(s) listed in {tsv} are missing, e.g. {missing[0]}: "

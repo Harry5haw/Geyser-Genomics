@@ -434,6 +434,13 @@ def test_number_treats_nan_as_missing():
     assert benchmark_happy._number("12.0", int) == 12
 
 
+def test_read_stratification_rejects_a_line_without_a_tab(tmp_path):
+    tsv = tmp_path / "s.tsv"
+    tsv.write_text("segdups GRCh38_chr20/segdups.bed\n")
+    with pytest.raises(ValueError, match="expected '<name><TAB><bed>'"):
+        benchmark_happy.read_stratification(str(tsv))
+
+
 def test_read_stratification_resolves_beds_next_to_the_tsv(tmp_path):
     tsv = tmp_path / "s.tsv"
     tsv.write_text("segdups\tGRCh38_chr20/segdups.bed\r\n")
