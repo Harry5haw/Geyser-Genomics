@@ -155,7 +155,7 @@ def test_planted_duplicates_are_marked_without_changing_calls(tmp_path, capfd):
     assert planted <= marked < planted + 0.1 * 10_000
 
 
-def _run(root, sample, capfd):
+def _run(root, sample, capfd, *extra):
     exit_code = run_local.main(
         [
             "--root",
@@ -167,6 +167,7 @@ def _run(root, sample, capfd):
             "--check",
             "--image",
             os.environ.get("GEYSER_IMAGE", "geyser-app"),
+            *extra,
         ]
     )
     out, err = capfd.readouterr()
@@ -245,3 +246,39 @@ def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
         assert not (root / "alignments" / name).exists()
     keys = tasks.keys_for("SYNTH001")
     assert not (root / keys["qc_html"]).exists() and not (root / keys["qc_json"]).exists()
+
+
+def _vcf_records(path):
+    import gzip
+
+    with gzip.open(path, "rt") as fh:
+        return [line for line in fh if not line.startswith("#")]
+
+
+@pytest.mark.parametrize("paired", [False, True], ids=["single-end", "paired-end"])
+def test_sharded_calling_gives_the_same_calls_as_one_job(tmp_path, capfd, paired):
+    # Scatter-gather (#108): 8 regions of 7,000 bp, one bcftools job each, then the merge. Positions are
+    # called in exactly one region, so the merged VCF must have the very same records as the single job.
+    import tasks
+
+    root = tmp_path / "bucket"
+    sample = "PAIRED001" if paired else "SYNTH001"
+    make_test_data.main(
+        ["--root", str(root), "--sample", sample, "--leading-gap", "1000"] + (["--paired"] if paired else [])
+    )
+    exit_code, _ = _run(root, sample, capfd)
+    assert exit_code == 0
+    unsharded = _vcf_records(root / "variants" / f"{sample}.vcf.gz")
+
+    exit_code, log = _run(root, sample, capfd, "--skip-to-variants", "--shard-window", "7000")
+
+    assert exit_code == 0  # --check: 10/10 planted SNPs from the merged VCF, nothing unexpected
+    assert "Merging 8 region parts" in log
+    assert _vcf_records(root / "variants" / f"{sample}.vcf.gz") == unsharded and len(unsharded) == 10
+    assert len(list((root / "variants" / sample / "parts").glob("*/*.vcf.gz"))) == 8  # parts/<RUN_NAME>/
+    assert (root / "variants" / f"{sample}.vcf.gz.tbi").exists()
+    record = json.loads((root / "runs" / f"{sample}.provenance.json").read_text())
+    assert record["status"] == "succeeded"  # the variants-only run inherits QC and align (provenance.UPSTREAM)
+    assert record["stages"]["CallVariants"]["run_name"] != record["stages"]["Align"]["run_name"]
+    metrics = [json.loads(line) for line in (root / "metrics" / "metrics.jsonl").read_text().splitlines()]
+    assert sum(m["task"] == tasks.SHARD_METRIC for m in metrics) == 8
