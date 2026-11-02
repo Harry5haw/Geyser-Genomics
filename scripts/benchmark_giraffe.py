@@ -31,6 +31,7 @@ import time
 
 import benchmark_aligners as ba
 import benchmark_happy
+import benchmark_history
 import run_local
 
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"  # the vg release Google's VG case study uses
@@ -264,6 +265,7 @@ def score_config(
     region=None,
     stratification=None,
     subsets=("*",),
+    aligner=None,
 ):
     """Calls and hap.py for one configuration, each redone only when missing or stale. Returns
     (summary, extended, calls info) or None if a step failed.
@@ -302,6 +304,8 @@ def score_config(
         or (stratification and not benchmark_happy.has_subsets(extended_csv, subsets))
     ):
         args = ["--root", root, "--sample", sid, "--reference", reference, "--callers", caller]
+        args += ["--caller-settings", benchmark_history.settings_tag(env.get("DEEPVARIANT_EXTRA_ARGS", ""))]
+        args += ["--aligner", aligner] if aligner else []
         args += ["--region", region] if region else []
         args += ["--stratification", stratification] if stratification else []
         if benchmark_happy.main(args) != 0:
@@ -519,6 +523,7 @@ def main(argv=None):
             a.region,
             a.stratification,
             subsets,
+            aligner={"giraffe": "vg giraffe"}.get(aligner, aligner),
         )
         if scored is None:
             return 1
