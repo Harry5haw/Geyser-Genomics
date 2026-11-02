@@ -474,7 +474,13 @@ python scripts/fetch_dv_testdata.py --dataset hg005-chr20 --stratifications
 python scripts/fetch_dv_testdata.py --dataset hg003-30x-chr20
 python scripts/benchmark_happy.py --sample HG005_chr20 --reference GRCh38_chr20.fa --region chr20 \
     --stratification stratifications/GRCh38_chr20.tsv
+
+# Every scored caller is appended to the benchmark history with the commit (--aligner / --caller-settings say
+# what produced the calls). Regenerate the report and commit both:
+python scripts/benchmark_history.py report
 ```
+
+**Benchmark history:** every hap.py result so far, 22 configurations across HG003 and HG005, is in one tracked series, [`docs/benchmarks/history.csv`](docs/benchmarks/history.csv), with the [report](docs/benchmarks/README.md) and a figure-ready CSV. The tables below are excerpts.
 
 **Accuracy: HG003 chr20, hap.py.** HG003 is NovaSeq PCR-free 35x, scored against GIAB v4.2.1 confident regions. These are the same settings Google's case studies use (`--engine=vcfeval --pass-only`):
 
@@ -733,7 +739,7 @@ Once deployed, a run is started by uploading a file.
 | Alignment | `alignments/<id>.cram` + `.cram.crai`, one per sample (coordinate-sorted, duplicates marked with samtools markdup; paired-end runs `samtools fixmate -m` first). CRAM stores the reads against the reference, so it is far smaller than a BAM, and it needs that same reference to read it: `samtools view -T reference/<name> alignments/<id>.cram` |
 | Variant calling | `variants/<id>.vcf.gz` + `.vcf.gz.tbi` (tabix index, for region queries) |
 | Consequence annotation (optional) | `variants/<id>.csq.vcf.gz` + `.tbi`: the same VCF with [bcftools csq](https://samtools.github.io/bcftools/howtos/csq-calling.html) consequences in `INFO/BCSQ` (e.g. `missense\|DEFB125\|ENST00000382410\|protein_coding\|+\|10I>10T`). Written only when the reference has gene models at `reference/<name>.gff3.gz` (Ensembl-style GFF3); `ANNOTATE=off` skips it. The cloud reference has none yet, so cloud runs don't annotate. |
-| QC statistics | `stats/<id>/`: `flagstat.txt` (samtools flagstat: mapped, duplicates, properly paired) and `mosdepth.summary.txt` / `mosdepth.global.dist.txt` (mean depth, and the fraction of bases covered at each depth; duplicates excluded) from the align stage; `bcftools.stats.txt` (SNP and indel counts, Ti/Tv) from variant calling. The job log prints the headline numbers. |
+| QC statistics | `stats/<id>/`: `flagstat.txt` (samtools flagstat: mapped, duplicates, properly paired) and `mosdepth.summary.txt` / `mosdepth.global.dist.txt` (mean depth, and the fraction of bases covered at each depth; duplicates excluded) from the align stage; `bcftools.stats.txt` (SNP and indel counts, Ti/Tv) from variant calling. DeepVariant and pangenome-aware DeepVariant write `bcftools.stats.<caller>.txt` over their **PASS calls only** (their VCFs also keep rejected RefCall candidates, which would halve Ti/Tv), and the sample's `bcftools.stats.txt` when they are the run's caller. The job log prints the headline numbers. |
 | Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error, the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. In the cloud the state machine doesn't pass the execution name to the jobs yet, so cloud records say `run_name: null`, and after a partial re-run one record can mix two runs. |
 
 ### 3. Monitoring
@@ -773,26 +779,50 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 
 ## 🛣️ Roadmap
 
-✅ done · ☁️ done and verified in the cloud · 🎯 top priority · 🔜 next
+✅ done · ☁️ done and verified in the cloud · 🚧 in progress · 🎯 top priority · 🔜 next
 
-| | Milestone | |
+Release notes for each version (drafts, not tagged yet) are in [`docs/releases/`](docs/releases/README.md).
+
+### 1.0: the platform, made public
+
+| | | |
 | :---: | :--- | :--- |
 | ✅ | **Offline pipeline** | Storage and metrics backends, Docker end-to-end truth check on every push |
-| ✅ | **Cost-safe networking and CI hardening** | NAT gateway off, budgets, OIDC with read-only Terraform roles, prod restricted to `main` |
-| ✅ | **Paired-end input, duplicate marking, run names** | R1/R2 pairing in the trigger, layout-aware stages, `samtools markdup`, runs named after the sample |
+| ☁️ | **Cost-safe networking and CI hardening** | NAT gateway off, budgets, OIDC with read-only Terraform roles, prod restricted to `main` |
+| ☁️ | **Paired-end input, duplicate marking, run names** | R1/R2 pairing in the trigger, layout-aware stages, `samtools markdup`, runs named after the sample |
 | ✅ | **DeepVariant and pangenome-aware DeepVariant (local GPU)** | hap.py on HG003 chr20 reproduces Google's published result; HG005 vs an HG003 control by GIAB region type |
 | ✅ | **Web UI** | Works offline |
-| ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; cloud run 1 min 52 s, down from 3 min 45 s |
 | ☁️ | **Resilience and sizing** | Infrastructure-only retries, time limits, per-stage sizes, 30-day log retention |
 | ☁️ | **Terraform state per environment, guardrails for automation** | Bounded role with a permissions boundary and an automatic $20 kill switch |
-| ✅ | **Better tools and outputs** | bwa-mem2, fastp, CRAM + indexes, QC statistics, provenance run record |
-| ✅ | **Repository quality** | ruff and Terraform checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
-| 🔜 | **Next cloud checkpoint** | Push an image from current main and run single- and paired-end samples; pass the run name to the jobs so cloud run records are complete |
-| 🔜 | **Monitoring** | Deploy the dashboard and alarm and check them against the cloud runs |
-| 🎯 | **Pangenome: where it should help most** | Done offline on chr20: HG005's extra errors explained (MAPQ-0 reads), reads aligned to the graph (`vg giraffe`, fewest errors). Next: newer HPRC graph, whole genome, giraffe in the pipeline. **Top priority** ([#51](../../issues/51)) |
-| 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions ([#43](../../issues/43), [#44](../../issues/44)) |
-| 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason (the tool is built and tested in [`gate/`](gate/README.md); running it in the pipeline comes after the `Map` state) |
+| ☁️ | **Provenance and monitoring** | Run record per sample with the execution name; dashboard with result quality, data lake storage and stage durations; trigger alarm; per-stage CPU and memory use |
+| ✅ | **Repository quality** | ruff, Terraform and Rust checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
 | 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |
+
+### 2.0 "XLR8": faster and cheaper
+
+<p align="center">
+  <img src="docs/assets/xlr8-2.0-release.png" alt="Project XLR8: Geyser Genomics 2.0" width="600"/>
+</p>
+
+| | | |
+| :---: | :--- | :--- |
+| ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; cloud run 1 min 52 s, down from 3 min 45 s |
+| ☁️ | **Faster tools** | bwa-mem2 (align stage 1.56× faster on HG003 chr20) with its index stored (align job 45.7 s → 29.3 s); fastp; CRAM + indexes |
+| ☁️ | **Faster starts, cheaper capacity** | Slim image (186 → 87 MB compressed, pulled by every job); Fargate Spot first with on-demand fallback; $0.0066-0.0070 per small sample at on-demand prices |
+| ☁️ | **Sharded variant calling** | Regions called in parallel by a `Map` state and merged exactly; for whole genomes, not small samples (it adds ~2 min of fixed overhead there) |
+| ✅ | **Quality gate (Rust)** | Fails a run with named reasons; thresholds calibrated on HG003/HG005; DeepVariant stats over PASS calls |
+| ✅ | **Variant consequences** | `bcftools csq` when the reference has gene models; shown in the web UI |
+| 🚧 | **Quality gate in the pipeline** | Gate stage, binary in the image, verdict in the run record ([#148](../../pull/148)) |
+| 🚧 | **DeepVariant in the cloud** | GPU environment in the public subnet, DeepVariant stage with bcftools fallback ([#125](../../pull/125), [#43](../../issues/43), [#44](../../issues/44)) |
+
+### After 2.0
+
+| | | |
+| :---: | :--- | :--- |
+| 🎯 | **Pangenome: where it should help most** | Done offline on chr20: HG005's extra errors explained (MAPQ-0 reads), reads aligned to the graph (`vg giraffe`, fewest errors). Next: newer HPRC graph, whole genome, giraffe in the pipeline ([#51](../../issues/51), [#146](../../issues/146)). **Top priority** |
+| 🔜 | **Pangenome-aware DeepVariant in the cloud** | Same GPU environment as 2.0's DeepVariant, plus shared memory for the graph |
+| 🔜 | **Whole genomes in the cloud** | make_examples on large CPU Spot, call_variants on the GPU, bigger job disks |
+| 🔜 | **Spot for the GPU queue** | A Spot environment ahead of on-demand, as for Fargate |
 
 ---
 

@@ -93,7 +93,12 @@ def test_run_streaming_captures_timestamped_lines_and_exit_code():
 
 
 def test_keys_follow_storage_contract():
-    assert dv.deepvariant_keys("S1") == {"bam": "alignments/S1.bam", "vcf": "variants_deepvariant/S1.vcf.gz"}
+    assert dv.deepvariant_keys("S1") == {
+        "bam": "alignments/S1.bam",
+        "vcf": "variants_deepvariant/S1.vcf.gz",
+        "caller_stats": "stats/S1/bcftools.stats.deepvariant.txt",
+        "bcftools_stats": "stats/S1/bcftools.stats.txt",  # tasks.keys_for: what the gate and widgets read
+    }
 
 
 @pytest.fixture
@@ -111,7 +116,7 @@ def dv_inputs(local_env, monkeypatch):
 
 
 def fake_run(vcf_bytes=None, code=0):
-    def run(cmd):
+    def run(cmd, **_):
         out = next(c.split("=", 1)[1] for c in cmd if c.startswith("--output_vcf="))
         if vcf_bytes is not None:
             with open(out, "wb") as fh:
@@ -170,7 +175,7 @@ def test_stage_reads_the_cram_and_indexes_it_itself(local_env, dv_inputs, monkey
     (local_env / "alignments" / "S1.cram.crai").write_bytes(b"STALE")
     seen = []
 
-    def run(cmd):
+    def run(cmd, **_):
         seen.extend(c for c in cmd if c.startswith("--reads="))
         return fake_run(b"x")(cmd)
 
@@ -192,3 +197,308 @@ def test_stage_fails_without_bam(local_env, dv_inputs, monkeypatch):
 def test_cli_requires_reference():
     with pytest.raises(SystemExit):
         dv.main(["S1"])
+
+
+# ---------- PASS-call stats (#58 follow-up) ----------
+
+STATS_TEXT = (
+    "SN\t0\tnumber of records:\t5\n"
+    "SN\t0\tnumber of SNPs:\t4\n"
+    "SN\t0\tnumber of indels:\t1\n"
+    "TSTV\t0\t3\t1\t3.00\t3\t1\t3.00\n"
+)
+
+
+@pytest.fixture
+def fake_stats(monkeypatch):
+    """bcftools stats faked: writes STATS_TEXT to the command's '> out' and records the command."""
+    commands = []
+
+    def run(label, command, skipped="its stats are skipped for this run"):
+        commands.append(command)
+        out = command.rsplit("> ", 1)[1].strip("'")
+        with open(out, "w") as fh:
+            fh.write(STATS_TEXT)
+        return True
+
+    monkeypatch.setattr(dv, "_run_stats_tool", run)
+    return commands
+
+
+def test_stats_count_pass_calls_only():
+    cmd = dv.pass_stats_command("/w/ref.fa", "/w/S1.vcf.gz", "/w/out.txt")
+    assert cmd.startswith("bcftools stats -f PASS ") and cmd.endswith("/w/S1.vcf.gz > /w/out.txt")
+
+
+def test_extra_caller_writes_only_its_own_stats(local_env, dv_inputs, monkeypatch, fake_stats, capsys):
+    # A benchmark running bcftools and DeepVariant: the sample's bcftools.stats.txt is the bcftools stage's.
+    monkeypatch.delenv("PIPELINE_CALLER", raising=False)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert (local_env / "stats" / "S1" / "bcftools.stats.deepvariant.txt").read_text() == STATS_TEXT
+    assert not (local_env / "stats" / "S1" / "bcftools.stats.txt").exists()
+    assert len(fake_stats) == 1 and " -f PASS " in fake_stats[0]
+    out = capsys.readouterr().out
+    assert "bcftools stats deepvariant: records=5, snps=4, indels=1, tstv=3.0" in out
+    assert "\nbcftools stats: " not in out  # not the line the quality widgets read
+
+
+@pytest.mark.parametrize("pangenome", [None, "g.gbz"])
+def test_the_runs_caller_also_writes_the_samples_stats(
+    local_env, dv_inputs, monkeypatch, fake_stats, capsys, pangenome
+):
+    caller = "pangenome" if pangenome else "deepvariant"
+    monkeypatch.setenv("PIPELINE_CALLER", caller)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    if pangenome:
+        (local_env / "pangenome").mkdir()
+        (local_env / "pangenome" / pangenome).write_bytes(b"graph")
+        dv.pangenome_deepvariant_task("S1", "ref.fa", pangenome)
+    else:
+        dv.deepvariant_task("S1", "ref.fa")
+    stats = local_env / "stats" / "S1"
+    assert (stats / "bcftools.stats.txt").read_text() == (stats / f"bcftools.stats.{caller}.txt").read_text()
+    assert "bcftools stats: records=5, snps=4, indels=1, tstv=3.0" in capsys.readouterr().out
+    # Listed as outputs of the run, so the quality gate doesn't take them for leftovers of an earlier run.
+    import provenance
+    import tasks
+
+    record = provenance.read_record(tasks.storage(), "S1")
+    outputs = {o["key"] for o in record["outputs"]}
+    assert {"stats/S1/bcftools.stats.txt", f"stats/S1/bcftools.stats.{caller}.txt"} <= outputs
+    assert record["stats"]["bcftools_stats"]["tstv"] == 3.0
+
+
+def test_another_runs_caller_does_not_claim_the_samples_stats(local_env, dv_inputs, monkeypatch, fake_stats):
+    monkeypatch.setenv("PIPELINE_CALLER", "bcftools")
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert not (local_env / "stats" / "S1" / "bcftools.stats.txt").exists()
+
+
+@pytest.mark.parametrize("primary", [False, True])
+def test_failed_stats_never_fail_the_stage(local_env, dv_inputs, monkeypatch, primary):
+    if primary:
+        monkeypatch.setenv("PIPELINE_CALLER", "deepvariant")
+    else:
+        monkeypatch.delenv("PIPELINE_CALLER", raising=False)
+    monkeypatch.setattr(dv, "_run_stats_tool", lambda label, command, skipped="": False)
+    vcf = gzip.compress(b"##fileformat=VCFv4.2\n")
+    monkeypatch.setattr(dv, "run_streaming", fake_run(vcf))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz").read_bytes() == vcf
+    assert not (local_env / "stats" / "S1" / "bcftools.stats.deepvariant.txt").exists()
+    sample_stats = local_env / "stats" / "S1" / "bcftools.stats.txt"
+    assert sample_stats.exists() == primary
+
+
+def test_failed_stats_of_the_runs_caller_replace_an_earlier_runs_file(local_env, dv_inputs, monkeypatch):
+    # An earlier bcftools run left its stats; this DeepVariant run's own failed. Without a replacement the
+    # gate would take the old numbers for this run's (the record inherits that run's CallVariants part).
+    import provenance
+    import tasks
+
+    stats = local_env / "stats" / "S1"
+    stats.mkdir(parents=True)
+    (stats / "bcftools.stats.txt").write_text(STATS_TEXT)
+    monkeypatch.setenv("PIPELINE_CALLER", "deepvariant")
+    monkeypatch.setattr(dv, "_run_stats_tool", lambda label, command, skipped="": False)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    text = (stats / "bcftools.stats.txt").read_text()
+    assert text.startswith("# No bcftools stats: deepvariant") and "SN\t" not in text
+    assert tasks.parse_bcftools_stats(text) == {}
+    outputs = {o["key"] for o in provenance.read_record(tasks.storage(), "S1")["outputs"]}
+    assert "stats/S1/bcftools.stats.txt" in outputs
+
+
+def test_the_images_bcftools_is_recorded_under_its_own_name(local_env, dv_inputs, monkeypatch, fake_stats):
+    import provenance
+    import tasks
+
+    monkeypatch.setattr(provenance, "tool_version", lambda name: {"bcftools": "1.13"}.get(name))
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    tools = provenance.read_record(tasks.storage(), "S1")["tools"]
+    assert tools["bcftools (DeepVariant image)"] == "1.13" and "bcftools" not in tools
+
+
+# ---- stopping a hung or failed wrapper (run_streaming limits) ----
+
+
+def py(code):
+    import sys
+
+    return [sys.executable, "-c", code]
+
+
+def test_limits_from_env_defaults_and_overrides():
+    d = dv.WrapperLimits.from_env({})
+    assert (d.timeout, d.idle, d.fatal_grace) == (None, None, 120)  # whole-genome steps can be long and silent
+    o = dv.WrapperLimits.from_env(
+        {
+            "DEEPVARIANT_TIMEOUT_SECONDS": "3300",
+            "DEEPVARIANT_IDLE_TIMEOUT_SECONDS": "900",
+            "DEEPVARIANT_FATAL_GRACE_SECONDS": "0",
+        }
+    )
+    assert (o.timeout, o.idle, o.fatal_grace) == (3300, 900, None)  # 0 = off, for every limit
+
+
+@pytest.mark.parametrize("value", ["2h", "-5"])
+def test_limits_reject_bad_values_by_name(value):
+    with pytest.raises(ValueError, match="DEEPVARIANT_TIMEOUT_SECONDS"):
+        dv.WrapperLimits.from_env({"DEEPVARIANT_TIMEOUT_SECONDS": value})
+
+
+def test_stop_reason_checks_each_limit():
+    limits = dv.WrapperLimits(timeout=100, idle=10, fatal_grace=5)
+    assert dv.stop_reason(limits, now=50, started=0, last_output=45, fatal_at=None) is None
+    assert "within 100 s" in dv.stop_reason(limits, now=101, started=0, last_output=100, fatal_at=None)
+    assert "printed nothing for 10 s" in dv.stop_reason(limits, now=60, started=0, last_output=49, fatal_at=None)
+    # after a fatal line: stopped only once it has also gone quiet for the grace period
+    assert dv.stop_reason(limits, now=60, started=0, last_output=59, fatal_at=40) is None  # still printing
+    assert "fatal error" in dv.stop_reason(limits, now=66, started=0, last_output=60, fatal_at=40)
+    off = dv.WrapperLimits(fatal_grace=0)
+    assert dv.stop_reason(off, now=10_000, started=0, last_output=0, fatal_at=1) is None
+
+
+def test_fatal_pattern_ignores_tensorflow_allocator_warnings():
+    warning = (
+        "W external/local_tsl/tsl/framework/bfc_allocator.cc:296] Allocator (GPU_0_bfc) ran out of memory trying "
+        "to allocate 2.68GiB with freed_by_count=0. The caller indicates that this is not a failure"
+    )
+    assert not dv.FATAL_RE.search(warning)  # seen in successful runs
+    assert dv.FATAL_RE.search("tensorflow.python.framework.errors_impl.ResourceExhaustedError: OOM when allocating")
+    assert dv.FATAL_RE.search("RESOURCE_EXHAUSTED: Out of memory while trying to allocate")
+
+
+def test_run_streaming_stops_a_silent_wrapper():
+    import time as _time
+
+    started = _time.monotonic()
+    with pytest.raises(dv.WrapperStopped, match="printed nothing"):
+        dv.run_streaming(
+            py("import time; print('start', flush=True); time.sleep(60)"),
+            limits=dv.WrapperLimits(idle=1),
+            poll=0.2,
+        )
+    assert _time.monotonic() - started < 30  # killed, not waited out
+
+
+def test_run_streaming_stops_a_wrapper_that_goes_quiet_after_a_fatal_error():
+    with pytest.raises(dv.WrapperStopped, match="fatal error"):
+        dv.run_streaming(
+            py("import time; print('ResourceExhaustedError: OOM', flush=True); time.sleep(60)"),
+            limits=dv.WrapperLimits(fatal_grace=1),
+            poll=0.2,
+        )
+
+
+def test_run_streaming_keeps_a_wrapper_that_still_prints_after_a_fatal_line():
+    code, events, _ = dv.run_streaming(
+        py(
+            "import time\nprint('RESOURCE_EXHAUSTED (autotuning, recovered)', flush=True)\n"
+            "for _ in range(12):\n    time.sleep(0.25); print('progress', flush=True)"
+        ),
+        limits=dv.WrapperLimits(fatal_grace=1),
+        poll=0.1,
+    )
+    assert code == 0 and len(events) == 13  # 3 s of progress, well past the 1 s grace: still alive
+
+
+def test_run_streaming_lets_a_wrapper_exit_by_itself_after_a_fatal_error():
+    code, events, _ = dv.run_streaming(
+        py("import sys; print('RESOURCE_EXHAUSTED', flush=True); sys.exit(1)"),
+        limits=dv.WrapperLimits(fatal_grace=30),
+        poll=0.2,
+    )
+    assert code == 1 and events[0][1] == "RESOURCE_EXHAUSTED"  # its own exit code, no WrapperStopped
+
+
+def test_run_streaming_overall_timeout_even_while_printing():
+    with pytest.raises(dv.WrapperStopped, match="did not finish within 1 s"):
+        dv.run_streaming(
+            py("import time\nwhile True:\n    print('tick', flush=True); time.sleep(0.1)"),
+            limits=dv.WrapperLimits(timeout=1),
+            poll=0.2,
+        )
+
+
+def test_run_streaming_returns_when_a_leftover_process_holds_the_pipe():
+    import time as _time
+
+    started = _time.monotonic()
+    code, events, _ = dv.run_streaming(
+        py(
+            "import subprocess, sys\n"
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])\n"
+            "print('done', flush=True)"
+        ),
+        limits=dv.WrapperLimits(),
+        poll=0.2,
+        drain=1.0,
+    )
+    assert code == 0 and [line for _, line in events] == ["done"]
+    assert _time.monotonic() - started < 15  # not stuck waiting for the leftover's 20 s
+
+
+class FakeProc:
+    def __init__(self, exited):
+        self.pid, self.exited, self.waits = 4242, exited, 0
+
+    def poll(self):
+        return 0 if self.exited else None
+
+    def wait(self, timeout=None):
+        self.waits += 1
+        return 0
+
+
+def test_kill_process_group_signals_the_group_even_after_the_wrapper_exited(monkeypatch):
+    sent = []
+    monkeypatch.setattr(dv.os, "killpg", lambda pid, sig: sent.append((pid, sig)), raising=False)
+    dv.kill_process_group(FakeProc(exited=True))
+    assert [pid for pid, _ in sent] == [4242, 4242]  # TERM and KILL to the group: a stuck step may outlive it
+
+
+def test_kill_process_group_stops_when_the_group_is_gone(monkeypatch):
+    def gone(pid, sig):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(dv.os, "killpg", gone, raising=False)
+    proc = FakeProc(exited=True)
+    dv.kill_process_group(proc)
+    assert proc.waits == 0
+
+
+def test_stage_checks_limits_before_downloading(dv_inputs, monkeypatch):
+    monkeypatch.setenv("DEEPVARIANT_IDLE_TIMEOUT_SECONDS", "soon")
+    fetched = []
+    monkeypatch.setattr(dv, "fetch_alignment", lambda *a, **k: fetched.append(a))
+    with pytest.raises(ValueError, match="DEEPVARIANT_IDLE_TIMEOUT_SECONDS"):
+        dv.deepvariant_task("S1", "ref.fa")
+    assert fetched == []
+
+
+def test_stage_fails_with_the_reason_when_the_wrapper_is_stopped(dv_inputs, monkeypatch):
+    def stopped(cmd, **_):
+        raise dv.WrapperStopped("run_deepvariant printed nothing for 900 s")
+
+    monkeypatch.setattr(dv, "run_streaming", stopped)
+    with pytest.raises(dv.WrapperStopped, match="printed nothing"):
+        dv.deepvariant_task("S1", "ref.fa")
+
+
+def test_run_local_passes_the_limits_through():
+    import run_local
+
+    for name in dv.LIMIT_VARS.values():
+        assert name in run_local.DEEPVARIANT_ENV_VARS
+
+
+def test_run_streaming_cleans_up_the_group_after_a_normal_exit(monkeypatch):
+    sent = []
+    monkeypatch.setattr(dv.os, "killpg", lambda pid, sig: sent.append(pid), raising=False)
+    code, _, _ = dv.run_streaming(py("print('ok', flush=True)"), limits=dv.WrapperLimits(), poll=0.2)
+    assert code == 0 and len(sent) == 1  # stray steps of a finished run do not keep the GPU

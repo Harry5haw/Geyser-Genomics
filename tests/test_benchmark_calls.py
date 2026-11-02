@@ -4,6 +4,7 @@ import pytest
 
 import benchmark_calls as bc
 import benchmark_giraffe as bg
+import benchmark_history as bh
 import fetch_dv_testdata as fetch
 
 
@@ -106,3 +107,47 @@ def bg_default():
     import run_local
 
     return run_local.DEFAULT_PANGENOME
+
+
+def test_history_metadata_names_the_aligner_and_the_reused_alignment():
+    vg = bc.history_metadata("giraffe", "HG003_chr20_vg")
+    assert vg["aligner"] == "vg giraffe" and vg["coverage"] == "35x"
+    assert vg["alignment"] == bh.KNOWN_RUNS["HG003_chr20_vg"]["alignment"]
+    assert bc.history_metadata("bwa", "NEW_SAMPLE") == {"aligner": "bwa"}  # unknown alignment: aligner only
+
+
+def test_every_configuration_is_scored_with_its_history_metadata(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_score(*args, history=None, **kw):
+        seen.append((args[4], args[5], history))  # sample, caller, history
+        return {}, {}, {}
+
+    monkeypatch.setattr(bc, "missing_inputs", lambda *a, **k: [])
+    monkeypatch.setattr(bc.ba, "alignment_path", lambda root, sid: str(tmp_path / f"{sid}.bam"))
+    monkeypatch.setattr(bg, "link_or_copy", lambda *a: None)
+    monkeypatch.setattr(bg, "score_config", fake_score)
+    assert bc.main(["--root", str(tmp_path), "--preset", "google-case-studies", "--reference", "r.fa"]) == 0
+    configs = bc.PRESETS["google-case-studies"]["configs"]
+    assert len(seen) == len(configs)
+    for (_, aligner, sid, source, caller, _, _), (seen_sid, seen_caller, history) in zip(configs, seen, strict=True):
+        assert (seen_sid, seen_caller) == (sid, caller)
+        assert history == bc.history_metadata(aligner, source) and history["alignment"]
+
+
+def test_r2_configurations_pass_their_graph_to_the_caller_and_the_history(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_score(*args, history=None, pangenome=None, **kw):
+        seen.append((args[4], pangenome, (history or {}).get("graph")))
+        return {}, {}, {}
+
+    monkeypatch.setattr(bc, "missing_inputs", lambda *a, **k: [])
+    monkeypatch.setattr(bc.ba, "alignment_path", lambda root, sid: str(tmp_path / f"{sid}.bam"))
+    monkeypatch.setattr(bg, "link_or_copy", lambda *a: None)
+    monkeypatch.setattr(bg, "score_config", fake_score)
+    assert bc.main(["--root", str(tmp_path), "--preset", "hprc-r2", "--reference", "r.fa"]) == 0
+    by_sample = {sid: (graph, hist) for sid, graph, hist in seen}
+    assert by_sample["HG003_chr20_r2"] == (bc.R2_GRAPH, bc.R2_GRAPH)
+    assert by_sample["HG003_chr20_vg_r2"] == (bc.R2_GRAPH, bc.R2_GRAPH)
+    assert all(g is None and h is None for sid, (g, h) in by_sample.items() if not sid.endswith("_r2"))

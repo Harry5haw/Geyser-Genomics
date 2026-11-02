@@ -40,6 +40,8 @@ def test_pangenome_keys_follow_storage_contract():
         "bam": "alignments/S1.bam",
         "vcf": "variants_pangenome/S1.vcf.gz",
         "pangenome": f"pangenome/{GRAPH}",
+        "caller_stats": "stats/S1/bcftools.stats.pangenome.txt",
+        "bcftools_stats": "stats/S1/bcftools.stats.txt",
     }
     assert dv.deepvariant_keys("S1")["vcf"] == "variants_deepvariant/S1.vcf.gz"  # linear path unchanged
 
@@ -88,7 +90,7 @@ def pg_inputs(local_env, monkeypatch):
 
 
 def fake_pangenome_run(seen, vcf_bytes, code=0):
-    def run(cmd):
+    def run(cmd, **_):
         seen.append(cmd)
         graph = next(c.split("=", 1)[1] for c in cmd if c.startswith("--pangenome="))
         with open(graph, "rb") as fh:

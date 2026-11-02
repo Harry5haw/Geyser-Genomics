@@ -178,6 +178,13 @@ def note_tools(*names: str) -> None:
             _current["tools"][f"{name} release"] = release
 
 
+def note_tool_as(label: str, name: str) -> None:
+    """Record tool `name`'s version under `label`: a second copy of a tool in another image (the DeepVariant
+    image's bcftools) must not overwrite the version of the one that did the main work."""
+    if _current is not None:
+        _current["tools"][label] = tool_version(name)
+
+
 def _put_json(storage, key, data) -> None:
     storage.upload_stream(io.BytesIO(json.dumps(data, indent=2, sort_keys=True).encode("utf-8")), key)
 

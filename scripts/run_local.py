@@ -76,7 +76,14 @@ DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.chr20.gbz"
 # Google's case studies run the pangenome container with --shm-size 12gb.
 DEFAULT_PANGENOME_SHM = "12g"
 DEEPVARIANT_PYTHON = "/opt/geyser-venv/bin/python"
-DEEPVARIANT_ENV_VARS = ("DEEPVARIANT_EXTRA_ARGS", "DEEPVARIANT_SHARDS", "DEEPVARIANT_MODEL_TYPE")
+DEEPVARIANT_ENV_VARS = (
+    "DEEPVARIANT_EXTRA_ARGS",
+    "DEEPVARIANT_SHARDS",
+    "DEEPVARIANT_MODEL_TYPE",
+    "DEEPVARIANT_TIMEOUT_SECONDS",
+    "DEEPVARIANT_IDLE_TIMEOUT_SECONDS",
+    "DEEPVARIANT_FATAL_GRACE_SECONDS",
+)
 # Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2;
 # ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz).
 PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE")
@@ -165,6 +172,9 @@ def pipeline_jobs(
                 "gpus": False,
             }
         )
+    # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
+    # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
+    caller_env = {} if "bcftools" in sets or skip_to_variants else {"PIPELINE_CALLER": sets[0]}
     if "deepvariant" in sets:
         jobs.append(
             {
@@ -172,6 +182,7 @@ def pipeline_jobs(
                 "cmd": deepvariant_command(sample_id, reference_name),
                 "image": dv_image,
                 "gpus": gpus,
+                "env": caller_env if sets == ["deepvariant"] else {},
             }
         )
     if "pangenome" in sets:
@@ -184,6 +195,7 @@ def pipeline_jobs(
                 "image": pg_image,
                 "gpus": gpus,
                 "shm": pg_shm,
+                "env": caller_env if sets == ["pangenome"] else {},
             }
         )
     return jobs
@@ -233,6 +245,7 @@ def run_job(job, runner, root, dv_memory=None, env=None):
         # Pipeline and DeepVariant knobs are passed through to the container when set on the host
         # (the host runner inherits the whole environment anyway).
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
+        extra.update(job.get("env") or {})
         extra.update(env or {})
         memory = None
         if job["name"] in ("deepvariant", "pangenome"):
