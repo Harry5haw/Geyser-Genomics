@@ -40,6 +40,8 @@ def test_pangenome_keys_follow_storage_contract():
         "bam": "alignments/S1.bam",
         "vcf": "variants_pangenome/S1.vcf.gz",
         "pangenome": f"pangenome/{GRAPH}",
+        "caller_stats": "stats/S1/bcftools.stats.pangenome.txt",
+        "bcftools_stats": "stats/S1/bcftools.stats.txt",
     }
     assert dv.deepvariant_keys("S1")["vcf"] == "variants_deepvariant/S1.vcf.gz"  # linear path unchanged
 

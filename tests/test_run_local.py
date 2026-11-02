@@ -3,6 +3,8 @@
 import gzip
 import json
 
+import pytest
+
 import run_local
 
 
@@ -137,3 +139,17 @@ def test_every_job_of_a_run_gets_the_same_run_name(monkeypatch):
     names = {arg for cmd in seen for arg in cmd if arg.startswith("RUN_NAME=")}
     assert names == {f"RUN_NAME={env['RUN_NAME']}"} and env["RUN_NAME"].startswith("S1-")
     assert all("APP_VERSION=local:geyser-app" in cmd for cmd in seen)
+
+
+@pytest.mark.parametrize(
+    ("caller", "expected"),
+    [
+        ("deepvariant", {"deepvariant": {"PIPELINE_CALLER": "deepvariant"}}),
+        ("pangenome", {"pangenome": {"PIPELINE_CALLER": "pangenome"}}),
+        ("both", {"deepvariant": {}}),
+        ("all", {"deepvariant": {}, "pangenome": {}}),
+    ],
+)
+def test_deepvariant_owns_the_samples_stats_only_without_bcftools(caller, expected):
+    jobs = run_local.pipeline_jobs("S1", "ref.fa", caller=caller)
+    assert {j["name"]: j["env"] for j in jobs if "env" in j} == expected
