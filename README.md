@@ -773,26 +773,50 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 
 ## 🛣️ Roadmap
 
-✅ done · ☁️ done and verified in the cloud · 🎯 top priority · 🔜 next
+✅ done · ☁️ done and verified in the cloud · 🚧 in progress · 🎯 top priority · 🔜 next
 
-| | Milestone | |
+Release notes for each version (drafts, not tagged yet) are in [`docs/releases/`](docs/releases/README.md).
+
+### 1.0: the platform, made public
+
+| | | |
 | :---: | :--- | :--- |
 | ✅ | **Offline pipeline** | Storage and metrics backends, Docker end-to-end truth check on every push |
-| ✅ | **Cost-safe networking and CI hardening** | NAT gateway off, budgets, OIDC with read-only Terraform roles, prod restricted to `main` |
-| ✅ | **Paired-end input, duplicate marking, run names** | R1/R2 pairing in the trigger, layout-aware stages, `samtools markdup`, runs named after the sample |
+| ☁️ | **Cost-safe networking and CI hardening** | NAT gateway off, budgets, OIDC with read-only Terraform roles, prod restricted to `main` |
+| ☁️ | **Paired-end input, duplicate marking, run names** | R1/R2 pairing in the trigger, layout-aware stages, `samtools markdup`, runs named after the sample |
 | ✅ | **DeepVariant and pangenome-aware DeepVariant (local GPU)** | hap.py on HG003 chr20 reproduces Google's published result; HG005 vs an HG003 control by GIAB region type |
 | ✅ | **Web UI** | Works offline |
-| ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; cloud run 1 min 52 s, down from 3 min 45 s |
 | ☁️ | **Resilience and sizing** | Infrastructure-only retries, time limits, per-stage sizes, 30-day log retention |
 | ☁️ | **Terraform state per environment, guardrails for automation** | Bounded role with a permissions boundary and an automatic $20 kill switch |
-| ✅ | **Better tools and outputs** | bwa-mem2, fastp, CRAM + indexes, QC statistics, provenance run record |
-| ✅ | **Repository quality** | ruff and Terraform checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
-| 🔜 | **Next cloud checkpoint** | Push an image from current main and run single- and paired-end samples; pass the run name to the jobs so cloud run records are complete |
-| 🔜 | **Monitoring** | Deploy the dashboard and alarm and check them against the cloud runs |
-| 🎯 | **Pangenome: where it should help most** | Done offline on chr20: HG005's extra errors explained (MAPQ-0 reads), reads aligned to the graph (`vg giraffe`, fewest errors). Next: newer HPRC graph, whole genome, giraffe in the pipeline. **Top priority** ([#51](../../issues/51)) |
-| 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions ([#43](../../issues/43), [#44](../../issues/44)) |
-| 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason (the tool is built and tested in [`gate/`](gate/README.md); running it in the pipeline comes after the `Map` state) |
+| ☁️ | **Provenance and monitoring** | Run record per sample with the execution name; dashboard with result quality, data lake storage and stage durations; trigger alarm; per-stage CPU and memory use |
+| ✅ | **Repository quality** | ruff, Terraform and Rust checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
 | 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |
+
+### 2.0 "XLR8": faster and cheaper
+
+<p align="center">
+  <img src="docs/assets/xlr8-2.0-release.png" alt="Project XLR8: Geyser Genomics 2.0" width="600"/>
+</p>
+
+| | | |
+| :---: | :--- | :--- |
+| ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; cloud run 1 min 52 s, down from 3 min 45 s |
+| ☁️ | **Faster tools** | bwa-mem2 (align stage 1.56× faster on HG003 chr20) with its index stored (align job 45.7 s → 29.3 s); fastp; CRAM + indexes |
+| ☁️ | **Faster starts, cheaper capacity** | Slim image (186 → 87 MB compressed, pulled by every job); Fargate Spot first with on-demand fallback; $0.0066-0.0070 per small sample at on-demand prices |
+| ☁️ | **Sharded variant calling** | Regions called in parallel by a `Map` state and merged exactly; for whole genomes, not small samples (it adds ~2 min of fixed overhead there) |
+| ✅ | **Quality gate (Rust)** | Fails a run with named reasons; thresholds calibrated on HG003/HG005; DeepVariant stats over PASS calls |
+| ✅ | **Variant consequences** | `bcftools csq` when the reference has gene models; shown in the web UI |
+| 🚧 | **Quality gate in the pipeline** | Gate stage, binary in the image, verdict in the run record ([#148](../../pull/148)) |
+| 🚧 | **DeepVariant in the cloud** | GPU environment in the public subnet, DeepVariant stage with bcftools fallback ([#125](../../pull/125), [#43](../../issues/43), [#44](../../issues/44)) |
+
+### After 2.0
+
+| | | |
+| :---: | :--- | :--- |
+| 🎯 | **Pangenome: where it should help most** | Done offline on chr20: HG005's extra errors explained (MAPQ-0 reads), reads aligned to the graph (`vg giraffe`, fewest errors). Next: newer HPRC graph, whole genome, giraffe in the pipeline ([#51](../../issues/51), [#146](../../issues/146)). **Top priority** |
+| 🔜 | **Pangenome-aware DeepVariant in the cloud** | Same GPU environment as 2.0's DeepVariant, plus shared memory for the graph |
+| 🔜 | **Whole genomes in the cloud** | make_examples on large CPU Spot, call_variants on the GPU, bigger job disks |
+| 🔜 | **Spot for the GPU queue** | A Spot environment ahead of on-demand, as for Fargate |
 
 ---
 
