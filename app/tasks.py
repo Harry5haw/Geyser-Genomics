@@ -11,7 +11,7 @@ Stages communicate only through storage keys:
     reference/{reference_name} (+ optional .fai / bwa indexes)
 
 qc and align both read the gzipped upload directly (FastQC and bwa mem read gzip), so they don't
-depend on each other and can run in parallel (the three-stage state machine, #84). There is no
+depend on each other: the state machine runs them as two branches of a Parallel state. There is no
 decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
 
 Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
@@ -21,7 +21,7 @@ both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
 METRICS_BACKEND (see metrics.py). If you rename a stage or key, update the Step
-Functions definition (infrastructure/step_functions.tf) and scripts/run_local.py too.
+Functions definition (infrastructure/state_machine.asl.json) and scripts/run_local.py too.
 """
 
 import argparse
@@ -194,16 +194,6 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     return local_ref
 
 
-def decompress_task(sample_id):
-    """No-op, kept so a new image still works under the old four-stage state machine.
-
-    qc and align now read raw_reads/ directly. Remove this (and its TASKS entry) once the
-    three-stage state machine is applied; it records no metric, so dashboards never show it.
-    """
-    print(f"'decompress' is no longer a stage: qc and align read raw_reads/ directly. "
-          f"Nothing to do for '{sample_id}'.", flush=True)
-
-
 def download_raw_reads(keys: dict, wd: str) -> list:
     """Download the sample's gzipped read file(s) as-is into wd; returns the local paths (R1 first)."""
     paths = []
@@ -313,7 +303,6 @@ def variants_task(sample_id, reference_name):
 
 
 TASKS = {
-    "decompress": (decompress_task, False),  # no-op until the three-stage state machine is applied
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),
