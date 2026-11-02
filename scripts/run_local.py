@@ -11,8 +11,8 @@ This plays the part of the cloud orchestration:
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 
 After variant calling, the quality gate (tasks.py gate, #144) checks the run's QC statistics and
-writes qc_reports/<id>.gate.json; it isn't a Step Functions state yet. GATE_MODE=warn (default) only
-warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
+writes qc_reports/<id>.gate.json, as the state machine's last step does in the cloud. GATE_MODE=warn
+(default) only warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
 it uses the synthetic thresholds unless GATE_CONFIG is set; --no-gate skips it.
 
 Typical use:
@@ -213,7 +213,9 @@ def pipeline_jobs(
                 "env": caller_env if sets == ["pangenome"] else {},
             }
         )
-    if gate and "bcftools" in sets:
+    # The gate judges the sample's stats: bcftools', or a DeepVariant-only run's (#147), as in the cloud. Not
+    # an add-on caller (--skip-to-variants without bcftools): the stats it would judge are an earlier run's.
+    if gate and ("bcftools" in sets or not skip_to_variants):
         # Last, so a failed gate (GATE_MODE=fail) can't keep DeepVariant or --check from running.
         job = {
             "name": "gate",

@@ -298,8 +298,19 @@ the state machine decides with Terraform's **`gate_mode`**:
 | Verdict | `gate_mode = "warn"` (default) | `gate_mode = "fail"` |
 | :--- | :--- | :--- |
 | pass | `Pipeline_Succeeded` | `Pipeline_Succeeded` |
-| fail | `Gate_Warned` → `Pipeline_Succeeded` (recorded) | `Notify_Failure` → `Pipeline_Failed`, error `QualityGateFailed`, the cause lists the gate's reasons |
-| none (the job failed, the verdict is missing, or it says `null`) | `Gate_Warned` → `Pipeline_Succeeded` | `Notify_Failure` → `Pipeline_Failed`, error `QualityGateError` |
+| fail | `Gate_Warned` → `Pipeline_Succeeded` (recorded) | `Notify_Failure` → `Pipeline_Failed`; the notification's error is `QualityGateFailed`, its cause lists the gate's reasons |
+| none (the job failed, the verdict is missing, unreadable or `null`) | `Gate_Skipped` → `Pipeline_Succeeded` (not judged) | `Notify_Failure` → `Pipeline_Failed`; the notification's error is `QualityGateError` |
+
+The execution itself always fails as `PipelineStageFailed`, like any failed stage. The gate's error and
+reasons are in the SNS failure notification (`ErrorDetails`) and in the execution's data (`$.error`,
+`$.gate.verdict`); the job pins `GATE_MODE=warn`, so the state machine is the one place the mode is
+decided. Before applying, the image in ECR (`dev-local`) must have the gate (main from #148 on):
+with an older image every gate job fails, which warn mode shows as `Gate_Skipped` on every run.
+
+The gate costs one more Fargate job per run: about a minute of start-up overhead and a fraction of a
+cent. Verdicts are per sample (`qc_reports/<id>.gate.json`), like every other key of a sample, so two
+runs of the same sample at once can read each other's verdict, as they already overwrite each other's
+stats; `scripts/reconcile.py` flags concurrent runs.
 
 A stage that fails before the gate (QC, align, variants) ends the run through `Notify_Failure` as before;
 the gate never runs then.
@@ -309,8 +320,9 @@ the gate never runs then.
 The user's decision (2 Nov 2026): **warn first, then fail** (#157).
 
 - **Criterion for the switch:** at least **5 real-sample cloud runs** (not the simulated CLOUD00x
-  checkpoints) with the gate, and **no false fails** against the calibrated thresholds: every failed
-  verdict was a really bad run, or the threshold was corrected first. DeepVariant runs need #158 first:
+  checkpoints) that the gate **judged** (`Gate_Decision` reached; a `Gate_Skipped` run doesn't count),
+  and **no false fails** against the calibrated thresholds: every failed verdict was a really bad run,
+  or the threshold was corrected first. DeepVariant runs need #158 first:
   until their run record counts a DeepVariant-only run as complete, the gate's `run_status` check fails
   them.
 - **The switch, one line:** `gate_mode = "fail"` (tfvars, or the default in

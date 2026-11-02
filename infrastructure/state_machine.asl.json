@@ -321,13 +321,16 @@
     },
     "Prepare_Gate_Command": {
       "Type": "Pass",
-      "Comment": "The quality gate (#144) on whichever caller ran. The job runs the app's default GATE_MODE=warn, so a failed verdict never fails the job itself: it stores qc_reports/{id}.gate.json, and the states below decide. Mode is Terraform's gate_mode.",
+      "Comment": "The quality gate (#144) on whichever caller ran. The job runs with GATE_MODE=warn (pinned here, whatever the job definition or the app default says), so a failed verdict never fails the job itself: it stores qc_reports/{id}.gate.json, and the states below decide. Mode is Terraform's gate_mode. The image must have the gate (main from #148 on).",
       "Parameters": {
         "Mode": "${gate_mode}",
         "JobName.$": "States.Format('QualityGate-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
           "Command.$": "States.Array('python', 'tasks.py', 'gate', $.srr_id)",
-          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "GATE_MODE", "Value": "warn" }
+          ],
           "ResourceRequirements": [
             { "Type": "VCPU", "Value": "${qc_vcpu}" },
             { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
@@ -379,14 +382,26 @@
       "Catch": [
         { "ErrorEquals": ["States.ALL"], "Next": "Gate_Problem", "ResultPath": "$.gate_error" }
       ],
-      "Next": "Gate_Decision"
+      "Next": "Gate_Verdict_Readable"
+    },
+    "Gate_Verdict_Readable": {
+      "Type": "Choice",
+      "Comment": "A verdict without a 'verdict' field (not the gate's JSON, or not an object) would make the comparisons below fail the run with States.Runtime and no notification: it is a gate problem instead. Presence tests never throw.",
+      "Choices": [{ "Variable": "$.gate.verdict.verdict", "IsPresent": true, "Next": "Gate_Decision" }],
+      "Default": "Gate_Problem"
     },
     "Gate_Decision": {
       "Type": "Choice",
-      "Comment": "pass: done. fail: the mode decides. Anything else (verdict null: the gate couldn't judge) is a gate problem.",
+      "Comment": "pass: done. fail (with its reasons): the mode decides. Anything else (verdict null: the gate couldn't judge) is a gate problem.",
       "Choices": [
         { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Pipeline_Succeeded" },
-        { "Variable": "$.gate.verdict.verdict", "StringEquals": "fail", "Next": "Gate_Failed" }
+        {
+          "And": [
+            { "Variable": "$.gate.verdict.verdict", "StringEquals": "fail" },
+            { "Variable": "$.gate.verdict.reasons", "IsPresent": true }
+          ],
+          "Next": "Gate_Failed"
+        }
       ],
       "Default": "Gate_Problem"
     },
@@ -408,9 +423,9 @@
     },
     "Gate_Problem": {
       "Type": "Choice",
-      "Comment": "The gate gave no verdict (its job failed, e.g. a bad GATE_CONFIG; the verdict is missing; or it says null). warn: the run succeeds anyway. fail: no verdict is no pass.",
+      "Comment": "The gate gave no verdict (its job failed, e.g. a bad GATE_CONFIG or an image without the gate; the verdict is missing, unreadable or null). warn: the run succeeds, through Gate_Skipped so it is told apart from a warned verdict. fail: no verdict is no pass.",
       "Choices": [{ "Variable": "$.gate_params.Mode", "StringEquals": "fail", "Next": "Prepare_Gate_Error" }],
-      "Default": "Gate_Warned"
+      "Default": "Gate_Skipped"
     },
     "Prepare_Gate_Error": {
       "Type": "Pass",
@@ -423,7 +438,12 @@
     },
     "Gate_Warned": {
       "Type": "Pass",
-      "Comment": "gate_mode = warn: a failed verdict or a gate problem is recorded (qc_reports/{id}.gate.json, the run record, the job log, this execution's history) and the run still succeeds.",
+      "Comment": "gate_mode = warn and the gate failed the sample: recorded (qc_reports/{id}.gate.json, the run record, the job log, this execution's output) and the run still succeeds.",
+      "Next": "Pipeline_Succeeded"
+    },
+    "Gate_Skipped": {
+      "Type": "Pass",
+      "Comment": "gate_mode = warn and the gate gave no verdict ($.gate_error or a null verdict says why). The run succeeds, but it was never judged: it doesn't count toward the switch to fail (#157). The QualityGate stage's FailureCount metric shows a failed gate job on the dashboard.",
       "Next": "Pipeline_Succeeded"
     },
     "Pipeline_Succeeded": {

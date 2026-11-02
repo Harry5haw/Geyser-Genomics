@@ -71,6 +71,10 @@ VERDICTS = {
     "fail": {"schema": 1, "sample_id": "S1", "verdict": "fail", "reasons": GATE_REASONS, "config": "built-in default"},
     # The gate couldn't judge (e.g. the binary crashed): tasks.py stores this instead of a verdict.
     "none": {"sample_id": "S1", "verdict": None, "mode": "warn", "error": "geyser-gate exited -6"},
+    # Not the gate's JSON: no verdict field, a fail without its reasons, not an object at all.
+    "malformed": {"schema": 1},
+    "reasonless": {"verdict": "fail"},
+    "list": [],
 }
 
 OK, FAIL = "BatchSucceeded", "BatchFailed"
@@ -116,6 +120,9 @@ TEST_CASES = {
     "GateNoVerdict": {"Read_Gate_Verdict": "VerdictNone", "Notify_Failure": "Published"},
     "GateJobFails": {"Quality_Gate": FAIL, "Notify_Failure": "Published"},
     "GateVerdictMissing": {"Read_Gate_Verdict": "NoSuchKey", "Notify_Failure": "Published"},
+    "GateVerdictMalformed": {"Read_Gate_Verdict": "VerdictMalformed", "Notify_Failure": "Published"},
+    "GateVerdictReasonless": {"Read_Gate_Verdict": "VerdictReasonless", "Notify_Failure": "Published"},
+    "GateVerdictList": {"Read_Gate_Verdict": "VerdictList", "Notify_Failure": "Published"},
 }
 # Every case passes the gate unless it says otherwise.
 GATE = {"Quality_Gate": OK, "Read_Gate_Verdict": "VerdictPass"}
@@ -548,7 +555,10 @@ def test_every_stage_gets_the_execution_name_as_run_name(sfn):
     params = batch_parameters(events)
     assert set(params) == set(BATCH_TASKS)
     for state, p in params.items():
-        assert p["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}], state
+        expected = [{"Name": "RUN_NAME", "Value": desc["name"]}]
+        if state == "Quality_Gate":  # pinned: the job never fails on a verdict; the state machine decides
+            expected.append({"Name": "GATE_MODE", "Value": "warn"})
+        assert p["ContainerOverrides"]["Environment"] == expected, state
 
 
 @pytest.mark.parametrize(
@@ -722,12 +732,25 @@ def test_the_gate_also_judges_a_deepvariant_run(sfn):
     assert "Call_Variants" not in states and states[-1] == "Pipeline_Succeeded"
 
 
-@pytest.mark.parametrize("case", ["GateFailsVerdict", "GateNoVerdict", "GateJobFails", "GateVerdictMissing"])
+NO_VERDICT_CASES = [
+    "GateNoVerdict",
+    "GateJobFails",
+    "GateVerdictMissing",
+    "GateVerdictMalformed",
+    "GateVerdictReasonless",
+    "GateVerdictList",
+]
+
+
+@pytest.mark.parametrize("case", ["GateFailsVerdict", *NO_VERDICT_CASES])
 def test_warn_mode_records_a_failed_or_missing_verdict_and_the_run_succeeds(sfn, case):
     desc, events = run_case(sfn, case)
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
-    assert states[-2:] == ["Gate_Warned", "Pipeline_Succeeded"]
+    # A judged run (Gate_Warned) is told apart from one the gate never judged (Gate_Skipped, #157).
+    last = "Gate_Warned" if case == "GateFailsVerdict" else "Gate_Skipped"
+    assert states[-2:] == [last, "Pipeline_Succeeded"]
+    assert "States.Runtime" not in history_text(events)
     assert "Notify_Failure" not in states
     output = json.loads(desc["output"])
     if case == "GateFailsVerdict":
@@ -749,7 +772,7 @@ def test_fail_mode_fails_the_run_with_the_gates_reasons(sfn_fail):
     assert "qc_reports/SAMPLE7.gate.json" in error["Cause"]
 
 
-@pytest.mark.parametrize("case", ["GateNoVerdict", "GateJobFails", "GateVerdictMissing"])
+@pytest.mark.parametrize("case", NO_VERDICT_CASES)
 def test_fail_mode_treats_no_verdict_as_no_pass(sfn_fail, case):
     desc, events = run_case(sfn_fail, case)
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
