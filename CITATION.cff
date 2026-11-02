@@ -1,0 +1,123 @@
+cff-version: 1.2.0
+message: >-
+  If you use Geyser Genomics, please cite it as below, and cite the tools and
+  data it builds on (listed under references).
+title: "Geyser Genomics: an event-driven AWS pipeline from FASTQ to VCF"
+type: software
+authors:
+  - family-names: Shaw
+    given-names: Harry
+repository-code: "https://github.com/Harry5haw/Geyser-Genomics"
+license: MIT
+abstract: >-
+  An event-driven pipeline on AWS (S3, Lambda, Step Functions, Batch, all in
+  Terraform) that turns a gzipped FASTQ into a VCF, developed offline first
+  against synthetic data with planted mutations, with linear and
+  pangenome-aware DeepVariant benchmarked against bcftools with hap.py.
+keywords:
+  - genomics
+  - bioinformatics
+  - variant calling
+  - pangenome
+  - deepvariant
+  - aws
+  - terraform
+references:
+  - type: article
+    title: "A universal SNP and small-indel variant caller using deep neural networks"
+    authors:
+      - family-names: Poplin
+        given-names: Ryan
+      - name: "et al."
+    journal: Nature Biotechnology
+    volume: 36
+    start: 983
+    end: 987
+    year: 2018
+    doi: 10.1038/nbt.4235
+  - type: article
+    title: "Pangenome-aware DeepVariant"
+    authors:
+      - family-names: Asri
+        given-names: Mobin
+      - name: "et al."
+    journal: bioRxiv
+    year: 2025
+    doi: 10.1101/2025.06.05.657102
+  - type: article
+    title: "A draft human pangenome reference"
+    authors:
+      - family-names: Liao
+        given-names: Wen-Wei
+      - name: "et al."
+    journal: Nature
+    volume: 617
+    start: 312
+    end: 324
+    year: 2023
+    doi: 10.1038/s41586-023-05896-x
+  - type: article
+    title: "Best practices for benchmarking germline small-variant calls in human genomes"
+    authors:
+      - family-names: Krusche
+        given-names: Peter
+      - name: "et al."
+    journal: Nature Biotechnology
+    volume: 37
+    start: 555
+    end: 560
+    year: 2019
+    doi: 10.1038/s41587-019-0054-x
+  - type: article
+    title: "Benchmarking challenging small variants with linked and long reads"
+    authors:
+      - family-names: Wagner
+        given-names: Justin
+      - name: "et al."
+    journal: Cell Genomics
+    volume: 2
+    issue: 5
+    start: 100128
+    year: 2022
+    doi: 10.1016/j.xgen.2022.100128
+  - type: article
+    title: "Aligning sequence reads, clone sequences and assembly contigs with BWA-MEM"
+    authors:
+      - family-names: Li
+        given-names: Heng
+    journal: arXiv
+    year: 2013
+    doi: 10.48550/arXiv.1303.3997
+  - type: conference-paper
+    title: "Efficient Architecture-Aware Acceleration of BWA-MEM for Multicore Systems"
+    authors:
+      - family-names: Vasimuddin
+        given-names: Md
+      - family-names: Misra
+        given-names: Sanchit
+      - family-names: Li
+        given-names: Heng
+      - family-names: Aluru
+        given-names: Srinivas
+    collection-title: "IEEE International Parallel and Distributed Processing Symposium (IPDPS)"
+    year: 2019
+    doi: 10.1109/IPDPS.2019.00041
+  - type: article
+    title: "Twelve years of SAMtools and BCFtools"
+    authors:
+      - family-names: Danecek
+        given-names: Petr
+      - name: "et al."
+    journal: GigaScience
+    volume: 10
+    issue: 2
+    start: giab008
+    year: 2021
+    doi: 10.1093/gigascience/giab008
+  - type: software
+    title: "FastQC: a quality control tool for high throughput sequence data"
+    authors:
+      - family-names: Andrews
+        given-names: Simon
+    year: 2010
+    url: "https://www.bioinformatics.babraham.ac.uk/projects/fastqc/"

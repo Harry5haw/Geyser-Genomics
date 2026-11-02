@@ -60,6 +60,7 @@
 9.  [Web UI](#️-web-ui)
 10. [Deployment & Usage](#-deployment--usage)
 11. [Roadmap](#️-roadmap)
+12. [Contributing, Security and Citing](#-contributing-security-and-citing)
 
 ---
 
@@ -585,3 +586,11 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |
 | 🔜 | **Web UI on S3** | Point the UI at the cloud bucket |
 | 🔜 | **Branch protection** | Required review for `prod`, once the repository is public |
+
+---
+
+## 🤝 Contributing, Security and Citing
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): set-up, the checks every change passes, branch/commit/PR conventions, and how infrastructure changes are reviewed.
+- [SECURITY.md](SECURITY.md): how to report a vulnerability privately, and what is in scope.
+- [CITATION.cff](CITATION.cff): how to cite Geyser and the tools and data it builds on (GitHub's "Cite this repository" uses it).
