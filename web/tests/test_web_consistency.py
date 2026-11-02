@@ -22,4 +22,4 @@ def test_metric_names_match_tasks_py():
 def test_stage_outputs_are_real_keys():
     keys = keys_for("X")
     for st in STAGES:
-        assert st.output in keys
+        assert all(name in keys for name in st.output)

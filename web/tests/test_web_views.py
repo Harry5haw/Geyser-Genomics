@@ -4,7 +4,7 @@ from .web_helpers import fastq_gz, metric, put, vcf_gz, write_metrics
 from samples.runs import write_run
 
 FINISHED = ["qc_reports/S1_fastqc.html", "qc_reports/S1_fastqc.zip",
-            "alignments/S1.bam"]
+            "alignments/S1.cram", "alignments/S1.cram.crai", "variants/S1.vcf.gz.tbi"]
 
 
 def finished_sample(storage, truth=True):
@@ -51,8 +51,9 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert body.count('class="planted"') == 2
     assert "Variants" in body and "3 calls" in body
     assert 'src="/samples/S1/files/qc_html/?inline=1"' in body
-    for kind in ("raw", "qc_html", "qc_zip", "bam", "vcf", "truth"):
+    for kind in ("raw", "qc_html", "qc_zip", "cram", "crai", "vcf", "tbi", "truth"):
         assert f"/samples/S1/files/{kind}/" in body
+    assert "/samples/S1/files/bam/" not in body  # only offered when a BAM exists (older runs)
     assert "/samples/S1/files/log/" not in body  # no run log for this sample
     assert "10.8 s" in body  # total of the stage durations
 
@@ -83,9 +84,9 @@ def test_unknown_or_invalid_sample_is_404(client, storage):
 
 def test_downloads_are_whitelisted(client, storage):
     finished_sample(storage)
-    resp = client.get("/samples/S1/files/bam/")
+    resp = client.get("/samples/S1/files/cram/")
     assert resp.status_code == 200
-    assert resp["Content-Disposition"].startswith('attachment; filename="S1.bam"')
+    assert resp["Content-Disposition"].startswith('attachment; filename="S1.cram"')
     assert b"".join(resp.streaming_content) == b"data"
     assert client.get("/samples/S1/files/metrics/").status_code == 404
     assert client.get("/samples/S1/files/..%2F..%2Fetc/").status_code == 404
@@ -108,3 +109,11 @@ def test_list_handles_failure_metric(client, storage):
     write_metrics(storage, [metric("QualityControl", "S1", "Failure")])
     body = client.get("/").content.decode()
     assert "Failed" in body
+
+
+def test_a_bam_from_before_cram_is_still_downloadable(client, storage):
+    finished_sample(storage)
+    put(storage, "alignments/S1.bam", b"old")
+    assert "/samples/S1/files/bam/" in client.get("/samples/S1/").content.decode()
+    resp = client.get("/samples/S1/files/bam/")
+    assert resp.status_code == 200 and b"".join(resp.streaming_content) == b"old"
