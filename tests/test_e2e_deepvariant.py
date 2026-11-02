@@ -62,6 +62,35 @@ def test_deepvariant_on_synthetic_data(tmp_path):
     assert "stats/SYNTH001/bcftools.stats.deepvariant.txt" in {o["key"] for o in record["outputs"]}
 
 
+def test_a_deepvariant_only_run_is_complete(tmp_path):
+    # #158: no bcftools stage, so no CallVariants; DeepVariant is the run's caller (PIPELINE_CALLER) and
+    # completes the record. The quality gate then judges DeepVariant's PASS-call stats.
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root)])
+    exit_code = run_local.main(
+        [
+            "--root",
+            str(root),
+            "--sample",
+            "SYNTH001",
+            "--reference",
+            "synthetic_ref.fa",
+            "--caller",
+            "deepvariant",
+            "--image",
+            os.environ.get("GEYSER_IMAGE", "geyser-app"),
+        ]
+        + dv_args()
+    )
+    assert exit_code == 0
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert (record["status"], record["complete"], record["caller"]) == ("succeeded", True, "deepvariant")
+    assert "CallVariants" not in record["stages"] and record["stages"]["DeepVariant"]["status"] == "Success"
+    verdict = json.loads((root / "qc_reports" / "SYNTH001.gate.json").read_text())
+    run_status = next(c for c in verdict["checks"] if c["name"] == "run_status")
+    assert run_status["status"] == "pass", run_status
+
+
 def test_image_bcftools_counts_pass_calls_only(tmp_path):
     """The DeepVariant image's own bcftools (Ubuntu's) on a VCF with RefCall candidates, using the stage's
     exact command: 5 PASS records (4 SNPs, Ti/Tv 3.0), while all 10 records would give Ti/Tv 0.5."""
