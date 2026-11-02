@@ -402,16 +402,17 @@ def test_effective_aligner_leaves_bwa_alone(tmp_path):
 
 # --- alignment input (CRAM, else BAM) ------------------------------------------
 
-def test_alignment_input_prefers_the_cram_and_warns_about_a_bam_beside_it(capsys):
+def test_alignment_input_prefers_the_cram_and_notes_a_bam_beside_it(capsys):
     present = {"alignments/S1.cram", "alignments/S1.bam"}
     assert tasks.alignment_input("S1", present.__contains__) == "alignments/S1.cram"
-    assert "WARNING" in capsys.readouterr().out  # an imported BAM next to an old CRAM is easy to miss
+    out = capsys.readouterr().out
+    assert "Note:" in out and "alignments/S1.bam" in out  # an imported BAM next to a CRAM is easy to miss
 
 
 def test_alignment_input_falls_back_to_a_bam_quietly(capsys):
     # fetch_dv_testdata.py writes alignments/<id>.bam, and runs from before CRAM left BAMs.
     assert tasks.alignment_input("S1", {"alignments/S1.bam"}.__contains__) == "alignments/S1.bam"
-    assert "WARNING" not in capsys.readouterr().out
+    assert "Note:" not in capsys.readouterr().out
 
 
 def test_alignment_input_without_either_names_both(local_env):
@@ -429,7 +430,8 @@ def test_fetch_alignment_indexes_what_it_downloaded_not_the_stored_index(local_e
 
     assert path == str(tmp_path / "S1.cram")
     assert not (tmp_path / "S1.cram.crai").exists()  # not downloaded
-    assert [shlex.split(c) for c in shell_commands] == [["samtools", "index", path]]
+    (command,) = [shlex.split(c) for c in shell_commands]
+    assert command[:2] == ["samtools", "index"] and command[-1] == path
 
 
 def test_fetch_alignment_uses_the_given_indexer(local_env, tool_calls, shell_commands, tmp_path):
@@ -447,9 +449,19 @@ def test_one_alignment_rule_for_stages_web_and_reconcile():
     assert all(form in tasks.keys_for("S1") for form in tasks.ALIGNMENT_FORMS)
 
 
-def test_fetch_alignment_indexes_a_bam_without_one(local_env, tool_calls, shell_commands, tmp_path):
+@pytest.mark.parametrize("stored_bai", [True, False])
+def test_fetch_alignment_reuses_a_bams_stored_index(local_env, tool_calls, shell_commands, tmp_path, stored_bai):
+    # Imported BAMs are never half-written by a stage, so their .bai can be trusted; a CRAM's .crai can't.
     put(local_env, "alignments/S1.bam", b"BAM")
+    if stored_bai:
+        put(local_env, "alignments/S1.bam.bai", b"BAI")
 
-    tasks.fetch_alignment("S1", str(tmp_path), need_index=True)
+    path = tasks.fetch_alignment("S1", str(tmp_path), need_index=True)
 
-    assert [shlex.split(c) for c in shell_commands] == [["samtools", "index", str(tmp_path / "S1.bam")]]
+    if stored_bai:
+        assert (tmp_path / "S1.bam.bai").read_bytes() == b"BAI" and shell_commands == []
+    else:
+        (command,) = [shlex.split(c) for c in shell_commands]
+        assert command[:2] == ["samtools", "index"] and command[-1] == path
+
+

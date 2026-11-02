@@ -125,8 +125,9 @@ def alignment_input(sample_id: str, exists=None) -> str:
     """Key of the alignment a caller should read: the CRAM, else a BAM. exists(key) -> bool.
 
     CRAM first: it is what the align stage writes. A BAM is legacy or imported input (runs from
-    before CRAM, fetch_dv_testdata.py). If both exist the CRAM wins, with a warning, because an
-    imported BAM next to an older CRAM is easy to mistake for the input. Neither is an error.
+    before CRAM, fetch_dv_testdata.py). If both exist the CRAM wins and a note says so (normal for a
+    sample re-aligned since CRAM; worth knowing if a BAM was imported on purpose). If there is no
+    alignment at all, FileNotFoundError naming every key tried.
     """
     exists = exists or storage().exists
     keys = keys_for(sample_id)
@@ -135,23 +136,35 @@ def alignment_input(sample_id: str, exists=None) -> str:
         raise FileNotFoundError(f"No alignment for {sample_id}: none of "
                                 + ", ".join(storage().describe(keys[f]) for f in ALIGNMENT_FORMS))
     if len(found) > 1:
-        print(f"WARNING: {sample_id} has {' and '.join(found)}; reading {found[0]}", flush=True)
+        print(f"Note: {sample_id} has {' and '.join(found)}; reading {found[0]}", flush=True)
     return found[0]
+
+
+def index_alignment(path: str) -> None:
+    """samtools index a local CRAM or BAM (.crai / .bai next to it). Needs no reference, even for CRAM."""
+    run_shell(f"samtools index -@ {os.cpu_count() or 1} {shlex.quote(path)}")
 
 
 def fetch_alignment(sample_id: str, wd: str, need_index: bool = False, indexer=None) -> str:
     """Download the sample's alignment (alignment_input) into wd, keeping its name. Returns the local path.
 
-    need_index: index the downloaded file (indexer(path), default samtools index) for callers that
-    need random access, e.g. DeepVariant. The stored .crai is deliberately not used: if a re-run
-    failed between its two uploads it can belong to the previous file, and indexing takes seconds.
+    need_index: also provide an index, for callers that need random access (DeepVariant). A CRAM is
+    always indexed here (indexer(path), default index_alignment), never paired with the stored
+    .crai: if a re-run failed between its two uploads, that .crai can belong to the previous CRAM.
+    A BAM is imported, never half-written by a stage, so its stored .bai is used when there is one.
     """
     key = alignment_input(sample_id)
     local = os.path.join(wd, os.path.basename(key))
     print(f"Fetching alignment {storage().describe(key)}", flush=True)
     storage().download(key, local)
     if need_index:
-        (indexer or (lambda path: run_shell(f"samtools index {shlex.quote(path)}")))(local)
+        if key.endswith(".bam"):
+            try:
+                storage().download(key + ".bai", local + ".bai")
+                return local
+            except ObjectNotFound:
+                pass
+        (indexer or index_alignment)(local)
     return local
 
 
@@ -443,9 +456,10 @@ def align_task(sample_id, reference_name):
         print(f"Aligning with {aligner}", flush=True)
         run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
         run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
-        # Index first: the CRAM is what marks the stage done (web status, reconcile, the variants
-        # stage), so it should not appear without its index. The pipeline's own readers never use
-        # the stored index (fetch_alignment), so a re-run that fails in between can't mislead them.
+        # Index first, so a first run never shows a CRAM (the stage-done marker) without its index.
+        # On a re-run that fails between the two uploads, the stored pair can disagree (new .crai,
+        # old CRAM; the job role can't delete objects to avoid it). The pipeline's own readers are
+        # immune, as fetch_alignment re-indexes; for people and browsers it is fixed by the next run.
         storage().upload(crai, keys["crai"])
         storage().upload(cram, keys["cram"])
     finally:

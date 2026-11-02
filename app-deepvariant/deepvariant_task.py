@@ -37,7 +37,7 @@ import subprocess
 import sys
 import time
 
-from tasks import (ensure_reference_local, fetch_alignment, keys_for, metrics, run_shell, storage,
+from tasks import (ensure_reference_local, fetch_alignment, index_alignment, keys_for, metrics, storage,
                    timed_stage, work_dir)
 
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
@@ -150,8 +150,9 @@ def run_streaming(cmd):
     return proc.wait(), events, time.time()
 
 
-def index_bam(bam):
-    run_shell(f"samtools index {shlex.quote(bam)}")
+def index_bam(path):
+    """Kept as this module's hook (tests replace it); the command itself is tasks.index_alignment."""
+    index_alignment(path)
 
 
 def gpu_name():
