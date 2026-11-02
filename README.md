@@ -335,6 +335,9 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --che
 # Paired-end instead: writes PAIRED001_R1.fastq.gz and PAIRED001_R2.fastq.gz
 python scripts/make_test_data.py --sample PAIRED001 --paired
 python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --check
+
+# Scatter-gather variant calling: one bcftools job per 7,000 bp region, then a merge into the same VCF
+python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --shard-window 7000 --check
 ```
 
 > [!TIP]
@@ -388,6 +391,8 @@ python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --ch
 > python scripts/benchmark_aligners.py --root <root> --from-bam alignments/HG003_chr20.bam \
 >     --base HG003_chr20 --reference GRCh38_chr20.fa --region chr20
 > ```
+>
+> **Scatter-gather variant calling** (`--shard-window BP`) is how the cloud will spread variant calling over many jobs. `tasks.py regions <ref> --window BP` cuts the reference into regions in reference order. `tasks.py variants <id> <ref> --region R` calls one region into `variants/<id>/parts/<run>/`; there's one folder per run (`RUN_NAME`), so a merge never picks up an earlier run's parts. `tasks.py variants <id> <ref> --window BP` merges every part into the usual `variants/<id>.vcf.gz` (+ `.tbi` and stats), and fails, naming them, if any parts are missing. bcftools reports each position in exactly one region, so the merged VCF has the same records as a single job; the Docker E2E test checks this. Shards record the `CallVariantsShard` metric and the merge records `CallVariants`. The Step Functions `Map` state that runs the shards in parallel in the cloud comes in a separate infrastructure PR.
 
 **Tests:**
 

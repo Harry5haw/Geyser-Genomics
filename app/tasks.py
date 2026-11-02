@@ -8,6 +8,8 @@ Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> qc_reports/{id}.fastp.{html,json}     (qc: fastp, report only)
                             -> alignments/{id}.cram + .cram.crai     (align: sorted, duplicates marked)
     alignments/{id}.cram    -> variants/{id}.vcf.gz + .vcf.gz.tbi    (variants)
+        or, scatter-gather: one variants/{id}/parts/<region>.vcf.gz per region (variants --region),
+        then variants --window concatenates them in reference order (see regions_from_lengths)
     stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
     runs/{id}.provenance.json: the run record (inputs, reference MD5, tools, timings, stats; provenance.py)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
@@ -28,6 +30,8 @@ Functions definition (infrastructure/state_machine.asl.json) and scripts/run_loc
 
 import argparse
 import gzip
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -254,7 +258,7 @@ def work_dir(sample_id: str) -> str:
     return tempfile.mkdtemp(prefix=f"geyser-{sample_id}-", dir=base)
 
 
-def timed_stage(task_name):
+def timed_stage(task_name, run_record=True):
     """Time a stage, record a Success/Failure metric and its run-record part (provenance.py).
 
     Neither the metric nor the run record can fail the stage.
@@ -266,7 +270,8 @@ def timed_stage(task_name):
             print(f"--- Starting '{task_name}' for sample '{sample_id}' ---", flush=True)
             start = time.time()
             status, error = "Failure", None
-            provenance.begin(task_name, sample_id)
+            if run_record:
+                provenance.begin(task_name, sample_id)
             try:
                 result = func(sample_id, *args, **kwargs)
                 status = "Success"
@@ -282,7 +287,8 @@ def timed_stage(task_name):
                 except Exception as err:  # noqa: BLE001 - metrics are best effort
                     print(f"WARNING: could not record metric: {err}", flush=True)
                 try:
-                    provenance.finish(storage(), status, duration, error)
+                    if run_record:
+                        provenance.finish(storage(), status, duration, error)
                 except Exception as err:  # noqa: BLE001 - provenance is best effort (finish never raises)
                     print(f"WARNING: could not write the run record: {err}", flush=True)
 
@@ -665,32 +671,193 @@ def align_task(sample_id, reference_name):
         shutil.rmtree(wd, ignore_errors=True)
 
 
+# Scatter-gather variant calling (#108): the reference is cut into regions, each region is called as
+# its own job (variants --region), and the merge (variants --window) concatenates the parts in
+# reference order. mpileup -r reports each position in exactly one region, so the merged calls equal
+# the unsharded ones (checked with SNPs on window boundaries; tests/test_e2e_docker.py).
+SHARD_METRIC = "CallVariantsShard"  # its own metric (and dashboard group); the merge is CallVariants
+DEFAULT_REGION_WINDOW = 50_000_000  # bp per region: GRCh38 chr20 (64.4 Mb) -> 2 shards
+# Parts live per run (RUN_NAME: the Step Functions execution, or run_local's run), so a merge only ever
+# sees its own run's shards: the job role can't delete objects, and an earlier run's parts stay behind.
+# Without RUN_NAME they share "unnamed", and a re-run that skips some shards could merge stale ones.
+PARTS_PREFIX = "variants/{sample_id}/parts/{run}/"
+
+
+def parts_prefix(sample_id: str) -> str:
+    return PARTS_PREFIX.format(sample_id=sample_id, run=_safe_name(os.environ.get("RUN_NAME") or "unnamed"))
+
+
+def _safe_name(text: str) -> str:
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in text)
+
+
+def contig_lengths_from_fai(text: str) -> list:
+    """[(contig, length)] in reference order, from a .fai. A malformed line is a ValueError naming it."""
+    lengths = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        cols = line.split("\t")
+        try:
+            lengths.append((cols[0], int(cols[1])))
+        except (IndexError, ValueError) as err:
+            raise ValueError(f"Malformed .fai line {number}: {line[:80]!r}") from err
+    return lengths
+
+
+def contig_lengths_from_fasta(path: str) -> list:
+    """[(contig, length)] in reference order, by reading the FASTA (when there is no .fai yet)."""
+    lengths, name, total = [], None, 0
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt") as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if name is not None:
+                    lengths.append((name, total))
+                if not line[1:].split():
+                    raise ValueError(f"FASTA header without a name in {os.path.basename(path)}")
+                name, total = line[1:].split()[0], 0
+            else:
+                total += len(line.strip())
+    if name is not None:
+        lengths.append((name, total))
+    return lengths
+
+
+def regions_from_lengths(lengths, window: int) -> list:
+    """Deterministic regions: each contig cut into windows of `window` bp, 1-based and inclusive, in order.
+
+    The last window of a contig is the remainder. Contig names containing ':' are braced, as htslib
+    reads regions ({HLA-A*01:01}:1-100).
+    """
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+    regions = []
+    for contig, length in lengths:
+        name = f"{{{contig}}}" if ":" in contig else contig
+        for start in range(1, length + 1, window):
+            regions.append(f"{name}:{start}-{min(start + window - 1, length)}")
+    return regions
+
+
+def region_part_key(sample_id: str, region: str) -> str:
+    """variants/{id}/parts/<region>.vcf.gz; the name is the region made filename-safe plus a short hash."""
+    digest = hashlib.md5(region.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]  # a name, not security
+    return parts_prefix(sample_id) + f"{_safe_name(region)}-{digest}.vcf.gz"
+
+
+def reference_regions(local_ref: str, window: int) -> list:
+    """Regions of a local reference: from its .fai if there is one, else from the FASTA.
+
+    No regions at all (an empty or broken index) is an error: a merge of nothing would otherwise
+    "succeed" with an empty VCF.
+    """
+    fai = local_ref + ".fai"
+    if os.path.exists(fai):
+        with open(fai) as fh:
+            lengths = contig_lengths_from_fai(fh.read())
+    else:
+        lengths = contig_lengths_from_fasta(local_ref)
+    regions = regions_from_lengths(lengths, window)
+    if not regions:
+        raise ValueError(f"No regions in {os.path.basename(local_ref)}: its index lists no contig with any bases")
+    return regions
+
+
+def _finish_vcf(ref: str, vcf: str, wd: str, keys: dict) -> None:
+    """Index, stats and upload a finished VCF (the unsharded call and the merge end the same way)."""
+    tbi = os.path.join(wd, os.path.basename(keys["tbi"]))
+    run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
+    stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
+    if _run_stats_tool(
+        "bcftools stats", f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}"
+    ):
+        _log_summary("bcftools stats", parse_bcftools_stats, stats)
+        upload_output(stats, keys["bcftools_stats"])
+    upload_output(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
+    upload_output(vcf, keys["vcf"])
+
+
+@timed_stage(SHARD_METRIC, run_record=False)
+def variants_shard_task(sample_id, reference_name, region):
+    """bcftools on one region of the sample's alignment -> variants/{id}/parts/<region>.vcf.gz."""
+    wd = work_dir(sample_id)
+    try:
+        alignment = fetch_alignment(sample_id, wd, need_index=True)  # -r needs random access
+        ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
+        part = os.path.join(wd, "part.vcf.gz")
+        print(f"Calling region {region}", flush=True)
+        run_shell(
+            f"bcftools mpileup -f {shlex.quote(ref)} -r {shlex.quote(region)} {shlex.quote(alignment)} "
+            f"| bcftools call -mv -Oz -o {shlex.quote(part)}"
+        )
+        storage().upload(part, region_part_key(sample_id, region))
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+
 @timed_stage("CallVariants")
-def variants_task(sample_id, reference_name):
-    """bcftools on the sample's CRAM (or BAM) -> variants/{id}.vcf.gz + its tabix index + bcftools stats."""
+def variants_task(sample_id, reference_name, window=None):
+    """bcftools on the sample's CRAM (or BAM) -> variants/{id}.vcf.gz + its tabix index + bcftools stats.
+
+    window: merge instead of call: concatenate the parts that variants --region wrote for every
+    region of regions_from_lengths(reference, window), in reference order. Every part must exist
+    (the missing ones are named); the window must be the one the regions were planned with.
+    """
     keys = keys_for(sample_id)
     wd = work_dir(sample_id)
     try:
-        alignment = fetch_alignment(sample_id, wd)  # mpileup reads it front to back: no index needed
         provenance.note_tools("bcftools")
         vcf = os.path.join(wd, os.path.basename(keys["vcf"]))
-        tbi = os.path.join(wd, os.path.basename(keys["tbi"]))
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
-        run_shell(
-            f"bcftools mpileup -f {shlex.quote(ref)} {shlex.quote(alignment)} "
-            f"| bcftools call -mv -Oz -o {shlex.quote(vcf)}"
-        )
-        run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
-        stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
-        if _run_stats_tool(
-            "bcftools stats", f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}"
-        ):
-            _log_summary("bcftools stats", parse_bcftools_stats, stats)
-            upload_output(stats, keys["bcftools_stats"])
-        upload_output(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
-        upload_output(vcf, keys["vcf"])
+        if window is None:
+            alignment = fetch_alignment(sample_id, wd)  # mpileup reads it front to back: no index needed
+            run_shell(
+                f"bcftools mpileup -f {shlex.quote(ref)} {shlex.quote(alignment)} "
+                f"| bcftools call -mv -Oz -o {shlex.quote(vcf)}"
+            )
+        else:
+            regions = reference_regions(ref, window)
+            part_keys = [region_part_key(sample_id, r) for r in regions]
+            stored = set(storage().list_keys(parts_prefix(sample_id)))  # one listing, not a HEAD per part
+            missing = [r for r, k in zip(regions, part_keys, strict=True) if k not in stored]
+            if missing:
+                raise FileNotFoundError(
+                    f"{len(missing)} of {len(regions)} region parts missing for {sample_id} "
+                    f"(window {window}): {', '.join(missing[:5])}{' ...' if len(missing) > 5 else ''}"
+                )
+            provenance.note(regions=len(regions), region_window=window)
+            try:  # the alignment the shards read, for the record (not downloaded here; never fails the merge)
+                provenance.note_input(alignment_input(sample_id))
+            except FileNotFoundError:
+                print(f"Note: no alignment for {sample_id} to name in the run record", flush=True)
+            listing = os.path.join(wd, "parts.txt")
+            with open(listing, "w") as fh:
+                for i, key in enumerate(part_keys):
+                    local = os.path.join(wd, f"part{i:05d}.vcf.gz")
+                    storage().download(key, local)
+                    provenance.note_input(key, local)
+                    fh.write(local + "\n")
+            print(f"Merging {len(regions)} region parts", flush=True)
+            run_shell(f"bcftools concat -Oz -o {shlex.quote(vcf)} -f {shlex.quote(listing)}")
+        _finish_vcf(ref, vcf, wd, keys)
     finally:
         shutil.rmtree(wd, ignore_errors=True)
+
+
+def regions_main(argv) -> int:
+    """tasks.py regions <reference_name> [--window N]: print the regions as a JSON list (the last stdout line)."""
+    parser = argparse.ArgumentParser(prog="tasks.py regions", description=regions_main.__doc__)
+    parser.add_argument("reference_name")
+    parser.add_argument("--window", type=int, default=DEFAULT_REGION_WINDOW)
+    args = parser.parse_args(argv)
+    wd = work_dir("regions")
+    try:
+        ref = ensure_reference_local(args.reference_name, wd, need_bwa_index=False)
+        print(json.dumps(reference_regions(ref, args.window)))
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+    return 0
 
 
 TASKS = {
@@ -701,17 +868,33 @@ TASKS = {
 
 
 def main(argv=None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["regions"]:
+        return regions_main(argv[1:])
     parser = argparse.ArgumentParser(description="Run one Geyser Genomics pipeline stage.")
     parser.add_argument("task_name", choices=sorted(TASKS))
     parser.add_argument("srr_id", help="Sample ID, e.g. SRR062634")
     parser.add_argument("reference_name", nargs="?", help="Reference FASTA name (align and variants), e.g. chr20.fa")
+    parser.add_argument("--region", help="variants: call only this region (a scatter-gather shard)")
+    parser.add_argument("--window", type=int, help="variants: merge the shards of regions planned with this window")
     args = parser.parse_args(argv)
+    if (args.region is not None or args.window is not None) and args.task_name != "variants":
+        parser.error("--region and --window only apply to 'variants'")
+    if args.region is not None and args.window is not None:
+        parser.error("--region (call one shard) and --window (merge the shards) are different jobs")
+    if args.window is not None and args.window < 1:
+        parser.error("--window must be >= 1")
 
     func, needs_reference = TASKS[args.task_name]
     if needs_reference:
         if not args.reference_name:
             parser.error(f"'{args.task_name}' requires reference_name")
-        func(args.srr_id, args.reference_name)
+        if args.region is not None:
+            variants_shard_task(args.srr_id, args.reference_name, args.region)
+        elif args.window is not None:
+            func(args.srr_id, args.reference_name, window=args.window)
+        else:
+            func(args.srr_id, args.reference_name)
     else:
         func(args.srr_id)
     print(f"Task '{args.task_name}' completed for sample '{args.srr_id}'.")

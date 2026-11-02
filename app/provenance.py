@@ -130,7 +130,7 @@ def note_stats(name: str, values: dict) -> None:
 
 
 def file_md5(path: str) -> str:
-    digest = hashlib.md5()
+    digest = hashlib.md5(usedforsecurity=False)  # identifies the build; FIPS builds reject plain md5()
     with open(path, "rb") as fh:
         for block in iter(lambda: fh.read(1 << 20), b""):
             digest.update(block)

@@ -58,11 +58,14 @@ STAGE_GROUPS = {
     "core": (Stage("QualityControl"), Stage("Align"), Stage("CallVariants")),
     "deepvariant": caller_stages("DeepVariant"),
     "pangenome": caller_stages("PangenomeDeepVariant"),
+    # Scatter-gather calling (#108): one CallVariantsShard per region; the merge is the core CallVariants.
+    "shards": (Stage("CallVariantsShard"),),
 }
 GROUP_TITLES = {
     "core": "Core pipeline (bcftools)",
     "deepvariant": "DeepVariant",
     "pangenome": "Pangenome-aware DeepVariant",
+    "shards": "Variant calling shards (per region)",
 }
 
 
