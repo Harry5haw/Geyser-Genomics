@@ -145,3 +145,25 @@ variable "log_retention_days" {
     error_message = "log_retention_days must be a value CloudWatch Logs accepts (1, 3, 5, 7, 14, 30, 60, 90, ...)."
   }
 }
+
+variable "variant_region_window" {
+  description = "Scatter-gather variant calling (#108): bases per region. The planner (tasks.py regions) and the merge (variants --window) both get this value. 50 Mb = 2 shards for GRCh38 chr20."
+  type        = number
+  default     = 50000000
+
+  validation {
+    condition     = var.variant_region_window >= 1000 && floor(var.variant_region_window) == var.variant_region_window
+    error_message = "variant_region_window must be a whole number of bases, at least 1000."
+  }
+}
+
+variable "variants_max_concurrency" {
+  description = "Most variant-calling shards (Map iterations) running at once. 4 x the variants size (2 vCPU) = the 8-vCPU Fargate cap."
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.variants_max_concurrency >= 1 && floor(var.variants_max_concurrency) == var.variants_max_concurrency
+    error_message = "variants_max_concurrency must be a whole number >= 1."
+  }
+}

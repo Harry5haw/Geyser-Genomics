@@ -27,6 +27,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
         Sid = "CloudWatchLogsPermissions", Effect = "Allow", Action = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"], Resource = "*"
       },
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
+      # Read_Regions reads the planner's output (tasks.py regions --output-key) straight from S3.
+      { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/variants/*/regions/*" },
       { Sid = "EventsPermissions", Effect = "Allow", Action = ["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets"], Resource = "*" }
     ]
   })
@@ -59,12 +61,20 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     align_memory_mb          = var.stage_resources["align"].memory_mb
     variants_vcpu            = var.stage_resources["variants"].vcpu
     variants_memory_mb       = var.stage_resources["variants"].memory_mb
+    bucket                   = aws_s3_bucket.data_lake.bucket
+    variant_region_window    = var.variant_region_window
+    variants_max_concurrency = var.variants_max_concurrency
   })
 
   lifecycle {
     precondition {
-      condition     = var.stage_resources["qc"].vcpu + var.stage_resources["align"].vcpu <= var.fargate_max_vcpus
-      error_message = "QC and align run at the same time: their vCPUs together must fit in fargate_max_vcpus."
+      # The region planner runs with QC's size, alongside QC and align.
+      condition     = 2 * var.stage_resources["qc"].vcpu + var.stage_resources["align"].vcpu <= var.fargate_max_vcpus
+      error_message = "QC, the region planner (QC's size) and align run at the same time: 2 x qc + align vCPUs must fit in fargate_max_vcpus."
+    }
+    precondition {
+      condition     = var.variants_max_concurrency * var.stage_resources["variants"].vcpu <= var.fargate_max_vcpus
+      error_message = "variants_max_concurrency shards of the variants size must fit in fargate_max_vcpus (more would only queue)."
     }
   }
   logging_configuration {

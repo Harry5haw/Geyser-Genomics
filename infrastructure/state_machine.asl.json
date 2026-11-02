@@ -1,11 +1,11 @@
 {
-  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling. Every job gets RUN_NAME = the execution name, which the stages write into the run record (app/provenance.py). Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
+  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling scattered by region (a Map over the planned regions) and merged. Every job gets RUN_NAME = the execution name, which the stages write into the run record (app/provenance.py). Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
   "StartAt": "QC_and_Align",
   "TimeoutSeconds": ${pipeline_timeout_seconds},
   "States": {
     "QC_and_Align": {
       "Type": "Parallel",
-      "Comment": "Both branches read raw_reads/ directly and don't depend on each other. If either fails, Step Functions stops the other and the Catch below handles it.",
+      "Comment": "QC and align read raw_reads/ directly and don't depend on each other; the third branch plans the variant-calling regions from the reference. If either fails, Step Functions stops the other and the Catch below handles it.",
       "Branches": [
         {
           "StartAt": "Prepare_QC_Command",
@@ -92,13 +92,135 @@
               "End": true
             }
           }
+        },
+        {
+          "StartAt": "Prepare_Plan_Command",
+          "States": {
+            "Prepare_Plan_Command": {
+              "Type": "Pass",
+              "Comment": "Plans the variant-calling regions (tasks.py regions) while QC and align run: it only needs the reference. The window is the same template value the merge uses.",
+              "Parameters": {
+                "JobName.$": "States.Format('PlanRegions-{}-{}', $.srr_id, $$.Execution.Name)",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'regions', $.reference_name, '--window', '${variant_region_window}', '--output-key', States.Format('variants/{}/regions/{}.json', $.srr_id, $$.Execution.Name))",
+                  "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value": "${qc_vcpu}" },
+                    { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
+                  ]
+                }
+              },
+              "ResultPath": "$.batch_params",
+              "Next": "Plan_Regions"
+            },
+            "Plan_Regions": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "$.batch_params.JobName",
+                "JobDefinition": "${job_definition}",
+                "JobQueue": "${job_queue}",
+                "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+                "Timeout": { "AttemptDurationSeconds": 1800 }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+              "ResultPath": "$.batch_output",
+              "End": true
+            }
+          }
         }
       ],
       "ResultSelector": {
         "qc.$": "$[0].batch_output",
-        "align.$": "$[1].batch_output"
+        "align.$": "$[1].batch_output",
+        "plan.$": "$[2].batch_output"
       },
       "ResultPath": "$.parallel_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+      ],
+      "Next": "Read_Regions"
+    },
+    "Read_Regions": {
+      "Type": "Task",
+      "Comment": "The regions the planner wrote, read straight from S3 (no Lambda) and parsed into a list for the Map.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('variants/{}/regions/{}.json', $.srr_id, $$.Execution.Name)"
+      },
+      "ResultSelector": { "regions.$": "States.StringToJson($.Body)" },
+      "ResultPath": "$.plan",
+      "Retry": [
+        { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+      ],
+      "Next": "Call_Variant_Shards"
+    },
+    "Call_Variant_Shards": {
+      "Type": "Map",
+      "Comment": "Scatter: one variants --region job per region, at most variants_max_concurrency at a time. Each writes variants/<id>/parts/<RUN_NAME>/.",
+      "ItemsPath": "$.plan.regions",
+      "Parameters": {
+        "srr_id.$": "$.srr_id",
+        "reference_name.$": "$.reference_name",
+        "region.$": "$$.Map.Item.Value",
+        "index.$": "$$.Map.Item.Index"
+      },
+      "MaxConcurrency": ${variants_max_concurrency},
+      "Iterator": {
+        "StartAt": "Prepare_Shard_Command",
+        "States": {
+          "Prepare_Shard_Command": {
+            "Type": "Pass",
+            "Parameters": {
+              "JobName.$": "States.Format('CallVariantsShard-{}-{}', $.index, $$.Execution.Name)",
+              "ContainerOverrides": {
+                "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--region', $.region)",
+                "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                "ResourceRequirements": [
+                  { "Type": "VCPU", "Value": "${variants_vcpu}" },
+                  { "Type": "MEMORY", "Value": "${variants_memory_mb}" }
+                ]
+              }
+            },
+            "ResultPath": "$.batch_params",
+            "Next": "Call_Shard"
+          },
+          "Call_Shard": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::batch:submitJob.sync",
+            "Parameters": {
+              "JobName.$": "$.batch_params.JobName",
+              "JobDefinition": "${job_definition}",
+              "JobQueue": "${job_queue}",
+              "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+              "Timeout": { "AttemptDurationSeconds": 7200 }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
       "Catch": [
         { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
       ],
@@ -109,7 +231,7 @@
       "Parameters": {
         "JobName.$": "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
-          "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)",
+          "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--window', '${variant_region_window}')",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
             { "Type": "VCPU", "Value": "${variants_vcpu}" },
