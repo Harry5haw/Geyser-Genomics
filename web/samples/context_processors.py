@@ -1,6 +1,5 @@
 from django.conf import settings
 
-
 HELIX_BASE_PAIRS = range(26)  # rungs in the decorative header helix (about 1.3 turns)
 
 

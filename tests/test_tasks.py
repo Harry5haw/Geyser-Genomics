@@ -1,4 +1,5 @@
 """Stage logic that runs without bioinformatics tools or AWS."""
+
 import gzip
 import importlib
 import importlib.util
@@ -114,7 +115,6 @@ def test_align_command_caps_sort_memory_on_big_hosts():
     assert sort[sort.index("-m") + 1] == tasks.SORT_MEMORY_PER_THREAD
 
 
-
 def test_align_command_paired_end_runs_fixmate_between_bwa_and_sort():
     cmd = tasks.align_command("/w/ref.fa", ["/w/S1_R1.fastq", "/w/S1_R2.fastq"], "/w/S1.bam", 4, "/w", "S1")
     bwa, fixmate, sort, markdup = _align_stages(cmd)
@@ -137,8 +137,9 @@ def test_align_command_rejects_unknown_aligner():
         tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1", aligner="minimap2")
 
 
-@pytest.mark.parametrize("value, expected", [(None, "bwa-mem2"), ("", "bwa-mem2"), ("bwa", "bwa"),
-                                             (" bwa-mem2 ", "bwa-mem2")])
+@pytest.mark.parametrize(
+    "value, expected", [(None, "bwa-mem2"), ("", "bwa-mem2"), ("bwa", "bwa"), (" bwa-mem2 ", "bwa-mem2")]
+)
 def test_aligner_from_env(monkeypatch, value, expected):
     if value is None:
         monkeypatch.delenv("ALIGNER", raising=False)
@@ -181,6 +182,7 @@ def test_align_command_rejects_wrong_number_of_fastqs():
 
 # --- layouts and keys ------------------------------------------------------------
 
+
 def test_single_end_keys_are_unchanged():
     # Step Functions, the web UI and the DeepVariant task all depend on these exact keys.
     assert tasks.keys_for("S1") == {
@@ -208,20 +210,26 @@ def test_paired_end_keys_have_one_raw_per_mate_and_one_of_everything_else():
     assert keys["vcf"] == "variants/S1.vcf.gz"
 
 
-@pytest.mark.parametrize("present,expected", [
-    ({"raw_reads/S1.fastq.gz"}, "single"),
-    ({"raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz"}, "paired"),
-])
+@pytest.mark.parametrize(
+    "present,expected",
+    [
+        ({"raw_reads/S1.fastq.gz"}, "single"),
+        ({"raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz"}, "paired"),
+    ],
+)
 def test_layout_from_raw(present, expected):
     assert tasks.layout_from_raw("S1", present.__contains__) == expected
 
 
-@pytest.mark.parametrize("present,message", [
-    ({"raw_reads/S1_R1.fastq.gz"}, "R2 is missing"),
-    ({"raw_reads/S1_R2.fastq.gz"}, "R1 is missing"),
-    ({"raw_reads/S1.fastq.gz", "raw_reads/S1_R1.fastq.gz"}, "both single-end and paired-end"),
-    (set(), "no raw files"),
-])
+@pytest.mark.parametrize(
+    "present,message",
+    [
+        ({"raw_reads/S1_R1.fastq.gz"}, "R2 is missing"),
+        ({"raw_reads/S1_R2.fastq.gz"}, "R1 is missing"),
+        ({"raw_reads/S1.fastq.gz", "raw_reads/S1_R1.fastq.gz"}, "both single-end and paired-end"),
+        (set(), "no raw files"),
+    ],
+)
 def test_layout_from_raw_refuses_to_guess(present, message):
     with pytest.raises(tasks.LayoutError, match=message):
         tasks.layout_from_raw("S1", present.__contains__)
@@ -267,8 +275,12 @@ def test_qc_command_reports_only_and_never_writes_reads():
     # No output reads at all, and nothing trimmed or filtered: the report describes the upload as is.
     for flag in ("-o", "-O", "--out1", "--out2"):
         assert flag not in cmd
-    for flag in ("--disable_adapter_trimming", "--disable_quality_filtering", "--disable_length_filtering",
-                 "--disable_trim_poly_g"):
+    for flag in (
+        "--disable_adapter_trimming",
+        "--disable_quality_filtering",
+        "--disable_length_filtering",
+        "--disable_trim_poly_g",
+    ):
         assert flag in cmd
     assert cmd[cmd.index("--thread") + 1] == str(tasks.QC_MAX_THREADS)  # fastp caps at 16
     assert cmd[cmd.index("--json") + 1] == "r.json" and cmd[cmd.index("--html") + 1] == "r.html"
@@ -278,8 +290,13 @@ def test_qc_command_reports_only_and_never_writes_reads():
 
 
 def test_qc_counts_fastqc_reports_from_before_fastp():
-    present = {"qc_reports/S1_fastqc.html", "qc_reports/P1_R1_fastqc.html", "qc_reports/P1_R2_fastqc.html",
-               "qc_reports/H1_R1_fastqc.html", "qc_reports/N1.fastp.html"}
+    present = {
+        "qc_reports/S1_fastqc.html",
+        "qc_reports/P1_R1_fastqc.html",
+        "qc_reports/P1_R2_fastqc.html",
+        "qc_reports/H1_R1_fastqc.html",
+        "qc_reports/N1.fastp.html",
+    }
     done = lambda sample, layout: tasks.output_present(sample, layout, "qc_html", present.__contains__)  # noqa: E731
     assert done("S1", "single") and done("P1", "paired") and done("N1", "single") and done("N1", "paired")
     assert not done("H1", "paired")  # only R1's report: QC never finished

@@ -35,7 +35,7 @@ import os
 import re
 import subprocess
 import time
-from functools import lru_cache
+from functools import cache
 
 SCHEMA_VERSION = 1
 RUN_PREFIX = "runs/"
@@ -87,10 +87,18 @@ def _warn(what, err):
 def begin(task: str, sample_id: str) -> None:
     """Start the part for one stage. Called by tasks.timed_stage."""
     global _current
-    _current = {"schema": SCHEMA_VERSION, "task": task, "sample_id": sample_id,
-                "run_name": os.environ.get("RUN_NAME") or None,
-                "app_version": os.environ.get("APP_VERSION") or None,
-                "started": _now(), "inputs": [], "outputs": [], "tools": {}, "stats": {}}
+    _current = {
+        "schema": SCHEMA_VERSION,
+        "task": task,
+        "sample_id": sample_id,
+        "run_name": os.environ.get("RUN_NAME") or None,
+        "app_version": os.environ.get("APP_VERSION") or None,
+        "started": _now(),
+        "inputs": [],
+        "outputs": [],
+        "tools": {},
+        "stats": {},
+    }
 
 
 def note(**fields) -> None:
@@ -139,7 +147,7 @@ def note_reference(name: str, local_path: str) -> None:
         _warn("hash the reference", err)
 
 
-@lru_cache(maxsize=None)
+@cache
 def tool_version(name: str):
     """The version a tool reports, or None if it isn't installed or its output isn't recognised."""
     if name not in TOOL_VERSION_COMMANDS:
@@ -176,6 +184,7 @@ def _put_json(storage, key, data) -> None:
 
 def _read_json(storage, key):
     from storage import ObjectNotFound  # noqa: PLC0415 - tasks imports this module; keep imports one-way
+
     try:
         with storage.open_read(key) as fh:
             return json.loads(fh.read().decode("utf-8"))
@@ -213,19 +222,27 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     in_run = {p["task"] for p in run}
     upstream = {u for task in in_run for u in UPSTREAM.get(task, ())} - in_run
     run += [p for p in parts if p["task"] in upstream]
-    stages = {p["task"]: {k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error",
-                                                "run_name")}
-              for p in run}
+    stages = {
+        p["task"]: {k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error", "run_name")}
+        for p in run
+    }
     complete = all(stages.get(t, {}).get("status") == "Success" for t in CORE_STAGES)
     # The status is the core pipeline's; a failed extra caller (DeepVariant) shows in its stage entry
     # but doesn't make the run failed when QC, align and variants are fine.
     failed = any(s["status"] != "Success" for t, s in stages.items() if t in CORE_STAGES)
     record = {
-        "schema": SCHEMA_VERSION, "sample_id": sample_id, "run_name": latest.get("run_name"),
-        "status": "failed" if failed else "succeeded" if complete else "incomplete", "complete": complete,
-        "updated": _now(), "app_version": latest.get("app_version"), "stages": stages,
-        "inputs": _union(p["inputs"] for p in run), "outputs": _union(p["outputs"] for p in run),
-        "tools": {}, "stats": {},
+        "schema": SCHEMA_VERSION,
+        "sample_id": sample_id,
+        "run_name": latest.get("run_name"),
+        "status": "failed" if failed else "succeeded" if complete else "incomplete",
+        "complete": complete,
+        "updated": _now(),
+        "app_version": latest.get("app_version"),
+        "stages": stages,
+        "inputs": _union(p["inputs"] for p in run),
+        "outputs": _union(p["outputs"] for p in run),
+        "tools": {},
+        "stats": {},
     }
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
@@ -261,7 +278,11 @@ def read_record(storage, sample_id: str, part_keys=None):
 def summary(record: dict) -> dict:
     """The short form reconcile and the web UI show: status, run name, per-stage status and run."""
     stages = record.get("stages") or {}
-    return {"status": record.get("status"), "complete": record.get("complete"), "run_name": record.get("run_name"),
-            "app_version": record.get("app_version"),
-            "stages": {task: s.get("status") for task, s in stages.items()},
-            "stage_runs": {task: s.get("run_name") for task, s in stages.items()}}
+    return {
+        "status": record.get("status"),
+        "complete": record.get("complete"),
+        "run_name": record.get("run_name"),
+        "app_version": record.get("app_version"),
+        "stages": {task: s.get("status") for task, s in stages.items()},
+        "stage_runs": {task: s.get("run_name") for task, s in stages.items()},
+    }

@@ -13,7 +13,8 @@ Select one with ``STORAGE_BACKEND=s3|local``. See ``storage_from_env``.
 
 import os
 import shutil
-from typing import BinaryIO, Iterator
+from collections.abc import Iterator
+from typing import BinaryIO
 
 
 class ObjectNotFound(Exception):
@@ -193,7 +194,9 @@ class S3Storage:
         if endpoint_url:
             kwargs["endpoint_url"] = endpoint_url
             if not is_aws_endpoint(endpoint_url):
-                config.update(request_checksum_calculation="when_required", response_checksum_validation="when_required")
+                config.update(
+                    request_checksum_calculation="when_required", response_checksum_validation="when_required"
+                )
         if addressing_style:
             config["s3"] = {"addressing_style": addressing_style}
         if config:

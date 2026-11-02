@@ -1,15 +1,16 @@
 """Dashboard and alarm builders (scripts/monitoring.py) and their CLIs. Nothing here reaches AWS."""
+
 import json
 import os
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import pytest
 
+import deepvariant_task
 import deploy_alarms
 import deploy_dashboard
-import deepvariant_task
 import monitoring
 import query_pipeline_duration
 import runtime_deploy_pipeline_dashboard
@@ -20,8 +21,13 @@ SFN_ARN = "arn:aws:states:eu-west-2:000000000000:stateMachine:geyser-pipeline-sf
 SNS_ARN = "arn:aws:sns:eu-west-2:000000000000:geyser-PipelineStatus-dev"
 ACCOUNT_ID_RE = re.compile(r"(?<!\d)\d{12}(?!\d)")
 METRIC_ID_RE = re.compile(r"^[a-z][a-zA-Z0-9_]*$")
-SCRIPTS = ("monitoring.py", "deploy_dashboard.py", "runtime_deploy_pipeline_dashboard.py", "deploy_alarms.py",
-           "query_pipeline_duration.py")
+SCRIPTS = (
+    "monitoring.py",
+    "deploy_dashboard.py",
+    "runtime_deploy_pipeline_dashboard.py",
+    "deploy_alarms.py",
+    "query_pipeline_duration.py",
+)
 
 
 def all_stage_names():
@@ -72,7 +78,11 @@ def test_only_timed_stages_record_failures():
 def test_caller_stages_builds_a_new_caller():
     stages = monitoring.caller_stages("Pangenome")
     assert [s.task_name for s in stages] == [
-        "Pangenome", "Pangenome.MakeExamples", "Pangenome.CallVariants", "Pangenome.PostprocessVariants"]
+        "Pangenome",
+        "Pangenome.MakeExamples",
+        "Pangenome.CallVariants",
+        "Pangenome.PostprocessVariants",
+    ]
 
 
 def test_unknown_group_and_schema_rejected():
@@ -112,7 +122,9 @@ def test_widgets_do_not_overlap():
 
 
 def test_dashboard_has_the_widgets_from_issue_48():
-    titles = [w["properties"].get("title", "") for w in monitoring.build_dashboard(state_machine_arn=SFN_ARN)["widgets"]]
+    titles = [
+        w["properties"].get("title", "") for w in monitoring.build_dashboard(state_machine_arn=SFN_ARN)["widgets"]
+    ]
     assert any("runs per day" in t.lower() for t in titles)
     assert any("End-to-end" in t for t in titles)
     assert any("Failures by stage" in t for t in titles)
@@ -129,9 +141,9 @@ def test_per_sample_duration_uses_exact_success_search():
     rows = monitoring.duration_metrics([monitoring.Stage("Align")], "per-sample", "GeyserGenomics", 3600)
     exprs = [r[0]["expression"] for r in rows]
     assert exprs == [
-        "AVG(SEARCH('{GeyserGenomics,SampleId,Status,TaskName} MetricName=\"Duration\" TaskName=\"Align\" "
+        'AVG(SEARCH(\'{GeyserGenomics,SampleId,Status,TaskName} MetricName="Duration" TaskName="Align" '
         "Status=\"Success\"', 'Average', 3600))",
-        "MAX(SEARCH('{GeyserGenomics,SampleId,Status,TaskName} MetricName=\"Duration\" TaskName=\"Align\" "
+        'MAX(SEARCH(\'{GeyserGenomics,SampleId,Status,TaskName} MetricName="Duration" TaskName="Align" '
         "Status=\"Success\"', 'Maximum', 3600))",
     ]
 
@@ -336,12 +348,15 @@ def test_query_pipeline_duration_is_importable_and_uses_given_client(capsys, mon
     monkeypatch.delenv("SFN_ARN", raising=False)
     with pytest.raises(SystemExit):
         query_pipeline_duration.main([])
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     client = mock.Mock()
     client.list_executions.return_value = {"executions": [{"executionArn": "e1", "name": "run-1"}]}
     client.describe_execution.return_value = {
-        "startDate": start, "stopDate": start + timedelta(minutes=2), "status": "SUCCEEDED",
-        "input": json.dumps({"srr_id": "SRR001"})}
+        "startDate": start,
+        "stopDate": start + timedelta(minutes=2),
+        "status": "SUCCEEDED",
+        "input": json.dumps({"srr_id": "SRR001"}),
+    }
     query_pipeline_duration.main(["--state-machine-arn", SFN_ARN], sfn_client=client)
     assert client.list_executions.call_args.kwargs["stateMachineArn"] == SFN_ARN
     out = capsys.readouterr().out
@@ -354,10 +369,11 @@ def test_query_pipeline_duration_is_importable_and_uses_given_client(capsys, mon
 def test_console_links_without_arns_have_no_account_specific_parts():
     links = dict(monitoring.console_links("eu-west-2"))
     assert "Pipeline runs (Step Functions)" not in links and "Data lake (S3)" not in links
-    assert links["Batch job logs"].endswith("#logsV2:log-groups/log-group/$252Faws$252Fbatch$252Fjob")
-    assert links["Trigger Lambda logs"].endswith("log-group/$252Faws$252Flambda$252Fgeyser-sfn-trigger")
+    assert links["Batch job logs"].endswith("#logsV2:log-groups/log-group/$252Faws$252Fbatch$252Fgeyser-dev")
+    assert links["Trigger Lambda logs"].endswith("$252Faws$252Flambda$252Fgeyser-sfn-trigger-dev")
     assert links["Step Functions error logs"].endswith(
-        "log-group/$252Faws$252Fvendedlogs$252Fstates$252Fgeyser-sfn-dev")
+        "log-group/$252Faws$252Fvendedlogs$252Fstates$252Fgeyser-sfn-dev"
+    )
     assert "#/functions/geyser-sfn-trigger?tab=monitoring" in links["Trigger Lambda"]
     assert all(url.startswith("https://") for url in links.values())
     assert all("eu-west-2" in url for label, url in links.items() if label != "Budgets")
@@ -366,8 +382,11 @@ def test_console_links_without_arns_have_no_account_specific_parts():
 def test_console_links_with_state_machine_and_bucket():
     links = dict(monitoring.console_links("eu-west-2", state_machine_arn=SFN_ARN, bucket="geyser-data-lake-abc"))
     assert links["Pipeline runs (Step Functions)"].endswith(
-        "#/statemachines/view/arn%3Aaws%3Astates%3Aeu-west-2%3A000000000000%3AstateMachine%3Ageyser-pipeline-sfn-dev")
-    assert links["Data lake (S3)"] == "https://s3.console.aws.amazon.com/s3/buckets/geyser-data-lake-abc?region=eu-west-2"
+        "#/statemachines/view/arn%3Aaws%3Astates%3Aeu-west-2%3A000000000000%3AstateMachine%3Ageyser-pipeline-sfn-dev"
+    )
+    assert (
+        links["Data lake (S3)"] == "https://s3.console.aws.amazon.com/s3/buckets/geyser-data-lake-abc?region=eu-west-2"
+    )
 
 
 def test_header_widget_lists_the_links():

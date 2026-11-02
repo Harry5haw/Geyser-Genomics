@@ -52,26 +52,30 @@ class CloudWatchMetrics:
         self._client = boto3.client("cloudwatch", region_name=region)
 
     def record(self, task_name, sample_id, status, duration_seconds):
-        data = [{
-            "MetricName": "Duration",
-            "Dimensions": [
-                {"Name": "TaskName", "Value": task_name},
-                {"Name": "SampleId", "Value": sample_id},
-                {"Name": "Status", "Value": status},
-            ],
-            "Value": duration_seconds,
-            "Unit": "Seconds",
-        }]
-        if status == "Failure":
-            data.append({
-                "MetricName": "FailureCount",
+        data = [
+            {
+                "MetricName": "Duration",
                 "Dimensions": [
                     {"Name": "TaskName", "Value": task_name},
                     {"Name": "SampleId", "Value": sample_id},
+                    {"Name": "Status", "Value": status},
                 ],
-                "Value": 1,
-                "Unit": "Count",
-            })
+                "Value": duration_seconds,
+                "Unit": "Seconds",
+            }
+        ]
+        if status == "Failure":
+            data.append(
+                {
+                    "MetricName": "FailureCount",
+                    "Dimensions": [
+                        {"Name": "TaskName", "Value": task_name},
+                        {"Name": "SampleId", "Value": sample_id},
+                    ],
+                    "Value": 1,
+                    "Unit": "Count",
+                }
+            )
         self._client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=data)
 
 

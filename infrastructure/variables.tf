@@ -82,3 +82,66 @@ variable "claude_kill_switch_usd" {
     error_message = "claude_kill_switch_usd must be above 0 and below claude_project_cap_usd."
   }
 }
+
+# --- Resilience and per-stage sizing (#104) ---
+
+variable "stage_resources" {
+  description = <<-EOT
+    vCPU and memory (MiB) per pipeline stage, sent as ContainerOverrides.ResourceRequirements by the
+    state machine. Must be a valid Fargate combination (1 vCPU: 2-8 GiB, 2: 4-16 GiB, 4: 8-30 GiB, in
+    1 GiB steps; checked below). QC and align run at the same time, so qc + align vCPU must fit in
+    fargate_max_vcpus.
+  EOT
+  type        = map(object({ vcpu = number, memory_mb = number }))
+  default = {
+    qc       = { vcpu = 1, memory_mb = 2048 } # fastp: light
+    align    = { vcpu = 4, memory_mb = 8192 } # bwa-mem2 (+ its index build), sort, markdup
+    variants = { vcpu = 2, memory_mb = 4096 } # bcftools mpileup | call: single-threaded, small
+  }
+
+  validation {
+    condition     = toset(keys(var.stage_resources)) == toset(["qc", "align", "variants"])
+    error_message = "stage_resources needs exactly the stages qc, align and variants."
+  }
+  validation {
+    condition = alltrue([for r in values(var.stage_resources) : contains(keys(local.fargate_memory_mb), tostring(r.vcpu)) && (
+      r.memory_mb >= local.fargate_memory_mb[tostring(r.vcpu)][0] &&
+      r.memory_mb <= local.fargate_memory_mb[tostring(r.vcpu)][1] &&
+      r.memory_mb % 1024 == 0
+    )])
+    error_message = "Each stage needs a valid Fargate vCPU/memory pair: 1 vCPU 2048-8192 MiB, 2 vCPU 4096-16384, 4 vCPU 8192-30720, in 1024 MiB steps."
+  }
+}
+
+variable "job_disk_gb" {
+  description = "Fargate ephemeral storage per job, in GiB. 20 (the default) is free and needs no setting; 21-200 is billed per GiB-hour. A real 30x sample needs ~100+."
+  type        = number
+  default     = 20
+
+  validation {
+    condition     = var.job_disk_gb == 20 || (var.job_disk_gb >= 21 && var.job_disk_gb <= 200)
+    error_message = "job_disk_gb must be 20 (the free default) or 21-200 (the Fargate range)."
+  }
+}
+
+variable "pipeline_timeout_hours" {
+  description = "Time limit for a whole pipeline run, queue waits included. The longest path is align (4 h attempt limit) then variants (2 h), so 12 h leaves room for retries and queueing. A run past it ends as TimedOut (no SNS message; it shows on the dashboard)."
+  type        = number
+  default     = 12
+
+  validation {
+    condition     = var.pipeline_timeout_hours >= 1 && var.pipeline_timeout_hours <= 48
+    error_message = "pipeline_timeout_hours must be between 1 and 48."
+  }
+}
+
+variable "log_retention_days" {
+  description = "Days to keep Batch job logs and trigger Lambda logs (the Step Functions error log keeps 7)."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_days)
+    error_message = "log_retention_days must be a value CloudWatch Logs accepts (1, 3, 5, 7, 14, 30, 60, 90, ...)."
+  }
+}

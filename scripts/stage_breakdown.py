@@ -42,6 +42,9 @@ class Prices:
     storage_gb_hour: float = DEFAULT_STORAGE_GB_HOUR_USD
 
 
+DEFAULT_PRICES = Prices()
+
+
 def _get(d, name, default=None):
     """Case-insensitive key lookup: Step Functions copies use PascalCase, describe_jobs camelCase."""
     if not isinstance(d, dict):
@@ -110,7 +113,7 @@ def describe_jobs(batch_client, job_ids) -> dict:
     ids = [j for j in dict.fromkeys(job_ids) if j]
     found = {}
     for i in range(0, len(ids), 100):  # describe_jobs takes at most 100 IDs
-        for job in batch_client.describe_jobs(jobs=ids[i:i + 100]).get("jobs", []):
+        for job in batch_client.describe_jobs(jobs=ids[i : i + 100]).get("jobs", []):
             found[job["jobId"]] = job
     return found
 
@@ -139,14 +142,15 @@ def ephemeral_storage_gb(job: dict):
         return None
 
 
-def fargate_cost(run_seconds, vcpu, memory_gb, prices: Prices = Prices(), storage_gb=None):
+def fargate_cost(run_seconds, vcpu, memory_gb, prices: Prices = DEFAULT_PRICES, storage_gb=None):
     """vCPU + memory, plus ephemeral storage beyond the free 20 GiB, for the billed time (1 min minimum)."""
     if run_seconds is None or vcpu is None or memory_gb is None:
         return None
     billed_hours = max(run_seconds, FARGATE_MINIMUM_SECONDS) / 3600
     extra_storage = max(0.0, (storage_gb or 0) - FARGATE_FREE_STORAGE_GB)
-    return billed_hours * (vcpu * prices.vcpu_hour + memory_gb * prices.gb_hour
-                           + extra_storage * prices.storage_gb_hour)
+    return billed_hours * (
+        vcpu * prices.vcpu_hour + memory_gb * prices.gb_hour + extra_storage * prices.storage_gb_hour
+    )
 
 
 def _seconds(start_ms, end_ms):
@@ -170,7 +174,7 @@ def failure_reason(job: dict):
     return reason
 
 
-def stage_row(stage: str, job: dict, prices: Prices = Prices()) -> dict:
+def stage_row(stage: str, job: dict, prices: Prices = DEFAULT_PRICES) -> dict:
     created, started, stopped = (_get(job, k) for k in ("CreatedAt", "StartedAt", "StoppedAt"))
     vcpu, memory_gb, gpus = resources(job)
     run = _seconds(started, stopped)
@@ -191,7 +195,7 @@ def stage_row(stage: str, job: dict, prices: Prices = Prices()) -> dict:
     }
 
 
-def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = Prices()) -> list:
+def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = DEFAULT_PRICES) -> list:
     tasks = batch_tasks(sfn_client, execution_arn)
     live = {}
     if batch_client is not None:
@@ -199,8 +203,7 @@ def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = P
             live = describe_jobs(batch_client, [t["job_id"] for t in tasks])
         except Exception:  # noqa: BLE001 - fall back to the copies in the history
             live = {}
-    return [stage_row(t["stage"], live.get(t["job_id"]) or t["job"] or {"JobId": t["job_id"]}, prices)
-            for t in tasks]
+    return [stage_row(t["stage"], live.get(t["job_id"]) or t["job"] or {"JobId": t["job_id"]}, prices) for t in tasks]
 
 
 def totals(rows: list) -> dict:
@@ -208,5 +211,4 @@ def totals(rows: list) -> dict:
         values = [r[key] for r in rows]
         return None if not values or any(v is None for v in values) else sum(values)
 
-    return {"wait_seconds": total("wait_seconds"), "run_seconds": total("run_seconds"),
-            "cost_usd": total("cost_usd")}
+    return {"wait_seconds": total("wait_seconds"), "run_seconds": total("run_seconds"), "cost_usd": total("cost_usd")}

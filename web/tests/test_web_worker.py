@@ -4,9 +4,10 @@ import sys
 import pytest
 from django.core.management import CommandError, call_command
 
-from .web_helpers import fastq_gz, put
 from samples.runs import read_run, read_text, write_run
 from samples.worker import RunLocalRunner, Worker
+
+from .web_helpers import fastq_gz, put
 
 
 class FakeRunner:
@@ -87,8 +88,18 @@ def test_run_local_command(tmp_path):
     runner = RunLocalRunner(tmp_path, runner="host", image="img", reference="ref.fa", python="py")
     cmd = runner.command("S1")
     assert cmd[0] == "py" and cmd[2].endswith(os.path.join("scripts", "run_local.py"))
-    assert cmd[3:] == ["--root", str(tmp_path), "--sample", "S1", "--runner", "host", "--image", "img",
-                       "--reference", "ref.fa"]
+    assert cmd[3:] == [
+        "--root",
+        str(tmp_path),
+        "--sample",
+        "S1",
+        "--runner",
+        "host",
+        "--image",
+        "img",
+        "--reference",
+        "ref.fa",
+    ]
 
 
 def test_run_local_runner_streams_output(tmp_path):

@@ -30,13 +30,34 @@ class RunLocalRunner:
         self.python = python or sys.executable
 
     def command(self, sample_id):
-        return [self.python, "-u", RUN_LOCAL_PATH, "--root", self.root, "--sample", sample_id,
-                "--runner", self.runner, "--image", self.image, "--reference", self.reference]
+        return [
+            self.python,
+            "-u",
+            RUN_LOCAL_PATH,
+            "--root",
+            self.root,
+            "--sample",
+            sample_id,
+            "--runner",
+            self.runner,
+            "--image",
+            self.image,
+            "--reference",
+            self.reference,
+        ]
 
     def run(self, sample_id, on_output):
         env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-        proc = subprocess.Popen(self.command(sample_id), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                env=env, text=True, encoding="utf-8", errors="replace", bufsize=1)
+        proc = subprocess.Popen(
+            self.command(sample_id),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+        )
         for line in proc.stdout:
             on_output(line)
         return proc.wait()

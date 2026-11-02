@@ -1,12 +1,19 @@
 import json
 
-from .web_helpers import FASTP_SINGLE, fastq_gz, metric, put, vcf_gz, write_metrics
 from samples.runs import write_run
 
-FINISHED = ["qc_reports/S1.fastp.html",
-            "alignments/S1.cram", "alignments/S1.cram.crai", "variants/S1.vcf.gz.tbi",
-            "stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt", "stats/S1/mosdepth.global.dist.txt",
-            "stats/S1/bcftools.stats.txt"]
+from .web_helpers import FASTP_SINGLE, fastq_gz, metric, put, vcf_gz, write_metrics
+
+FINISHED = [
+    "qc_reports/S1.fastp.html",
+    "alignments/S1.cram",
+    "alignments/S1.cram.crai",
+    "variants/S1.vcf.gz.tbi",
+    "stats/S1/flagstat.txt",
+    "stats/S1/mosdepth.summary.txt",
+    "stats/S1/mosdepth.global.dist.txt",
+    "stats/S1/bcftools.stats.txt",
+]
 
 
 def finished_sample(storage, truth=True):
@@ -15,12 +22,28 @@ def finished_sample(storage, truth=True):
         put(storage, key, b"<html><body>fastp report</body></html>" if key.endswith(".html") else b"data")
     put(storage, "qc_reports/S1.fastp.json", json.dumps(FASTP_SINGLE))
     put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G"), (300, "C", "T"), (500, "G", "A")]))
-    write_metrics(storage, [metric("QualityControl", "S1", duration=7.2),
-                            metric("Align", "S1", duration=2.5), metric("CallVariants", "S1", duration=1.1)])
+    write_metrics(
+        storage,
+        [
+            metric("QualityControl", "S1", duration=7.2),
+            metric("Align", "S1", duration=2.5),
+            metric("CallVariants", "S1", duration=1.1),
+        ],
+    )
     if truth:
-        put(storage, "truth/S1.json", json.dumps({"snps": [{"pos": 100, "ref": "A", "alt": "G"},
-                                                          {"pos": 300, "ref": "C", "alt": "T"},
-                                                          {"pos": 900, "ref": "T", "alt": "C"}]}))
+        put(
+            storage,
+            "truth/S1.json",
+            json.dumps(
+                {
+                    "snps": [
+                        {"pos": 100, "ref": "A", "alt": "G"},
+                        {"pos": 300, "ref": "C", "alt": "T"},
+                        {"pos": 900, "ref": "T", "alt": "C"},
+                    ]
+                }
+            ),
+        )
 
 
 def test_empty_list_page(client, storage):
@@ -55,8 +78,20 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert "Variants" in body and "3 calls" in body
     assert 'src="/samples/S1/files/qc_html/?inline=1"' in body
     assert "Bases ≥ Q30" in body and "93.4%" in body and "Duplication (fastp estimate)" in body
-    for kind in ("raw", "qc_html", "qc_json", "cram", "crai", "vcf", "tbi", "truth",
-                 "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats"):
+    for kind in (
+        "raw",
+        "qc_html",
+        "qc_json",
+        "cram",
+        "crai",
+        "vcf",
+        "tbi",
+        "truth",
+        "flagstat",
+        "mosdepth_summary",
+        "mosdepth_dist",
+        "bcftools_stats",
+    ):
         assert f"/samples/S1/files/{kind}/" in body
     assert "/samples/S1/files/bam/" not in body  # only offered when a BAM exists (older runs)
     assert "/samples/S1/files/log/" not in body  # no run log for this sample

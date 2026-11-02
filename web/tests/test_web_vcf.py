@@ -1,5 +1,6 @@
-from .web_helpers import put, vcf_gz
 from samples.vcf import check_truth, parse_vcf, read_variants
+
+from .web_helpers import put, vcf_gz
 
 
 def test_parse_vcf_rows_and_fields(storage):
@@ -7,8 +8,16 @@ def test_parse_vcf_rows_and_fields(storage):
     table = read_variants(storage, "variants/S1.vcf.gz")
     assert table.total == 2
     snp, indel = table.rows
-    assert (snp.chrom, snp.pos, snp.ref, snp.alt, snp.qual, snp.depth, snp.genotype, snp.kind) == \
-        ("synth1", 100, "A", "G", 200.0, 31, "1/1", "SNP")
+    assert (snp.chrom, snp.pos, snp.ref, snp.alt, snp.qual, snp.depth, snp.genotype, snp.kind) == (
+        "synth1",
+        100,
+        "A",
+        "G",
+        200.0,
+        31,
+        "1/1",
+        "SNP",
+    )
     assert (indel.qual, indel.kind, indel.genotype) == (None, "Indel", "0/1")
     assert table.calls == {(100, "A", "G"), (250, "AT", "A")}
 

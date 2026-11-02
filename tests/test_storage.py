@@ -78,12 +78,20 @@ def test_storage_from_env_rejects_unknown_backend():
 
 def test_list_keys_filters_by_prefix_and_sorts(tmp_path):
     s = LocalStorage(tmp_path)
-    for key in ["raw_reads/B.fastq.gz", "raw_reads/A.fastq.gz", "raw_reads_old/C.fastq.gz",
-                "variants/A.vcf.gz", "metrics/metrics.jsonl"]:
+    for key in [
+        "raw_reads/B.fastq.gz",
+        "raw_reads/A.fastq.gz",
+        "raw_reads_old/C.fastq.gz",
+        "variants/A.vcf.gz",
+        "metrics/metrics.jsonl",
+    ]:
         s.upload_stream(io.BytesIO(b"x"), key)
     assert list(s.list_keys("raw_reads/")) == ["raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz"]
     assert list(s.list_keys("raw_reads")) == [
-        "raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz", "raw_reads_old/C.fastq.gz"]
+        "raw_reads/A.fastq.gz",
+        "raw_reads/B.fastq.gz",
+        "raw_reads_old/C.fastq.gz",
+    ]
     assert list(s.list_keys("variants/A")) == ["variants/A.vcf.gz"]
     assert len(list(s.list_keys())) == 5
 
@@ -228,7 +236,7 @@ def test_forward_only_stream_fills_each_read():
 
 class _BrokenStream(io.RawIOBase):
     def readinto(self, buf):
-        raise IOError("connection dropped")
+        raise OSError("connection dropped")
 
 
 def test_failed_write_leaves_no_key_and_no_temp_file(tmp_path):
@@ -338,29 +346,45 @@ def test_s3_defaults_to_aws_when_no_endpoint_is_set():
 
 def test_s3_empty_endpoint_and_style_mean_unset():
     # The web UI passes every variable, empty when not configured.
-    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket",
-                          "S3_ENDPOINT_URL": "", "S3_ADDRESSING_STYLE": ""})
+    s = storage_from_env(
+        {"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "S3_ENDPOINT_URL": "", "S3_ADDRESSING_STYLE": ""}
+    )
     assert s._client.meta.endpoint_url == "https://s3.eu-west-2.amazonaws.com"
 
 
 def test_s3_endpoint_url_and_region_reach_the_client():
-    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
-                          "S3_ENDPOINT_URL": OVH_ENDPOINT})
+    s = storage_from_env(
+        {"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra", "S3_ENDPOINT_URL": OVH_ENDPOINT}
+    )
     assert s._client.meta.endpoint_url == OVH_ENDPOINT
     assert s._client.meta.region_name == "gra"
     assert s.describe("variants/S1.vcf.gz") == "s3://bucket/variants/S1.vcf.gz"
 
 
 def test_s3_requests_go_to_the_custom_endpoint_path_style():
-    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
-                          "S3_ENDPOINT_URL": OVH_ENDPOINT, "S3_ADDRESSING_STYLE": "PATH"})
+    s = storage_from_env(
+        {
+            "STORAGE_BACKEND": "s3",
+            "BUCKET_NAME": "bucket",
+            "AWS_REGION": "gra",
+            "S3_ENDPOINT_URL": OVH_ENDPOINT,
+            "S3_ADDRESSING_STYLE": "PATH",
+        }
+    )
     url = _sent_request(s, lambda st: st.exists("raw_reads/S1.fastq.gz")).url
     assert url == f"{OVH_ENDPOINT}/bucket/raw_reads/S1.fastq.gz"
 
 
 def test_s3_requests_go_to_the_custom_endpoint_virtual_style():
-    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
-                          "S3_ENDPOINT_URL": OVH_ENDPOINT, "S3_ADDRESSING_STYLE": "virtual"})
+    s = storage_from_env(
+        {
+            "STORAGE_BACKEND": "s3",
+            "BUCKET_NAME": "bucket",
+            "AWS_REGION": "gra",
+            "S3_ENDPOINT_URL": OVH_ENDPOINT,
+            "S3_ADDRESSING_STYLE": "virtual",
+        }
+    )
     url = _sent_request(s, lambda st: st.exists("raw_reads/S1.fastq.gz")).url
     assert url == "https://bucket.s3.gra.io.cloud.ovh.net/raw_reads/S1.fastq.gz"
 
@@ -378,8 +402,9 @@ def test_s3_rejects_an_unknown_addressing_style():
 
 def test_s3_compatible_uploads_send_no_default_checksums():
     # boto3 >= 1.36 adds CRC32 checksums to every upload by default; many S3-compatible services reject them.
-    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
-                          "S3_ENDPOINT_URL": OVH_ENDPOINT})
+    s = storage_from_env(
+        {"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra", "S3_ENDPOINT_URL": OVH_ENDPOINT}
+    )
     request = _sent_request(s, lambda st: st._client.put_object(Bucket="bucket", Key="k", Body=b"x"))
     assert _checksum_headers(request) == []
 
@@ -394,8 +419,13 @@ def test_aws_uploads_keep_boto3s_default_checksums():
 def test_an_explicit_aws_endpoint_keeps_aws_behaviour():
     from storage import is_aws_endpoint
 
-    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket",
-                          "S3_ENDPOINT_URL": "https://bucket.vpce-0abc.s3.eu-west-2.vpce.amazonaws.com"})
+    s = storage_from_env(
+        {
+            "STORAGE_BACKEND": "s3",
+            "BUCKET_NAME": "bucket",
+            "S3_ENDPOINT_URL": "https://bucket.vpce-0abc.s3.eu-west-2.vpce.amazonaws.com",
+        }
+    )
     assert s._client.meta.config.request_checksum_calculation != "when_required"
     assert is_aws_endpoint("https://s3.eu-west-2.amazonaws.com")
     assert is_aws_endpoint(None)
@@ -404,8 +434,9 @@ def test_an_explicit_aws_endpoint_keeps_aws_behaviour():
 
 
 def test_boto3s_own_endpoint_variable_is_honoured():
-    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
-                          "AWS_ENDPOINT_URL_S3": OVH_ENDPOINT})
+    s = storage_from_env(
+        {"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra", "AWS_ENDPOINT_URL_S3": OVH_ENDPOINT}
+    )
     assert s._client.meta.endpoint_url == OVH_ENDPOINT
     assert s._client.meta.config.request_checksum_calculation == "when_required"
 
@@ -422,12 +453,17 @@ def test_boto3s_generic_endpoint_variable_counts_too():
     from storage import s3_endpoint_from_env
 
     assert s3_endpoint_from_env({"AWS_ENDPOINT_URL": "http://localhost:9000"}) == "http://localhost:9000"
-    assert s3_endpoint_from_env({"S3_ENDPOINT_URL": OVH_ENDPOINT, "AWS_ENDPOINT_URL_S3": "http://x",
-                                 "AWS_ENDPOINT_URL": "http://y"}) == OVH_ENDPOINT
+    assert (
+        s3_endpoint_from_env(
+            {"S3_ENDPOINT_URL": OVH_ENDPOINT, "AWS_ENDPOINT_URL_S3": "http://x", "AWS_ENDPOINT_URL": "http://y"}
+        )
+        == OVH_ENDPOINT
+    )
     assert s3_endpoint_from_env({"S3_ENDPOINT_URL": "  ", "AWS_ENDPOINT_URL_S3": "http://x"}) == "http://x"
 
 
 def test_s3_endpoint_without_a_scheme_is_rejected():
     with pytest.raises(ValueError, match="http"):
-        storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket",
-                          "S3_ENDPOINT_URL": "s3.eu-west-2.amazonaws.com"})
+        storage_from_env(
+            {"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "S3_ENDPOINT_URL": "s3.eu-west-2.amazonaws.com"}
+        )

@@ -47,7 +47,7 @@ def write_fai(fasta):
     """
     fai = fasta + ".fai"
     rows = []
-    name = None
+    name = length = start = line_bases = line_bytes = None  # set at each header line
     with open(fasta, "rb") as fh:
         offset = 0
         for raw in fh:
@@ -79,9 +79,12 @@ def happy_command(sample_id, reference_name, vcf_key, out_prefix, region=None, s
         HAPPY_BIN,
         f"/data/truth/{sample_id}.vcf.gz",
         f"/data/{vcf_key}",
-        "-f", f"/data/truth/{sample_id}.bed",
-        "-r", f"/data/reference/{reference_name}",
-        "-o", f"/data/{out_prefix}",
+        "-f",
+        f"/data/truth/{sample_id}.bed",
+        "-r",
+        f"/data/reference/{reference_name}",
+        "-o",
+        f"/data/{out_prefix}",
         "--engine=vcfeval",
         "--pass-only",
     ]
@@ -143,16 +146,22 @@ def stratified_table(results, subsets):
     results: {caller: {(subset, type): {...}}} from read_extended.
     """
     callers = [c for c in CALLER_ORDER if c in results]
-    lines = ["| Region | Type | Truth | " + " | ".join(f"{CALLER_LABELS[c]} FN / FP (F1)" for c in callers) + " |",
-             "| :--- | :--- | ---: | " + " | ".join("---:" for _ in callers) + " |"]
+    lines = [
+        "| Region | Type | Truth | " + " | ".join(f"{CALLER_LABELS[c]} FN / FP (F1)" for c in callers) + " |",
+        "| :--- | :--- | ---: | " + " | ".join("---:" for _ in callers) + " |",
+    ]
     for subset in subsets:
         for kind in ("SNP", "INDEL"):
             cells = [results[c].get((subset, kind)) for c in callers]
             if not any(cells):
                 continue
             truth = next(r["truth"] for r in cells if r)
-            shown = [f"{r['fn']:,} / {r['fp']:,} ({r['f1']:.5f})" if r and r["f1"] is not None
-                     else (f"{r['fn']:,} / {r['fp']:,}" if r else "") for r in cells]
+            shown = [
+                f"{r['fn']:,} / {r['fp']:,} ({r['f1']:.5f})"
+                if r and r["f1"] is not None
+                else (f"{r['fn']:,} / {r['fp']:,}" if r else "")
+                for r in cells
+            ]
             name = "all confident regions" if subset == "*" else subset
             lines.append(f"| {name} | {kind} | {truth:,} | " + " | ".join(shown) + " |")
     return "\n".join(lines)
@@ -187,8 +196,10 @@ def summary_table(results):
         for kind in ("SNP", "INDEL"):
             r = results.get(caller, {}).get(kind)
             if r:
-                lines.append(f"| {CALLER_LABELS[caller]} | {kind} | {r['tp']:,} | {r['fn']:,} | {r['fp']:,} | "
-                             f"{r['recall']:.6f} | {r['precision']:.6f} | {r['f1']:.6f} |")
+                lines.append(
+                    f"| {CALLER_LABELS[caller]} | {kind} | {r['tp']:,} | {r['fn']:,} | {r['fp']:,} | "
+                    f"{r['recall']:.6f} | {r['precision']:.6f} | {r['f1']:.6f} |"
+                )
     return "\n".join(lines)
 
 
@@ -198,12 +209,20 @@ def main(argv=None):
     p.add_argument("--sample", required=True)
     p.add_argument("--reference", required=True, help="reference name under reference/")
     p.add_argument("--region", help="restrict to one contig, e.g. chr20 (hap.py -l)")
-    p.add_argument("--callers", nargs="+", choices=CALLER_ORDER, default=list(CALLER_ORDER),
-                   help="callers to score (default: every one with a VCF)")
+    p.add_argument(
+        "--callers",
+        nargs="+",
+        choices=CALLER_ORDER,
+        default=list(CALLER_ORDER),
+        help="callers to score (default: every one with a VCF)",
+    )
     p.add_argument("--image", default=HAPPY_IMAGE)
-    p.add_argument("--stratification", metavar="TSV_KEY",
-                   help="hap.py stratification TSV under the root, e.g. stratifications/GRCh38_chr20.tsv "
-                        "(fetch_dv_testdata.py --stratifications): adds a per-region table")
+    p.add_argument(
+        "--stratification",
+        metavar="TSV_KEY",
+        help="hap.py stratification TSV under the root, e.g. stratifications/GRCh38_chr20.tsv "
+        "(fetch_dv_testdata.py --stratifications): adds a per-region table",
+    )
     a = p.parse_args(argv)
 
     root = os.path.abspath(a.root)
@@ -220,8 +239,10 @@ def main(argv=None):
             p.error(str(err))
         missing = [bed for _, bed in entries if not os.path.exists(bed)]
         if missing:
-            p.error(f"{len(missing)} BED(s) listed in {tsv} are missing, e.g. {missing[0]}: "
-                    "run fetch_dv_testdata.py --stratifications again")
+            p.error(
+                f"{len(missing)} BED(s) listed in {tsv} are missing, e.g. {missing[0]}: "
+                "run fetch_dv_testdata.py --stratifications again"
+            )
         subsets = ["*"] + [name for name, _ in entries]
     ref = os.path.join(root, "reference", a.reference)
     if not os.path.exists(ref + ".fai"):
@@ -238,7 +259,8 @@ def main(argv=None):
             continue
         prefix = f"{out_dir}/{caller}"
         cmd = run_local.docker_command(
-            happy_command(a.sample, a.reference, vcf_key, prefix, a.region, a.stratification), root, a.image)
+            happy_command(a.sample, a.reference, vcf_key, prefix, a.region, a.stratification), root, a.image
+        )
         print(f"\n>>> hap.py: {caller}", flush=True)
         if subprocess.run(cmd).returncode != 0:
             print(f"hap.py failed for {caller}")
@@ -251,11 +273,15 @@ def main(argv=None):
         print("No caller VCFs found to score.")
         return 1
     table = summary_table(results)
-    text = (f"# hap.py results: {a.sample}\n\nvcfeval engine, PASS only, GIAB confident regions"
-            f"{', ' + a.region if a.region else ''}.\n\n{table}\n")
+    text = (
+        f"# hap.py results: {a.sample}\n\nvcfeval engine, PASS only, GIAB confident regions"
+        f"{', ' + a.region if a.region else ''}.\n\n{table}\n"
+    )
     if stratified:
-        text += (f"\n## By region type (GIAB stratifications, {a.stratification})\n\n"
-                 f"{stratified_table(stratified, subsets)}\n")
+        text += (
+            f"\n## By region type (GIAB stratifications, {a.stratification})\n\n"
+            f"{stratified_table(stratified, subsets)}\n"
+        )
     summary_path = os.path.join(root, *out_dir.split("/"), "summary.md")
     with open(summary_path, "w", encoding="utf-8") as fh:
         fh.write(text)
