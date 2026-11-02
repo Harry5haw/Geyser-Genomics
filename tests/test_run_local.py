@@ -120,3 +120,14 @@ def test_bed_boundaries_are_half_open_across_many_intervals(tmp_path):
 
 def test_missing_truth_fails_the_check(tmp_path):
     assert not run_local.check_against_truth(str(tmp_path), "S1")
+
+
+def test_every_job_of_a_run_gets_the_same_run_name(monkeypatch):
+    seen = []
+    monkeypatch.setattr(run_local.subprocess, "run", lambda cmd: seen.append(cmd) or type("R", (), {"returncode": 0}))
+    env = run_local.run_env("S1", "geyser-app")
+    for job in run_local.pipeline_jobs("S1", "r"):
+        run_local.run_job(job, "docker", "root", env=env)
+    names = {arg for cmd in seen for arg in cmd if arg.startswith("RUN_NAME=")}
+    assert names == {f"RUN_NAME={env['RUN_NAME']}"} and env["RUN_NAME"].startswith("S1-")
+    assert all("APP_VERSION=local:geyser-app" in cmd for cmd in seen)

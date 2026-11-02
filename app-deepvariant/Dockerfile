@@ -29,7 +29,7 @@ RUN python3 -m venv /opt/geyser-venv && \
     /opt/geyser-venv/bin/pip install --no-cache-dir -r /tmp/geyser-requirements.txt
 
 WORKDIR /app
-COPY app/storage.py app/metrics.py app/tasks.py ./
+COPY app/storage.py app/metrics.py app/tasks.py app/provenance.py ./
 COPY app-deepvariant/deepvariant_task.py ./
 
 ENTRYPOINT []
