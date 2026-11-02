@@ -8,7 +8,7 @@ Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> qc_reports/{id}.fastp.{html,json}     (qc: fastp, report only)
                             -> alignments/{id}.cram + .cram.crai     (align: sorted, duplicates marked)
     alignments/{id}.cram    -> variants/{id}.vcf.gz + .vcf.gz.tbi    (variants)
-        or, scatter-gather: one variants/{id}/parts/<region>.vcf.gz per region (variants --region),
+        or, scatter-gather: one intermediate/variant-parts/{id}/<run>/<region>.vcf.gz per region (variants --region),
         then variants --window concatenates them in reference order (see regions_from_lengths)
     stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
     runs/{id}.provenance.json: the run record (inputs, reference MD5, tools, timings, stats; provenance.py)
@@ -684,7 +684,10 @@ DEFAULT_REGION_WINDOW = 50_000_000  # bp per region: GRCh38 chr20 (64.4 Mb) -> 2
 # Parts live per run (RUN_NAME: the Step Functions execution, or run_local's run), so a merge only ever
 # sees its own run's shards: the job role can't delete objects, and an earlier run's parts stay behind.
 # Without RUN_NAME they share "unnamed", and a re-run that skips some shards could merge stale ones.
-PARTS_PREFIX = "variants/{sample_id}/parts/{run}/"
+# Everything under INTERMEDIATE_PREFIX is disposable: the data lake's lifecycle rule (#62) expires it
+# after a few days, which is what clears those leftover parts. Outputs never go here.
+INTERMEDIATE_PREFIX = "intermediate/"
+PARTS_PREFIX = INTERMEDIATE_PREFIX + "variant-parts/{sample_id}/{run}/"
 
 
 def parts_prefix(sample_id: str) -> str:
@@ -745,7 +748,7 @@ def regions_from_lengths(lengths, window: int) -> list:
 
 
 def region_part_key(sample_id: str, region: str) -> str:
-    """variants/{id}/parts/<region>.vcf.gz; the name is the region made filename-safe plus a short hash."""
+    """intermediate/variant-parts/{id}/<run>/<region>.vcf.gz; the name is the region made filename-safe plus a short hash."""
     digest = hashlib.md5(region.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]  # a name, not security
     return parts_prefix(sample_id) + f"{_safe_name(region)}-{digest}.vcf.gz"
 
@@ -844,7 +847,7 @@ def _finish_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) ->
 
 @timed_stage(SHARD_METRIC, run_record=False)
 def variants_shard_task(sample_id, reference_name, region):
-    """bcftools on one region of the sample's alignment -> variants/{id}/parts/<region>.vcf.gz."""
+    """bcftools on one region of the sample's alignment -> intermediate/variant-parts/{id}/<run>/<region>.vcf.gz."""
     wd = work_dir(sample_id)
     try:
         alignment = fetch_alignment(sample_id, wd, need_index=True)  # -r needs random access
