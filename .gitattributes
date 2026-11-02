@@ -1,0 +1,3 @@
+# Terraform renders infrastructure/*.json into resources (templatefile): a CRLF checkout (Windows,
+# core.autocrlf=true) would change the deployed definition by whitespace and show drift in every plan.
+infrastructure/** text eol=lf

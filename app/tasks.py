@@ -8,7 +8,7 @@ Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> qc_reports/{id}.fastp.{html,json}     (qc: fastp, report only)
                             -> alignments/{id}.cram + .cram.crai     (align: sorted, duplicates marked)
     alignments/{id}.cram    -> variants/{id}.vcf.gz + .vcf.gz.tbi    (variants)
-        or, scatter-gather: one variants/{id}/parts/<region>.vcf.gz per region (variants --region),
+        or, scatter-gather: one intermediate/variant-parts/{id}/<run>/<region>.vcf.gz per region (variants --region),
         then variants --window concatenates them in reference order (see regions_from_lengths)
     stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
     runs/{id}.provenance.json: the run record (inputs, reference MD5, tools, timings, stats; provenance.py)
@@ -131,6 +131,9 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     keys["bam"] = f"alignments/{sample_id}.bam"
     keys["vcf"] = f"variants/{sample_id}.vcf.gz"
     keys["tbi"] = f"variants/{sample_id}.vcf.gz.tbi"
+    # Consequence annotation (bcftools csq), written only when the reference has a GFF (annotate_vcf).
+    keys["csq_vcf"] = f"variants/{sample_id}.csq.vcf.gz"
+    keys["csq_tbi"] = f"variants/{sample_id}.csq.vcf.gz.tbi"
     # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
     for name, filename in STATS_FILES.items():
         keys[name] = f"stats/{sample_id}/{filename}"
@@ -601,14 +604,15 @@ def _log_summary(label, parse, path):
         print(f"WARNING: could not summarise {os.path.basename(path)}: {err}", flush=True)
 
 
-def _run_stats_tool(label: str, command: str) -> bool:
-    """Run one QC statistics command. Best effort: its failure warns, never fails the stage, because
-    the stage's real output (CRAM, VCF) is already built and worth more than a side report."""
+def _run_stats_tool(label: str, command: str, skipped: str = "its stats are skipped for this run") -> bool:
+    """Run one best-effort command (QC statistics, annotation): its failure warns, never fails the
+    stage, because the stage's real output (CRAM, VCF) is already built and worth more than a side
+    report. `skipped` says what the run goes without."""
     try:
         run_shell(command)
         return True
     except subprocess.CalledProcessError as err:
-        print(f"WARNING: {label} failed (exit {err.returncode}); its stats are skipped for this run", flush=True)
+        print(f"WARNING: {label} failed (exit {err.returncode}); {skipped}", flush=True)
         return False
 
 
@@ -680,7 +684,10 @@ DEFAULT_REGION_WINDOW = 50_000_000  # bp per region: GRCh38 chr20 (64.4 Mb) -> 2
 # Parts live per run (RUN_NAME: the Step Functions execution, or run_local's run), so a merge only ever
 # sees its own run's shards: the job role can't delete objects, and an earlier run's parts stay behind.
 # Without RUN_NAME they share "unnamed", and a re-run that skips some shards could merge stale ones.
-PARTS_PREFIX = "variants/{sample_id}/parts/{run}/"
+# Everything under INTERMEDIATE_PREFIX is disposable: the data lake's lifecycle rule (#62) expires it
+# after a few days, which is what clears those leftover parts. Outputs never go here.
+INTERMEDIATE_PREFIX = "intermediate/"
+PARTS_PREFIX = INTERMEDIATE_PREFIX + "variant-parts/{sample_id}/{run}/"
 
 
 def parts_prefix(sample_id: str) -> str:
@@ -741,7 +748,7 @@ def regions_from_lengths(lengths, window: int) -> list:
 
 
 def region_part_key(sample_id: str, region: str) -> str:
-    """variants/{id}/parts/<region>.vcf.gz; the name is the region made filename-safe plus a short hash."""
+    """intermediate/variant-parts/{id}/<run>/<region>.vcf.gz; the name is the region made filename-safe plus a short hash."""
     digest = hashlib.md5(region.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]  # a name, not security
     return parts_prefix(sample_id) + f"{_safe_name(region)}-{digest}.vcf.gz"
 
@@ -764,8 +771,66 @@ def reference_regions(local_ref: str, window: int) -> list:
     return regions
 
 
-def _finish_vcf(ref: str, vcf: str, wd: str, keys: dict) -> None:
-    """Index, stats and upload a finished VCF (the unsharded call and the merge end the same way)."""
+# Gene models for consequence annotation sit next to the reference: reference/<name>.gff3.gz, in
+# Ensembl GFF3 form (what bcftools csq reads). ANNOTATE=off skips annotation even when one exists.
+ANNOTATION_SUFFIX = ".gff3.gz"
+ANNOTATE_MODES = ("auto", "off")
+
+
+def annotation_key(reference_name: str) -> str:
+    return f"{REFERENCE_PREFIX}{reference_name}{ANNOTATION_SUFFIX}"
+
+
+def annotate_mode() -> str:
+    mode = os.environ.get("ANNOTATE", "auto").strip().lower() or "auto"
+    if mode not in ANNOTATE_MODES:
+        raise ValueError(f"ANNOTATE must be one of {ANNOTATE_MODES}, got {mode!r}")
+    return mode
+
+
+def annotate_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) -> list:
+    """bcftools csq on a finished VCF -> [(local path, key)] to upload: the annotated VCF and its index.
+
+    Optional and best effort, like the QC statistics: nothing happens when ANNOTATE=off or the
+    reference has no GFF (the cloud reference has none today), and a csq failure warns rather than
+    failing the stage, whose real output (the VCF) is already built. -p a takes genotypes as phased,
+    because bcftools call doesn't phase; consequences are per allele either way (BCSQ in INFO).
+    """
+    if annotate_mode() == "off":
+        print("Annotation off (ANNOTATE=off)", flush=True)
+        provenance.note(annotation="off")
+        return []
+    gff_key = annotation_key(reference_name)
+    gff = os.path.join(wd, os.path.basename(gff_key))
+    try:  # storage trouble (throttling, a GFF deleted mid-run) must not cost the VCF either
+        if not storage().exists(gff_key):
+            print(f"No gene models at {storage().describe(gff_key)}; skipping annotation", flush=True)
+            provenance.note(annotation="skipped: no GFF")
+            return []
+        storage().download(gff_key, gff)
+    except Exception as err:  # noqa: BLE001 - best effort, see the docstring
+        print(f"WARNING: could not read {storage().describe(gff_key)} ({err}); no annotated VCF this run", flush=True)
+        provenance.note(annotation="failed")
+        return []
+    provenance.note_input(gff_key, gff)
+    csq = os.path.join(wd, os.path.basename(keys["csq_vcf"]))
+    csq_tbi = os.path.join(wd, os.path.basename(keys["csq_tbi"]))
+    annotate = (
+        f"bcftools csq -f {shlex.quote(ref)} -g {shlex.quote(gff)} -p a -Oz -o {shlex.quote(csq)} {shlex.quote(vcf)}"
+    )
+    index = f"bcftools index -t -o {shlex.quote(csq_tbi)} {shlex.quote(csq)}"
+    skipped = "no annotated VCF this run"
+    if not (
+        _run_stats_tool("bcftools csq", annotate, skipped) and _run_stats_tool("bcftools index (csq)", index, skipped)
+    ):
+        provenance.note(annotation="failed")
+        return []
+    provenance.note(annotation="done")
+    return [(csq_tbi, keys["csq_tbi"]), (csq, keys["csq_vcf"])]
+
+
+def _finish_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) -> None:
+    """Index, stats, annotation and upload of a finished VCF (the unsharded call and the merge end the same way)."""
     tbi = os.path.join(wd, os.path.basename(keys["tbi"]))
     run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
     stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
@@ -774,13 +839,15 @@ def _finish_vcf(ref: str, vcf: str, wd: str, keys: dict) -> None:
     ):
         _log_summary("bcftools stats", parse_bcftools_stats, stats)
         upload_output(stats, keys["bcftools_stats"])
-    upload_output(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
+    for local, key in annotate_vcf(reference_name, ref, vcf, wd, keys):
+        upload_output(local, key)
+    upload_output(tbi, keys["tbi"])  # index, stats and annotation first, as in align: the VCF marks the stage done
     upload_output(vcf, keys["vcf"])
 
 
 @timed_stage(SHARD_METRIC, run_record=False)
 def variants_shard_task(sample_id, reference_name, region):
-    """bcftools on one region of the sample's alignment -> variants/{id}/parts/<region>.vcf.gz."""
+    """bcftools on one region of the sample's alignment -> intermediate/variant-parts/{id}/<run>/<region>.vcf.gz."""
     wd = work_dir(sample_id)
     try:
         alignment = fetch_alignment(sample_id, wd, need_index=True)  # -r needs random access
@@ -805,6 +872,7 @@ def variants_task(sample_id, reference_name, window=None):
     (the missing ones are named); the window must be the one the regions were planned with.
     """
     keys = keys_for(sample_id)
+    annotate_mode()  # a mistyped ANNOTATE fails now, not after a chromosome's worth of calling
     wd = work_dir(sample_id)
     try:
         provenance.note_tools("bcftools")
@@ -840,7 +908,7 @@ def variants_task(sample_id, reference_name, window=None):
                     fh.write(local + "\n")
             print(f"Merging {len(regions)} region parts", flush=True)
             run_shell(f"bcftools concat -Oz -o {shlex.quote(vcf)} -f {shlex.quote(listing)}")
-        _finish_vcf(ref, vcf, wd, keys)
+        _finish_vcf(reference_name, ref, vcf, wd, keys)
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 

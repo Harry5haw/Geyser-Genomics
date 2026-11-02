@@ -41,3 +41,15 @@ def test_truth_check_matches_run_local_semantics():
     assert result.missed == [(200, "C", "T")] and result.extra == [(300, "G", "A")]
     assert not result.perfect
     assert check_truth({(100, "A", "G"), (200, "C", "T")}, truth).perfect
+
+
+def test_each_allele_shows_its_own_consequence():
+    from samples.vcf import parse_vcf
+
+    lines = [
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
+        "c\t100\t.\tA\tG,T\t50\t.\tBCSQ=missense|G1|T1|protein_coding|+|5N>5S|100A>G,"
+        "synonymous|G1|T1|protein_coding|+|5N|100A>T",
+    ]
+    rows = parse_vcf(lines).rows
+    assert [(v.alt, v.consequence) for v in rows] == [("G", "missense G1"), ("T", "synonymous G1")]

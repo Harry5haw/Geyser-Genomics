@@ -54,6 +54,12 @@ variable "fargate_max_vcpus" {
   default     = 8
 }
 
+variable "fargate_spot_max_vcpus" {
+  description = "Max vCPUs of the Fargate Spot compute environment (the queue's first choice). Its own cap, on top of fargate_max_vcpus: at both caps 16 vCPUs can run, the Spot half at Spot prices."
+  type        = number
+  default     = 8
+}
+
 variable "claude_role_trusted_user" {
   description = "IAM user allowed to assume the geyser-claude role (the user's own CLI identity)."
   type        = string
@@ -143,6 +149,17 @@ variable "log_retention_days" {
   validation {
     condition     = contains([1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653], var.log_retention_days)
     error_message = "log_retention_days must be a value CloudWatch Logs accepts (1, 3, 5, 7, 14, 30, 60, 90, ...)."
+  }
+}
+
+variable "intermediate_expiry_days" {
+  description = "Days before the data lake's disposable intermediates (intermediate/, decompressed/) expire and unfinished multipart uploads are aborted (storage_lifecycle.tf). Outputs and raw reads never expire."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.intermediate_expiry_days >= 1
+    error_message = "intermediate_expiry_days must be at least 1: a merge must still find its parts."
   }
 }
 
