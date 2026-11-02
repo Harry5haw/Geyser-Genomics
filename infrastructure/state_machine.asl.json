@@ -1,6 +1,7 @@
 {
-  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
+  "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling. Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
   "StartAt": "QC_and_Align",
+  "TimeoutSeconds": ${pipeline_timeout_seconds},
   "States": {
     "QC_and_Align": {
       "Type": "Parallel",
@@ -14,7 +15,11 @@
               "Parameters": {
                 "JobName.$": "States.Format('QualityControl-{}-{}', $.srr_id, $$.Execution.Name)",
                 "ContainerOverrides": {
-                  "Command.$": "States.Array('python', 'tasks.py', 'qc', $.srr_id)"
+                  "Command.$": "States.Array('python', 'tasks.py', 'qc', $.srr_id)",
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value": "${qc_vcpu}" },
+                    { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
+                  ]
                 }
               },
               "ResultPath": "$.batch_params",
@@ -30,6 +35,14 @@
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
                 "Timeout": { "AttemptDurationSeconds": 3600 }
               },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
               "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
               "ResultPath": "$.batch_output",
               "End": true
@@ -44,7 +57,11 @@
               "Parameters": {
                 "JobName.$": "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)",
                 "ContainerOverrides": {
-                  "Command.$": "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)"
+                  "Command.$": "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)",
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value": "${align_vcpu}" },
+                    { "Type": "MEMORY", "Value": "${align_memory_mb}" }
+                  ]
                 }
               },
               "ResultPath": "$.batch_params",
@@ -60,6 +77,14 @@
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
                 "Timeout": { "AttemptDurationSeconds": 14400 }
               },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
               "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
               "ResultPath": "$.batch_output",
               "End": true
@@ -82,7 +107,11 @@
       "Parameters": {
         "JobName.$": "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
-          "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)"
+          "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name)",
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value": "${variants_vcpu}" },
+            { "Type": "MEMORY", "Value": "${variants_memory_mb}" }
+          ]
         }
       },
       "ResultPath": "$.batch_params",
@@ -98,6 +127,14 @@
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
         "Timeout": { "AttemptDurationSeconds": 7200 }
       },
+      "Retry": [
+        {
+          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
       "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
       "ResultPath": "$.batch_output",
       "Catch": [

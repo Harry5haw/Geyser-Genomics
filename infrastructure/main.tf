@@ -201,7 +201,7 @@ resource "aws_batch_job_definition" "geyser_app_job_def" {
   name                  = "${var.project_name}-app-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
-  container_properties = jsonencode({
+  container_properties = jsonencode(merge({
     image = "${aws_ecr_repository.geyser_app.repository_url}:${var.image_version}"
     # This role is for pulling the container and basic setup.
     executionRoleArn = aws_iam_role.geyser_batch_execution_role.arn
@@ -215,6 +215,7 @@ resource "aws_batch_job_definition" "geyser_app_job_def" {
     networkConfiguration = {
       assignPublicIp = "ENABLED"
     }
+    # Defaults only: the state machine sets each stage's size (var.stage_resources).
     resourceRequirements = [
       { type = "VCPU", value = "2" },
       { type = "MEMORY", value = "4096" }
@@ -223,7 +224,45 @@ resource "aws_batch_job_definition" "geyser_app_job_def" {
       { name = "BUCKET_NAME", value = aws_s3_bucket.data_lake.bucket },
       { name = "APP_VERSION", value = var.image_version }
     ]
-  })
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.geyser_batch_jobs.name
+        "awslogs-region"        = data.aws_region.current.region
+        "awslogs-stream-prefix" = "geyser"
+      }
+    }
+    },
+    # Fargate gives 20 GiB free; only ask for more when job_disk_gb says so (21-200 GiB, billed).
+    var.job_disk_gb > 20 ? { ephemeralStorage = { sizeInGiB = var.job_disk_gb } } : {}
+  ))
+
+  # Retry infrastructure failures only, never the application's own errors: a corrupt upload or a
+  # tool's non-zero exit fails fast. Conditions are checked in order; the first match wins.
+  # onStatusReason matches from the start of the reason (only a trailing * is allowed).
+  retry_strategy {
+    attempts = 3
+    evaluate_on_exit {
+      on_status_reason = "Host EC2*" # the instance went away under the job
+      action           = "RETRY"
+    }
+    evaluate_on_exit {
+      on_status_reason = "Your Spot Task was interrupted*" # Fargate Spot (Workstream C)
+      action           = "RETRY"
+    }
+    evaluate_on_exit {
+      on_status_reason = "Task failed to start*" # e.g. capacity or ENI trouble before the container ran
+      action           = "RETRY"
+    }
+    evaluate_on_exit {
+      on_status_reason = "ResourceInitializationError*" # image pull or log setup failed
+      action           = "RETRY"
+    }
+    evaluate_on_exit {
+      on_status_reason = "*" # everything else, including every non-zero exit code
+      action           = "EXIT"
+    }
+  }
   tags = { Name = "${var.project_name}-AppJobDef" }
 }
 
