@@ -14,6 +14,8 @@ import tasks
 REF = "ref.fa"
 # The default aligner's index files (bwa-mem2: .0123, .amb, .ann, .bwt.2bit.64, .pac).
 INDEX_EXTS = tasks.ALIGNER_INDEX_EXTS[tasks.DEFAULT_ALIGNER]
+# A reference whose first contig starts with a gap, like a human chromosome: bwa-mem2 is safe on it.
+GAPPED_REF = b">c\n" + b"N" * tasks.BWA_MEM2_SAFE_N_PREFIX + b"\nACGT\n"
 
 
 def put(root, key, data=b"x"):
@@ -188,7 +190,7 @@ def test_qc_timeout_comes_from_environment(local_env, monkeypatch):
 
 def test_align_uploads_bam_under_the_stage_key(local_env, tool_calls, shell_commands):
     put(local_env, "decompressed/S1.fastq")
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
 
     tasks.align_task("S1", REF)
 
@@ -204,8 +206,22 @@ def test_align_with_aligner_bwa_builds_and_runs_bwa(local_env, tool_calls, shell
 
     tasks.align_task("S1", REF)
 
-    assert [c[:2] for c in tool_calls] == [["bwa", "index"], ["samtools", "faidx"]]
+    assert [c[:2] for c in tool_calls] == [["samtools", "faidx"], ["bwa", "index"]]
     assert shell_commands[0].startswith("bwa mem")
+
+
+def test_align_falls_back_to_bwa_when_the_first_contig_starts_with_sequence(
+        local_env, tool_calls, shell_commands, capsys):
+    # bwa-mem2#262: reads at the very start of the first contig get misplaced. ACGT... has no gap.
+    put(local_env, "decompressed/S1.fastq")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+
+    tasks.align_task("S1", REF)
+
+    assert shell_commands[0].startswith("bwa mem ")
+    assert ["bwa", "index"] in [c[:2] for c in tool_calls]
+    assert not any(c[0] == "bwa-mem2" for c in tool_calls)  # no wasted bwa-mem2 index build
+    assert "bwa-mem2#262" in capsys.readouterr().out
 
 
 def test_unknown_aligner_fails_before_any_download(local_env, tool_calls, monkeypatch):
@@ -277,3 +293,42 @@ def test_keys_follow_the_documented_layout():
         "bam": "alignments/S1.bam",
         "vcf": "variants/S1.vcf.gz",
     }
+
+
+# --- bwa-mem2 guard (bwa-mem2#262) ---------------------------------------------
+
+def write_ref(tmp_path, text, name="r.fa"):
+    path = tmp_path / name
+    if name.endswith(".gz"):
+        import gzip
+        with gzip.open(path, "wt") as fh:
+            fh.write(text)
+    else:
+        path.write_text(text)
+    return str(path)
+
+
+def test_first_contig_prefix_joins_lines_and_stops_at_the_next_contig(tmp_path):
+    ref = write_ref(tmp_path, ">a desc\nnnAC\nGT\n>b\nTTTT\n")
+    assert tasks.first_contig_prefix(ref, 5) == "NNACG"
+    assert tasks.first_contig_prefix(ref, 100) == "NNACGT"  # never reads into contig b
+
+
+def test_first_contig_prefix_reads_gzipped_fasta(tmp_path):
+    assert tasks.first_contig_prefix(write_ref(tmp_path, ">a\nNNNA\n", "r.fa.gz"), 3) == "NNN"
+
+
+@pytest.mark.parametrize("first_contig, expected", [
+    ("N" * 1000 + "ACGT", "bwa-mem2"),           # human-like leading gap
+    ("n" * 600 + "\n" + "N" * 400, "bwa-mem2"),  # soft-masked, split over lines
+    ("N" * 999 + "A", "bwa"),                    # gap one base too short
+    ("ACGT" + "N" * 2000, "bwa"),                # sequence at position 1
+    ("N" * 500, "bwa"),                          # contig shorter than the window: can't tell, be safe
+])
+def test_effective_aligner(tmp_path, first_contig, expected):
+    ref = write_ref(tmp_path, f">c\n{first_contig}\n>d\n{'N' * 2000}\n")
+    assert tasks.effective_aligner("bwa-mem2", ref) == expected
+
+
+def test_effective_aligner_leaves_bwa_alone(tmp_path):
+    assert tasks.effective_aligner("bwa", write_ref(tmp_path, ">c\nACGT\n")) == "bwa"
