@@ -184,14 +184,36 @@ resource "aws_batch_compute_environment" "geyser_fargate" {
   tags = { Name = "${var.project_name}-ComputeEnv" }
 }
 
-
+# Fargate Spot: the same tasks on spare capacity, roughly 70% cheaper, but AWS can reclaim a task with
+# two minutes' notice. The job definition's retry_strategy retries "Your Spot Task was interrupted*",
+# so an interrupted stage reruns from its inputs in S3. Added next to the on-demand environment, never
+# instead of it: the queue tries Spot first and falls back to on-demand Fargate when Spot has no
+# capacity or is at its own cap (#124). Creating or changing a compute environment is outside the
+# geyser-claude boundary (it sets the spend rate), so this one is applied by the user.
+resource "aws_batch_compute_environment" "geyser_fargate_spot" {
+  name         = "${var.project_name}-fargate-spot-env"
+  type         = "MANAGED"
+  service_role = aws_iam_role.geyser_batch_service_role.arn
+  compute_resources {
+    type               = "FARGATE_SPOT"
+    max_vcpus          = var.fargate_spot_max_vcpus # its own spend-rate cap, see docs/design/claude-guardrails.md
+    subnets            = [aws_subnet.public.id]
+    security_group_ids = [aws_vpc.main.default_security_group_id]
+  }
+  tags = { Name = "${var.project_name}-ComputeEnvSpot" }
+}
 
 resource "aws_batch_job_queue" "geyser_queue" {
   name     = "${var.project_name}-job-queue"
   priority = 1
   state    = "ENABLED"
+  # Spot first; on-demand Fargate takes what Spot can't place.
   compute_environment_order {
     order               = 1
+    compute_environment = aws_batch_compute_environment.geyser_fargate_spot.arn
+  }
+  compute_environment_order {
+    order               = 2
     compute_environment = aws_batch_compute_environment.geyser_fargate.arn
   }
   tags = { Name = "${var.project_name}-JobQueue" }

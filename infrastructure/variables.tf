@@ -54,6 +54,12 @@ variable "fargate_max_vcpus" {
   default     = 8
 }
 
+variable "fargate_spot_max_vcpus" {
+  description = "Max vCPUs of the Fargate Spot compute environment (the queue's first choice). Its own cap, on top of fargate_max_vcpus: at both caps 16 vCPUs can run, the Spot half at Spot prices."
+  type        = number
+  default     = 8
+}
+
 variable "claude_role_trusted_user" {
   description = "IAM user allowed to assume the geyser-claude role (the user's own CLI identity)."
   type        = string
