@@ -52,11 +52,19 @@ FIELDS = [
     "precision",
     "f1",
 ]
-# Rows that identify one scoring of one caller: re-recording them replaces the old rows.
-RUN_KEY = ("date", "run", "caller", "caller_settings")
+# One configuration: a run's caller over one region. Its settings are part of what a scoring records, not of its
+# identity, so a re-score with other settings supersedes the old one (and a sub-region scoring stays separate).
+CONFIG_KEY = ("run", "caller", "region")
+# Rows that identify one scoring of one configuration: re-recording them (a re-score the same day) replaces them.
+RUN_KEY = ("date",) + CONFIG_KEY
 CALLERS = ("bcftools", "deepvariant", "pangenome")
 CALLER_LABELS = {"bcftools": "bcftools", "deepvariant": "linear DV", "pangenome": "pangenome DV"}
 PANGENOME_GRAPH = "HPRC v1.1 MC GRCh38, chr20"
+# GBZ file names under pangenome/ -> their name in the history (benchmark_happy --graph takes either).
+GRAPH_LABELS = {
+    "hprc-v1.1-mc-grch38.chr20.gbz": PANGENOME_GRAPH,
+    "hprc-v2.0-mc-grch38-eval.chr20.gbz": "HPRC v2.0 MC GRCh38 eval, chr20",
+}
 # GIAB stratifications shown as error columns in the report (when a run has them).
 REPORT_SUBSETS = (
     ("alldifficultregions", "difficult"),
@@ -78,11 +86,11 @@ KNOWN_RUNS = {
     ),
     "HG003_30x_chr20": dict(sample="HG003", coverage="30x", alignment=GOOGLE_30X, aligner="bwa", source="#95"),
     "HG003_30x_chr20_mq5": dict(
-        sample="HG003", coverage="30x", alignment=GOOGLE_30X, aligner="bwa", source="#95", caller_settings=MAPQ5
+        sample="HG003", coverage="30x", alignment=GOOGLE_30X, aligner="bwa", source="#51", caller_settings=MAPQ5
     ),
     "HG005_chr20": dict(sample="HG005", coverage="30x", alignment=GOOGLE_30X, aligner="bwa", source="#95"),
     "HG005_chr20_mq5": dict(
-        sample="HG005", coverage="30x", alignment=GOOGLE_30X, aligner="bwa", source="#95", caller_settings=MAPQ5
+        sample="HG005", coverage="30x", alignment=GOOGLE_30X, aligner="bwa", source="#51", caller_settings=MAPQ5
     ),
     "HG003_chr20_bwa": dict(sample="HG003", coverage="35x", alignment=PIPELINE_READS, aligner="bwa", source="#110"),
     "HG003_chr20_bwamem2": dict(
@@ -194,19 +202,28 @@ def settings_tag(extra_args: str) -> str:
 
 
 def git_commit(repo=REPO_ROOT) -> str:
-    """Short HEAD of the repo running the benchmark, '-dirty' with uncommitted changes, '' outside git."""
+    """Short HEAD of the repo running the benchmark, '-dirty' with uncommitted changes, '' outside git.
+
+    docs/benchmarks/ (the history and its report) doesn't count as a change: recording one caller rewrites it."""
     try:
         sha = subprocess.run(
             ["git", "-C", repo, "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=True
         ).stdout.strip()
-        dirty = subprocess.run(["git", "-C", repo, "diff", "--quiet", "HEAD"], capture_output=True).returncode != 0
+        dirty = (
+            subprocess.run(
+                ["git", "-C", repo, "diff", "--quiet", "HEAD", "--", ".", ":(exclude)docs/benchmarks"],
+                capture_output=True,
+            ).returncode
+            != 0
+        )
     except (OSError, subprocess.CalledProcessError):
         return ""
     return sha + ("-dirty" if dirty else "")
 
 
 def run_metadata(run: str, caller: str, **given) -> dict:
-    """Metadata for one scoring: KNOWN_RUNS for runs scored before this script, then what the caller passed."""
+    """Metadata for one scoring: KNOWN_RUNS for runs scored before this script, then what the caller passed (None is
+    'not given'; an explicit '' clears a known value)."""
     meta = {"run": run, "caller": caller, "sample": run.split("_")[0], "coverage": "", "alignment": "", "aligner": ""}
     meta["caller_settings"] = ""
     meta["graph"] = PANGENOME_GRAPH if caller == "pangenome" else ""
@@ -214,21 +231,24 @@ def run_metadata(run: str, caller: str, **given) -> dict:
     meta.update(KNOWN_RUNS.get(run, {}))
     if (run, caller) in KNOWN_SETTINGS:
         meta["caller_settings"] = KNOWN_SETTINGS[(run, caller)]
-    meta.update({k: v for k, v in given.items() if v not in (None, "")})
+    meta.update({k: v for k, v in given.items() if v is not None})
+    meta["graph"] = GRAPH_LABELS.get(meta["graph"], meta["graph"])
     return meta
 
 
 # ---------- the history file ----------
 
 
-def read_history(path=HISTORY) -> list:
+def read_history(path=None) -> list:
+    path = path or HISTORY
     if not os.path.exists(path):
         return []
     with open(path, newline="", encoding="utf-8") as fh:
         return list(csv.DictReader(fh))
 
 
-def write_history(rows, path=HISTORY) -> None:
+def write_history(rows, path=None) -> None:
+    path = path or HISTORY
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     rows = sorted(rows, key=lambda r: (r["date"], r["run"], r["caller"], r["caller_settings"], r["subset"], r["type"]))
     with open(path, "w", newline="", encoding="utf-8") as fh:
@@ -237,10 +257,10 @@ def write_history(rows, path=HISTORY) -> None:
         writer.writerows({k: r.get(k, "") for k in FIELDS} for r in rows)
 
 
-def record(prefix, meta: dict, path=HISTORY) -> int:
+def record(prefix, meta: dict, path=None) -> int:
     """Append one caller's hap.py results (<prefix>.*) to the history; returns the number of rows written.
 
-    Rows with the same date, run, caller and settings are replaced (a re-score the same day)."""
+    Rows with the same date, run, caller and region are replaced (a re-score the same day)."""
     info = happy_run_info(prefix)
     base = {**{k: "" for k in FIELDS}, **info, **{k: v for k, v in meta.items() if k in FIELDS}}
     new = [{**base, **{k: str(v) for k, v in r.items()}} for r in read_happy(prefix)]
@@ -252,7 +272,7 @@ def record(prefix, meta: dict, path=HISTORY) -> int:
     return len(new)
 
 
-def backfill(root, path=HISTORY) -> int:
+def backfill(root, path=None) -> int:
     """Record every KNOWN_RUNS folder under <root>/benchmarks that hap.py scored. Safe to run again."""
     total = 0
     for run in sorted(KNOWN_RUNS):
@@ -268,18 +288,22 @@ def backfill(root, path=HISTORY) -> int:
 # ---------- report ----------
 
 
+def config_key(r) -> tuple:
+    return tuple(r[k] for k in CONFIG_KEY)
+
+
 def configuration_label(r) -> str:
     label = f"{r['aligner'] or '?'} + {CALLER_LABELS.get(r['caller'], r['caller'])}"
-    return label + (f", {r['caller_settings']}" if r["caller_settings"] else "")
+    label += f", {r['caller_settings']}" if r["caller_settings"] else ""
+    return label + (f" ({r['region']})" if ":" in r.get("region", "") else "")  # only a sub-region is named
 
 
 def latest(rows) -> list:
-    """The latest scoring of each (run, caller, settings): its rows for every subset and type."""
+    """The latest scoring of each configuration (run, caller, region): its rows for every subset and type."""
     newest = {}
     for r in rows:
-        key = (r["run"], r["caller"], r["caller_settings"])
-        newest[key] = max(newest.get(key, ""), r["date"])
-    return [r for r in rows if r["date"] == newest[(r["run"], r["caller"], r["caller_settings"])]]
+        newest[config_key(r)] = max(newest.get(config_key(r), ""), r["date"])
+    return [r for r in rows if r["date"] == newest[config_key(r)]]
 
 
 def _int(text):
@@ -294,9 +318,8 @@ def configurations(rows) -> list:
     (FN + FP) in the REPORT_SUBSETS where the run was stratified. This is the figure CSV's row."""
     by_key = {}
     for r in latest(rows):
-        key = (r["run"], r["caller"], r["caller_settings"])
         c = by_key.setdefault(
-            key,
+            config_key(r),
             {
                 "sample": r["sample"],
                 "coverage": r["coverage"],
@@ -404,7 +427,7 @@ def _changes(rows) -> list:
     dates = {}
     for r in rows:
         if r["subset"] == "*":
-            dates.setdefault((r["run"], r["caller"], r["caller_settings"]), {}).setdefault(r["date"], {})[r["type"]] = r
+            dates.setdefault(config_key(r), {}).setdefault(r["date"], {})[r["type"]] = r
     lines = []
     for (run, _, _), by_date in sorted(dates.items()):
         if len(by_date) < 2:

@@ -233,7 +233,9 @@ def main(argv=None):
     p.add_argument("--alignment", help="history: where the alignment came from, in words")
     p.add_argument("--coverage", help="history: e.g. 30x")
     p.add_argument(
-        "--graph", help=f"history: the pangenome caller's graph (default: {benchmark_history.PANGENOME_GRAPH})"
+        "--graph",
+        help="history: the pangenome caller's graph, a GBZ under pangenome/ or a label "
+        f"(default: {benchmark_history.PANGENOME_GRAPH})",
     )
     p.add_argument(
         "--caller-settings",
@@ -276,6 +278,8 @@ def main(argv=None):
     os.makedirs(os.path.join(root, *out_dir.split("/")), exist_ok=True)
 
     results, stratified = {}, {}
+    # Once, before any caller is recorded: each record() rewrites the tracked history.
+    commit = "" if a.no_history else benchmark_history.git_commit()
     for caller in a.callers:
         vcf_key = run_local.VCF_KEYS[caller].format(id=a.sample)
         if not os.path.exists(os.path.join(root, *vcf_key.split("/"))):
@@ -302,7 +306,7 @@ def main(argv=None):
                 coverage=a.coverage,
                 graph=a.graph if caller == "pangenome" else None,
                 caller_settings=settings,
-                commit=benchmark_history.git_commit(),
+                commit=commit,
                 source="benchmark_happy.py",
             )
             written = benchmark_history.record(os.path.join(root, *prefix.split("/")), meta, a.history)

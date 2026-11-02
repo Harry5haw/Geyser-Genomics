@@ -2,7 +2,7 @@ sample,coverage,run,configuration,aligner,caller,caller_settings,snp_f1,indel_f1
 HG003,30x,HG003_30x_chr20,bwa + bcftools,bwa,bcftools,,0.991795,0.94893,397,758,609,497,2261,1022,462,635,2026-11-02,#95
 HG003,30x,HG003_30x_chr20,bwa + linear DV,bwa,deepvariant,,0.997474,0.995766,273,81,63,28,445,314,66,286,2026-11-02,#95
 HG003,30x,HG003_30x_chr20,bwa + pangenome DV,bwa,pangenome,,0.997575,0.996235,250,90,53,28,421,307,38,277,2026-11-02,#95
-HG003,30x,HG003_30x_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.99771,0.996189,251,70,53,29,403,285,45,253,2026-11-02,#95
+HG003,30x,HG003_30x_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.99771,0.996189,251,70,53,29,403,285,45,253,2026-11-02,#51
 HG003,35x,HG003_chr20,bwa + bcftools,bwa,bcftools,,0.991511,0.950708,361,835,582,487,2265,,,,2026-11-01,#70
 HG003,35x,HG003_chr20,bwa + linear DV,bwa,deepvariant,,0.997752,0.997061,263,52,48,15,378,281,52,257,2026-11-02,#70
 HG003,35x,HG003_chr20,bwa + pangenome DV,bwa,pangenome,,0.997718,0.997206,242,78,42,18,380,302,41,266,2026-11-02,#70
@@ -20,4 +20,4 @@ HG003,35x,HG003_chr20_giraffe,vg giraffe + pangenome DV,vg giraffe,pangenome,,0.
 HG005,30x,HG005_chr20,bwa + bcftools,bwa,bcftools,,0.992337,0.955805,357,697,415,342,1811,932,413,612,2026-11-02,#95
 HG005,30x,HG005_chr20,bwa + linear DV,bwa,deepvariant,,0.997876,0.996461,233,58,49,11,351,275,77,247,2026-11-02,#95
 HG005,30x,HG005_chr20,bwa + pangenome DV,bwa,pangenome,,0.997526,0.997111,244,95,39,10,388,331,55,303,2026-11-02,#95
-HG005,30x,HG005_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.998051,0.996993,221,46,41,10,318,259,62,231,2026-11-02,#95
+HG005,30x,HG005_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.998051,0.996993,221,46,41,10,318,259,62,231,2026-11-02,#51

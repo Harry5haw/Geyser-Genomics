@@ -194,12 +194,68 @@ def test_benchmark_happy_records_the_graph_for_pangenome_rows_only(tmp_path, mon
         write_happy(str(root / out[len("/data/") :]))
         return subprocess.CompletedProcess(cmd, 0)
 
+    commits = []
     monkeypatch.setattr(benchmark_happy.subprocess, "run", fake_happy)
-    monkeypatch.setattr(bh, "git_commit", lambda repo=None: "abc1234")
-    args = ["--root", str(root), "--sample", "S1", "--reference", "r.fa", "--graph", "hprc-v2.0.gbz"]
+    monkeypatch.setattr(bh, "git_commit", lambda repo=None: commits.append(1) or "abc1234")
+    r2 = "hprc-v2.0-mc-grch38-eval.chr20.gbz"
+    args = ["--root", str(root), "--sample", "S1", "--reference", "r.fa", "--graph", r2]
     assert benchmark_happy.main(args + ["--callers", "deepvariant", "pangenome"]) == 0
-    graphs = {(r["caller"], r["graph"]) for r in bh.read_history(bh.HISTORY)}
-    assert graphs == {("deepvariant", ""), ("pangenome", "hprc-v2.0.gbz")}
+    graphs = {(r["caller"], r["graph"], r["commit"]) for r in bh.read_history(bh.HISTORY)}
+    assert graphs == {("deepvariant", "", "abc1234"), ("pangenome", bh.GRAPH_LABELS[r2], "abc1234")}
+    assert commits == [1]  # once per run, before the first record() rewrites the history
+
+
+def test_git_commit_ignores_the_history_itself(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "docs" / "benchmarks").mkdir(parents=True)
+    (repo / "docs" / "benchmarks" / "history.csv").write_text("a\n")
+    (repo / "code.py").write_text("x = 1\n")
+    git = ["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t"]
+    for cmd in (["init", "-q"], ["add", "."], ["commit", "-qm", "init"]):
+        subprocess.run(git + cmd, check=True, capture_output=True)
+    clean = bh.git_commit(str(repo))
+    assert clean and not clean.endswith("-dirty")
+    (repo / "docs" / "benchmarks" / "history.csv").write_text("a\nb\n")  # what record() does
+    assert bh.git_commit(str(repo)) == clean
+    (repo / "code.py").write_text("x = 2\n")
+    assert bh.git_commit(str(repo)) == clean + "-dirty"
+
+
+def test_a_rescore_with_other_settings_supersedes_and_a_sub_region_stays_separate(tmp_path):
+    history = str(tmp_path / "history.csv")
+    prefix = str(tmp_path / "b" / "deepvariant")
+    write_happy(prefix, snp_fn=10)
+    bh.record(prefix, bh.run_metadata("S1", "deepvariant", aligner="bwa"), history)
+    write_happy(prefix, snp_fn=7, timestamp="Tue Nov 03 09:00:00 2026")  # re-scored with VG flags
+    bh.record(prefix, bh.run_metadata("S1", "deepvariant", aligner="bwa", caller_settings="VG flags"), history)
+    write_happy(prefix, snp_fn=1, timestamp="Wed Nov 04 09:00:00 2026", region="chr20:1-1000000")
+    bh.record(prefix, bh.run_metadata("S1", "deepvariant", aligner="bwa"), history)
+    configs = bh.configurations(bh.read_history(history))
+    # One configuration per region: the whole region's latest scoring (the VG-flags re-score superseded the first),
+    # and the sub-region's own, named, instead of the sub-region becoming the headline.
+    assert sorted((c["configuration"], c["snp_fn"]) for c in configs) == [
+        ("bwa + linear DV (chr20:1-1000000)", "1"),
+        ("bwa + linear DV, VG flags", "7"),
+    ]
+
+
+def test_metadata_explicit_empty_clears_a_known_value_and_graphs_get_labels():
+    assert bh.run_metadata("HG003_chr20_vg", "deepvariant")["caller_settings"] == bh.VG_FLAGS
+    assert bh.run_metadata("HG003_chr20_vg", "deepvariant", caller_settings="")["caller_settings"] == ""
+    assert bh.run_metadata("HG003_chr20_vg", "deepvariant", caller_settings=None)["caller_settings"] == bh.VG_FLAGS
+    assert bh.run_metadata("X", "pangenome")["graph"] == bh.PANGENOME_GRAPH
+    assert bh.run_metadata("X", "pangenome", graph="hprc-v2.0-mc-grch38-eval.chr20.gbz")["graph"].startswith(
+        "HPRC v2.0"
+    )
+    assert bh.run_metadata("HG003_30x_chr20_mq5", "deepvariant")["source"] == "#51"
+
+
+def test_history_functions_default_to_the_current_history_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(bh, "HISTORY", str(tmp_path / "other.csv"))
+    prefix = str(tmp_path / "b" / "deepvariant")
+    write_happy(prefix)
+    assert bh.record(prefix, bh.run_metadata("S1", "deepvariant")) == 3  # no path: HISTORY now, not at import
+    assert os.path.exists(tmp_path / "other.csv") and len(bh.read_history()) == 3
 
 
 def test_tests_never_touch_the_tracked_history():
