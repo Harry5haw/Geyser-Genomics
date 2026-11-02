@@ -192,6 +192,21 @@ def failure_error(events):
     return failed[0]["executionFailedEventDetails"].get("error") if failed else None
 
 
+def state_entered(events, name) -> dict:
+    (event,) = [e for e in events if e.get("stateEnteredEventDetails", {}).get("name") == name
+                and e["type"].endswith("StateEntered")]
+    return event
+
+
+def ancestor(by_id, event, event_type):
+    """The nearest earlier event of event_type on event's previousEventId chain, or None."""
+    while event is not None:
+        if event["type"] == event_type:
+            return event
+        event = by_id.get(event.get("previousEventId"))
+    return None
+
+
 def entered(events) -> list:
     return [e["stateEnteredEventDetails"]["name"] for e in events if "stateEnteredEventDetails" in e]
 
@@ -215,15 +230,19 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
     assert "Notify_Failure" not in states and "Pipeline_Failed" not in states
-    # Both branches start before either Batch job finishes, and variants only after both.
-    first_done = min(i for i, e in enumerate(events) if e["type"] == "TaskSucceeded")
-    starts = [i for i, e in enumerate(events) if e["type"] == "TaskStateEntered"
-              and e["stateEnteredEventDetails"]["name"] in ("Quality_Control", "Align_Genome")]
-    assert len(starts) == 2 and max(starts) < first_done
-    parallel_exit = next(i for i, e in enumerate(events) if e["type"] == "ParallelStateExited")
-    variants = next(i for i, e in enumerate(events) if e["type"] == "TaskStateEntered"
-                    and e["stateEnteredEventDetails"]["name"] == "Call_Variants")
-    assert parallel_exit < variants
+    # Structure, not timing: with instant mocks either branch may finish before the other has
+    # logged anything, so event order says nothing. The previousEventId links do: both branches
+    # hang off the one ParallelStateStarted, and variants comes after the Parallel state exits.
+    by_id = {e["id"]: e for e in events}
+    (started,) = [e for e in events if e["type"] == "ParallelStateStarted"]
+    heads = {e["stateEnteredEventDetails"]["name"] for e in events
+             if e.get("previousEventId") == started["id"] and "stateEnteredEventDetails" in e}
+    assert heads == {"Prepare_QC_Command", "Prepare_Align_Command"}
+    for task in ("Quality_Control", "Align_Genome", "Call_Variants"):
+        assert ancestor(by_id, state_entered(events, task), "ParallelStateStarted") is not None
+    variants = state_entered(events, "Call_Variants")
+    assert ancestor(by_id, variants, "ParallelStateExited") is not None
+    assert ancestor(by_id, state_entered(events, "Quality_Control"), "ParallelStateExited") is None
 
     output = json.loads(desc["output"])
     assert output["parallel_output"] == {"qc": {"JobId": "job-ok", "Status": "SUCCEEDED"},
