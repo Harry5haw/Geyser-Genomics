@@ -25,6 +25,27 @@ def test_pipeline_recovers_planted_snps(tmp_path, capfd):
     # This reference starts with sequence, so the align stage must have fallen back to bwa (bwa-mem2#262).
     assert "bwa-mem2#262" in log and "Aligning with bwa\n" in log.replace("\r", "")
     _check_cram_and_indexes(root, "SYNTH001", reads=10_000)
+    _check_stats(root, "SYNTH001", paired=False)
+
+
+def _check_stats(root, sample, paired):
+    """stats/{id}/ holds all four files and they describe the synthetic data: 30x reads, 10 SNPs."""
+    import tasks
+
+    stats = {name: (root / key).read_text() for name, key in tasks.keys_for(sample).items()
+             if name in tasks.STATS_FILES}
+    assert set(stats) == set(tasks.STATS_FILES)
+    flagstat = tasks.parse_flagstat(stats["flagstat"])
+    assert flagstat["in_total"] == 10_000 and flagstat["mapped_pct"] >= 99.5
+    if paired:
+        assert flagstat["properly_paired_pct"] >= 99.0
+    depth = tasks.parse_mosdepth_summary(stats["mosdepth_summary"])["mean_depth"]
+    assert 25 <= depth <= 31, depth  # simulated 30x, duplicates and the leading gap (if any) not counted
+    at_1x = next(float(line.split("\t")[2]) for line in stats["mosdepth_dist"].splitlines()
+                 if line.startswith("total\t1\t"))
+    assert at_1x >= 0.95, at_1x  # nearly every base covered (only a leading N gap, if any, is not)
+    variants = tasks.parse_bcftools_stats(stats["bcftools_stats"])
+    assert variants["snps"] == 10 and variants["indels"] == 0 and variants["tstv"] is not None
 
 
 def _check_cram_and_indexes(root, sample, reads):
@@ -117,6 +138,7 @@ def test_paired_end_sample_runs_through_every_stage(tmp_path, capfd):
     assert "Aligning with bwa-mem2" in log
     assert "samtools fixmate -m" in log
     _check_cram_and_indexes(root, "PAIRED001", reads=10_000)  # 5,000 pairs
+    _check_stats(root, "PAIRED001", paired=True)
     for mate in ("R1", "R2"):
         assert (root / "qc_reports" / f"PAIRED001_{mate}_fastqc.html").exists()
     assert _markdup_stat(log, "PAIRED") == 10_000 and _markdup_stat(log, "SINGLE") == 0
