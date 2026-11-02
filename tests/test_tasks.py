@@ -39,6 +39,46 @@ def test_decompress_handles_multi_member_gzip(local_env):
     assert (local_env / "decompressed" / "S1.fastq").read_bytes() == b"@a\nA\n+\nI\n@b\nC\n+\nI\n"
 
 
+def test_decompress_never_lets_storage_seek_the_gzip_stream(local_env, monkeypatch):
+    # #71: in the cloud the raw read stream is an S3 body that can't seek. GzipFile over it still
+    # says seekable(), so decompress must hand storage a stream that says it isn't.
+    import io
+
+    content = b"@r1\nACGT\n+\nIIII\n" * 50
+    write_raw(local_env, "S1", gzip.compress(content))
+    s = tasks.storage()
+    real_open, real_upload = s.open_read, s.upload_stream
+
+    class S3Body(io.RawIOBase):
+        def __init__(self, fh):
+            self._fh = fh
+
+        def readable(self):
+            return True
+
+        def readinto(self, b):
+            return self._fh.readinto(b)
+
+        def seekable(self):
+            return False
+
+        def close(self):
+            self._fh.close()
+            super().close()
+
+    seekable = []
+
+    def upload(stream, key):
+        seekable.append(stream.seekable())
+        real_upload(stream, key)
+
+    monkeypatch.setattr(s, "open_read", lambda key: S3Body(real_open(key)))
+    monkeypatch.setattr(s, "upload_stream", upload)
+    tasks.decompress_task("S1")
+    assert seekable == [False]
+    assert (local_env / "decompressed" / "S1.fastq").read_bytes() == content
+
+
 def test_failed_stage_raises_and_records_failure(local_env):
     with pytest.raises(Exception):
         tasks.decompress_task("MISSING")

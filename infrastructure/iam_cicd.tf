@@ -22,9 +22,9 @@ locals {
     "${local.gh_sub_prefix}:environment:prod:ref:refs/heads/main",
   ]
 
-  # Terraform backend (must match backend.tf, which cannot use variables).
+  # Terraform backend (must match backend.tf and backend-<env>.hcl, which cannot use variables).
   tf_state_bucket = "geyser-tfstate-${data.aws_caller_identity.current.account_id}-${data.aws_region.current.name}"
-  tf_state_key    = "feature/rebrand-refactor/terraform.tfstate"
+  tf_state_keys   = ["env/dev/terraform.tfstate", "env/prod/terraform.tfstate"] # one state per environment (#45)
   tf_lock_table   = "geyser-tf-lock"
 }
 
@@ -236,7 +236,7 @@ resource "aws_iam_policy" "geyser_github_terraform_plan_policy" {
         Sid      = "StateObjectRead",
         Effect   = "Allow",
         Action   = "s3:GetObject",
-        Resource = "arn:aws:s3:::${local.tf_state_bucket}/${local.tf_state_key}"
+        Resource = [for key in local.tf_state_keys : "arn:aws:s3:::${local.tf_state_bucket}/${key}"]
       },
       {
         Sid    = "StateLock",
