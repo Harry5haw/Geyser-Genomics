@@ -580,3 +580,80 @@ def test_alignment_stats_commands(shell_commands, tmp_path):
 def test_stats_are_per_sample_not_per_mate():
     keys = tasks.keys_for("S1", "paired")
     assert keys["flagstat"] == "stats/S1/flagstat.txt" and "flagstat_R1" not in keys
+
+
+# --- run record (provenance.py) --------------------------------------------------
+
+def read_json(root, key):
+    import json
+    return json.loads((root / key).read_text())
+
+
+def test_align_writes_its_run_record_part(local_env, tool_calls, shell_commands, monkeypatch):
+    import hashlib
+
+    monkeypatch.setenv("RUN_NAME", "S1-20261102T100000Z-abc")
+    monkeypatch.setenv("APP_VERSION", "dev-local")
+    put(local_env, "raw_reads/S1.fastq.gz", b"reads")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+
+    tasks.align_task("S1", REF)
+
+    part = read_json(local_env, "runs/S1.provenance/Align.json")
+    assert part["status"] == "Success" and part["run_name"] == "S1-20261102T100000Z-abc"
+    assert part["aligner"] == "bwa-mem2" and part["layout"] == "single" and part["app_version"] == "dev-local"
+    assert part["inputs"] == [{"key": "raw_reads/S1.fastq.gz", "bytes": 5}]
+    assert part["reference"] == {"name": REF, "md5": hashlib.md5(GAPPED_REF).hexdigest(), "bytes": len(GAPPED_REF)}
+    assert [o["key"] for o in part["outputs"]] == ["stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt",
+                                                  "stats/S1/mosdepth.global.dist.txt", "alignments/S1.cram.crai",
+                                                  "alignments/S1.cram"]
+    assert part["stats"]["flagstat"]["mapped_pct"] == 100.0  # the fixture's real flagstat output
+    assert part["stats"]["mosdepth"]["mean_depth"] == 27.99
+    assert set(part["tools"]) >= {"bwa-mem2", "samtools", "mosdepth"}
+    record = read_json(local_env, "runs/S1.provenance.json")
+    assert record["stages"]["Align"]["status"] == "Success" and record["status"] == "incomplete"
+
+
+def test_a_failed_stage_still_records_itself_with_the_error(local_env, tool_calls, monkeypatch):
+    put(local_env, "raw_reads/S1.fastq.gz")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+
+    def failing(command):
+        raise subprocess.CalledProcessError(1, "bwa-mem2 mem ...")
+
+    monkeypatch.setattr(tasks, "run_shell", failing)
+    with pytest.raises(subprocess.CalledProcessError):
+        tasks.align_task("S1", REF)
+
+    part = read_json(local_env, "runs/S1.provenance/Align.json")
+    assert part["status"] == "Failure" and part["error"].startswith("CalledProcessError")
+    assert read_json(local_env, "runs/S1.provenance.json")["status"] == "failed"
+
+
+def test_a_full_run_assembles_a_complete_record(local_env, tool_calls, shell_commands):
+    put(local_env, "raw_reads/S1.fastq.gz")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+
+    tasks.qc_task("S1")
+    tasks.align_task("S1", REF)
+    tasks.variants_task("S1", REF)
+
+    record = read_json(local_env, "runs/S1.provenance.json")
+    assert record["status"] == "succeeded" and record["complete"]
+    assert set(record["stages"]) == {"QualityControl", "Align", "CallVariants"}
+    assert "variants/S1.vcf.gz" in [o["key"] for o in record["outputs"]]
+    assert record["stats"]["bcftools_stats"] == {"records": 10, "snps": 10, "indels": 0, "tstv": 1.5}
+
+
+def test_a_broken_run_record_never_fails_the_stage(local_env, tool_calls, monkeypatch):
+    import provenance
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("storage is down for run records")
+
+    monkeypatch.setattr(provenance, "assemble", broken)
+    put(local_env, "raw_reads/S1.fastq.gz", b"@r\nA\n+\nI\n")
+
+    tasks.qc_task("S1")  # must not raise
+
+    assert (local_env / "qc_reports" / "S1_fastqc.html").exists()

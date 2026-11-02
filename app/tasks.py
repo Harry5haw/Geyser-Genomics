@@ -9,6 +9,7 @@ Stages communicate only through storage keys:
                             -> alignments/{id}.cram + .cram.crai     (align: sorted, duplicates marked)
     alignments/{id}.cram    -> variants/{id}.vcf.gz + .vcf.gz.tbi    (variants)
     stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
+    runs/{id}.provenance.json: the run record (inputs, reference MD5, tools, timings, stats; provenance.py)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
 qc and align both read the gzipped upload directly (FastQC, bwa-mem2 and bwa read gzip), so they don't
@@ -37,6 +38,7 @@ import tempfile
 import time
 from functools import wraps
 
+import provenance
 from metrics import metrics_from_env
 from storage import ObjectNotFound, storage_from_env
 
@@ -170,6 +172,7 @@ def fetch_alignment(sample_id: str, wd: str, need_index: bool = False, indexer=N
     local = os.path.join(wd, os.path.basename(key))
     print(f"Fetching alignment {storage().describe(key)}", flush=True)
     storage().download(key, local)
+    provenance.note_input(key, local)
     if need_index:
         if key.endswith(".bam"):
             try:
@@ -231,17 +234,24 @@ def work_dir(sample_id: str) -> str:
 
 
 def timed_stage(task_name):
-    """Time a stage and record a Success/Failure metric. Metric errors never fail the stage."""
+    """Time a stage, record a Success/Failure metric and its run-record part (provenance.py).
+
+    Neither the metric nor the run record can fail the stage.
+    """
     def decorator(func):
         @wraps(func)
         def wrapper(sample_id, *args, **kwargs):
             print(f"--- Starting '{task_name}' for sample '{sample_id}' ---", flush=True)
             start = time.time()
-            status = "Failure"
+            status, error = "Failure", None
+            provenance.begin(task_name, sample_id)
             try:
                 result = func(sample_id, *args, **kwargs)
                 status = "Success"
                 return result
+            except BaseException as err:
+                error = f"{type(err).__name__}: {err}"[:500]
+                raise
             finally:
                 duration = time.time() - start
                 print(f"--- '{task_name}' for '{sample_id}': {status} in {duration:.2f}s ---", flush=True)
@@ -249,6 +259,10 @@ def timed_stage(task_name):
                     metrics().record(task_name, sample_id, status, duration)
                 except Exception as err:  # noqa: BLE001 - metrics are best effort
                     print(f"WARNING: could not record metric: {err}", flush=True)
+                try:
+                    provenance.finish(storage(), status, duration, error)
+                except Exception as err:  # noqa: BLE001 - provenance is best effort (finish never raises)
+                    print(f"WARNING: could not write the run record: {err}", flush=True)
         return wrapper
     return decorator
 
@@ -316,9 +330,16 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
         raise FileNotFoundError(f"Reference FASTA missing: {storage().describe(fasta_key)}") from err
 
     _fetch_or_build(fasta_key, local_ref, [".fai"], ["samtools", "faidx", local_ref], "FASTA index")
+    provenance.note_reference(reference_name, local_ref)
     if need_bwa_index:
         prepare_aligner(reference_name, local_ref, aligner)
     return local_ref
+
+
+def upload_output(local_path: str, key: str) -> None:
+    """Upload a stage output and list it (with its size) in the run record."""
+    storage().upload(local_path, key)
+    provenance.note_output(key, local_path)
 
 
 def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
@@ -375,6 +396,7 @@ def download_raw_reads(keys: dict, wd: str) -> list:
     for key in keys_of(keys, "raw"):
         paths.append(os.path.join(wd, os.path.basename(key)))
         storage().download(key, paths[-1])
+        provenance.note_input(key, paths[-1])
     return paths
 
 
@@ -387,6 +409,8 @@ def qc_task(sample_id):
         out_dir = os.path.join(wd, "qc")
         os.makedirs(out_dir)
         fastqs = download_raw_reads(keys, wd)
+        provenance.note(layout=sample_layout(sample_id))
+        provenance.note_tools("fastqc")
         # FastQC can hang (not exit) if its report thread crashes, so bound it. It now also
         # decompresses the reads itself, so it gets the hour the decompress stage used to have
         # (keep in step with the stage's Step Functions timeout). One thread per file (-t) processes R1 and R2 at
@@ -396,7 +420,7 @@ def qc_task(sample_id):
         subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
         for name in ("qc_html", "qc_zip"):
             for key in keys_of(keys, name):
-                storage().upload(os.path.join(out_dir, os.path.basename(key)), key)
+                upload_output(os.path.join(out_dir, os.path.basename(key)), key)
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
@@ -506,6 +530,7 @@ def _log_summary(label, parse, path):
         with open(path) as fh:
             values = parse(fh.read())
         print(f"{label}: " + ", ".join(f"{k}={v}" for k, v in values.items()), flush=True)
+        provenance.note_stats(label.replace(" ", "_"), values)
     except Exception as err:  # noqa: BLE001 - the stats file itself is still uploaded
         print(f"WARNING: could not summarise {os.path.basename(path)}: {err}", flush=True)
 
@@ -558,17 +583,19 @@ def align_task(sample_id, reference_name):
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         aligner = prepare_aligner(reference_name, ref, aligner)
         print(f"Aligning with {aligner}", flush=True)
+        provenance.note(aligner=aligner, layout=PAIRED if len(fastqs) == 2 else SINGLE)
+        provenance.note_tools(aligner, "samtools", "mosdepth")
         run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
         run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
         stats = alignment_stats(ref, cram, wd, threads, keys)
         for path, key in stats:  # before the CRAM: a sample that shows as aligned has its stats
-            storage().upload(path, key)
+            upload_output(path, key)
         # Index first, so a first run never shows a CRAM (the stage-done marker) without its index.
         # On a re-run that fails between the two uploads, the stored pair can disagree (new .crai,
         # old CRAM; the job role can't delete objects to avoid it). The pipeline's own readers are
         # immune, as fetch_alignment re-indexes; for people and browsers it is fixed by the next run.
-        storage().upload(crai, keys["crai"])
-        storage().upload(cram, keys["cram"])
+        upload_output(crai, keys["crai"])
+        upload_output(cram, keys["cram"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
@@ -580,6 +607,7 @@ def variants_task(sample_id, reference_name):
     wd = work_dir(sample_id)
     try:
         alignment = fetch_alignment(sample_id, wd)  # mpileup reads it front to back: no index needed
+        provenance.note_tools("bcftools")
         vcf = os.path.join(wd, os.path.basename(keys["vcf"]))
         tbi = os.path.join(wd, os.path.basename(keys["tbi"]))
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
@@ -592,9 +620,9 @@ def variants_task(sample_id, reference_name):
         if _run_stats_tool("bcftools stats",
                            f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}"):
             _log_summary("bcftools stats", parse_bcftools_stats, stats)
-            storage().upload(stats, keys["bcftools_stats"])
-        storage().upload(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
-        storage().upload(vcf, keys["vcf"])
+            upload_output(stats, keys["bcftools_stats"])
+        upload_output(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
+        upload_output(vcf, keys["vcf"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
