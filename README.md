@@ -7,7 +7,7 @@
 <p><strong>An event-driven AWS pipeline that turns raw DNA sequencing reads into a list of genetic variants,<br/>built and tested offline first.</strong></p>
 
 <p>
-  <a href="#️-project-status--features"><img src="https://img.shields.io/badge/Project%20Status-In%20Active%20Development-orange?style=for-the-badge" alt="Project status: in active development"></a>
+  <a href="#️-project-status--features"><img src="https://img.shields.io/badge/Status-Cloud%20verified%20·%20actively%20developed-2E7D32?style=for-the-badge" alt="Status: verified in the cloud, actively developed"></a>
 </p>
 
 <p>
@@ -33,10 +33,10 @@
 
 <table>
   <tr>
-    <td align="center" width="20%"><h3>4</h3>containerised<br/>pipeline stages</td>
+    <td align="center" width="20%"><h3>3</h3>stages, QC and alignment<br/>in parallel</td>
     <td align="center" width="20%"><h3>10 / 10</h3>planted SNPs recovered<br/>on every push</td>
+    <td align="center" width="20%"><h3>1 min 52 s</h3>cloud run, small sample,<br/>under 1 cent</td>
     <td align="center" width="20%"><h3>0.9977</h3>DeepVariant SNP F1<br/>on HG003 chr20*</td>
-    <td align="center" width="20%"><h3>3.3×</h3>faster neural-network step<br/>on an RTX 3080 GPU</td>
     <td align="center" width="20%"><h3>0</h3>stored AWS keys<br/>in CI (OIDC)</td>
   </tr>
 </table>
@@ -68,37 +68,47 @@
 
 Geyser Genomics is an **event-driven bioinformatics pipeline**. It takes raw DNA data from a sequencing machine (a gzipped FASTQ file) and turns it into a list of genetic variants (a VCF file).
 
-In the cloud design, uploading a file to S3 starts the run. AWS Step Functions then runs each stage as a container on AWS Batch, and the results are written back to the same bucket. The same containers also run on a laptop against a local folder, which is how the project is developed and tested.
+Uploading a file to S3 starts a run. AWS Step Functions runs quality control and alignment side by side as containers on AWS Batch, then variant calling, and writes every result back to the same bucket. The same containers also run on a laptop against a local folder: that is how the project is developed and tested, and the cloud is a checkpoint rather than the development loop.
 
 **From raw reads to variants**
 
 ```mermaid
 flowchart LR
-    IN(["🧬 FASTQ.gz<br/>millions of raw reads"]) --> Q["🔍 Quality control<br/>fastp"]
-    IN --> A["🧭 Align to reference<br/>bwa-mem2 + samtools sort + markdup"]
-    A --> V["🧪 Call variants<br/>bcftools"]
-    V --> OUT(["📄 VCF.gz<br/>list of variants"])
-    A -.->|"alternative caller"| DV["🧠 DeepVariant<br/>GPU"]
+    IN(["🧬 FASTQ.gz<br/>single- or paired-end"]) --> Q["🔍 Quality control<br/>fastp"]
+    IN --> A["🧭 Align<br/>bwa-mem2 → sort → mark duplicates"]
+    Q --> R(["📊 QC report<br/>HTML + JSON"])
+    A --> C(["🗜️ CRAM + index"])
+    A --> S1(["📈 flagstat, mosdepth"])
+    C --> V["🧪 Call variants<br/>bcftools"]
+    V --> OUT(["📄 VCF.gz + index"])
+    V --> S2(["📈 bcftools stats"])
+    C -.->|"alternative callers,<br/>local GPU"| DV["🧠 DeepVariant<br/>linear or pangenome-aware"]
     DV -.-> OUT2(["📄 VCF.gz"])
-    Q -.-> R(["📊 QC report"])
 
     classDef io fill:#6A1B9A,stroke:#4A148C,color:#fff
     classDef stage fill:#E65100,stroke:#BF360C,color:#fff
     classDef alt fill:#2E7D32,stroke:#1B5E20,color:#fff
-    class IN,OUT,OUT2,R io
+    class IN,OUT,OUT2,R,C,S1,S2 io
     class Q,A,V stage
     class DV alt
 ```
 
+Every run also writes a **run record** (`runs/<id>.provenance.json`): the inputs, the reference's MD5, the tool versions, the image, and each stage's timing and outcome.
+
 What it does today:
 
-*   ⚙️ **Event-driven:** an upload to the `raw_reads/` prefix starts the workflow. No one has to launch the stages by hand.
-*   📦 **Containerised and on demand:** every stage runs in the same Docker image on AWS Batch (Fargate). Compute only runs while a job is running. The Fargate environment is capped at 16 vCPUs, which is up to 8 jobs at once.
-*   💰 **Cost-conscious:** there is no always-on NAT gateway (it is optional and off by default). ECR images and logs are pruned automatically, and an AWS Budget alert fires at $10 a month. Idle cost is mostly storage.
-*   🧪 **Tested offline:** every push runs the unit tests and a Docker end-to-end run on synthetic data with known mutations. The run must recover exactly those mutations.
+*   ⚙️ **Event-driven:** an upload to `raw_reads/` starts the run (both mates, for paired-end). No one launches the stages by hand.
+*   ⚡ **Parallel where it can be:** QC and alignment both read the gzipped upload directly, so they run at the same time, then variant calling reads the CRAM. There is no decompressed copy in between.
+*   📦 **Sized per stage, scales to zero:** QC gets 1 vCPU / 2 GiB, alignment 4 / 8 GiB, variant calling 2 / 4 GiB, on AWS Batch (Fargate), all from one Docker image. Nothing runs between samples.
+*   🛟 **Resilient without hiding bugs:** infrastructure failures (a lost host, a task that failed to start) are retried; a failing tool or a corrupt upload fails at once and notifies through SNS. Each stage and each run has a time limit.
+*   💰 **Cost-bounded:** no NAT gateway, Fargate capped at 8 vCPUs, ECR images and logs pruned, a $10 monthly budget alert, and a $20 project cap with an automatic kill switch for the automation role. A small test run costs well under a cent; idle cost is storage.
+*   🧪 **Tested offline:** every push runs the linters, the unit tests, a Docker end-to-end run on synthetic data with planted mutations (which must all be recovered, and nothing else), and the state machine itself in Step Functions Local.
 
 > [!NOTE]
-> **Where it stands:** the pipeline is verified locally in Docker. The AWS infrastructure is defined in Terraform and deployed, but the cloud pipeline has not been run end to end since the cost and security changes of November 2026. The next milestone is pangenome-aware variant calling, built and benchmarked locally first.
+> **Where it stands (2 November 2026):**
+> - **In the cloud:** the three-stage pipeline, with its retries, time limits and per-stage sizes, is applied in AWS and verified by real runs ([Deployment](#-deployment--usage)).
+> - **Locally and in CI only, for now:** the image those runs used predates the move to bwa-mem2, fastp, CRAM, the QC statistics and the run record. All of these are verified locally and in CI, and they reach the cloud with the next image push.
+> - **Locally on a GPU:** pangenome-aware DeepVariant is benchmarked on two samples.
 
 ---
 
@@ -186,65 +196,66 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
 | Goal | Approach | Where it is today |
 | :--- | :--- | :--- |
-| **Reproducible results** | All tools pinned in one Docker image; synthetic data with planted mutations as a truth check | Done. The end-to-end test runs on every push. |
-| **No manual steps** | An S3 upload triggers Lambda, which starts Step Functions | Built in Terraform. Not yet re-tested in the cloud. |
-| **Pay only while running** | Batch on Fargate, no NAT gateway, budget alert | Applied. Storage is the remaining idle cost. |
-| **Scale out across samples** | Each upload is its own Step Functions execution | Limited by design: one sample per run, stages in sequence, up to 8 Fargate jobs at once. |
-| **Accessible to non-cloud users** | A web UI for uploading samples and browsing results | Works offline against the local folder. Not yet connected to S3 or deployed. |
+| **Reproducible results** | Tools and Python packages pinned exactly, base image pinned by digest; synthetic data with planted mutations as a truth check; a run record per sample | Done. The end-to-end truth check runs on every push. |
+| **No manual steps** | An S3 upload triggers a Lambda, which starts Step Functions | Verified in the cloud (single-end). Paired-end triggering is tested offline. |
+| **Pay only while running** | Batch on Fargate scales to zero, no NAT gateway, budgets | Applied. A small test run costs about $0.006; storage is the remaining idle cost. |
+| **Fail loudly, recover from flaky infrastructure** | Infrastructure-only retries, per-stage and per-run time limits, failures published to SNS | Applied and tested in the cloud: a truncated upload fails once, notifies and ends Failed. |
+| **Scale out** | One execution per sample, QC and alignment in parallel, up to 8 Fargate vCPUs at once | Applied. Splitting one sample's variant calling across jobs is planned (2.0). |
+| **Accessible to non-cloud users** | A web UI for uploading samples and browsing results | Works offline against the local folder. Not deployed. |
 
 ---
 
 ## 🗺️ Project Status & Features
 
-The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end to end **locally in Docker**. The AWS side is defined and deployed, and has just been hardened for cost and security. It has not been run end to end since then.
+Three levels of "done", kept separate: **☁️ verified in the cloud** (applied in AWS and proven by a real run), **✅ verified locally and in CI** (Docker end-to-end on every push, not yet run in AWS), and **🔜 planned**.
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Bioinformatics Pipeline** | ✅ Verified locally | fastp quality control and bwa-mem2 alignment (sorted, duplicate-marked CRAM), both straight from the gzipped upload so they can run side by side, then bcftools variant calling. |
-| **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
-| **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
-| **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs QC and alignment in parallel, then variant calling, on AWS Batch (Fargate), with failure notifications via SNS. The definition is tested offline in Step Functions Local. |
-| **CI Authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
-| **Automated Deployment** | ⏸️ Not yet | CI runs tests only. The Terraform workflow can only plan, is manual, and is currently disabled. Deploys are done locally. |
-| **Cost Safety** | ✅ Applied | NAT gateway optional and off, Fargate jobs in a public subnet, ECR and log retention limits, $10 monthly budget alert. |
-| **Custom Monitoring** | 🚧 In progress | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). The dashboard and alarm are scripted and tested offline, not yet deployed (see [Monitoring](#3-monitoring)). |
-| **Google DeepVariant** | 🚧 Local GPU working, cloud pending | Deep-learning variant calling as an alternative to bcftools. It runs locally on an NVIDIA GPU in Docker, with accuracy and timings measured (see below). A GPU Batch environment exists in AWS, but the stage is not wired into Step Functions and needs larger instances. |
-| **Web UI Front-End** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (QC summary and report, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
+| **Orchestration and trigger** | ☁️ Cloud | S3 upload → Lambda → Step Functions: QC and alignment in a `Parallel` state, then variant calling, each a Batch job on Fargate. Runs are named after the sample (`<id>-<UTC time>-<hash>`); a duplicate S3 event starts nothing. Tested offline in Step Functions Local. |
+| **Resilience and sizing** | ☁️ Cloud | Infrastructure-only retries (3 attempts), Batch API retries with back-off, per-stage timeouts and a 12-hour run limit, per-stage vCPU/memory, 30-day log retention. A failed stage publishes to SNS and the run ends Failed; a run that hits the time limit ends TimedOut (no SNS message, but it counts in the Step Functions metrics). |
+| **Bioinformatics tools** | ✅ Local + CI | fastp QC (one report per sample), bwa-mem2 alignment (with an automatic fallback to bwa for references that would trigger a bwa-mem2 bug), duplicates marked, CRAM + index, tabix-indexed VCF from bcftools. They reach the cloud with the next image push; the cloud runs so far used bwa, FastQC and BAM. |
+| **QC statistics** | ✅ Local + CI | `samtools flagstat`, `mosdepth` coverage and `bcftools stats` per sample, under `stats/<id>/`. |
+| **Run record (provenance)** | ✅ Local + CI | `runs/<id>.provenance.json` per sample, assembled from one part per stage so parallel stages never overwrite each other. In the cloud, the state machine doesn't pass the run name to the jobs yet, so cloud records will show `run_name: null` until it does. |
+| **Paired-end input** | ✅ Local + CI | `<id>_R1.fastq.gz` + `<id>_R2.fastq.gz`: the trigger waits for both mates and starts one run; the stages detect the layout themselves. The trigger's S3 read access is applied; no paired-end cloud run yet. |
+| **Offline development and testing** | ✅ Complete | The whole pipeline runs locally in Docker with no AWS account. CI: ruff lint and format, `terraform fmt`/`validate`, unit tests, Docker end-to-end truth check, Step Functions Local, and DeepVariant on the CPU image for pull requests. |
+| **Infrastructure as code** | ✅ Complete | Every AWS resource is in Terraform, with state per environment (`dev` is live; `prod` is intentionally not deployed). Changes are planned, reviewed, then applied. |
+| **CI authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
+| **Cost safety and guardrails** | ☁️ Applied | No NAT gateway, Fargate in a public subnet, capped Batch capacity, ECR and log retention, a $10 monthly budget alert. The role automation uses has a permissions boundary and a $20 project budget that attaches a deny-all policy by itself ([guardrails](docs/design/claude-guardrails.md)). |
+| **Automated deployment** | ⏸️ Manual by design | CI runs tests and checks only. The "Terraform Plan" workflow can only plan, is manual, and is disabled. Applies happen from a reviewed plan. |
+| **Monitoring** | 🔜 Planned | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). The dashboard and alarm are scripted and unit-tested, not deployed yet (see [Monitoring](#3-monitoring)). |
+| **DeepVariant and pangenome-aware DeepVariant** | ✅ Local GPU | Alternative variant callers, benchmarked with hap.py on HG003 and HG005 chr20 (see below). A GPU Batch environment exists in AWS; the stage isn't wired into Step Functions yet and needs larger instances. |
+| **Web UI** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (QC summary and report, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
+| **Other S3-compatible storage** | ✅ Unit-tested | `S3_ENDPOINT_URL` points the storage layer at any S3-compatible service (OVHcloud Object Storage, MinIO, LocalStack). Not yet run against one. |
 
 ---
 
 ## 🛠️ How It Works: The Architecture
 
-The design is event-driven and uses managed AWS services, so there are no servers to look after for the main pipeline. (The planned DeepVariant stage uses GPU instances that AWS Batch starts and stops.)
+The design is event-driven and uses managed AWS services, so there are no servers to look after: the trigger is a Lambda, the orchestrator is Step Functions, and Batch on Fargate starts a container per stage and scales to zero. Everything below is Terraform in `infrastructure/`.
 
 ```mermaid
 flowchart TB
-    U(["📤 Upload<br/>raw_reads/ID.fastq.gz"]) --> S3[("🪣 Amazon S3<br/>data lake")]
-    S3 -->|"S3 event<br/>prefix raw_reads/, suffix .gz"| L["λ Lambda trigger"]
+    U(["📤 Upload<br/>raw_reads/ID.fastq.gz<br/>or ID_R1 + ID_R2"]) --> S3[("🪣 Amazon S3<br/>data lake")]
+    S3 -->|"S3 event<br/>prefix raw_reads/, suffix .gz"| L["λ Trigger Lambda<br/>pairs mates · names the run"]
     L -->|"StartExecution"| SFN
 
-    subgraph SFN ["⚙️ AWS Step Functions: one execution per sample"]
+    subgraph SFN ["⚙️ AWS Step Functions: one execution per sample · 12 h limit"]
         direction LR
         subgraph PAR ["Parallel"]
             direction TB
-            SF1["Quality control"]
-            SF2["Align"]
+            SF1["Quality control<br/>fastp · 1 vCPU / 2 GiB"]
+            SF2["Align<br/>bwa-mem2 → CRAM · 4 vCPU / 8 GiB"]
         end
-        PAR --> SF3["Call variants"]
+        PAR --> SF3["Call variants<br/>bcftools · 2 vCPU / 4 GiB"]
     end
 
-    SFN ==>|"submitJob.sync<br/>one job per stage"| BATCH["🐳 AWS Batch on Fargate<br/>geyser-app image · 2 vCPU / 4 GB"]
+    SFN ==>|"submitJob.sync, one job per stage<br/>Batch API errors retried"| BATCH["🐳 AWS Batch on Fargate<br/>one geyser-app image · max 8 vCPUs<br/>infrastructure failures retried"]
+    SFN -.->|"any failure"| SNS["📣 SNS: Notify_Failure<br/>then the run ends Failed"]
     ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
-    BATCH <-->|"read inputs<br/>write outputs"| S3
-    SFN -.->|"any failure"| SNS["📣 SNS alert"]
-    BATCH -.->|"Duration, FailureCount"| CW["📈 CloudWatch metrics"]
-    CW -.-> DASH["Dashboards<br/>in progress"]
-
-    subgraph GHA ["🔧 GitHub Actions"]
-        direction LR
-        PUSH["push / pull request"] --> TESTS["✅ Unit + Docker E2E tests"]
-        MAN["manual run"] -.-> PLAN["📝 terraform plan<br/>OIDC · read-only role"]
-    end
+    BATCH -->|"outputs, stats,<br/>run record"| OUT[("🪣 S3: qc_reports/, alignments/,<br/>variants/, stats/, runs/")]
+    BATCH -.->|"Duration, FailureCount<br/>logs kept 30 days"| CW["📈 CloudWatch"]
+    CW -.-> DASH["Dashboard + alarm<br/>scripted, not deployed"]
+    BUD["🛡️ Budgets: $10/month alert<br/>$20 project cap → automatic deny-all"]
 
     classDef user fill:#2E7D32,stroke:#1B5E20,color:#fff
     classDef store fill:#6A1B9A,stroke:#4A148C,color:#fff
@@ -252,11 +263,35 @@ flowchart TB
     classDef obs fill:#1565C0,stroke:#0D47A1,color:#fff
     classDef pending fill:#9E9E9E,stroke:#616161,color:#fff,stroke-dasharray: 4 3
     class U user
-    class S3,ECR store
-    class L,SF1,SF2,SF3,SF4,BATCH,SNS aws
-    class CW,TESTS,PLAN obs
+    class S3,ECR,OUT store
+    class L,SF1,SF2,SF3,BATCH,SNS aws
+    class CW,BUD obs
     class DASH pending
 ```
+
+**Stages talk only through storage keys.** `app/tasks.py` holds the key conventions (`keys_for`), and every stage, the trigger, the web UI and the scripts use them. QC writes `qc_reports/`, alignment writes `alignments/` and `stats/`, variant calling reads the CRAM and writes `variants/` and `stats/`, and each stage adds its part of the run record under `runs/`. The same code runs against S3 in the cloud and against a folder offline (`STORAGE_BACKEND=s3|local`).
+
+### The offline-first workflow
+
+Developing directly in the cloud was slow and costly, so the project is built offline first. Changes are made and proven on a laptop, then repeated in CI; the cloud only sees checkpoints.
+
+```mermaid
+flowchart LR
+    subgraph DEV ["💻 Laptop: the inner loop"]
+        direction TB
+        E["Edit app/, scripts/, web/"] --> UT["pytest<br/>seconds, no Docker"]
+        UT --> E2E["Docker end-to-end<br/>same image, local_bucket/ as S3"]
+        E2E --> CHK["run_local.py --check<br/>10/10 planted SNPs, 0 extra"]
+    end
+    CHK --> PR["Pull request: CI repeats it<br/>lint · unit · E2E · Step Functions Local"]
+    PR --> MAIN["main"]
+    MAIN -.->|"checkpoint only, after an infra change"| CLOUD["☁️ one small cloud run<br/>minutes, under a cent"]
+    INFRA["infrastructure/ change"] -->|"terraform plan, reviewed"| APPLY["apply"] --> CLOUD
+```
+
+- **The fake has to behave like the real thing.** The local storage backend writes through a temp file and renames it, so a key only appears complete, as in S3. The first cloud run still found a bug no offline test could: the local backend only ever read streams forward, while boto3 seeks any stream that claims to be seekable, and a gzip stream over an S3 download claims it can (#71). The fix came with a test that runs boto3's real transfer code against a stubbed S3 client, so the offline suite now covers that access pattern too.
+- **The state machine is tested too.** `infrastructure/state_machine.asl.json` is the file Terraform deploys, and `tests/test_state_machine_local.py` runs that same file in Step Functions Local with Batch and SNS mocked: parallel branches, every failure path, retries and the run time limit.
+- **Infrastructure changes are reviewed as plans.** Every apply follows a reviewed `terraform plan`; replacing or destroying a compute environment, queue, bucket or VPC stops the change.
 
 ---
 
@@ -266,16 +301,18 @@ The platform's design is guided by modern cloud-native principles:
 
 | Technology | Role & Rationale |
 | :--- | :--- |
-| **Terraform** | **The Cloud Architect.** Defines the AWS resources (VPC, S3, IAM, ECR, Batch, Step Functions, Lambda) as code, so the environment can be reviewed in a plan before anything changes. |
-| **AWS Step Functions** | **The Conductor.** Replaced a self-hosted Airflow setup from earlier in the project. A managed state machine runs the stages in order and routes any failure to an SNS notification. |
-| **AWS Batch + Fargate** | **The Compute Engine.** Runs each stage as a container job (2 vCPU / 4 GB) with queuing and scheduling handled by AWS. The compute environment is capped at 16 vCPUs, which keeps costs bounded. |
-| **Docker** | **The Reproducible Toolbox.** Packages all bioinformatics tools (`fastp`, `bwa-mem2`, `Samtools`, etc.) and their specific dependencies into a single, portable container image. This guarantees scientific reproducibility. |
-| **GitHub Actions**| **The CI Engine.** Every push and pull request runs the offline test suite. A manual workflow can run `terraform plan` with short-lived OIDC credentials and a read-only role. It cannot apply changes. |
-| **pytest + synthetic data**| **The Safety Net.** A generator creates a small reference genome and simulated reads with known mutations. The end-to-end test runs every stage in Docker and requires the final VCF to contain exactly those mutations. |
-| **Amazon S3**| **The Data Lake.** Holds the inputs, every intermediate file and the results, under fixed key prefixes. An upload to `raw_reads/` is the event that starts the pipeline. |
-| **Python**| The primary language for the bioinformatics application logic (`app/tasks.py`) and for interacting with AWS services via the `boto3` SDK. |
+| **Terraform** | **The Cloud Architect.** Defines every AWS resource (VPC, S3, IAM, ECR, Batch, Step Functions, Lambda, budgets, log groups) as code, with state per environment, so every change is a plan that can be reviewed before it happens. |
+| **AWS Step Functions** | **The Conductor.** Replaced a self-hosted Airflow setup from earlier in the project. Runs QC and alignment in a `Parallel` state, then variant calling, retries Batch API errors, enforces a 12-hour limit and routes any failure to SNS. The definition is a JSON file that is tested in Step Functions Local. ([Why not Nextflow?](docs/design/why-not-nextflow.md)) |
+| **AWS Batch + Fargate** | **The Compute Engine.** Runs each stage as a container job at its own size (QC 1 vCPU / 2 GiB, alignment 4 / 8, variants 2 / 4), retrying only infrastructure failures. Capped at 8 vCPUs, which bounds the spend rate. |
+| **Docker** | **The Reproducible Toolbox.** One image with every pipeline tool (fastp, bwa-mem2 and bwa, samtools, bcftools, mosdepth) at pinned versions, on a base image pinned by digest. DeepVariant has its own images (CPU and GPU, linear and pangenome-aware). |
+| **GitHub Actions** | **The CI Engine.** Every push and pull request runs ruff, `terraform fmt`/`validate`, the unit tests, the Docker end-to-end truth check (with cached image layers) and the state machine in Step Functions Local, all without AWS credentials. A manual workflow can run `terraform plan` with short-lived OIDC credentials and a read-only role. Dependabot proposes grouped dependency updates. |
+| **pytest + synthetic data** | **The Safety Net.** A generator creates a small reference genome and simulated reads (single- or paired-end, optionally with PCR-like duplicates) with known mutations. The end-to-end test runs every stage in Docker and requires the final VCF to contain exactly those mutations. |
+| **Amazon S3** | **The Data Lake.** Holds the inputs, the outputs, the QC statistics and the run records under fixed key prefixes. An upload to `raw_reads/` is the event that starts the pipeline. |
+| **Python** | The stage logic (`app/tasks.py`), the storage and metrics backends, the trigger Lambda, the ops scripts and the Django web UI. Cloud specifics stay in the backends, the Lambda and Terraform. |
 
 **Why not Nextflow?** Most genomics pipelines are written for a workflow engine. [docs/design/why-not-nextflow.md](docs/design/why-not-nextflow.md) maps Geyser's pieces to Nextflow concepts, lists what an engine would and wouldn't have replaced, and says when the choice should change.
+
+**Design notes:** [why not Nextflow](docs/design/why-not-nextflow.md) · [guardrails for the automation role](docs/design/claude-guardrails.md) · [DeepVariant sizing on AWS](app-deepvariant/README.md)
 
 ---
 
@@ -562,7 +599,7 @@ There is no database. Status is worked out from which outputs exist, the local m
 ## 🚀 Deployment & Usage
 
 ### 1. The Deployment Process
-Deployment is manual. Terraform is run locally from `infrastructure/`: run `terraform plan`, review it, then `terraform apply`. The container image is built locally and pushed to ECR. There is no automatic deploy.
+Deployment is deliberate, not automatic. Terraform runs locally from `infrastructure/` (`terraform init -backend-config=backend-dev.hcl`, then `plan`, review, `apply`), and the container image is built locally and pushed to ECR under a tag (`main-<sha>`, plus `dev-local` for the one the job definition uses). Claude Code, which helps build the project, can run plans and applies too, but only as a bounded role: a permissions boundary, Batch capacity caps, a local check before each command, and a $20 project budget that cuts the role off automatically. Destroying or replacing stateful resources stays a human decision. See [docs/design/claude-guardrails.md](docs/design/claude-guardrails.md).
 
 **Sizing and resilience settings** (`infrastructure/variables.tf`, all with defaults):
 
@@ -594,8 +631,13 @@ The GitHub Actions workflow `.github/workflows/deploy-platform.yml` ("Terraform 
 ### 2. How to Use the Platform (Event-Driven)
 Once deployed, a run is started by uploading a file.
 
-> [!IMPORTANT]
-> This cloud flow has not been re-tested since the November 2026 cost and security changes. The first cloud run is on the [Roadmap](#️-roadmap).
+**Verified in the cloud (2 November 2026).** Each checkpoint used the same small sample: 10,000 single-end reads from GRCh38 chr20:10,000,001-10,050,000, with the image `geyser-app:main-69daa5c` (bwa, FastQC and BAM; the tool upgrades on main reach the cloud with the next image).
+
+| Run | What it showed |
+| :--- | :--- |
+| `CLOUD002-20261102T132058Z-43888afd` | The three-stage state machine: QC and alignment overlapped, the run SUCCEEDED in 1 min 52 s (the old four-stage run took 3 min 45 s), the VCF has all 10 planted SNPs, cost about $0.006. |
+| `CLOUD003-20261102T144231Z-08dc9420` | Per-stage sizes in effect (QC 1 vCPU / 2 GiB, alignment 4 / 8, variants 2 / 4), logs in the new 30-day log groups, 10/10 SNPs. |
+| `CLOUD004-20261102T144542Z-3aa11cd4` | A deliberately truncated upload: the stages fail, `Notify_Failure` publishes to SNS, the run ends Failed, and each job ran once (application failures are not retried). |
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
@@ -610,12 +652,12 @@ Once deployed, a run is started by uploading a file.
 | Alignment | `alignments/<id>.cram` + `.cram.crai`, one per sample (coordinate-sorted, duplicates marked with samtools markdup; paired-end runs `samtools fixmate -m` first). CRAM stores the reads against the reference, so it is far smaller than a BAM, and it needs that same reference to read it: `samtools view -T reference/<name> alignments/<id>.cram` |
 | Variant calling | `variants/<id>.vcf.gz` + `.vcf.gz.tbi` (tabix index, for region queries) |
 | QC statistics | `stats/<id>/`: `flagstat.txt` (samtools flagstat: mapped, duplicates, properly paired) and `mosdepth.summary.txt` / `mosdepth.global.dist.txt` (mean depth, and the fraction of bases covered at each depth; duplicates excluded) from the align stage; `bcftools.stats.txt` (SNP and indel counts, Ti/Tv) from variant calling. The job log prints the headline numbers. |
-| Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error, the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. |
+| Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error, the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. In the cloud the state machine doesn't pass the execution name to the jobs yet, so cloud records say `run_name: null`, and after a partial re-run one record can mix two runs. |
 
 ### 3. Monitoring
 
 > [!NOTE]
-> The dashboard and alarm below are written and unit-tested but **not yet deployed**. They will be deployed and checked against real data after the first cloud run.
+> The dashboard and alarm below are written and unit-tested but **not deployed yet**. Now that cloud runs are verified, deploying them and checking them against those runs is the next monitoring step.
 
 Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWatch namespace `GeyserGenomics`. The dashboard and alarm definitions are built in `scripts/monitoring.py` and deployed by small Python scripts rather than Terraform, because the dashboard JSON was hard to manage there.
 
@@ -649,20 +691,26 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 
 ## 🛣️ Roadmap
 
+✅ done · ☁️ done and verified in the cloud · 🎯 top priority · 🔜 next
+
 | | Milestone | |
 | :---: | :--- | :--- |
-| ✅ | **Offline pipeline** | End-to-end truth check on every push |
-| ✅ | **Cost-safe networking** | NAT gateway optional and off, ECR and log retention limits, budget alert |
-| ✅ | **CI hardening** | OIDC with separate dev and prod roles, read-only Terraform roles, prod restricted to `main` |
-| ✅ | **DeepVariant on a local GPU** | Measured on a whole chromosome |
+| ✅ | **Offline pipeline** | Storage and metrics backends, Docker end-to-end truth check on every push |
+| ✅ | **Cost-safe networking and CI hardening** | NAT gateway off, budgets, OIDC with read-only Terraform roles, prod restricted to `main` |
+| ✅ | **Paired-end input, duplicate marking, run names** | R1/R2 pairing in the trigger, layout-aware stages, `samtools markdup`, runs named after the sample |
+| ✅ | **DeepVariant and pangenome-aware DeepVariant (local GPU)** | hap.py on HG003 chr20 reproduces Google's published result; HG005 vs an HG003 control by GIAB region type |
 | ✅ | **Web UI** | Works offline |
-| ✅ | **Pangenome-aware DeepVariant (local)** | GPU, HPRC graph cut to chr20, hap.py benchmark on HG003 chr20 against linear DeepVariant and bcftools; reproduces Google's published result |
-| 🎯 | **Pangenome: where it should help most** | Benchmark a sample of under-represented ancestry, align reads to the graph (`vg giraffe`), newer HPRC graph, whole genome. **Top priority** ([#51](../../issues/51)) |
-| 🔜 | **First cloud run since the hardening** | One small sample through S3 → Step Functions → Batch, confirming the VCF |
-| 🔜 | **Monitoring** | Dashboard and alarm are scripted and tested offline; deploy them after the first cloud run |
-| 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |
-| 🔜 | **Web UI on S3** | Point the UI at the cloud bucket |
-| 🔜 | **Branch protection** | Required review for `prod`, once the repository is public |
+| ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; cloud run 1 min 52 s, down from 3 min 45 s |
+| ☁️ | **Resilience and sizing** | Infrastructure-only retries, time limits, per-stage sizes, 30-day log retention |
+| ☁️ | **Terraform state per environment, guardrails for automation** | Bounded role with a permissions boundary and an automatic $20 kill switch |
+| ✅ | **Better tools and outputs** | bwa-mem2, fastp, CRAM + indexes, QC statistics, provenance run record |
+| ✅ | **Repository quality** | ruff and Terraform checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
+| 🔜 | **Next cloud checkpoint** | Push an image from current main and run single- and paired-end samples; pass the run name to the jobs so cloud run records are complete |
+| 🔜 | **Monitoring** | Deploy the dashboard and alarm and check them against the cloud runs |
+| 🎯 | **Pangenome: where it should help most** | Explain HG005's extra low-mappability errors, align reads to the graph (`vg giraffe`), newer HPRC graph, whole genome. **Top priority** ([#51](../../issues/51)) |
+| 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions ([#43](../../issues/43), [#44](../../issues/44)) |
+| 🔜 | **2.0: faster and cheaper** | Variant calling split across jobs by region (a `Map` state), Spot capacity, a quality gate that fails a run with a named reason |
+| 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |
 
 ---
 
