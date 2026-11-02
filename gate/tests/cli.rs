@@ -7,6 +7,9 @@
 //!   the data the default thresholds were checked on. No run record (not run through run_local).
 //!   HG003's alignment is the pipeline's align stage on its reads (aligner benchmark); HG005's is the
 //!   downloaded 30x BAM, and its fastp report is of reads extracted from that BAM.
+//! - tests/fixtures/HG003_chr20_giraffe/: HG003's same reads aligned to the HPRC chr20 graph with vg giraffe
+//!   (giraffe benchmark, #129) and called with DeepVariant: bcftools stats of its PASS calls, and of all
+//!   its records (RefCall candidates included) to show why DeepVariant stats must be PASS-only.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,6 +62,27 @@ fn synthetic_bucket(layout: &str, status: &str) -> (tempfile::TempDir, &'static 
 fn giab_bucket(sample: &str) -> tempfile::TempDir {
     let record = json!({"schema": 1, "sample_id": sample, "status": "succeeded", "run_name": null});
     bucket(sample, Some(record.to_string()))
+}
+
+/// The giraffe alignment of HG003's reads: its own stats, HG003's fastp report (the same reads), and
+/// `bcftools` = which DeepVariant stats file to use as bcftools.stats.txt.
+fn giraffe_bucket(bcftools: &str) -> tempfile::TempDir {
+    let sample = "HG003_chr20_giraffe";
+    let dir = tempfile::tempdir().unwrap();
+    for (fixture, key) in FILES {
+        let from = match fixture {
+            "fastp.json" => "HG003_chr20/fastp.json".to_string(),
+            "bcftools.stats.txt" => format!("{sample}/{bcftools}"),
+            _ => format!("{sample}/{fixture}"),
+        };
+        let to = dir.path().join(key.replace("{s}", sample));
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        fs::copy(crate_path(&format!("tests/fixtures/{from}")), to).unwrap();
+    }
+    fs::create_dir_all(dir.path().join("runs")).unwrap();
+    let record = json!({"schema": 1, "sample_id": sample, "status": "succeeded", "run_name": null});
+    fs::write(dir.path().join(format!("runs/{sample}.provenance.json")), record.to_string()).unwrap();
+    dir
 }
 
 fn gate(args: &[&str]) -> Output {
@@ -241,4 +265,27 @@ fn print_default_config_prints_the_built_in_thresholds() {
     assert_eq!(out.status.code(), Some(0));
     let printed = String::from_utf8(out.stdout).unwrap();
     assert_eq!(printed, fs::read_to_string(crate_path("thresholds/default.toml")).unwrap());
+}
+
+#[test]
+fn a_graph_alignment_passes_the_default_thresholds() {
+    let dir = giraffe_bucket("bcftools.stats.txt");
+    let (code, v, stderr) = run(dir.path(), "HG003_chr20_giraffe", &[]);
+    assert_eq!(code, 0, "{stderr}");
+    let m = &v["metrics"];
+    assert_eq!(m["read_count_difference"], 0, "giraffe keeps every read, as bwa-mem2 does");
+    assert_eq!(
+        [&m["mapped_pct"], &m["duplicate_pct"], &m["properly_paired_pct"], &m["mean_depth"], &m["breadth_10x_pct"]],
+        [&json!(98.7374), &json!(10.989), &json!(97.6577), &json!(36.2856), &json!(98.0)]
+    );
+    assert_eq!((&m["snps"], &m["tstv"]), (&json!(90280), &json!(1.9632)), "DeepVariant PASS calls");
+}
+
+#[test]
+fn deepvariant_stats_must_count_pass_calls_only() {
+    // Over all records, DeepVariant's RefCall candidates (mostly errors) pull Ti/Tv to 0.86.
+    let dir = giraffe_bucket("bcftools.deepvariant.all-records.stats.txt");
+    let (code, v, _) = run(dir.path(), "HG003_chr20_giraffe", &[]);
+    assert_eq!(code, 1);
+    assert_eq!(reasons(&v), ["tstv 0.8564 is below the minimum 1.7"]);
 }

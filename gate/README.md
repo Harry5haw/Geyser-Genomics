@@ -119,6 +119,11 @@ from that BAM. HG003 passes every check with a margin. HG005 passes every check 
 `read_count_difference`, because its alignment and its "upload" don't match (below). Their stats are
 test fixtures (`tests/fixtures/HG00{3,5}_chr20/`).
 
+A third real alignment checks that the defaults aren't tuned to one aligner: HG003's same reads aligned
+to the HPRC chr20 **graph** with vg giraffe (the giraffe benchmark, #129) and called with DeepVariant
+(`tests/fixtures/HG003_chr20_giraffe/`). It passes every default check: 98.74% mapped, 10.99%
+duplicates, 97.66% properly paired, 36.29x, 98% at 10x, read count difference 0, Ti/Tv 1.96 (PASS calls).
+
 | Check | Bound | HG003 chr20 | HG005 chr20 | Why this bound |
 | :--- | :--- | ---: | ---: | :--- |
 | `run_status` | `succeeded` | | | A failed or unfinished run has nothing to vouch for |
@@ -257,4 +262,7 @@ chr20 stats and fastp reports.
 - **Adapter content:** the QC stage runs fastp with adapter trimming disabled (report-only), and then
   fastp doesn't detect adapters, so the report has no adapter numbers. Checking them needs a QC-stage
   change (e.g. let fastp detect adapters without writing trimmed reads).
-- Stats for the DeepVariant and pangenome VCFs (they have no `bcftools stats` yet), with their own Ti/Tv range.
+- Stats for the DeepVariant and pangenome VCFs (they have no `bcftools stats` yet). **They must count
+  PASS calls only** (`bcftools stats -f PASS`): DeepVariant's VCF also holds its RefCall candidates, and
+  over all records the giraffe + DeepVariant VCF has Ti/Tv 0.86 (PASS: 1.96), which would fail every
+  good run. A test pins this down.
