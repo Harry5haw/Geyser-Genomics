@@ -7,11 +7,13 @@ needed. Each test case below picks success or failure per task state and checks 
 
 Opt in with GEYSER_SFN_LOCAL=1 (needs Docker; pulls the image on first use, ~200 MB).
 """
+import io
 import json
 import os
 import re
 import socket
 import subprocess
+import tarfile
 import time
 import uuid
 
@@ -30,6 +32,10 @@ ASL_PATH = os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json")
 MACHINE = "geyser-pipeline-local"
 REGION = "eu-west-2"
 ACCOUNT = "123456789012"  # Step Functions Local's fixed account
+# Inside the container. The image runs as uid 1000 (stepfunctionslocal) and reads this file on every
+# StartExecution, not at startup: if it can't, every mocked run fails with a bare HTTP 500.
+MOCK_CONFIG_DIR = "/home/stepfunctionslocal"
+READY_TIMEOUT_SECONDS = 90
 # Stand-ins for the three values step_functions.tf passes to templatefile().
 TEMPLATE_VARS = {
     "job_definition": "geyser-app-job-def",
@@ -78,59 +84,106 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+def _mock_config_tar() -> bytes:
+    """MockConfigFile.json as a tar stream for `docker cp -`: root-owned, mode 0644.
+
+    Copied in rather than bind-mounted, so host permissions don't matter. (A bind mount of a pytest
+    temp dir, mode 0700 and owned by the CI runner's uid 1001, was unreadable to the container's
+    uid 1000 on Linux: every StartExecution returned 500. Docker Desktop hid that locally.)
+    """
+    data = json.dumps(MOCK_CONFIG).encode("utf-8")
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo("MockConfigFile.json")
+        info.size, info.mode, info.uid, info.gid, info.mtime = len(data), 0o644, 0, 0, int(time.time())
+        tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def container_logs(name, lines=40) -> str:
+    logs = subprocess.run(["docker", "logs", "--tail", str(lines), name], capture_output=True, text=True)
+    return logs.stdout + logs.stderr
+
+
+def _start_probe(client, arn):
+    """Start a mocked execution; True once one starts. This is the readiness check: the API answering
+    is not enough, since the mock config is only read when an execution starts."""
+    client.start_execution(stateMachineArn=f"{arn}#HappyPath", name=f"probe-{uuid.uuid4().hex[:8]}",
+                           input=json.dumps({"srr_id": "PROBE", "reference_name": "ref.fa"}))
+    return True
+
+
 @pytest.fixture(scope="module")
-def sfn(tmp_path_factory):
+def sfn():
     import boto3
     from botocore.config import Config
 
-    config_dir = tmp_path_factory.mktemp("sfn-local")
-    (config_dir / "MockConfigFile.json").write_text(json.dumps(MOCK_CONFIG), encoding="utf-8")
     port = _free_port()
     name = f"geyser-sfn-local-{uuid.uuid4().hex[:8]}"
     subprocess.run(
-        ["docker", "run", "-d", "--rm", "--name", name, "-p", f"127.0.0.1:{port}:8083",
-         "--mount", f"type=bind,readonly,source={config_dir},target=/home/StepFunctionsLocal/mock",
-         "-e", "SFN_MOCK_CONFIG=/home/StepFunctionsLocal/mock/MockConfigFile.json",
+        ["docker", "create", "--name", name, "-p", f"127.0.0.1:{port}:8083",
+         "-e", f"SFN_MOCK_CONFIG={MOCK_CONFIG_DIR}/MockConfigFile.json",
          "-e", f"AWS_DEFAULT_REGION={REGION}", IMAGE],
         check=True, capture_output=True)
     try:
+        subprocess.run(["docker", "cp", "-", f"{name}:{MOCK_CONFIG_DIR}/"], input=_mock_config_tar(),
+                       check=True, capture_output=True)
+        subprocess.run(["docker", "start", name], check=True, capture_output=True)
         client = boto3.client(
             "stepfunctions", endpoint_url=f"http://127.0.0.1:{port}", region_name=REGION,
             aws_access_key_id="local", aws_secret_access_key="local",
             config=Config(retries={"max_attempts": 1}))
-        deadline = time.time() + 60
+
+        # Ready = the API answers, the definition is accepted, and a mocked execution starts.
+        deadline, arn, last_error = time.time() + READY_TIMEOUT_SECONDS, None, None
         while True:
             try:
-                client.list_state_machines()
-                break
-            except Exception:  # noqa: BLE001 - still starting
-                if time.time() > deadline:
-                    logs = subprocess.run(["docker", "logs", name], capture_output=True, text=True)
-                    pytest.fail(f"Step Functions Local did not start:\n{logs.stdout}{logs.stderr}")
-                time.sleep(1)
-        arn = client.create_state_machine(
-            name=MACHINE, definition=render_definition(),
-            roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole")["stateMachineArn"]
-        yield client, arn
+                if arn is None:
+                    client.list_state_machines()
+                    arn = client.create_state_machine(
+                        name=MACHINE, definition=render_definition(),
+                        roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole")["stateMachineArn"]
+                if _start_probe(client, arn):
+                    break
+            except Exception as err:  # noqa: BLE001 - still starting, or a real problem shown below
+                last_error = err
+            if time.time() > deadline:
+                pytest.fail(f"Step Functions Local not ready after {READY_TIMEOUT_SECONDS} s "
+                            f"({'no state machine' if arn is None else 'mocked execution would not start'}): "
+                            f"{last_error}\n--- container log ---\n{container_logs(name)}")
+            time.sleep(1)
+        yield client, arn, name
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
 def run_case(sfn, case, sample="S1", reference="chr20.fa"):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
-    client, arn = sfn
-    execution = client.start_execution(
-        stateMachineArn=f"{arn}#{case}", name=f"{case}-{uuid.uuid4().hex[:8]}",
-        input=json.dumps({"srr_id": sample, "reference_name": reference}))["executionArn"]
+    client, arn, name = sfn
+    try:
+        execution = client.start_execution(
+            stateMachineArn=f"{arn}#{case}", name=f"{case}-{uuid.uuid4().hex[:8]}",
+            input=json.dumps({"srr_id": sample, "reference_name": reference}))["executionArn"]
+    except Exception as err:  # noqa: BLE001 - the 500s say nothing; the container log does
+        pytest.fail(f"StartExecution failed for {case}: {err}\n--- container log ---\n{container_logs(name)}")
     deadline = time.time() + 60
     while True:
         desc = client.describe_execution(executionArn=execution)
         if desc["status"] != "RUNNING":
             break
-        assert time.time() < deadline, f"{case} still running after 60 s"
+        assert time.time() < deadline, f"{case} still running after 60 s\n{container_logs(name)}"
         time.sleep(0.5)
     events = client.get_execution_history(executionArn=execution, maxResults=1000)["events"]
     return desc, events
+
+
+def test_mock_config_is_readable_by_the_container_user():
+    # The regression behind the first CI failure: whatever the host, the file must reach the
+    # container as something its uid 1000 can read.
+    with tarfile.open(fileobj=io.BytesIO(_mock_config_tar())) as tar:
+        (member,) = tar.getmembers()
+        assert member.name == "MockConfigFile.json" and member.mode & 0o004  # world-readable
+        assert json.loads(tar.extractfile(member).read()) == MOCK_CONFIG
 
 
 def failure_error(events):
