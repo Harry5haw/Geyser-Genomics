@@ -12,25 +12,20 @@ ARRAY_RE = re.compile(
 
 
 def state_machine_stages():
-    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+    with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
         return [(m.group(1), bool(m.group(2))) for m in ARRAY_RE.finditer(fh.read())]
 
 
-# Stages the deployed state machine may still call after they stopped being real stages. Each is a
-# no-op in tasks.TASKS so a new image works before the state machine is updated; remove it from
-# both once infrastructure/step_functions.tf no longer calls it.
-RETIRED_STAGES = {"decompress"}
-
-
 def test_state_machine_matches_local_runner():
-    assert [s for s in state_machine_stages() if s[0] not in RETIRED_STAGES] == run_local.STAGES
+    # File order: the QC branch, the align branch, then variants (run_local runs them in that order).
+    assert state_machine_stages() == run_local.STAGES
 
 
-def test_retired_stages_are_not_run_or_timed():
-    for stage in RETIRED_STAGES:
-        assert stage in tasks.TASKS, f"keep '{stage}' as a no-op until the state machine stops calling it"
-        assert stage not in dict(run_local.STAGES)
-        assert not hasattr(tasks.TASKS[stage][0], "__wrapped__"), f"'{stage}' must not record a metric"
+def test_state_machine_is_rendered_from_the_asl_file():
+    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    assert 'templatefile("${path.module}/state_machine.asl.json"' in tf
+    assert "States.Array" not in tf  # no second copy of the stage commands
 
 
 def test_state_machine_stages_exist_in_tasks():

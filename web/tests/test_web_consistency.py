@@ -7,7 +7,7 @@ from samples.status import STAGES
 
 
 def test_stage_order_matches_local_runner_and_state_machine():
-    # tests/test_consistency.py already ties run_local.STAGES to step_functions.tf
+    # tests/test_consistency.py already ties run_local.STAGES to infrastructure/state_machine.asl.json
     assert [s.name for s in STAGES] == [name for name, _ in run_local.STAGES]
 
 
