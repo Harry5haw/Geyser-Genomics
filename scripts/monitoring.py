@@ -14,6 +14,9 @@ Two metric schemas are supported:
   aggregated  the same metrics without the SampleId dimension (a proposed change, not made yet). One
               series per stage gives real p50/p95 durations.
 
+Result quality (mapped %, duplicate %, mean depth, variant counts, Ti/Tv) is read from the Batch job logs
+with Logs Insights widgets, not from custom metrics; see the "quality" section below.
+
 Alarms are observability signals shown on the dashboard, not an email system. There is one: the trigger
 Lambda failing, the only failure that leaves no trace in the pipeline's own metrics (no run starts).
 Stage and run failures are already visible in the dashboard widgets. Email is optional and off by default.
@@ -302,9 +305,151 @@ def console_links(
         ("Alarms", f"{console}/cloudwatch/home?region={region}#alarmsV2:"),
     ]
     if bucket:
-        links.append(("Data lake (S3)", f"https://s3.console.aws.amazon.com/s3/buckets/{bucket}?region={region}"))
+        s3 = f"https://s3.console.aws.amazon.com/s3/buckets/{bucket}?region={region}"
+        links.append(("Data lake (S3)", s3))
+        # One JSON per sample: inputs, reference MD5, tool versions, stage timings, headline stats (#67).
+        links.append(("Run records (S3 runs/)", f"{s3}&prefix=runs/&showversions=false"))
     links.append(("Budgets", "https://console.aws.amazon.com/billing/home#/budgets"))
     return links
+
+
+# ---------------------------------------------------------------------------------------------- quality
+
+# Result quality (#58) comes from the Batch job logs, not from custom metrics: every align and variants
+# job prints one headline line per stats file (app/tasks.py _log_summary), e.g.
+#   flagstat: in_total=10000, duplicates=478, mapped=10000, mapped_pct=100.0, ...
+#   mosdepth: length=64444167, bases=1428300, mean_depth=0.02
+#   bcftools stats: records=10, snps=10, indels=0, tstv=0.25
+# and timed_stage's "--- Starting '<Task>' for sample '<id>' ---" names the sample in the same log
+# stream. Logs Insights joins the two per stream, then the align and variants jobs per sample. That
+# costs a Logs Insights scan of the Batch log group each time the widget loads (tens of KB per run),
+# instead of $0.30 a month per custom metric (more with a SampleId dimension, see #54).
+# tests/test_monitoring.py renders real lines through _log_summary and checks every pattern below.
+
+# Logs Insights regex: named groups are (?<name>...). Field names are prefixed x_ so the stats aliases
+# below can reuse the plain names (Logs Insights rejects redefining a field).
+QUALITY_PARSE = (
+    ("starting", "\"--- Starting '*' for sample '*' ---\" as x_task, x_sample"),
+    ("reads", r"/^flagstat: in_total=(?<x_reads>\d+)/"),
+    ("dups", r"/^flagstat: .*duplicates=(?<x_dups>\d+)/"),
+    ("mapped", r"/^flagstat: .*\bmapped_pct=(?<x_mapped>[\d.]+)/"),
+    ("depth", r"/^mosdepth: .*mean_depth=(?<x_depth>[\d.]+)/"),
+    ("variants", r"/^bcftools stats: records=(?<x_vars>\d+), snps=(?<x_snps>\d+), indels=(?<x_indels>\d+)/"),
+    ("tstv", r"/^bcftools stats: .*tstv=(?<x_tstv>[\d.]+)/"),
+)
+QUALITY_COLUMNS = (
+    "sample",
+    "last_run",
+    "reads",
+    "mapped_pct",
+    "dup_pct",
+    "mean_depth",
+    "variants",
+    "snps",
+    "indels",
+    "tstv",
+)
+
+
+@dataclass(frozen=True)
+class QualityThresholds:
+    """When a sample is listed under "outside thresholds". Ti/Tv is only judged with enough SNPs:
+    whole-genome germline calls sit around 2.0-2.1, but a handful of SNPs (synthetic data) says nothing."""
+
+    min_mapped_pct: float = 90.0
+    max_dup_pct: float = 30.0
+    tstv_range: tuple = (1.8, 2.4)
+    min_snps_for_tstv: int = 1000
+
+    def filter_clause(self) -> str:
+        low, high = self.tstv_range
+        return (
+            f"mapped_pct < {self.min_mapped_pct} or dup_pct > {self.max_dup_pct} or variants = 0 "
+            f"or (snps >= {self.min_snps_for_tstv} and (tstv < {low} or tstv > {high}))"
+        )
+
+
+DEFAULT_THRESHOLDS = QualityThresholds()
+
+
+def quality_query(thresholds: QualityThresholds = None) -> str:
+    """One row per sample (core pipeline: align + bcftools variants), newest first. With thresholds,
+    only the samples outside them. A sample run more than once in the window shows the highest value
+    of each column across those runs: the run record (runs/<id>.provenance.json) has each run's own."""
+    lines = [
+        "fields @timestamp, @message",
+        "| filter @message like /^--- Starting '(Align|CallVariants)' for sample /"
+        " or @message like /^(flagstat|mosdepth|bcftools stats): /",
+    ]
+    lines += [f"| parse @message {pattern}" for _, pattern in QUALITY_PARSE]
+    lines += [
+        "| stats latest(x_sample) as sample, max(@timestamp) as t, max(x_reads) as rd, max(x_dups) as dp,"
+        " max(x_mapped) as mp, max(x_depth) as dpt, max(x_vars) as v, max(x_snps) as sn,"
+        " max(x_indels) as ind, max(x_tstv) as tt by @logStream",
+        "| stats max(t) as last_run, max(rd) as reads, max(mp) as mapped_pct, max(dp) as dups,"
+        " max(dpt) as mean_depth, max(v) as variants, max(sn) as snps, max(ind) as indels, max(tt) as tstv"
+        " by sample",
+        "| fields round(100 * dups / reads, 2) as dup_pct",
+    ]
+    if thresholds is not None:
+        lines.append(f"| filter {thresholds.filter_clause()}")
+    lines += [f"| display {', '.join(QUALITY_COLUMNS)}", "| sort last_run desc", "| limit 100"]
+    return "\n".join(lines)
+
+
+def quality_trend_query() -> str:
+    """Daily mean mapped % and duplicate % across all alignments, and how many there were."""
+    parse = dict(QUALITY_PARSE)
+    return "\n".join(
+        [
+            "fields @timestamp, @message",
+            "| filter @message like /^flagstat: /",
+            *(f"| parse @message {parse[name]}" for name in ("reads", "dups", "mapped")),
+            "| fields 100 * x_dups / x_reads as x_dup_pct",
+            "| stats avg(x_mapped) as mapped_pct, avg(x_dup_pct) as dup_pct, count(*) as alignments by bin(1d)",
+        ]
+    )
+
+
+def _log_widget(title, query, region, log_group, *, view="table", width=GRID_WIDTH, height=6):
+    return {
+        "type": "log",
+        "width": width,
+        "height": height,
+        "properties": {"title": title, "region": region, "view": view, "query": f"SOURCE '{log_group}' | {query}"},
+    }
+
+
+def quality_widgets(
+    region: str = DEFAULT_REGION, log_group: str = BATCH_LOG_GROUP, thresholds: QualityThresholds = DEFAULT_THRESHOLDS
+) -> list:
+    """Result quality from the Batch job logs: a per-sample table, the samples outside thresholds, a trend."""
+    low, high = thresholds.tstv_range
+    return [
+        _text_widget(
+            "## Result quality (core pipeline)\n"
+            "From the align and variants job logs (samtools flagstat, mosdepth, bcftools stats). Mean depth is "
+            "over the whole reference, so a small sample on a large reference shows a tiny depth. Runs from "
+            "images before the QC statistics (#102) have no values. Each run's full record, with tool "
+            f"versions, is `runs/<id>.provenance.json` in the data lake. Thresholds: mapped < "
+            f"{thresholds.min_mapped_pct:g}%, duplicates > {thresholds.max_dup_pct:g}%, no variants, or Ti/Tv "
+            f"outside {low:g}-{high:g} with at least {thresholds.min_snps_for_tstv:,} SNPs.",
+            height=2,
+        ),
+        _log_widget("Result quality per sample (newest first)", quality_query(), region, log_group, height=7),
+        _log_widget(
+            "Samples outside quality thresholds", quality_query(thresholds), region, log_group, width=12, height=6
+        ),
+        _log_widget(
+            "Mapped % and duplicate % per day (mean across alignments)",
+            quality_trend_query(),
+            region,
+            log_group,
+            view="timeSeries",
+            width=12,
+            height=6,
+        ),
+    ]
 
 
 def build_dashboard(
@@ -317,8 +462,12 @@ def build_dashboard(
     lookback: str = "-P14D",
     alarm_arns=None,
     links=None,
+    quality: bool = True,
+    batch_log_group: str = BATCH_LOG_GROUP,
+    thresholds: QualityThresholds = DEFAULT_THRESHOLDS,
 ) -> dict:
-    """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, stage durations."""
+    """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, result
+    quality (from the Batch job logs), stage durations."""
     _check_schema(schema)
     groups = resolve_groups(groups)
     duration_note = (
@@ -369,6 +518,8 @@ def build_dashboard(
             width=GRID_WIDTH,
         )
     )
+    if quality:
+        widgets += quality_widgets(region, batch_log_group, thresholds)
     for name, stages in groups.items():
         widgets.append(
             _metric_widget(
