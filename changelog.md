@@ -19,6 +19,10 @@ descriptions have the detail and the test results). There are no tagged releases
   stats`. ([#102](../../pull/102))
 - **Provenance run record** `runs/<id>.provenance.json`, assembled from one part per stage; shown by
   `reconcile.py`. ([#105](../../pull/105))
+- **Quality gate** (`gate/`, Rust): a run's fastp report, QC statistics and run record against thresholds
+  calibrated on HG003/HG005 chr20, with a JSON verdict naming each failed check ([#116](../../pull/116),
+  [#123](../../pull/123)). Built into the image and run as `tasks.py gate` after variant calling, in warn
+  mode, with the verdict in `qc_reports/<id>.gate.json` and the run record ([#144](../../issues/144)).
 
 ### Infrastructure (applied)
 - **QC and alignment in a `Parallel` state**, then variant calling. The definition moved to

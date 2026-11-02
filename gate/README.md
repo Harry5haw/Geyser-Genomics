@@ -9,9 +9,10 @@ It doesn't re-run any tool. It only reads the tools' own output files and applie
 small TOML file. It is written in Rust because it is meant to ship as one static binary
 (1 MB, `x86_64-unknown-linux-musl`) that can be copied into the pipeline image without adding a runtime.
 
-> **Status:** a standalone tool, tested offline. It is **not yet part of the pipeline**: `app/tasks.py`,
-> the state machine and the image are unchanged. Running it as a stage after variant calling is a
-> follow-up (see [Not yet](#not-yet)).
+> **Status:** in the pipeline image and run by `tasks.py gate <id>` after variant calling (#144), in
+> **warn** mode by default: the verdict is stored and recorded, and a failed verdict doesn't fail the run.
+> `run_local.py` runs it; the cloud's Step Functions state for it is a later infrastructure change. See
+> [In the pipeline](#in-the-pipeline).
 
 ## Inputs
 
@@ -250,15 +251,38 @@ The tests read only real tool output: the synthetic samples' stats shared with t
 paired-end sample (`tests/fixtures/{SYNTH001,PAIRED001}/`, run records included), and the HG003/HG005
 chr20 stats and fastp reports.
 
+## In the pipeline
+
+The image builds the gate from source in its own stage (Rust 1.99.1, static musl binary, ~1 MB) and
+copies only the binary and `thresholds/` into the final image (`/usr/local/bin/geyser-gate`,
+`/opt/geyser-gate/thresholds/`, also in `$GATE_THRESHOLDS_DIR`).
+
+`tasks.py gate <id>` (the `QualityGate` stage, `app/tasks.py`):
+
+1. Fetches the gate's inputs into a temporary root laid out like the bucket: the fastp report and the
+   four `stats/<id>/` files that exist, and the run record **assembled fresh from its stage parts**
+   (`provenance.read_record`), so a stale stored copy can't mislead it.
+2. Runs `geyser-gate` and stores the verdict as **`qc_reports/<id>.gate.json`**.
+3. Records it in the run record: `gate {verdict, reasons, mode, config, gate_version, key}`, and a
+   `QualityGate` stage entry. The gate doesn't change the record's `status`, which stays the core
+   pipeline's.
+
+| Setting | Values | Default |
+| :--- | :--- | :--- |
+| `GATE_MODE` | `warn`: a failed verdict, or a gate that can't run (an image without the binary), only warns. `fail`: a failed verdict fails the `QualityGate` stage with the reasons | `warn`, until the decision is made (#144) |
+| `GATE_CONFIG` | a thresholds file, e.g. `$GATE_THRESHOLDS_DIR/synthetic.toml` | the built-in human WGS thresholds |
+
+A mistyped `GATE_MODE` or an unusable `GATE_CONFIG` (exit 2) fails the stage in either mode: they are
+operator settings, not quality problems. `run_local.py` runs the gate after variant calling (`--no-gate`
+skips it) and, for `make_test_data.py` samples (they have `truth/<id>.json`), uses the synthetic
+thresholds unless `GATE_CONFIG` is set. The dashboard shows the stage as its own group (`gate`).
+
 ## Not yet
 
-- **Building the record from its parts:** the gate reads the stored record and rejects it when it is
-  stale; it doesn't re-assemble it from the parts as `provenance.read_record` does (that logic stays in
-  one place, Python).
-- **Wiring it into the pipeline:** a fourth state after variant calling (or the end of the variants
-  stage), the static binary copied into the image, and the verdict stored as `runs/<id>.gate.json`.
-  A failed gate would end the run through `Notify_Failure` with its reasons. That touches `app/`, the
-  Dockerfile and `infrastructure/`, so it is its own issue.
+- **The Step Functions state** that runs `tasks.py gate` after variant calling in the cloud (and, in
+  `fail` mode, ends a failed run through `Notify_Failure` with the gate's reasons). An infrastructure
+  change of its own.
+- **Choosing warn or fail** for the cloud, once there are verdicts from real runs.
 - **Adapter content:** the QC stage runs fastp with adapter trimming disabled (report-only), and then
   fastp doesn't detect adapters, so the report has no adapter numbers. Checking them needs a QC-stage
   change (e.g. let fastp detect adapters without writing trimmed reads).
