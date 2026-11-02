@@ -88,9 +88,10 @@ resource "aws_batch_compute_environment" "gpu_env" {
     # route out with the NAT gateway off, so instances there could not pull from ECR or reach S3 (#43).
     subnets = [aws_subnet.public.id]
 
-    # ECS-optimised AL2 AMI with the NVIDIA driver, and a root volume big enough for the image.
+    # ECS-optimised Amazon Linux 2023 AMI with the NVIDIA driver, and a root volume big enough for the image.
+    # Not ECS_AL2_NVIDIA: Batch refuses new environments on Amazon Linux 2 (end-of-life).
     ec2_configuration {
-      image_type = "ECS_AL2_NVIDIA"
+      image_type = "ECS_AL2023_NVIDIA"
     }
     launch_template {
       launch_template_id = aws_launch_template.gpu.id

@@ -18,7 +18,7 @@ flowchart LR
 
 | Piece | Today | After |
 | :--- | :--- | :--- |
-| GPU compute environment | private subnet: no route out with the NAT gateway off, so instances can't pull images or reach S3. Instance types `g4dn.xlarge`, `g5.xlarge`, `g5.2xlarge` | **public subnet** (public IPs, like the Fargate jobs; no NAT, no hourly cost). `gpu_instance_types` = `g6.xlarge`, `g5.xlarge`. ECS GPU AMI (`ECS_AL2_NVIDIA`), launch template with a 100 GB gp3 root volume |
+| GPU compute environment | private subnet: no route out with the NAT gateway off, so instances can't pull images or reach S3. Instance types `g4dn.xlarge`, `g5.xlarge`, `g5.2xlarge` | **public subnet** (public IPs, like the Fargate jobs; no NAT, no hourly cost). `gpu_instance_types` = `g6.xlarge`, `g5.xlarge`. ECS GPU AMI (`ECS_AL2023_NVIDIA`; Batch refuses new Amazon Linux 2 environments), launch template with a 100 GB gp3 root volume |
 | DeepVariant image | local only | ECR repository `geyser-deepvariant` (keeps 2 images), pushed by hand (~9.8 GB) |
 | Job definition | none | `geyser-deepvariant-job`: EC2, 1 GPU, `deepvariant_resources` (4 vCPU / 14 GiB by default), `DEEPVARIANT_SHARDS` = vCPUs, the same infrastructure-only retry rule as the app job, logs in `/aws/batch/geyser-<env>` |
 | State machine | QC ∥ align → bcftools | QC ∥ align → `Choose_Caller` → DeepVariant on the GPU queue, **falling back to bcftools** if it fails (the reason goes in `$.deepvariant_error`); bcftools only, as today, without a caller |
