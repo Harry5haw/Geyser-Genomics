@@ -112,7 +112,7 @@ def test_batch_job_names_still_fit(trigger):
         prefixes = re.findall(
             r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", fh.read()
         )
-    assert prefixes == ["QualityControl", "AlignGenome", "CallVariants"]
+    assert prefixes == ["QualityControl", "AlignGenome", "DeepVariant", "CallVariants"]
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
     for prefix in prefixes:
@@ -155,3 +155,21 @@ def test_handler_reraises_other_errors(trigger, monkeypatch):
     monkeypatch.setattr(trigger, "_sfn_client", RecordingSfn(RuntimeError("AccessDenied")))
     with pytest.raises(RuntimeError):
         trigger.handler(s3_event("raw_reads/S1.fastq.gz"), None)
+
+
+def test_caller_comes_from_the_environment_only_when_set(trigger, monkeypatch):
+    monkeypatch.delenv("REFERENCE_NAME", raising=False)
+    monkeypatch.delenv("CALLER", raising=False)
+    assert "caller" not in trigger.build_pipeline_input("raw_reads/S1.fastq.gz")
+    monkeypatch.setenv("CALLER", "deepvariant")
+    assert trigger.build_pipeline_input("raw_reads/S1.fastq.gz")["caller"] == "deepvariant"
+    monkeypatch.setenv("CALLER", "gatk")
+    with pytest.raises(ValueError, match="CALLER must be one of"):
+        trigger.build_pipeline_input("raw_reads/S1.fastq.gz")
+
+
+def test_trigger_callers_match_the_state_machine_choice(trigger):
+    with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
+        asl = fh.read()
+    assert '"StringEquals": "deepvariant"' in asl
+    assert set(trigger.CALLERS) == {"bcftools", "deepvariant"}

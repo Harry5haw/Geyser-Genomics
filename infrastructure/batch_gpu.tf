@@ -69,18 +69,30 @@ resource "aws_batch_compute_environment" "gpu_env" {
 
     instance_role = aws_iam_instance_profile.geyser_ec2_instance_profile.arn
 
-    # ✅ Correct according to your schema
-    instance_type = ["g4dn.xlarge", "g5.xlarge", "g5.2xlarge"]
+    # 24 GB-class GPUs only (G2): call_variants at its default batch size needs more than 10 GB.
+    instance_type = var.gpu_instance_types
 
+    # Scales to zero between runs. Spend-rate cap (#73): with the default 4, at most one
+    # g6.xlarge/g5.xlarge runs at a time. Changes in place.
     min_vcpus = 0
-    # Spend-rate cap (#73): 8 vCPUs = at most two g5.xlarge or one g5.2xlarge. Changes in place.
     max_vcpus = var.gpu_max_vcpus
 
     security_group_ids = [
       aws_security_group.batch_gpu_compute.id
     ]
 
-    subnets = [aws_subnet.private.id]
+    # The public subnet (map_public_ip_on_launch), like the Fargate jobs: the private subnet has no
+    # route out with the NAT gateway off, so instances there could not pull from ECR or reach S3 (#43).
+    subnets = [aws_subnet.public.id]
+
+    # ECS-optimised AL2 AMI with the NVIDIA driver, and a root volume big enough for the image.
+    ec2_configuration {
+      image_type = "ECS_AL2_NVIDIA"
+    }
+    launch_template {
+      launch_template_id = aws_launch_template.gpu.id
+      version            = aws_launch_template.gpu.latest_version
+    }
   }
 
   tags = {
@@ -91,6 +103,31 @@ resource "aws_batch_compute_environment" "gpu_env" {
 
 
 
+
+# Root volume for the GPU instances: the default 30 GB can't hold the unpacked DeepVariant image.
+resource "aws_launch_template" "gpu" {
+  name = "${var.project_name}-gpu-${var.environment}"
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = var.gpu_disk_gb
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
+  metadata_options {
+    http_tokens                 = "required" # IMDSv2 only
+    http_put_response_hop_limit = 2          # containers on the instance
+  }
+
+  tags = {
+    Project     = var.project_name
+    Environment = var.environment
+  }
+}
 
 # The job queue dedicated to GPU tasks.
 resource "aws_batch_job_queue" "gpu_queue" {

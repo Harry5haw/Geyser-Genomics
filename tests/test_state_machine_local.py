@@ -49,6 +49,9 @@ TEMPLATE_VARS = {
     "align_memory_mb": "8192",
     "variants_vcpu": "2",
     "variants_memory_mb": "4096",
+    # Cloud DeepVariant (deepvariant.tf, batch_gpu.tf).
+    "deepvariant_job_definition": "geyser-deepvariant-job",
+    "gpu_job_queue": "geyser-gpu-queue-dev",
 }
 BATCH_TASKS = ("Quality_Control", "Align_Genome", "Call_Variants")
 
@@ -71,6 +74,18 @@ TEST_CASES = {
         "Quality_Control": OK,
         "Align_Genome": "AlwaysThrottled",
         "Call_Variants": OK,
+        "Notify_Failure": "Published",
+    },
+    # caller = deepvariant: DeepVariant on the GPU queue instead of bcftools...
+    "DeepVariantOk": {"Quality_Control": OK, "Align_Genome": OK, "DeepVariant": OK, "Call_Variants": OK},
+    # ...and bcftools when DeepVariant fails; the run still succeeds.
+    "DeepVariantFallsBack": {"Quality_Control": OK, "Align_Genome": OK, "DeepVariant": FAIL, "Call_Variants": OK},
+    # Both callers fail: the run fails through Notify_Failure as before.
+    "BothCallersFail": {
+        "Quality_Control": OK,
+        "Align_Genome": OK,
+        "DeepVariant": FAIL,
+        "Call_Variants": FAIL,
         "Notify_Failure": "Published",
     },
 }
@@ -209,14 +224,17 @@ def sfn():
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
-def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60):
+def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
+    run_input = {"srr_id": sample, "reference_name": reference}
+    if caller:
+        run_input["caller"] = caller
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
             name=f"{case}-{uuid.uuid4().hex[:8]}",
-            input=json.dumps({"srr_id": sample, "reference_name": reference}),
+            input=json.dumps(run_input),
         )["executionArn"]
     except Exception as err:  # noqa: BLE001 - the 500s say nothing; the container log does
         pytest.fail(f"StartExecution failed for {case}: {err}\n--- container log ---\n{container_logs(name)}")
@@ -415,3 +433,48 @@ def test_run_still_ends_failed_when_the_notification_fails(sfn):
     desc, events = run_case(sfn, "NotifyFails")
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     assert any(e["type"] == "TaskFailed" and e["taskFailedEventDetails"]["resourceType"] == "sns" for e in events)
+
+
+def test_without_a_caller_the_run_uses_bcftools_as_before(sfn):
+    desc, events = run_case(sfn, "HappyPath", caller="bcftools")
+    assert desc["status"] == "SUCCEEDED"
+    assert "DeepVariant" not in entered(events) and "Call_Variants" in entered(events)
+
+
+def test_caller_deepvariant_runs_deepvariant_on_the_gpu_queue(sfn):
+    desc, events = run_case(sfn, "DeepVariantOk", sample="SAMPLE7", reference="ref.fa", caller="deepvariant")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "DeepVariant" in states and "Call_Variants" not in states
+    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    (dv,) = [
+        json.loads(e["taskScheduledEventDetails"]["parameters"])
+        for e in events
+        if e["type"] == "TaskScheduled" and names.get(e["previousEventId"]) == "DeepVariant"
+    ]
+    assert dv["JobQueue"] == TEMPLATE_VARS["gpu_job_queue"]
+    assert dv["JobDefinition"] == TEMPLATE_VARS["deepvariant_job_definition"]
+    assert dv["ContainerOverrides"]["Command"] == [
+        "/opt/geyser-venv/bin/python",
+        "deepvariant_task.py",
+        "SAMPLE7",
+        "ref.fa",
+    ]
+    assert dv["ContainerOverrides"]["Environment"][0]["Name"] == "RUN_NAME"
+    assert dv["Timeout"]["AttemptDurationSeconds"] == 3600
+
+
+def test_a_failed_deepvariant_falls_back_to_bcftools(sfn):
+    desc, events = run_case(sfn, "DeepVariantFallsBack", caller="deepvariant")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("DeepVariant") < states.index("Call_Variants")
+    assert "Notify_Failure" not in states
+    output = json.loads(desc["output"])
+    assert output["deepvariant_error"]["Error"] == "States.TaskFailed"  # why the fallback happened
+
+
+def test_both_callers_failing_fails_the_run(sfn):
+    desc, events = run_case(sfn, "BothCallersFail", caller="deepvariant")
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert entered(events)[-2:] == ["Notify_Failure", "Pipeline_Failed"]

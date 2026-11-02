@@ -145,3 +145,40 @@ variable "log_retention_days" {
     error_message = "log_retention_days must be a value CloudWatch Logs accepts (1, 3, 5, 7, 14, 30, 60, 90, ...)."
   }
 }
+
+# --- Cloud DeepVariant (G2: #43, #44; docs/design/cloud-deepvariant.md) ---
+
+variable "gpu_instance_types" {
+  description = "Instance types the GPU Batch environment may launch. Both have a 24 GB-class GPU (call_variants at batch 1024 needs more than 10 GB). g6 (L4) is about 20% cheaper than g5 (A10G) in eu-west-2."
+  type        = list(string)
+  default     = ["g6.xlarge", "g5.xlarge"]
+}
+
+variable "deepvariant_resources" {
+  description = "vCPU and memory (MiB) per DeepVariant job, plus one GPU. 4 vCPU fits the current gpu_max_vcpus cap; the measured shape (16 vCPU, ~8 min for chr20) needs gpu_max_vcpus = 16 and the 4xlarge types."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 4, memory_mb = 14336 } # 16 GiB instance, ~2 GiB left for the ECS agent and OS
+}
+
+variable "deepvariant_image_version" {
+  description = "Tag of the geyser-deepvariant image in ECR (pushed by hand: ~9.8 GB)."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "gpu_disk_gb" {
+  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment and DeepVariant's intermediates: 100 GB for chromosome-scale runs, 250+ for a whole genome."
+  type        = number
+  default     = 100
+}
+
+variable "default_caller" {
+  description = "Variant caller for runs the trigger starts: bcftools (Fargate) or deepvariant (GPU, falls back to bcftools if it fails). Keep bcftools until the GPU environment is applied and a cloud run has passed."
+  type        = string
+  default     = "bcftools"
+
+  validation {
+    condition     = contains(["bcftools", "deepvariant"], var.default_caller)
+    error_message = "default_caller must be bcftools or deepvariant."
+  }
+}
