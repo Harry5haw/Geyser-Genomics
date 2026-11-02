@@ -262,20 +262,30 @@ copies only the binary and `thresholds/` into the final image (`/usr/local/bin/g
 1. Fetches the gate's inputs into a temporary root laid out like the bucket: the fastp report and the
    four `stats/<id>/` files that exist, and the run record **assembled fresh from its stage parts**
    (`provenance.read_record`), so a stale stored copy can't mislead it.
-2. Runs `geyser-gate` and stores the verdict as **`qc_reports/<id>.gate.json`**.
+2. Runs `geyser-gate` and stores the verdict as **`qc_reports/<id>.gate.json`**. When the gate gives no
+   verdict (not installed, timed out, crashed, config error), that key gets a `"verdict": null` file
+   with the reason instead, so an earlier run's verdict there can't pass for this run's (the bucket
+   never deletes). The verdict also carries the run name it judged.
 3. Records it in the run record: `gate {verdict, reasons, mode, config, gate_version, key}`, and a
    `QualityGate` stage entry. The gate doesn't change the record's `status`, which stays the core
    pipeline's.
 
 | Setting | Values | Default |
 | :--- | :--- | :--- |
-| `GATE_MODE` | `warn`: a failed verdict, or a gate that can't run (an image without the binary), only warns. `fail`: a failed verdict fails the `QualityGate` stage with the reasons | `warn`, until the decision is made (#144) |
-| `GATE_CONFIG` | a thresholds file, e.g. `$GATE_THRESHOLDS_DIR/synthetic.toml` | the built-in human WGS thresholds |
+| `GATE_MODE` | `warn`: a failed verdict, or a gate that can't give one (an image without the binary, a timeout, a crash, an unreadable verdict), only warns. `fail`: either fails the `QualityGate` stage, with the gate's reasons | `warn`, until the decision is made (#144) |
+| `GATE_CONFIG` | a thresholds file inside the container, e.g. `$GATE_THRESHOLDS_DIR/synthetic.toml` (variables are expanded by the stage, since Batch and `docker run -e` pass values as they are) | the built-in human WGS thresholds |
 
 A mistyped `GATE_MODE` or an unusable `GATE_CONFIG` (exit 2) fails the stage in either mode: they are
-operator settings, not quality problems. `run_local.py` runs the gate after variant calling (`--no-gate`
-skips it) and, for `make_test_data.py` samples (they have `truth/<id>.json`), uses the synthetic
-thresholds unless `GATE_CONFIG` is set. The dashboard shows the stage as its own group (`gate`).
+operator settings, not quality problems. `run_local.py` runs the gate as the last job, after variant
+calling and any DeepVariant job, so a failed gate never keeps those or `--check` from running
+(`--no-gate` skips it). For `make_test_data.py` samples (they have `truth/<id>.json`) it uses the
+synthetic thresholds unless `GATE_CONFIG` is set; a host `GATE_CONFIG` in the repo's `gate/thresholds/`
+or under the storage root is passed as its path in the container. The dashboard shows the stage as its
+own group ("Quality gate").
+
+A gate re-run by hand (`tasks.py gate <id>` without `RUN_NAME`) keeps the core stages in the record,
+not the extra callers': a run still in progress (gate done, DeepVariant running) would otherwise borrow
+an older run's DeepVariant entry.
 
 ## Not yet
 

@@ -192,7 +192,9 @@ def test_a_missing_binary_warns_in_warn_mode_and_fails_in_fail_mode(sample, fake
     assert "geyser-gate is not installed" in capsys.readouterr().out
     r = record(sample)
     assert r["gate"]["verdict"] is None and "not installed" in r["gate"]["error"]
-    assert not (sample / "qc_reports" / "S1.gate.json").exists()
+    # The verdict key says so too, so an earlier run's verdict there can't pass for this one.
+    stored = json.loads((sample / "qc_reports" / "S1.gate.json").read_text())
+    assert stored["verdict"] is None and "not installed" in stored["error"]
 
     monkeypatch.setenv("GATE_MODE", "fail")
     with pytest.raises(RuntimeError, match="geyser-gate is not installed"):
@@ -231,3 +233,44 @@ def test_a_gate_rerun_by_hand_keeps_the_core_stages_in_the_record(sample, fake_g
 def test_main_runs_the_gate_without_a_reference(sample, fake_gate):
     assert tasks.main(["gate", "S1"]) == 0
     assert len(fake_gate["calls"]) == 1
+
+
+def test_a_crashed_binary_only_warns_in_warn_mode(sample, fake_gate, monkeypatch, capsys):
+    # The release build aborts on a panic: a negative exit code, and no verdict.
+    fake_gate["returncode"], fake_gate["write"] = -6, False
+    tasks.gate_task("S1")
+    assert "geyser-gate exited -6" in capsys.readouterr().out
+    assert record(sample)["stages"]["QualityGate"]["status"] == "Success"
+    monkeypatch.setenv("GATE_MODE", "fail")
+    with pytest.raises(RuntimeError, match="exited -6"):
+        tasks.gate_task("S1")
+
+
+def test_an_unreadable_verdict_only_warns_in_warn_mode(sample, fake_gate, monkeypatch):
+    def broken(cmd, **kwargs):
+        out = cmd[cmd.index("--output") + 1]
+        with open(out, "w") as fh:
+            fh.write('{"verdict": "maybe"}')
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(tasks.subprocess, "run", broken)
+    tasks.gate_task("S1")
+    assert "not a gate verdict" in record(sample)["gate"]["error"]
+
+
+def test_an_earlier_verdict_is_replaced_when_the_gate_gives_none(sample, fake_gate):
+    tasks.gate_task("S1")
+    assert json.loads((sample / "qc_reports" / "S1.gate.json").read_text())["verdict"] == "pass"
+    fake_gate["returncode"], fake_gate["write"] = 2, False
+    with pytest.raises(RuntimeError):
+        tasks.gate_task("S1")
+    assert json.loads((sample / "qc_reports" / "S1.gate.json").read_text())["verdict"] is None
+
+
+def test_gate_config_variables_are_expanded(sample, fake_gate, monkeypatch):
+    # Batch overrides and docker -e pass values unexpanded.
+    monkeypatch.setenv("GATE_THRESHOLDS_DIR", "/opt/geyser-gate/thresholds")
+    monkeypatch.setenv("GATE_CONFIG", "$GATE_THRESHOLDS_DIR/synthetic.toml")
+    tasks.gate_task("S1")
+    cmd = fake_gate["calls"][0]["cmd"]
+    assert cmd[cmd.index("--config") + 1] == "/opt/geyser-gate/thresholds/synthetic.toml"

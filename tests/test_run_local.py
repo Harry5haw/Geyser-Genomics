@@ -150,9 +150,9 @@ def test_the_gate_runs_after_variant_calling_when_asked():
     assert "env" not in jobs[-1], "no gate_config: the host's GATE_CONFIG or the built-in thresholds"
 
 
-def test_the_gate_follows_the_merge_of_a_scattered_call_and_precedes_deepvariant():
+def test_the_gate_runs_last_after_the_merge_of_a_scattered_call_and_deepvariant():
     jobs = run_local.pipeline_jobs("S1", "r.fa", "both", regions=["c:1-10"], shard_window=10, gate=True)
-    assert [j["name"] for j in jobs] == ["qc", "align", "variants-shard", "variants", "gate", "deepvariant"]
+    assert [j["name"] for j in jobs] == ["qc", "align", "variants-shard", "variants", "deepvariant", "gate"]
 
 
 def test_no_gate_without_a_bcftools_call_set():
@@ -174,8 +174,20 @@ def test_synthetic_samples_get_the_synthetic_thresholds(tmp_path, monkeypatch):
     assert run_local.gate_config_for(str(tmp_path), "S1", "host").endswith(
         os.path.join("gate", "thresholds", "synthetic.toml")
     )
-    monkeypatch.setenv("GATE_CONFIG", "/my/own.toml")
-    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") is None, "the host's choice is passed through"
+    monkeypatch.setenv("GATE_CONFIG", "/opt/geyser-gate/thresholds/default.toml")  # a container path already
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/default.toml"
+    assert run_local.gate_config_for(str(tmp_path), "S1", "host") is None, "the host runner inherits it"
+
+
+def test_host_gate_configs_become_container_paths(tmp_path, monkeypatch):
+    repo_file = os.path.join(run_local.REPO_ROOT, "gate", "thresholds", "default.toml")
+    monkeypatch.setenv("GATE_CONFIG", repo_file)
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/default.toml"
+    mine = tmp_path / "configs" / "strict.toml"
+    mine.parent.mkdir()
+    mine.write_text("[checks]\nsnps = { min = 1 }\n")
+    monkeypatch.setenv("GATE_CONFIG", str(mine))
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/data/configs/strict.toml", "under the root"
 
 
 def test_gate_settings_reach_the_gate_container(monkeypatch):

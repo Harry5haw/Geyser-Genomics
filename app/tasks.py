@@ -969,12 +969,14 @@ def fetch_gate_inputs(sample_id: str, root: str) -> list:
     fetched = []
     for name in GATE_INPUTS:
         key = keys[name]
-        if storage().exists(key):
-            local = os.path.join(root, *key.split("/"))
-            os.makedirs(os.path.dirname(local), exist_ok=True)
-            storage().download(key, local)
-            provenance.note_input(key, local)
-            fetched.append(key)
+        local = os.path.join(root, *key.split("/"))
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        try:
+            storage().download(key, local)  # one request; a missing file is the gate's to report
+        except ObjectNotFound:
+            continue
+        provenance.note_input(key, local)
+        fetched.append(key)
     record = provenance.read_record(storage(), sample_id)
     if record is not None:
         local = os.path.join(root, *provenance.record_key(sample_id).split("/"))
@@ -985,19 +987,53 @@ def fetch_gate_inputs(sample_id: str, root: str) -> list:
     return fetched
 
 
-def _gate_problem(mode: str, message: str) -> None:
-    """The gate couldn't give a verdict. warn: say so and record it; fail: fail the stage."""
-    provenance.note(gate={"verdict": None, "mode": mode, "error": message})
+def _store_no_verdict(sample_id: str, key: str, wd: str, mode: str, message: str) -> None:
+    """The gate gave no verdict: store that under the verdict key too, so an earlier run's verdict
+    there can't pass for this run's (nothing is ever deleted from the bucket), and record it."""
+    path = os.path.join(wd, "no-verdict.json")
+    with open(path, "w") as fh:
+        json.dump(
+            {
+                "sample_id": sample_id,
+                "run_name": os.environ.get("RUN_NAME") or None,
+                "verdict": None,
+                "mode": mode,
+                "error": message,
+            },
+            fh,
+        )
+    upload_output(path, key)
+    provenance.note(gate={"verdict": None, "mode": mode, "error": message, "key": key})
+
+
+def _gate_problem(sample_id: str, key: str, wd: str, mode: str, message: str) -> None:
+    """The gate couldn't give a verdict (not installed, timed out, crashed, unreadable verdict).
+    warn: say so, store and record it; fail: the same, then fail the stage."""
+    _store_no_verdict(sample_id, key, wd, mode, message)
     if mode == "fail":
         raise RuntimeError(f"quality gate: {message}")
     print(f"WARNING: quality gate: {message} (GATE_MODE=warn: the run continues)", flush=True)
+
+
+def _read_verdict(path: str) -> dict:
+    """The verdict JSON, or ValueError if it isn't one (missing file, bad JSON, missing fields)."""
+    try:
+        with open(path) as fh:
+            verdict = json.load(fh)
+    except (OSError, json.JSONDecodeError) as err:
+        raise ValueError(f"no readable verdict: {err}") from err
+    missing = [k for k in ("verdict", "reasons", "config") if k not in verdict]
+    if missing or verdict["verdict"] not in ("pass", "fail"):
+        raise ValueError(f"not a gate verdict (missing {missing or 'a pass/fail verdict'})")
+    return verdict
 
 
 @timed_stage(GATE_METRIC)
 def gate_task(sample_id):
     """geyser-gate on the sample's fastp report, stats/{id}/ and run record -> qc_reports/{id}.gate.json."""
     mode = gate_mode()  # a mistyped GATE_MODE fails now, as ANNOTATE does
-    config = os.environ.get("GATE_CONFIG", "").strip() or None
+    # Expanded here: Batch and `docker run -e` pass values as they are (e.g. $GATE_THRESHOLDS_DIR/...).
+    config = os.path.expandvars(os.environ.get("GATE_CONFIG", "").strip()) or None
     key = keys_for(sample_id)["gate_verdict"]
     wd = work_dir(sample_id)
     try:
@@ -1012,17 +1048,26 @@ def gate_task(sample_id):
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=GATE_TIMEOUT_SECONDS)
         except FileNotFoundError:
-            return _gate_problem(mode, f"{GATE_BINARY} is not installed (an image from before #144?)")
+            return _gate_problem(
+                sample_id, key, wd, mode, f"{GATE_BINARY} is not installed (an image from before #144?)"
+            )
         except subprocess.TimeoutExpired:
-            return _gate_problem(mode, f"{GATE_BINARY} timed out after {GATE_TIMEOUT_SECONDS}s")
+            return _gate_problem(sample_id, key, wd, mode, f"{GATE_BINARY} timed out after {GATE_TIMEOUT_SECONDS}s")
         if result.stderr:
             print(result.stderr.rstrip(), flush=True)  # one line per check, then PASS/FAIL
-        if result.returncode not in (0, 1) or not os.path.exists(verdict_path):
-            # Exit 2: a usage or config error (e.g. a bad GATE_CONFIG). An operator setting, so it fails
+        if result.returncode == 2:
+            # A usage or config error (e.g. a GATE_CONFIG with a typo): an operator setting, so it fails
             # in either mode, like a mistyped GATE_MODE.
-            raise RuntimeError(f"quality gate could not run (exit {result.returncode}): {result.stderr.strip()}")
-        with open(verdict_path) as fh:
-            verdict = json.load(fh)
+            message = f"could not run (exit 2): {result.stderr.strip()}"
+            _store_no_verdict(sample_id, key, wd, mode, message)
+            raise RuntimeError(f"quality gate {message}")
+        if result.returncode not in (0, 1):
+            # A crash (e.g. a panic, which aborts: a negative code here) is the gate's problem, not the run's.
+            return _gate_problem(sample_id, key, wd, mode, f"{GATE_BINARY} exited {result.returncode}")
+        try:
+            verdict = _read_verdict(verdict_path)
+        except ValueError as err:
+            return _gate_problem(sample_id, key, wd, mode, str(err))
         upload_output(verdict_path, key)
         summary = {
             "verdict": verdict["verdict"],

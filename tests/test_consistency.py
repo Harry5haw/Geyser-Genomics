@@ -27,6 +27,13 @@ def test_state_machine_is_rendered_from_the_asl_file():
     assert "States.Array" not in tf  # no second copy of the stage commands
 
 
+def test_the_quality_gate_is_the_only_task_the_state_machine_does_not_run_yet():
+    # The gate stage (#144) runs locally (run_local.py) first; its Step Functions state is a later
+    # infrastructure change. When that lands, this set becomes empty: update tasks, the state machine
+    # and run_local together (the repo rule this test keeps visible).
+    assert set(tasks.TASKS) - {stage for stage, _ in state_machine_stages()} == {"gate"}
+
+
 def test_state_machine_stages_exist_in_tasks():
     for stage, needs_ref in state_machine_stages():
         assert stage in tasks.TASKS

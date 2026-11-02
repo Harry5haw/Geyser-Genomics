@@ -54,6 +54,8 @@ UPSTREAM = {
     "DeepVariant": CORE_STAGES,
     "PangenomeDeepVariant": CORE_STAGES,
     # The quality gate judges the core stages' outputs; a gate re-run by hand keeps them in the record.
+    # Not the extra callers: a run in progress (gate done, DeepVariant still running) would borrow an
+    # older run's DeepVariant entry, which is what UPSTREAM avoids.
     "QualityGate": CORE_STAGES,
 }
 # name -> (command, regex on its combined output). Run once per process, outside the pipeline's

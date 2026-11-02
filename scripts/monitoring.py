@@ -71,6 +71,7 @@ GROUP_TITLES = {
     "deepvariant": "DeepVariant",
     "pangenome": "Pangenome-aware DeepVariant",
     "shards": "Variant calling shards (per region)",
+    "gate": "Quality gate",
 }
 
 

@@ -180,16 +180,6 @@ def pipeline_jobs(
                     "gpus": False,
                 }
             )
-        if stage == "variants" and gate:
-            job = {
-                "name": "gate",
-                "cmd": stage_command("gate", sample_id, None, False),
-                "image": app_image,
-                "gpus": False,
-            }
-            if gate_config:
-                job["env"] = {"GATE_CONFIG": gate_config}
-            jobs.append(job)
     if "deepvariant" in sets:
         jobs.append(
             {
@@ -211,6 +201,17 @@ def pipeline_jobs(
                 "shm": pg_shm,
             }
         )
+    if gate and "bcftools" in sets:
+        # Last, so a failed gate (GATE_MODE=fail) can't keep DeepVariant or --check from running.
+        job = {
+            "name": "gate",
+            "cmd": stage_command("gate", sample_id, None, False),
+            "image": app_image,
+            "gpus": False,
+        }
+        if gate_config:
+            job["env"] = {"GATE_CONFIG": gate_config}
+        jobs.append(job)
     return jobs
 
 
@@ -225,13 +226,32 @@ def local_regions(root, reference_name, window):
 
 
 def gate_config_for(root, sample_id, runner):
-    """GATE_CONFIG for the gate job: the host's if set, else the synthetic thresholds for a
-    make_test_data.py sample (it has truth/<id>.json), else None (the built-in human WGS thresholds)."""
-    if os.environ.get("GATE_CONFIG"):
-        return None  # passed through as it is (PIPELINE_ENV_VARS)
+    """GATE_CONFIG for the gate job: the host's if set (for docker, a host file in the repo's
+    gate/thresholds/ or under the storage root becomes its path in the container), else the synthetic
+    thresholds for a make_test_data.py sample (it has truth/<id>.json), else None (built-in thresholds)."""
+    host = os.environ.get("GATE_CONFIG")
+    if host:
+        return container_path(host, root) if runner == "docker" else None
     if os.path.exists(os.path.join(root, "truth", f"{sample_id}.json")):
         return SYNTHETIC_GATE_CONFIG[runner]
     return None
+
+
+def container_path(host_path, root):
+    """Where a host file is inside the stage container: the repo's gate/thresholds/ files are in the
+    image, the storage root is mounted at /data. Anything else (a container path already) as it is."""
+    if not os.path.isfile(host_path):
+        return host_path
+    path = os.path.abspath(host_path)
+    bases = (
+        (os.path.join(REPO_ROOT, "gate", "thresholds"), "/opt/geyser-gate/thresholds"),
+        (root, "/data"),
+    )
+    for base, target in bases:
+        base = os.path.abspath(base)
+        if os.path.commonpath([path, base]) == base:
+            return target + "/" + os.path.relpath(path, base).replace(os.sep, "/")
+    return host_path
 
 
 def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None):
