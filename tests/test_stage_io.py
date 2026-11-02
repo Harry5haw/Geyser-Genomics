@@ -77,7 +77,7 @@ def work_dir_is_empty(local_env):
 # --- ensure_reference_local ---------------------------------------------------
 
 def test_stored_indexes_are_downloaded_not_rebuilt(local_env, tool_calls, tmp_path):
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
     for ext in [".fai"] + INDEX_EXTS:
         put(local_env, f"reference/{REF}{ext}")
     dest = tmp_path / "dest"
@@ -91,18 +91,18 @@ def test_stored_indexes_are_downloaded_not_rebuilt(local_env, tool_calls, tmp_pa
 
 
 def test_missing_indexes_are_built(local_env, tool_calls, tmp_path):
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
     dest = tmp_path / "dest"
     dest.mkdir()
 
     tasks.ensure_reference_local(REF, str(dest))
 
-    assert [c[:2] for c in tool_calls] == [["bwa-mem2", "index"], ["samtools", "faidx"]]
+    assert [c[:2] for c in tool_calls] == [["samtools", "faidx"], ["bwa-mem2", "index"]]
 
 
 @pytest.mark.parametrize("missing", INDEX_EXTS)
 def test_one_missing_index_file_triggers_a_rebuild(local_env, tool_calls, tmp_path, missing):
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
     for ext in [".fai"] + [e for e in INDEX_EXTS if e != missing]:
         put(local_env, f"reference/{REF}{ext}")
     dest = tmp_path / "dest"
@@ -116,7 +116,7 @@ def test_one_missing_index_file_triggers_a_rebuild(local_env, tool_calls, tmp_pa
 def test_a_stored_bwa_index_is_not_enough_for_bwa_mem2(local_env, tool_calls, tmp_path):
     # The cloud reference/ prefix held only bwa's index before bwa-mem2: .amb/.ann/.pac are shared,
     # but bwa-mem2 also needs .0123 and .bwt.2bit.64, so it must rebuild rather than fail in `mem`.
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
     for ext in [".fai"] + tasks.ALIGNER_INDEX_EXTS["bwa"]:
         put(local_env, f"reference/{REF}{ext}")
     dest = tmp_path / "dest"
@@ -140,6 +140,24 @@ def test_aligner_env_selects_which_index_is_fetched(local_env, tool_calls, tmp_p
 
     assert tool_calls == []  # bwa's stored index is complete: nothing to build
     assert not (dest / f"{REF}.0123").exists()
+
+
+def test_the_default_index_path_applies_the_bwa_mem2_guard(local_env, tool_calls, tmp_path):
+    # Not only the align stage: any caller asking for an aligner index on a reference that starts
+    # with sequence gets bwa's index, never a bwa-mem2 one it could misalign with (bwa-mem2#262).
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    tasks.ensure_reference_local(REF, str(dest))
+
+    assert [c[:2] for c in tool_calls] == [["samtools", "faidx"], ["bwa", "index"]]
+
+
+def test_unknown_aligner_argument_fails_before_the_download(local_env, tool_calls, tmp_path):
+    # No reference stored: reaching the download would raise FileNotFoundError instead.
+    with pytest.raises(ValueError, match="minimap2"):
+        tasks.ensure_reference_local(REF, str(tmp_path), aligner="minimap2")
 
 
 def test_variant_calling_skips_the_bwa_index(local_env, tool_calls, tmp_path):

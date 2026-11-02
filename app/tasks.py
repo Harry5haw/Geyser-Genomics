@@ -228,14 +228,16 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
                            aligner: str = None) -> str:
     """Fetch reference/<name> and its .fai (built if missing). Returns the local FASTA path.
 
-    need_bwa_index: also fetch or build the aligner's index (ensure_aligner_index); aligner defaults
-    to aligner_from_env(). Variant calling only needs the .fai; skipping the aligner index there
-    saves minutes on a full chromosome.
+    need_bwa_index: also prepare the aligner's index via prepare_aligner (so the bwa-mem2#262 guard
+    applies); aligner defaults to aligner_from_env(). Variant calling only needs the .fai; skipping
+    the aligner index there saves minutes on a full chromosome.
     """
     fasta_key = f"{REFERENCE_PREFIX}{reference_name}"
     local_ref = os.path.join(dest_dir, reference_name)
     if need_bwa_index:
         aligner = aligner or aligner_from_env()
+        if aligner not in ALIGNER_INDEX_EXTS:  # fail before the (large) download
+            raise ValueError(f"Unknown aligner {aligner!r}; expected one of {sorted(ALIGNER_INDEX_EXTS)}")
 
     try:
         print(f"Fetching reference {storage().describe(fasta_key)}")
@@ -243,13 +245,23 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     except ObjectNotFound as err:
         raise FileNotFoundError(f"Reference FASTA missing: {storage().describe(fasta_key)}") from err
 
-    if need_bwa_index:
-        ensure_aligner_index(reference_name, local_ref, aligner)
     _fetch_or_build(fasta_key, local_ref, [".fai"], ["samtools", "faidx", local_ref], "FASTA index")
+    if need_bwa_index:
+        prepare_aligner(reference_name, local_ref, aligner)
     return local_ref
 
 
-def ensure_aligner_index(reference_name: str, local_ref: str, aligner: str) -> None:
+def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
+    """Choose the aligner for this reference (effective_aligner) and fetch or build its index.
+
+    Returns the aligner to run. The only way to an aligner index, so the guard can't be skipped.
+    """
+    aligner = effective_aligner(requested, local_ref)
+    _ensure_aligner_index(reference_name, local_ref, aligner)
+    return aligner
+
+
+def _ensure_aligner_index(reference_name: str, local_ref: str, aligner: str) -> None:
     """Fetch the aligner's stored index next to local_ref, or build it if any file is missing.
 
     Building in the job is fine for one chromosome. bwa-mem2 index needs ~28 bytes of RAM per
@@ -373,8 +385,7 @@ def align_task(sample_id, reference_name):
             storage().download(key, fastqs[-1])
         bam = os.path.join(wd, f"{sample_id}.bam")
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
-        aligner = effective_aligner(aligner, ref)
-        ensure_aligner_index(reference_name, ref, aligner)
+        aligner = prepare_aligner(reference_name, ref, aligner)
         print(f"Aligning with {aligner}", flush=True)
         run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id, aligner))
         storage().upload(bam, keys["bam"])
