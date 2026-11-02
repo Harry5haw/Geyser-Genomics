@@ -3,11 +3,14 @@ import json
 import pytest
 
 
-@pytest.mark.parametrize("key,expected", [
-    ("raw_reads/SRR062634.fastq.gz", "SRR062634"),
-    ("raw_reads/small_test.fastq.gz", "small_test"),
-    ("SRR1.fq.gz", "SRR1"),
-])
+@pytest.mark.parametrize(
+    "key,expected",
+    [
+        ("raw_reads/SRR062634.fastq.gz", "SRR062634"),
+        ("raw_reads/small_test.fastq.gz", "small_test"),
+        ("SRR1.fq.gz", "SRR1"),
+    ],
+)
 def test_parse_sample_id(trigger, key, expected):
     assert trigger.parse_sample_id(key) == expected
 
@@ -83,10 +86,12 @@ class RecordingSfn:
 def test_execution_name_is_readable_and_deterministic(trigger):
     name = trigger.build_execution_name("SRR062634", "2026-11-01T12:34:56.789Z", "b/raw_reads/SRR062634.fastq.gz/0055")
     assert re.fullmatch(r"SRR062634-20261101T123456Z-[0-9a-f]{8}", name)
-    assert name == trigger.build_execution_name("SRR062634", "2026-11-01T12:34:56.789Z",
-                                                "b/raw_reads/SRR062634.fastq.gz/0055")
-    assert name != trigger.build_execution_name("SRR062634", "2026-11-01T12:34:56.789Z",
-                                                "b/raw_reads/SRR062634.fastq.gz/0056")
+    assert name == trigger.build_execution_name(
+        "SRR062634", "2026-11-01T12:34:56.789Z", "b/raw_reads/SRR062634.fastq.gz/0055"
+    )
+    assert name != trigger.build_execution_name(
+        "SRR062634", "2026-11-01T12:34:56.789Z", "b/raw_reads/SRR062634.fastq.gz/0056"
+    )
 
 
 def test_execution_name_without_event_details_is_random_but_valid(trigger):
@@ -104,7 +109,9 @@ def test_execution_name_is_always_valid(trigger, sample_id):
 def test_batch_job_names_still_fit(trigger):
     """step_functions.tf builds job names as '<Prefix>-<srr_id>-<execution name>'; Batch allows 128 chars."""
     with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
-        prefixes = re.findall(r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", fh.read())
+        prefixes = re.findall(
+            r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", fh.read()
+        )
     assert len(prefixes) == 4
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")

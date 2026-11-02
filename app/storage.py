@@ -194,7 +194,9 @@ class S3Storage:
         if endpoint_url:
             kwargs["endpoint_url"] = endpoint_url
             if not is_aws_endpoint(endpoint_url):
-                config.update(request_checksum_calculation="when_required", response_checksum_validation="when_required")
+                config.update(
+                    request_checksum_calculation="when_required", response_checksum_validation="when_required"
+                )
         if addressing_style:
             config["s3"] = {"addressing_style": addressing_style}
         if config:

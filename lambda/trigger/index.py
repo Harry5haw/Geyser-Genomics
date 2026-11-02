@@ -50,7 +50,7 @@ def parse_raw_key(object_key: str):
     for mate in MATES:
         suffix = f"_{mate}"
         if stem.endswith(suffix) and len(stem) > len(suffix):
-            return stem[:-len(suffix)], mate
+            return stem[: -len(suffix)], mate
     if not stem:
         raise ValueError(f"Could not parse a sample ID from object key {object_key!r}")
     return stem, None
@@ -73,8 +73,7 @@ def mate_key(object_key: str) -> str:
         raise ValueError(f"{object_key!r} is not a paired-end mate (_R1/_R2)")
     directory, filename = os.path.split(object_key)
     if filename != f"{sample_id}_{mate}{RAW_SUFFIX}":
-        raise ValueError(f"Paired-end mates must be named <id>_R1{RAW_SUFFIX} / <id>_R2{RAW_SUFFIX}, "
-                         f"got {filename!r}")
+        raise ValueError(f"Paired-end mates must be named <id>_R1{RAW_SUFFIX} / <id>_R2{RAW_SUFFIX}, got {filename!r}")
     other = MATES[1 - MATES.index(mate)]
     renamed = f"{sample_id}_{other}{RAW_SUFFIX}"
     return f"{directory}/{renamed}" if directory else renamed
@@ -191,8 +190,8 @@ def handler(event, context):
     if mate is None:
         sequencer = s3_record["object"].get("sequencer")
         name = build_execution_name(
-            sample_id, record.get("eventTime"),
-            f"{bucket_name}/{object_key}/{sequencer}" if sequencer else None)
+            sample_id, record.get("eventTime"), f"{bucket_name}/{object_key}/{sequencer}" if sequencer else None
+        )
     else:
         other_key = mate_key(object_key)
         keys = {mate: object_key, parse_raw_key(other_key)[1]: other_key}
@@ -208,8 +207,9 @@ def handler(event, context):
 
     logger.info(f"Triggering pipeline for '{sample_id}' from s3://{bucket_name}/{object_key}")
     try:
-        response = _sfn().start_execution(stateMachineArn=state_machine_arn, name=name,
-                                          input=json.dumps(pipeline_input))
+        response = _sfn().start_execution(
+            stateMachineArn=state_machine_arn, name=name, input=json.dumps(pipeline_input)
+        )
     except Exception as err:
         if not _is_already_exists(err):
             raise

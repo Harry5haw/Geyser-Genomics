@@ -9,8 +9,13 @@ def states(sample):
 
 
 def test_lists_only_real_pipeline_inputs(storage):
-    for key in ["raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz", "raw_reads/notes.txt",
-                "raw_reads/C.D.fastq.gz", "raw_reads/bad id.fastq.gz"]:
+    for key in [
+        "raw_reads/A.fastq.gz",
+        "raw_reads/B.fastq.gz",
+        "raw_reads/notes.txt",
+        "raw_reads/C.D.fastq.gz",
+        "raw_reads/bad id.fastq.gz",
+    ]:
         put(storage, key, b"x")
     assert status.list_sample_ids(storage) == ["A", "B"]
 
@@ -27,8 +32,14 @@ def test_completed_stages_come_from_keys_and_durations_from_metrics(storage):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     put(storage, "qc_reports/S1.fastp.html", b"x")
     put(storage, "alignments/S1.cram", b"x")
-    write_metrics(storage, [metric("QualityControl", "S1", duration=5.5), metric("Align", "S1", duration=2.0),
-                            metric("QualityControl", "OTHER", duration=99)])
+    write_metrics(
+        storage,
+        [
+            metric("QualityControl", "S1", duration=5.5),
+            metric("Align", "S1", duration=2.0),
+            metric("QualityControl", "OTHER", duration=99),
+        ],
+    )
     sample = status.load_one(storage, "S1")
     assert states(sample) == ["done", "done", "running"]  # variants once qc and align are done
     assert [s.duration for s in sample.stages] == [5.5, 2.0, None]
@@ -59,8 +70,7 @@ def test_sample_finished_with_fastqc_before_fastp_is_still_complete(storage):
 
 
 def test_all_outputs_present_is_succeeded(storage):
-    for key in ["raw_reads/S1.fastq.gz", "qc_reports/S1.fastp.html",
-                "alignments/S1.bam", "variants/S1.vcf.gz"]:
+    for key in ["raw_reads/S1.fastq.gz", "qc_reports/S1.fastp.html", "alignments/S1.bam", "variants/S1.vcf.gz"]:
         put(storage, key, b"x")
     assert status.load_one(storage, "S1").state == "succeeded"
 
@@ -99,8 +109,12 @@ def test_metrics_from_an_earlier_run_are_ignored(storage):
 def test_corrupt_metric_lines_are_skipped(storage):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     put(storage, "qc_reports/S1.fastp.html", b"x")
-    put(storage, "metrics/metrics.jsonl", 'not json\n{"task": "QualityControl"}\n'
-        '{"timestamp": 1, "task": "QualityControl", "sample_id": "S1", "status": "Success", "duration_seconds": 4}\n')
+    put(
+        storage,
+        "metrics/metrics.jsonl",
+        'not json\n{"task": "QualityControl"}\n'
+        '{"timestamp": 1, "task": "QualityControl", "sample_id": "S1", "status": "Success", "duration_seconds": 4}\n',
+    )
     assert status.load_one(storage, "S1").stages[0].duration == 4
 
 

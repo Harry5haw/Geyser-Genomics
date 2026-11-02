@@ -69,7 +69,8 @@ def output_keys(expected: dict, name: str) -> list:
 def load_trigger():
     """lambda/trigger/index.py, imported by path ('lambda' is a Python keyword)."""
     spec = importlib.util.spec_from_file_location(
-        "geyser_trigger_reconcile", os.path.join(REPO_ROOT, "lambda", "trigger", "index.py"))
+        "geyser_trigger_reconcile", os.path.join(REPO_ROOT, "lambda", "trigger", "index.py")
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -83,8 +84,10 @@ def extra_outputs() -> dict:
     except Exception:  # noqa: BLE001 - the DeepVariant module is optional here
         return {}
     # The pangenome VCF key doesn't depend on which graph was used; any name gives the same key.
-    return {"dv": lambda sample_id: deepvariant_keys(sample_id)["vcf"],
-            "pg": lambda sample_id: deepvariant_keys(sample_id, pangenome="graph.gbz")["vcf"]}
+    return {
+        "dv": lambda sample_id: deepvariant_keys(sample_id)["vcf"],
+        "pg": lambda sample_id: deepvariant_keys(sample_id, pangenome="graph.gbz")["vcf"],
+    }
 
 
 def key_patterns(extras: dict) -> list:
@@ -111,8 +114,11 @@ def match_sample(key: str, patterns) -> str:
 def raw_upload_problem(trigger, key: str):
     """(sample_id, None) for a raw key the stages will read, else (None, problem)."""
     if not key.endswith(".gz"):
-        return None, {"key": key, "problem": "ignored",
-                      "detail": "not .gz, so the S3 trigger never fires and no run starts"}
+        return None, {
+            "key": key,
+            "problem": "ignored",
+            "detail": "not .gz, so the S3 trigger never fires and no run starts",
+        }
     try:
         sample_id, mate = trigger.parse_raw_key(key)
     except ValueError:
@@ -127,12 +133,18 @@ def raw_upload_problem(trigger, key: str):
         expected = keys_for(sample_id, PAIRED)[f"raw_{mate}"]
         if key != expected:
             # The trigger keeps the folder when it looks for the partner, but the stages don't.
-            return None, {"key": key, "problem": "will fail",
-                          "detail": f"the trigger waits for {partner}, then starts a run for '{sample_id}', "
-                                    f"but the stages read {expected}"}
+            return None, {
+                "key": key,
+                "problem": "will fail",
+                "detail": f"the trigger waits for {partner}, then starts a run for '{sample_id}', "
+                f"but the stages read {expected}",
+            }
     if key != expected:
-        return None, {"key": key, "problem": "will fail",
-                      "detail": f"starts a run for '{sample_id}', but the stages read {expected}"}
+        return None, {
+            "key": key,
+            "problem": "will fail",
+            "detail": f"starts a run for '{sample_id}', but the stages read {expected}",
+        }
     return sample_id, None
 
 
@@ -141,8 +153,11 @@ def raw_layout(sample_id: str, keys: set):
     single = keys_for(sample_id, SINGLE)["raw"] in keys
     mates = [m for m in MATES if keys_for(sample_id, PAIRED)[f"raw_{m}"] in keys]
     if single and mates:
-        return None, "both layouts", (f"{sample_id}.fastq.gz and _{'/_'.join(mates)} both uploaded: "
-                                      "every stage fails rather than guess")
+        return (
+            None,
+            "both layouts",
+            (f"{sample_id}.fastq.gz and _{'/_'.join(mates)} both uploaded: every stage fails rather than guess"),
+        )
     if len(mates) == 1:
         missing = next(m for m in MATES if m not in mates)
         return None, "lone mate", f"{mates[0]} uploaded, {missing} missing: the trigger waits, no run starts"
@@ -201,8 +216,9 @@ def reconcile(keys, running: Counter = None) -> dict:
         outputs = {name: any(all(k in keys for k in form) for form in forms[name]) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
         # But one mate's FastQC report still shows the run got that far (e.g. FastQC failed on R2).
-        reached = [STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS
-                   if any(k in keys for form in forms[name] for k in form)]
+        reached = [
+            STAGE_NAMES[name] for name, _ in STAGE_OUTPUTS if any(k in keys for form in forms[name] for k in form)
+        ]
         open_count = running.get(sample_id, 0)
         problem = None
         if layout_problem:
@@ -223,12 +239,25 @@ def reconcile(keys, running: Counter = None) -> dict:
         if open_count > 1:
             note = f"{open_count} runs at once: they overwrite each other's outputs"
             problem = "concurrent runs"
-        rows.append({"sample_id": sample_id, "status": status, "layout": layout, "raw": has_raw,
-                     "outputs": outputs, "extra_outputs": extra, "open_runs": open_count, "note": note,
-                     "problem": problem})
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "status": status,
+                "layout": layout,
+                "raw": has_raw,
+                "outputs": outputs,
+                "extra_outputs": extra,
+                "open_runs": open_count,
+                "note": note,
+                "problem": problem,
+            }
+        )
 
-    return {"samples": rows, "upload_problems": upload_problems,
-            "problem_count": len(upload_problems) + sum(1 for r in rows if r["problem"])}
+    return {
+        "samples": rows,
+        "upload_problems": upload_problems,
+        "problem_count": len(upload_problems) + sum(1 for r in rows if r["problem"]),
+    }
 
 
 def print_report(result: dict) -> None:
@@ -240,10 +269,11 @@ def print_report(result: dict) -> None:
         marks += "".join(f" {label if r['extra_outputs'].get(label) else '.' * len(label)}" for label in extra_labels)
         flag = "!" if r["problem"] else " "
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
-        print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} "
-              f"{note}")
-    print("Outputs: Q QC report (fastp), A alignment, V VCF"
-          + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else ""))
+        print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{2 * len(labels) + 3 * len(extra_labels)}} {note}")
+    print(
+        "Outputs: Q QC report (fastp), A alignment, V VCF"
+        + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if extra_labels else "")
+    )
     if result["upload_problems"]:
         print("\nUpload problems:")
         for p in result["upload_problems"]:
@@ -259,8 +289,11 @@ def parse_args(argv=None):
     where.add_argument("--local-dir", help="Local storage root (e.g. local_bucket)")
     where.add_argument("--bucket", help="S3 data lake bucket (default: from STORAGE_BACKEND/BUCKET_NAME)")
     p.add_argument("--region", default=DEFAULT_REGION, help="AWS region (default: eu-west-2)")
-    p.add_argument("--state-machine-arn", default=os.environ.get("SFN_ARN"),
-                   help="Also check open Step Functions runs (default: $SFN_ARN; skipped if unset)")
+    p.add_argument(
+        "--state-machine-arn",
+        default=os.environ.get("SFN_ARN"),
+        help="Also check open Step Functions runs (default: $SFN_ARN; skipped if unset)",
+    )
     p.add_argument("--json", action="store_true", help="Print the result as JSON")
     p.add_argument("--fail-on-problems", action="store_true", help="Exit 1 if any problem is found")
     return p.parse_args(argv)
@@ -279,11 +312,15 @@ def main(argv=None, storage=None, sfn_client=None) -> int:
     if args.state_machine_arn:
         if sfn_client is None:
             import boto3
+
             sfn_client = boto3.client("stepfunctions", region_name=args.region)
         running = open_runs(sfn_client, args.state_machine_arn)
     else:
-        print("NOTE: no --state-machine-arn/SFN_ARN, so open runs aren't checked: a sample still being "
-              "processed shows as 'not started' or 'incomplete'.", file=sys.stderr)
+        print(
+            "NOTE: no --state-machine-arn/SFN_ARN, so open runs aren't checked: a sample still being "
+            "processed shows as 'not started' or 'incomplete'.",
+            file=sys.stderr,
+        )
 
     result = reconcile(storage.list_keys(""), running)
     if args.json:

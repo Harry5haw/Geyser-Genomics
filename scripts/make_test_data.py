@@ -48,7 +48,7 @@ def simulate_reads(rng, genome, coverage, read_length, error_rate):
     n_reads = len(genome) * coverage // read_length
     for i in range(n_reads):
         start = rng.randrange(0, len(genome) - read_length + 1)
-        seq = genome[start:start + read_length]
+        seq = genome[start : start + read_length]
         if rng.random() < 0.5:
             seq = seq.translate(COMPLEMENT)[::-1]
         yield f"read{i}", add_errors(rng, seq, error_rate), "I" * read_length
@@ -57,8 +57,7 @@ def simulate_reads(rng, genome, coverage, read_length, error_rate):
 def add_errors(rng, seq, error_rate):
     if not error_rate:
         return seq
-    return "".join(rng.choice([b for b in BASES if b != base]) if rng.random() < error_rate else base
-                   for base in seq)
+    return "".join(rng.choice([b for b in BASES if b != base]) if rng.random() < error_rate else base for base in seq)
 
 
 def simulate_pairs(rng, genome, coverage, read_length, error_rate, insert_mean=400, insert_sd=50):
@@ -71,7 +70,7 @@ def simulate_pairs(rng, genome, coverage, read_length, error_rate, insert_mean=4
     for i in range(n_pairs):
         frag_len = min(len(genome), max(read_length, int(rng.gauss(insert_mean, insert_sd))))
         start = rng.randrange(0, len(genome) - frag_len + 1)
-        fragment = genome[start:start + frag_len]
+        fragment = genome[start : start + frag_len]
         if rng.random() < 0.5:
             fragment = fragment.translate(COMPLEMENT)[::-1]
         r1 = fragment[:read_length]
@@ -96,7 +95,7 @@ def write_fasta(path, name, seq, width=60):
     with open(path, "w", encoding="ascii", newline="\n") as fh:
         fh.write(f">{name}\n")
         for i in range(0, len(seq), width):
-            fh.write(seq[i:i + width] + "\n")
+            fh.write(seq[i : i + width] + "\n")
 
 
 def main(argv=None):
@@ -111,17 +110,27 @@ def main(argv=None):
     p.add_argument("--read-length", type=int, default=150)
     p.add_argument("--error-rate", type=float, default=0.001)
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--duplicate-rate", type=float, default=0.0,
-                   help="fraction of reads (pairs with --paired) followed by an exact copy "
-                        "(planted PCR duplicates); default 0")
-    p.add_argument("--paired", action="store_true",
-                   help="write paired-end reads as <sample>_R1.fastq.gz and <sample>_R2.fastq.gz "
-                        "(same total coverage)")
+    p.add_argument(
+        "--duplicate-rate",
+        type=float,
+        default=0.0,
+        help="fraction of reads (pairs with --paired) followed by an exact copy (planted PCR duplicates); default 0",
+    )
+    p.add_argument(
+        "--paired",
+        action="store_true",
+        help="write paired-end reads as <sample>_R1.fastq.gz and <sample>_R2.fastq.gz (same total coverage)",
+    )
     p.add_argument("--insert-size", type=int, default=400, help="mean fragment length for --paired")
-    p.add_argument("--leading-gap", type=int, default=0, metavar="N",
-                   help="start the reference with N Ns, like the gap at the start of a human chromosome "
-                        "(the align stage only uses bwa-mem2 on such references; see BWA_MEM2_SAFE_N_PREFIX "
-                        "in app/tasks.py). Reads and SNPs are the same, the SNPs N positions later; default 0")
+    p.add_argument(
+        "--leading-gap",
+        type=int,
+        default=0,
+        metavar="N",
+        help="start the reference with N Ns, like the gap at the start of a human chromosome "
+        "(the align stage only uses bwa-mem2 on such references; see BWA_MEM2_SAFE_N_PREFIX "
+        "in app/tasks.py). Reads and SNPs are the same, the SNPs N positions later; default 0",
+    )
     a = p.parse_args(argv)
     if a.leading_gap < 0:
         p.error("--leading-gap must be >= 0")
@@ -160,14 +169,22 @@ def main(argv=None):
     truth_path = os.path.join(a.root, "truth", f"{a.sample}.json")
     os.makedirs(os.path.dirname(truth_path), exist_ok=True)
     with open(truth_path, "w", encoding="utf-8") as fh:
-        json.dump({"sample": a.sample, "reference": a.reference, "contig": a.contig, "snps": snps,
-                   "planted_duplicates": n_dup}, fh, indent=2)
+        json.dump(
+            {
+                "sample": a.sample,
+                "reference": a.reference,
+                "contig": a.contig,
+                "snps": snps,
+                "planted_duplicates": n_dup,
+            },
+            fh,
+            indent=2,
+        )
 
     unit = "pairs" if a.paired else "reads"
     gap = f", starting with {a.leading_gap:,} Ns" if a.leading_gap else ""
     print(f"reference : {os.path.join(a.root, 'reference', a.reference)} ({a.length + a.leading_gap:,} bp{gap})")
-    print(f"reads     : {', '.join(fastq_paths)} ({n:,} {unit} x {a.read_length} bp, "
-          f"{n_dup:,} planted duplicates)")
+    print(f"reads     : {', '.join(fastq_paths)} ({n:,} {unit} x {a.read_length} bp, {n_dup:,} planted duplicates)")
     print(f"truth     : {truth_path} ({len(snps)} SNPs)")
 
 

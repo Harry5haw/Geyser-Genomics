@@ -1,4 +1,5 @@
 """scripts/reconcile.py on a temporary local bucket and a fake Step Functions client (no AWS)."""
+
 import json
 from unittest import mock
 
@@ -17,20 +18,28 @@ def make_bucket(tmp_path, keys):
 
 
 def full_sample(sample_id):
-    return [f"raw_reads/{sample_id}.fastq.gz",
-            f"qc_reports/{sample_id}.fastp.html", f"qc_reports/{sample_id}.fastp.json",
-            f"alignments/{sample_id}.cram", f"alignments/{sample_id}.cram.crai",
-            f"variants/{sample_id}.vcf.gz", f"variants/{sample_id}.vcf.gz.tbi"]
+    return [
+        f"raw_reads/{sample_id}.fastq.gz",
+        f"qc_reports/{sample_id}.fastp.html",
+        f"qc_reports/{sample_id}.fastp.json",
+        f"alignments/{sample_id}.cram",
+        f"alignments/{sample_id}.cram.crai",
+        f"variants/{sample_id}.vcf.gz",
+        f"variants/{sample_id}.vcf.gz.tbi",
+    ]
 
 
-KEYS = (full_sample("S1") + ["variants_deepvariant/S1.vcf.gz"]
-        + ["raw_reads/S2.fastq.gz"]                                                    # not started
-        + ["raw_reads/S3.fastq.gz", "qc_reports/S3.fastp.html"]                      # align failed
-        + ["raw_reads/S10.fastq.gz", "alignments/S10.bam"]          # qc failed, align ran (BAM: before CRAM)
-        + ["decompressed/OLD.fastq"]                       # left over from the four-stage layout: ignored
-        + ["raw_reads/S4.fq.gz", "raw_reads/notes.txt", "raw_reads/sub/S5.fastq.gz", "raw_reads/S7.v2.fastq.gz"]
-        + ["variants/S6.vcf.gz", "variants_pangenome/S9.vcf.gz"]                       # orphans
-        + ["metrics/metrics.jsonl"])
+KEYS = (
+    full_sample("S1")
+    + ["variants_deepvariant/S1.vcf.gz"]
+    + ["raw_reads/S2.fastq.gz"]  # not started
+    + ["raw_reads/S3.fastq.gz", "qc_reports/S3.fastp.html"]  # align failed
+    + ["raw_reads/S10.fastq.gz", "alignments/S10.bam"]  # qc failed, align ran (BAM: before CRAM)
+    + ["decompressed/OLD.fastq"]  # left over from the four-stage layout: ignored
+    + ["raw_reads/S4.fq.gz", "raw_reads/notes.txt", "raw_reads/sub/S5.fastq.gz", "raw_reads/S7.v2.fastq.gz"]
+    + ["variants/S6.vcf.gz", "variants_pangenome/S9.vcf.gz"]  # orphans
+    + ["metrics/metrics.jsonl"]
+)
 
 
 def by_sample(result):
@@ -41,8 +50,13 @@ def test_statuses_and_upload_problems(tmp_path):
     result = reconcile.reconcile(make_bucket(tmp_path, KEYS).list_keys(""))
     rows = by_sample(result)
     assert {s: r["status"] for s, r in rows.items()} == {
-        "S1": "complete", "S2": "not started", "S3": "incomplete", "S6": "orphan", "S9": "orphan",
-        "S10": "incomplete"}
+        "S1": "complete",
+        "S2": "not started",
+        "S3": "incomplete",
+        "S6": "orphan",
+        "S9": "orphan",
+        "S10": "incomplete",
+    }
     assert rows["S1"]["extra_outputs"] == {"dv": True, "pg": False} and rows["S1"]["problem"] is None
     assert rows["S9"]["extra_outputs"] == {"dv": False, "pg": True}
     # qc and align run side by side, so either can be the one missing.
@@ -52,8 +66,11 @@ def test_statuses_and_upload_problems(tmp_path):
 
     problems = {p["key"]: p for p in result["upload_problems"]}
     assert problems["raw_reads/notes.txt"]["problem"] == "ignored"
-    for key, sample in (("raw_reads/S4.fq.gz", "S4"), ("raw_reads/sub/S5.fastq.gz", "S5"),
-                        ("raw_reads/S7.v2.fastq.gz", "S7")):
+    for key, sample in (
+        ("raw_reads/S4.fq.gz", "S4"),
+        ("raw_reads/sub/S5.fastq.gz", "S5"),
+        ("raw_reads/S7.v2.fastq.gz", "S7"),
+    ):
         assert problems[key]["problem"] == "will fail"
         assert f"the stages read raw_reads/{sample}.fastq.gz" in problems[key]["detail"]
     assert result["problem_count"] == 4 + 3  # 4 upload problems + S2, S3 and S10
@@ -66,7 +83,8 @@ def fake_sfn(running_inputs):
         {"executions": [{"executionArn": f"e{i}"} for i in range(2, len(running_inputs))]},
     ]
     client.describe_execution.side_effect = lambda executionArn: {
-        "input": json.dumps({"srr_id": running_inputs[int(executionArn[1:])]})}
+        "input": json.dumps({"srr_id": running_inputs[int(executionArn[1:])]})
+    }
     return client
 
 
@@ -107,8 +125,9 @@ def test_clean_bucket_passes(tmp_path, capsys, monkeypatch):
 
 def test_cli_uses_state_machine_when_given(tmp_path, capsys):
     sfn = fake_sfn(["S2", "S2"])
-    reconcile.main(["--local-dir", str(make_bucket(tmp_path, KEYS).root), "--state-machine-arn", SFN_ARN],
-                   sfn_client=sfn)
+    reconcile.main(
+        ["--local-dir", str(make_bucket(tmp_path, KEYS).root), "--state-machine-arn", SFN_ARN], sfn_client=sfn
+    )
     assert "2 runs at once" in capsys.readouterr().out
 
 
@@ -126,11 +145,18 @@ def test_patterns_follow_keys_for():
 
 
 def test_samples_with_fastqc_reports_from_before_fastp_still_count_as_qc_done():
-    old_single = ["raw_reads/OLD.fastq.gz", "qc_reports/OLD_fastqc.html", "qc_reports/OLD_fastqc.zip",
-                  "alignments/OLD.bam", "variants/OLD.vcf.gz"]
-    old_paired = (["raw_reads/OLDP_R1.fastq.gz", "raw_reads/OLDP_R2.fastq.gz"]
-                  + [f"qc_reports/OLDP_{m}_fastqc.html" for m in ("R1", "R2")]
-                  + ["alignments/OLDP.bam", "variants/OLDP.vcf.gz"])
+    old_single = [
+        "raw_reads/OLD.fastq.gz",
+        "qc_reports/OLD_fastqc.html",
+        "qc_reports/OLD_fastqc.zip",
+        "alignments/OLD.bam",
+        "variants/OLD.vcf.gz",
+    ]
+    old_paired = (
+        ["raw_reads/OLDP_R1.fastq.gz", "raw_reads/OLDP_R2.fastq.gz"]
+        + [f"qc_reports/OLDP_{m}_fastqc.html" for m in ("R1", "R2")]
+        + ["alignments/OLDP.bam", "variants/OLDP.vcf.gz"]
+    )
     half = ["raw_reads/HALF_R1.fastq.gz", "raw_reads/HALF_R2.fastq.gz", "qc_reports/HALF_R1_fastqc.html"]
     rows = by_sample(reconcile.reconcile(old_single + old_paired + half))
     assert rows["OLD"]["status"] == "complete" and rows["OLD"]["outputs"]["qc_html"]
@@ -139,27 +165,35 @@ def test_samples_with_fastqc_reports_from_before_fastp_still_count_as_qc_done():
 
 
 def paired_sample(sample_id):
-    return ([f"raw_reads/{sample_id}_{m}.fastq.gz" for m in ("R1", "R2")]
-            + [f"qc_reports/{sample_id}.fastp.{ext}" for ext in ("html", "json")]  # one report for the pair
-            + [f"alignments/{sample_id}.cram", f"alignments/{sample_id}.cram.crai", f"variants/{sample_id}.vcf.gz"])
+    return (
+        [f"raw_reads/{sample_id}_{m}.fastq.gz" for m in ("R1", "R2")]
+        + [f"qc_reports/{sample_id}.fastp.{ext}" for ext in ("html", "json")]  # one report for the pair
+        + [f"alignments/{sample_id}.cram", f"alignments/{sample_id}.cram.crai", f"variants/{sample_id}.vcf.gz"]
+    )
 
 
-PAIRED_KEYS = (paired_sample("P1")
-               + ["raw_reads/P2_R1.fastq.gz"]                                           # lone mate
-               + ["raw_reads/P3_R1.fastq.gz", "raw_reads/P3_R2.fastq.gz",
-                  "qc_reports/P3.fastp.html"]                                           # align failed
-               + ["raw_reads/P4.fastq.gz", "raw_reads/P4_R1.fastq.gz", "raw_reads/P4_R2.fastq.gz"]
-               + ["raw_reads/P5_R1.fq.gz", "raw_reads/sub/P6_R1.fastq.gz"]
-               + ["qc_reports/P7.fastp.html", "alignments/P7.bam"]                     # orphan
-               + full_sample("run_1"))  # SRA-style _1 is not a mate: run_1 is a single-end sample
+PAIRED_KEYS = (
+    paired_sample("P1")
+    + ["raw_reads/P2_R1.fastq.gz"]  # lone mate
+    + ["raw_reads/P3_R1.fastq.gz", "raw_reads/P3_R2.fastq.gz", "qc_reports/P3.fastp.html"]  # align failed
+    + ["raw_reads/P4.fastq.gz", "raw_reads/P4_R1.fastq.gz", "raw_reads/P4_R2.fastq.gz"]
+    + ["raw_reads/P5_R1.fq.gz", "raw_reads/sub/P6_R1.fastq.gz"]
+    + ["qc_reports/P7.fastp.html", "alignments/P7.bam"]  # orphan
+    + full_sample("run_1")
+)  # SRA-style _1 is not a mate: run_1 is a single-end sample
 
 
 def test_paired_end_samples(tmp_path):
     result = reconcile.reconcile(make_bucket(tmp_path, PAIRED_KEYS).list_keys(""))
     rows = by_sample(result)
     assert {s: r["status"] for s, r in rows.items()} == {
-        "P1": "complete", "P2": "lone mate", "P3": "incomplete", "P4": "both layouts", "P7": "orphan",
-        "run_1": "complete"}
+        "P1": "complete",
+        "P2": "lone mate",
+        "P3": "incomplete",
+        "P4": "both layouts",
+        "P7": "orphan",
+        "run_1": "complete",
+    }
     assert rows["P1"]["layout"] == "paired" and rows["P1"]["problem"] is None
     assert all(rows["P1"]["outputs"].values())
     assert rows["run_1"]["layout"] == "single"
@@ -207,8 +241,9 @@ def test_warns_when_open_runs_are_not_checked(tmp_path, capsys, monkeypatch):
 def test_one_mates_fastqc_report_is_incomplete_not_unstarted():
     # FastQC (before #100) wrote one report per mate: one alone is not a QC output, but it does show
     # the run reached qc.
-    rows = by_sample(reconcile.reconcile(["raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz",
-                                          "qc_reports/S1_R1_fastqc.html"]))
+    rows = by_sample(
+        reconcile.reconcile(["raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz", "qc_reports/S1_R1_fastqc.html"])
+    )
     assert rows["S1"]["status"] == "incomplete" and rows["S1"]["outputs"]["qc_html"] is False
     assert "output from qc" in rows["S1"]["note"]
 

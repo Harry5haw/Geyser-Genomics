@@ -80,7 +80,25 @@ def get_storage():
 
 
 __all__ = [
-    "ALIGNMENT_FORMS", "LayoutError", "LocalStorage", "all_raw_keys", "MATES", "ObjectNotFound", "PAIRED", "PER_MATE_KEYS", "RUN_LOCAL_PATH",
-    "REPO_ROOT", "SINGLE", "get_storage", "keys_for", "keys_of", "layout_from_raw", "legacy_qc_keys", "output_present", "make_test_data",
-    "parse_raw_key", "parse_sample_id", "run_local",
+    "ALIGNMENT_FORMS",
+    "LayoutError",
+    "LocalStorage",
+    "all_raw_keys",
+    "MATES",
+    "ObjectNotFound",
+    "PAIRED",
+    "PER_MATE_KEYS",
+    "RUN_LOCAL_PATH",
+    "REPO_ROOT",
+    "SINGLE",
+    "get_storage",
+    "keys_for",
+    "keys_of",
+    "layout_from_raw",
+    "legacy_qc_keys",
+    "output_present",
+    "make_test_data",
+    "parse_raw_key",
+    "parse_sample_id",
+    "run_local",
 ]

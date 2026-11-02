@@ -22,9 +22,9 @@ class Variant:
 
 @dataclass
 class VariantTable:
-    rows: list = field(default_factory=list)   # at most `limit` Variants
-    total: int = 0                             # every record in the file
-    calls: set = field(default_factory=set)    # {(pos, ref, alt)} for all records, as run_local.read_vcf_calls
+    rows: list = field(default_factory=list)  # at most `limit` Variants
+    total: int = 0  # every record in the file
+    calls: set = field(default_factory=set)  # {(pos, ref, alt)} for all records, as run_local.read_vcf_calls
 
     @property
     def truncated(self) -> bool:
@@ -65,12 +65,18 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
             table.total += 1
             table.calls.add((pos, ref, alt))
             if len(table.rows) < limit:
-                table.rows.append(Variant(
-                    chrom=chrom, pos=pos, ref=ref, alt=alt,
-                    qual=None if qual == "." else round(float(qual), 1),
-                    depth=int(depth) if depth and depth.isdigit() else None,
-                    genotype=genotype, kind=_kind(ref, alt),
-                ))
+                table.rows.append(
+                    Variant(
+                        chrom=chrom,
+                        pos=pos,
+                        ref=ref,
+                        alt=alt,
+                        qual=None if qual == "." else round(float(qual), 1),
+                        depth=int(depth) if depth and depth.isdigit() else None,
+                        genotype=genotype,
+                        kind=_kind(ref, alt),
+                    )
+                )
     return table
 
 

@@ -1,4 +1,5 @@
 """The web UI builds its storage from settings: an S3-compatible endpoint has to reach it too (#80)."""
+
 import pytest
 
 

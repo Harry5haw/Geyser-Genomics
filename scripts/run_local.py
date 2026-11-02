@@ -118,10 +118,18 @@ def deepvariant_command(sample_id, reference_name, pangenome=None):
     return cmd + ["--pangenome", pangenome] if pangenome else cmd
 
 
-def pipeline_jobs(sample_id, reference_name, caller="bcftools", app_image="geyser-app",
-                  dv_image="geyser-deepvariant", gpus=True, skip_to_variants=False,
-                  pg_image="geyser-deepvariant-pangenome", pangenome=DEFAULT_PANGENOME,
-                  pg_shm=DEFAULT_PANGENOME_SHM):
+def pipeline_jobs(
+    sample_id,
+    reference_name,
+    caller="bcftools",
+    app_image="geyser-app",
+    dv_image="geyser-deepvariant",
+    gpus=True,
+    skip_to_variants=False,
+    pg_image="geyser-deepvariant-pangenome",
+    pangenome=DEFAULT_PANGENOME,
+    pg_shm=DEFAULT_PANGENOME_SHM,
+):
     """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome)."""
     if caller not in CALLERS:
         raise ValueError(f"unknown caller {caller!r}")
@@ -132,16 +140,35 @@ def pipeline_jobs(sample_id, reference_name, caller="bcftools", app_image="geyse
             continue
         if stage == "variants" and "bcftools" not in sets:
             continue
-        jobs.append({"name": stage, "cmd": stage_command(stage, sample_id, reference_name, needs_ref),
-                     "image": app_image, "gpus": False})
+        jobs.append(
+            {
+                "name": stage,
+                "cmd": stage_command(stage, sample_id, reference_name, needs_ref),
+                "image": app_image,
+                "gpus": False,
+            }
+        )
     if "deepvariant" in sets:
-        jobs.append({"name": "deepvariant", "cmd": deepvariant_command(sample_id, reference_name),
-                     "image": dv_image, "gpus": gpus})
+        jobs.append(
+            {
+                "name": "deepvariant",
+                "cmd": deepvariant_command(sample_id, reference_name),
+                "image": dv_image,
+                "gpus": gpus,
+            }
+        )
     if "pangenome" in sets:
         # Google publishes pangenome-aware images with and without GPU support (pangenome_aware_deepvariant-
         # <version>[-gpu]); like linear DeepVariant, only call_variants uses the GPU. --no-gpu for the CPU image.
-        jobs.append({"name": "pangenome", "cmd": deepvariant_command(sample_id, reference_name, pangenome),
-                     "image": pg_image, "gpus": gpus, "shm": pg_shm})
+        jobs.append(
+            {
+                "name": "pangenome",
+                "cmd": deepvariant_command(sample_id, reference_name, pangenome),
+                "image": pg_image,
+                "gpus": gpus,
+                "shm": pg_shm,
+            }
+        )
     return jobs
 
 
@@ -155,8 +182,7 @@ def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, sh
         # Hard cap (also counts the container's page cache): keeps a big run from starving the host.
         full += ["--memory", memory, "--memory-swap", memory]
     full += ["--mount", f"type=bind,source={os.path.abspath(root)},target=/data"]
-    env = {"STORAGE_BACKEND": "local", "METRICS_BACKEND": "local", "LOCAL_STORAGE_DIR": "/data",
-           **(extra_env or {})}
+    env = {"STORAGE_BACKEND": "local", "METRICS_BACKEND": "local", "LOCAL_STORAGE_DIR": "/data", **(extra_env or {})}
     for k, v in env.items():
         full += ["-e", f"{k}={v}"]
     return full + [image] + cmd
@@ -171,17 +197,23 @@ def run_job(job, runner, root, dv_memory=None):
         if job["name"] in ("deepvariant", "pangenome"):
             extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
-        return subprocess.run(docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory,
-                                             job.get("shm"))).returncode
+        return subprocess.run(
+            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"))
+        ).returncode
     if job["name"] in ("deepvariant", "pangenome"):
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
     # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastp) must be on PATH. bwa-mem2 has no
     # apt package (the image installs the upstream release); without it, set ALIGNER=bwa.
-    host_env = {**os.environ, "STORAGE_BACKEND": "local", "METRICS_BACKEND": "local",
-                "LOCAL_STORAGE_DIR": os.path.abspath(root)}
-    return subprocess.run([sys.executable, "tasks.py"] + job["cmd"][2:], cwd=os.path.join(REPO_ROOT, "app"),
-                          env=host_env).returncode
+    host_env = {
+        **os.environ,
+        "STORAGE_BACKEND": "local",
+        "METRICS_BACKEND": "local",
+        "LOCAL_STORAGE_DIR": os.path.abspath(root),
+    }
+    return subprocess.run(
+        [sys.executable, "tasks.py"] + job["cmd"][2:], cwd=os.path.join(REPO_ROOT, "app"), env=host_env
+    ).returncode
 
 
 def read_vcf_calls(path, regions=None):
@@ -245,8 +277,13 @@ def truth_counts(root, sample_id, caller="bcftools"):
         called, kind = read_vcf_calls(vcf_path(root, caller, sample_id), regions), "giab"
     else:
         return None
-    return {"kind": kind, "truth": len(truth), "tp": len(truth & called),
-            "missed": sorted(truth - called), "extra": sorted(called - truth)}
+    return {
+        "kind": kind,
+        "truth": len(truth),
+        "tp": len(truth & called),
+        "missed": sorted(truth - called),
+        "extra": sorted(called - truth),
+    }
 
 
 def check_against_truth(root, sample_id, caller="bcftools"):
@@ -256,8 +293,10 @@ def check_against_truth(root, sample_id, caller="bcftools"):
         print(f"\nTruth check ({caller}): no truth/{sample_id}.json or truth/{sample_id}.vcf.gz under {root}")
         return False
     if counts["kind"] == "planted":
-        print(f"\nTruth check ({caller}): {counts['tp']}/{counts['truth']} planted SNPs called, "
-              f"{len(counts['extra'])} unexpected calls")
+        print(
+            f"\nTruth check ({caller}): {counts['tp']}/{counts['truth']} planted SNPs called, "
+            f"{len(counts['extra'])} unexpected calls"
+        )
         for item in counts["missed"]:
             print(f"  MISSED   pos={item[0]} {item[1]}>{item[2]}")
         for item in counts["extra"]:
@@ -267,16 +306,19 @@ def check_against_truth(root, sample_id, caller="bcftools"):
     tp, fn, fp = counts["tp"], len(counts["missed"]), len(counts["extra"])
     recall = tp / counts["truth"] if counts["truth"] else 0.0
     precision = tp / (tp + fp) if tp + fp else 0.0
-    print(f"\nTruth check ({caller}, GIAB, report only): TP={tp} FN={fn} FP={fp} "
-          f"recall={recall:.3f} precision={precision:.3f}")
+    print(
+        f"\nTruth check ({caller}, GIAB, report only): TP={tp} FN={fn} FP={fp} "
+        f"recall={recall:.3f} precision={precision:.3f}"
+    )
     return True
 
 
 def compare_callers(root, sample_id, first="bcftools", second="deepvariant"):
     a = read_vcf_calls(vcf_path(root, first, sample_id))
     b = read_vcf_calls(vcf_path(root, second, sample_id))
-    print(f"\nCaller comparison for {sample_id}: shared={len(a & b)} "
-          f"{first}-only={len(a - b)} {second}-only={len(b - a)}")
+    print(
+        f"\nCaller comparison for {sample_id}: shared={len(a & b)} {first}-only={len(a - b)} {second}-only={len(b - a)}"
+    )
 
 
 def main(argv=None):
@@ -288,20 +330,40 @@ def main(argv=None):
     p.add_argument("--image", default="geyser-app")
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
     p.add_argument("--dv-image", default="geyser-deepvariant", help="DeepVariant image (app-deepvariant/)")
-    p.add_argument("--no-gpu", action="store_true",
-                   help="run DeepVariant and pangenome-aware DeepVariant without --gpus all (CPU images)")
-    p.add_argument("--pg-image", default="geyser-deepvariant-pangenome",
-                   help="pangenome-aware DeepVariant image (app-deepvariant/ built with "
-                        "DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu, or without -gpu for CPU)")
-    p.add_argument("--pangenome", default=DEFAULT_PANGENOME, metavar="GBZ",
-                   help="pangenome graph under pangenome/ (default: %(default)s)")
-    p.add_argument("--pg-shm-size", default=DEFAULT_PANGENOME_SHM, metavar="SIZE",
-                   help="--shm-size for the pangenome container (default: %(default)s, as in Google's case studies)")
-    p.add_argument("--dv-memory", metavar="SIZE",
-                   help="memory cap for the DeepVariant and pangenome containers, e.g. 12g. A whole chromosome can "
-                        "otherwise take most of the Docker VM; 16 make_examples shards thrashed under 8g")
-    p.add_argument("--skip-to-variants", action="store_true",
-                   help="start at variant calling, using an existing alignments/<sample>.cram (or .bam)")
+    p.add_argument(
+        "--no-gpu",
+        action="store_true",
+        help="run DeepVariant and pangenome-aware DeepVariant without --gpus all (CPU images)",
+    )
+    p.add_argument(
+        "--pg-image",
+        default="geyser-deepvariant-pangenome",
+        help="pangenome-aware DeepVariant image (app-deepvariant/ built with "
+        "DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu, or without -gpu for CPU)",
+    )
+    p.add_argument(
+        "--pangenome",
+        default=DEFAULT_PANGENOME,
+        metavar="GBZ",
+        help="pangenome graph under pangenome/ (default: %(default)s)",
+    )
+    p.add_argument(
+        "--pg-shm-size",
+        default=DEFAULT_PANGENOME_SHM,
+        metavar="SIZE",
+        help="--shm-size for the pangenome container (default: %(default)s, as in Google's case studies)",
+    )
+    p.add_argument(
+        "--dv-memory",
+        metavar="SIZE",
+        help="memory cap for the DeepVariant and pangenome containers, e.g. 12g. A whole chromosome can "
+        "otherwise take most of the Docker VM; 16 make_examples shards thrashed under 8g",
+    )
+    p.add_argument(
+        "--skip-to-variants",
+        action="store_true",
+        help="start at variant calling, using an existing alignments/<sample>.cram (or .bam)",
+    )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     a = p.parse_args(argv)
 
@@ -318,9 +380,18 @@ def main(argv=None):
         sample_id, reference = payload["srr_id"], payload["reference_name"]
         print(f"\n=== Pipeline input: {json.dumps(payload)} ===")
         started = time.time()
-        jobs = pipeline_jobs(sample_id, reference, a.caller, a.image, a.dv_image,
-                             gpus=not a.no_gpu, skip_to_variants=a.skip_to_variants,
-                             pg_image=a.pg_image, pangenome=a.pangenome, pg_shm=a.pg_shm_size)
+        jobs = pipeline_jobs(
+            sample_id,
+            reference,
+            a.caller,
+            a.image,
+            a.dv_image,
+            gpus=not a.no_gpu,
+            skip_to_variants=a.skip_to_variants,
+            pg_image=a.pg_image,
+            pangenome=a.pangenome,
+            pg_shm=a.pg_shm_size,
+        )
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             if run_job(job, a.runner, a.root, a.dv_memory) != 0:

@@ -88,8 +88,18 @@ def test_run_local_command(tmp_path):
     runner = RunLocalRunner(tmp_path, runner="host", image="img", reference="ref.fa", python="py")
     cmd = runner.command("S1")
     assert cmd[0] == "py" and cmd[2].endswith(os.path.join("scripts", "run_local.py"))
-    assert cmd[3:] == ["--root", str(tmp_path), "--sample", "S1", "--runner", "host", "--image", "img",
-                       "--reference", "ref.fa"]
+    assert cmd[3:] == [
+        "--root",
+        str(tmp_path),
+        "--sample",
+        "S1",
+        "--runner",
+        "host",
+        "--image",
+        "img",
+        "--reference",
+        "ref.fa",
+    ]
 
 
 def test_run_local_runner_streams_output(tmp_path):

@@ -1,4 +1,5 @@
 """Pangenome-aware DeepVariant: stage, local runner, test-data fetch and hap.py benchmark (no Docker needed)."""
+
 import gzip
 import json
 
@@ -15,17 +16,24 @@ GRAPH = "hprc-v1.1-mc-grch38.gbz"
 # run_pangenome_aware_deepvariant output: same banners as run_deepvariant, but its make_examples binary has a suffix.
 PANGENOME_OUTPUT = [
     (0.0, dv.BANNER),
-    (0.0, "time seq 0 7 | parallel -q --halt 2 --line-buffer "
-          "/opt/deepvariant/bin/make_examples_pangenome_aware_dv --mode calling --ref /w/ref.fa"),
+    (
+        0.0,
+        "time seq 0 7 | parallel -q --halt 2 --line-buffer "
+        "/opt/deepvariant/bin/make_examples_pangenome_aware_dv --mode calling --ref /w/ref.fa",
+    ),
     (40.0, dv.BANNER),
-    (40.0, "time /opt/deepvariant/bin/call_variants --outfile /w/i/cv.tfrecord.gz "
-           "--examples /w/i/make_examples_pangenome_aware_dv.tfrecord@8.gz"),
+    (
+        40.0,
+        "time /opt/deepvariant/bin/call_variants --outfile /w/i/cv.tfrecord.gz "
+        "--examples /w/i/make_examples_pangenome_aware_dv.tfrecord@8.gz",
+    ),
     (70.0, dv.BANNER),
     (70.0, "time /opt/deepvariant/bin/postprocess_variants --ref /w/ref.fa --infile /w/i/cv.tfrecord.gz"),
 ]
 
 
 # ---- the stage (app-deepvariant/deepvariant_task.py) ----
+
 
 def test_pangenome_keys_follow_storage_contract():
     assert dv.deepvariant_keys("S1", GRAPH) == {
@@ -37,11 +45,17 @@ def test_pangenome_keys_follow_storage_contract():
 
 
 def test_pangenome_command_uses_its_own_binary_and_flags():
-    cmd = dv.build_run_deepvariant_cmd("/w/ref.fa", "/w/S1.bam", "/w/out.vcf.gz", "/w/i", "S1", 8,
-                                       pangenome="/w/g.gbz")
+    cmd = dv.build_run_deepvariant_cmd("/w/ref.fa", "/w/S1.bam", "/w/out.vcf.gz", "/w/i", "S1", 8, pangenome="/w/g.gbz")
     assert cmd[0] == dv.RUN_PANGENOME_DEEPVARIANT
-    for flag in ("--model_type=WGS", "--ref=/w/ref.fa", "--reads=/w/S1.bam", "--pangenome=/w/g.gbz",
-                 "--output_vcf=/w/out.vcf.gz", "--num_shards=8", "--sample_name_reads=S1"):
+    for flag in (
+        "--model_type=WGS",
+        "--ref=/w/ref.fa",
+        "--reads=/w/S1.bam",
+        "--pangenome=/w/g.gbz",
+        "--output_vcf=/w/out.vcf.gz",
+        "--num_shards=8",
+        "--sample_name_reads=S1",
+    ):
         assert flag in cmd
     # run_pangenome_aware_deepvariant 1.9.0 has no --sample_name flag
     assert not any(c.startswith("--sample_name=") for c in cmd)
@@ -83,6 +97,7 @@ def fake_pangenome_run(seen, vcf_bytes, code=0):
         with open(out, "wb") as fh:
             fh.write(vcf_bytes)
         return code, PANGENOME_OUTPUT, 75.0
+
     return run
 
 
@@ -101,8 +116,12 @@ def test_pangenome_stage_uploads_vcf_and_records_its_own_metrics(pg_inputs, monk
     assert (pg_inputs / "variants_pangenome" / "S1.vcf.gz").read_bytes() == vcf
     assert not (pg_inputs / "variants_deepvariant").exists()  # linear DeepVariant output untouched
     recorded = {m["task"]: m for m in metrics_lines(pg_inputs)}
-    assert set(recorded) == {"PangenomeDeepVariant", "PangenomeDeepVariant.MakeExamples",
-                             "PangenomeDeepVariant.CallVariants", "PangenomeDeepVariant.PostprocessVariants"}
+    assert set(recorded) == {
+        "PangenomeDeepVariant",
+        "PangenomeDeepVariant.MakeExamples",
+        "PangenomeDeepVariant.CallVariants",
+        "PangenomeDeepVariant.PostprocessVariants",
+    }
     assert recorded["PangenomeDeepVariant"]["status"] == "Success"
 
 
@@ -132,6 +151,7 @@ def test_cli_dispatches_on_pangenome_flag(monkeypatch):
 
 # ---- local runner (scripts/run_local.py) ----
 
+
 def names(jobs):
     return [j["name"] for j in jobs]
 
@@ -141,8 +161,14 @@ def test_pangenome_caller_replaces_variants_stage_and_uses_gpu_and_shm():
     assert names(jobs) == ["qc", "align", "pangenome"]
     pg = jobs[-1]
     assert pg["image"] == "geyser-deepvariant-pangenome" and pg["gpus"] and pg["shm"] == "12g"
-    assert pg["cmd"] == ["/opt/geyser-venv/bin/python", "deepvariant_task.py", "S1", "ref.fa",
-                         "--pangenome", "hprc-v1.1-mc-grch38.chr20.gbz"]
+    assert pg["cmd"] == [
+        "/opt/geyser-venv/bin/python",
+        "deepvariant_task.py",
+        "S1",
+        "ref.fa",
+        "--pangenome",
+        "hprc-v1.1-mc-grch38.chr20.gbz",
+    ]
 
 
 def test_no_gpu_also_applies_to_pangenome():
@@ -157,13 +183,18 @@ def test_pangenome_graph_can_be_overridden():
 
 def test_all_caller_runs_three_callers_in_order():
     assert names(run_local.pipeline_jobs("S1", "r", caller="all", skip_to_variants=True)) == [
-        "variants", "deepvariant", "pangenome"]
+        "variants",
+        "deepvariant",
+        "pangenome",
+    ]
     assert run_local.CALLER_SETS["all"] == ["bcftools", "deepvariant", "pangenome"]
 
 
 def test_existing_callers_unchanged():
     assert names(run_local.pipeline_jobs("S1", "r", caller="both", skip_to_variants=True)) == [
-        "variants", "deepvariant"]
+        "variants",
+        "deepvariant",
+    ]
     assert "pangenome" not in names(run_local.pipeline_jobs("S1", "r", caller="deepvariant"))
 
 
@@ -189,17 +220,22 @@ def test_sample_keys_runs_a_paired_sample_once(tmp_path, trigger):
     for name in ("PAIR_R1.fastq.gz", "PAIR_R2.fastq.gz", "SINGLE.fastq.gz", "run_1.fastq.gz"):
         (raw / name).write_bytes(b"")
     assert run_local.sample_keys(trigger, str(tmp_path)) == [
-        "raw_reads/PAIR.fastq.gz", "raw_reads/SINGLE.fastq.gz", "raw_reads/run_1.fastq.gz"]
+        "raw_reads/PAIR.fastq.gz",
+        "raw_reads/SINGLE.fastq.gz",
+        "raw_reads/run_1.fastq.gz",
+    ]
     assert run_local.sample_keys(trigger, str(tmp_path), "PAIR") == ["raw_reads/PAIR.fastq.gz"]
     assert run_local.sample_keys(trigger, str(tmp_path / "empty")) == []
 
 
 def test_vcf_path_for_pangenome(tmp_path):
-    assert run_local.vcf_path(str(tmp_path), "pangenome", "S1").replace("\\", "/").endswith(
-        "variants_pangenome/S1.vcf.gz")
+    assert (
+        run_local.vcf_path(str(tmp_path), "pangenome", "S1").replace("\\", "/").endswith("variants_pangenome/S1.vcf.gz")
+    )
 
 
 # ---- test-data fetch (scripts/fetch_dv_testdata.py) ----
+
 
 def test_pangenome_graph_added_only_on_request():
     plain = fetch.dataset_files("hg003-chr20")
@@ -241,11 +277,20 @@ def test_remote_url_keeps_absolute_urls():
 
 # ---- hap.py benchmark (scripts/benchmark_happy.py) ----
 
+
 def test_happy_command_matches_google_case_study_settings():
-    cmd = benchmark_happy.happy_command("HG003_chr20", "GRCh38_chr20.fa", "variants_pangenome/HG003_chr20.vcf.gz",
-                                        "benchmarks/HG003_chr20/pangenome", region="chr20")
-    assert cmd[:3] == [benchmark_happy.HAPPY_BIN, "/data/truth/HG003_chr20.vcf.gz",
-                       "/data/variants_pangenome/HG003_chr20.vcf.gz"]
+    cmd = benchmark_happy.happy_command(
+        "HG003_chr20",
+        "GRCh38_chr20.fa",
+        "variants_pangenome/HG003_chr20.vcf.gz",
+        "benchmarks/HG003_chr20/pangenome",
+        region="chr20",
+    )
+    assert cmd[:3] == [
+        benchmark_happy.HAPPY_BIN,
+        "/data/truth/HG003_chr20.vcf.gz",
+        "/data/variants_pangenome/HG003_chr20.vcf.gz",
+    ]
     for part in ("--engine=vcfeval", "--pass-only"):
         assert part in cmd
     assert cmd[cmd.index("-f") + 1] == "/data/truth/HG003_chr20.bed"
@@ -269,8 +314,15 @@ def test_read_summary_keeps_pass_rows(tmp_path):
     path.write_text(SUMMARY_CSV)
     r = benchmark_happy.read_summary(str(path))
     assert set(r) == {"SNP", "INDEL"}
-    assert r["SNP"] == {"truth": 70166, "tp": 69926, "fn": 240, "fp": 76,
-                        "recall": 0.99658, "precision": 0.998915, "f1": 0.997746}
+    assert r["SNP"] == {
+        "truth": 70166,
+        "tp": 69926,
+        "fn": 240,
+        "fp": 76,
+        "recall": 0.99658,
+        "precision": 0.998915,
+        "f1": 0.997746,
+    }
 
 
 def test_summary_table_lists_callers_in_order(tmp_path):
@@ -279,8 +331,12 @@ def test_summary_table_lists_callers_in_order(tmp_path):
     r = benchmark_happy.read_summary(str(path))
     table = benchmark_happy.summary_table({"pangenome": r, "bcftools": r})
     rows = table.splitlines()[2:]
-    assert [row.split(" | ")[0] for row in rows] == ["| bcftools", "| bcftools",
-                                                      "| Pangenome-aware DeepVariant", "| Pangenome-aware DeepVariant"]
+    assert [row.split(" | ")[0] for row in rows] == [
+        "| bcftools",
+        "| bcftools",
+        "| Pangenome-aware DeepVariant",
+        "| Pangenome-aware DeepVariant",
+    ]
     assert "69,926" in table and "0.997746" in table
 
 
@@ -292,6 +348,7 @@ def test_write_fai_matches_samtools_layout(tmp_path):
 
 
 # ---- HG005 / HG003 30x datasets and GIAB stratifications (#51 next steps) ----
+
 
 def test_hg005_and_its_hg003_control_come_from_the_same_bam_set():
     hg005 = fetch.DATASETS["hg005-chr20"]["files"]
@@ -307,7 +364,10 @@ def test_hg005_and_its_hg003_control_come_from_the_same_bam_set():
         ds = fetch.DATASETS[name]
         assert ds["reference"] == "GRCh38_chr20.fa" and name in fetch.GRCH38_DATASETS
         assert [k for _, _, k, _ in ds["files"]][1:] == [
-            "reference/GRCh38_chr20.fa", f"truth/{ds['sample']}.vcf.gz", f"truth/{ds['sample']}.bed"]
+            "reference/GRCh38_chr20.fa",
+            f"truth/{ds['sample']}.vcf.gz",
+            f"truth/{ds['sample']}.bed",
+        ]
     assert hg005[2][0].startswith(fetch.GIAB) and hg005[2][0].endswith("HG005_GRCh38_1_22_v4.2.1_benchmark.vcf.gz")
     # the control's truth is the HG003 truth hg003-chr20 uses
     assert [f[0] for f in control[2:]] == [f[0] for f in fetch.DATASETS["hg003-chr20"]["files"][2:]]
@@ -323,8 +383,9 @@ def test_bam_region_command_fetches_one_contig_atomically(tmp_path):
     assert cmd[:3] == ["docker", "run", "--rm"] and fetch.APP_IMAGE in cmd
     script = cmd[-1]
     assert "samtools view -b -o /data/alignments/S.bam.part https://h/x.bam chr20" in script
-    assert script.index("samtools quickcheck /data/alignments/S.bam.part") < \
-        script.index("mv /data/alignments/S.bam.part /data/alignments/S.bam")
+    assert script.index("samtools quickcheck /data/alignments/S.bam.part") < script.index(
+        "mv /data/alignments/S.bam.part /data/alignments/S.bam"
+    )
     assert script.startswith("set -e; cd /tmp")  # the downloaded remote .bai lands outside /data
     assert fetch.bam_region_command(str(tmp_path), "u", "k", "c", image="other")[-4] == "other"
 
@@ -332,7 +393,7 @@ def test_bam_region_command_fetches_one_contig_atomically(tmp_path):
 def test_stratifications_only_on_request_and_only_for_grch38():
     plain = fetch.dataset_files("hg005-chr20")
     strat = fetch.dataset_files("hg005-chr20", stratifications=True)
-    added = strat[len(plain):]
+    added = strat[len(plain) :]
     assert len(added) == len(fetch.STRATIFICATIONS)
     for (name, path), (url, size, key, how) in zip(fetch.STRATIFICATIONS, added, strict=True):
         assert url == fetch.STRAT_BASE + path and size is None
@@ -363,8 +424,7 @@ def test_keep_contig_gunzips_a_bed_gz_to_plain_bed(tmp_path):
 
 
 def test_happy_command_adds_stratification():
-    cmd = benchmark_happy.happy_command("S", "r.fa", "v.vcf.gz", "o",
-                                        stratification="stratifications/GRCh38_chr20.tsv")
+    cmd = benchmark_happy.happy_command("S", "r.fa", "v.vcf.gz", "o", stratification="stratifications/GRCh38_chr20.tsv")
     assert cmd[cmd.index("--stratification") + 1] == "/data/stratifications/GRCh38_chr20.tsv"
     assert "--stratification" not in benchmark_happy.happy_command("S", "r.fa", "v.vcf.gz", "o")
 
@@ -423,7 +483,9 @@ def test_region_fetch_needs_the_app_image(tmp_path, monkeypatch):
         return type("R", (), {"returncode": 1})()
 
     monkeypatch.setattr(fetch.subprocess, "run", fake_run)
-    monkeypatch.setattr(fetch, "dataset_files", lambda *a: [("https://h/x.bam", None, "alignments/S.bam", "region:chr20")])
+    monkeypatch.setattr(
+        fetch, "dataset_files", lambda *a: [("https://h/x.bam", None, "alignments/S.bam", "region:chr20")]
+    )
     with pytest.raises(RuntimeError, match="docker build"):
         fetch.fetch_dataset("hg005-chr20", str(tmp_path), app_image="missing-image")
     assert calls == [["docker", "image", "inspect", "missing-image"]]
@@ -456,6 +518,16 @@ def test_stratification_with_missing_bed_stops_before_hap_py(tmp_path, monkeypat
     ran = []
     monkeypatch.setattr(benchmark_happy.subprocess, "run", lambda *a, **k: ran.append(a))
     with pytest.raises(SystemExit):
-        benchmark_happy.main(["--root", str(tmp_path), "--sample", "S", "--reference", "r.fa",
-                              "--stratification", r"stratifications\GRCh38_chr20.tsv"])
+        benchmark_happy.main(
+            [
+                "--root",
+                str(tmp_path),
+                "--sample",
+                "S",
+                "--reference",
+                "r.fa",
+                "--stratification",
+                r"stratifications\GRCh38_chr20.tsv",
+            ]
+        )
     assert ran == []

@@ -1,4 +1,5 @@
 """Nothing at build time checks that tasks.py, the state machine and the local runner agree. This does."""
+
 import os
 import re
 
@@ -6,9 +7,7 @@ import run_local
 import tasks
 from conftest import REPO_ROOT
 
-ARRAY_RE = re.compile(
-    r"States\.Array\('python',\s*'tasks\.py',\s*'(\w+)',\s*\$\.srr_id(,\s*\$\.reference_name)?\)"
-)
+ARRAY_RE = re.compile(r"States\.Array\('python',\s*'tasks\.py',\s*'(\w+)',\s*\$\.srr_id(,\s*\$\.reference_name)?\)")
 
 
 def state_machine_stages():

@@ -56,7 +56,7 @@ LOG_TAIL_LINES = 300
 def _split_kind(kind):
     """'raw_R1' -> ('raw', 'R1'); 'bam' -> ('bam', None). None for anything not downloadable."""
     for mate in MATES:
-        base = kind[:-len(mate) - 1]
+        base = kind[: -len(mate) - 1]
         if kind == f"{base}_{mate}" and base in PER_MATE_KEYS:
             return base, mate
     return (kind, None) if kind in FILE_KINDS else None
@@ -176,8 +176,9 @@ def sample_detail(request, sample_id):
     for kind, label, description in _download_kinds(sample.keys):
         key = _file_key(sample_id, kind, sample.keys)
         if storage.exists(key):
-            downloads.append({"kind": kind, "label": label, "description": description,
-                              "filename": os.path.basename(key)})
+            downloads.append(
+                {"kind": kind, "label": label, "description": description, "filename": os.path.basename(key)}
+            )
     context = {
         **_status_context(storage, sample),
         "truth": truth,

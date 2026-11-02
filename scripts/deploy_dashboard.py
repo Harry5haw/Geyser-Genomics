@@ -42,27 +42,51 @@ def parse_args(argv=None):
     p.add_argument("--dashboard-name", default="geyser-dashboard-dev")
     p.add_argument("--region", default=monitoring.DEFAULT_REGION, help="AWS region (default: eu-west-2)")
     p.add_argument("--namespace", default=monitoring.DEFAULT_NAMESPACE)
-    p.add_argument("--state-machine-arn", default=os.environ.get("SFN_ARN"),
-                   help="Step Functions state machine ARN (default: $SFN_ARN). Without it the "
-                        "Step Functions widgets are left out.")
-    p.add_argument("--schema", choices=monitoring.SCHEMAS, default="per-sample",
-                   help="Metric dimensions to read: per-sample (what app/metrics.py publishes today) "
-                        "or aggregated (no SampleId; gives real p50/p95)")
-    p.add_argument("--groups", default=",".join(monitoring.STAGE_GROUPS),
-                   help=f"Comma-separated stage groups (default: all of {','.join(monitoring.STAGE_GROUPS)})")
+    p.add_argument(
+        "--state-machine-arn",
+        default=os.environ.get("SFN_ARN"),
+        help="Step Functions state machine ARN (default: $SFN_ARN). Without it the "
+        "Step Functions widgets are left out.",
+    )
+    p.add_argument(
+        "--schema",
+        choices=monitoring.SCHEMAS,
+        default="per-sample",
+        help="Metric dimensions to read: per-sample (what app/metrics.py publishes today) "
+        "or aggregated (no SampleId; gives real p50/p95)",
+    )
+    p.add_argument(
+        "--groups",
+        default=",".join(monitoring.STAGE_GROUPS),
+        help=f"Comma-separated stage groups (default: all of {','.join(monitoring.STAGE_GROUPS)})",
+    )
     p.add_argument("--lookback", default="-P14D", help="Default time range, e.g. -P3D or -P14D")
-    p.add_argument("--alarm-prefix", default=monitoring.DEFAULT_ALARM_PREFIX,
-                   help="Prefix used by deploy_alarms.py (default: geyser-dev)")
-    p.add_argument("--account-id", default=os.environ.get("AWS_ACCOUNT_ID"),
-                   help="AWS account ID for the alarm widget (default: $AWS_ACCOUNT_ID, else looked up with STS)")
+    p.add_argument(
+        "--alarm-prefix",
+        default=monitoring.DEFAULT_ALARM_PREFIX,
+        help="Prefix used by deploy_alarms.py (default: geyser-dev)",
+    )
+    p.add_argument(
+        "--account-id",
+        default=os.environ.get("AWS_ACCOUNT_ID"),
+        help="AWS account ID for the alarm widget (default: $AWS_ACCOUNT_ID, else looked up with STS)",
+    )
     p.add_argument("--no-alarm-widget", action="store_true", help="Leave out the alarm status widget")
-    p.add_argument("--bucket", default=os.environ.get("BUCKET_NAME"),
-                   help="Data lake bucket for the S3 link (default: $BUCKET_NAME; link left out if unset)")
-    p.add_argument("--trigger-function-name",
-                   default=os.environ.get("TRIGGER_FUNCTION_NAME", monitoring.DEFAULT_TRIGGER_FUNCTION),
-                   help="Trigger Lambda name for its console links")
-    p.add_argument("--sfn-log-group", default=monitoring.DEFAULT_SFN_LOG_GROUP,
-                   help="Step Functions log group for its console link")
+    p.add_argument(
+        "--bucket",
+        default=os.environ.get("BUCKET_NAME"),
+        help="Data lake bucket for the S3 link (default: $BUCKET_NAME; link left out if unset)",
+    )
+    p.add_argument(
+        "--trigger-function-name",
+        default=os.environ.get("TRIGGER_FUNCTION_NAME", monitoring.DEFAULT_TRIGGER_FUNCTION),
+        help="Trigger Lambda name for its console links",
+    )
+    p.add_argument(
+        "--sfn-log-group",
+        default=monitoring.DEFAULT_SFN_LOG_GROUP,
+        help="Step Functions log group for its console link",
+    )
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
     return p.parse_args(argv)
 
@@ -76,6 +100,7 @@ def resolve_account_id(args, sts_client=None) -> str:
         return PLACEHOLDER_ACCOUNT
     if sts_client is None:
         import boto3
+
         sts_client = boto3.client("sts", region_name=args.region)
     return sts_client.get_caller_identity()["Account"]
 
@@ -89,8 +114,11 @@ def existing_alarms(client, names) -> list:
         return list(names)
     for name in names:
         if name not in found:
-            print(f"NOTE: alarm '{name}' does not exist (run deploy_alarms.py first, same --prefix); "
-                  "left off the dashboard.", file=sys.stderr)
+            print(
+                f"NOTE: alarm '{name}' does not exist (run deploy_alarms.py first, same --prefix); "
+                "left off the dashboard.",
+                file=sys.stderr,
+            )
     return [n for n in names if n in found]
 
 
@@ -99,6 +127,7 @@ def main(argv=None, client=None, sts_client=None) -> int:
     monitoring.check_arn(args.state_machine_arn, "states", "--state-machine-arn")
     if client is None and not args.dry_run:
         import boto3
+
         client = boto3.client("cloudwatch", region_name=args.region)
     alarm_arns = None
     if not args.no_alarm_widget:
@@ -109,13 +138,21 @@ def main(argv=None, client=None, sts_client=None) -> int:
         alarm_arns = [monitoring.alarm_arn(args.region, account_id, name) for name in names]
     try:
         body = monitoring.build_dashboard(
-            args.region, args.namespace, state_machine_arn=args.state_machine_arn, schema=args.schema,
-            groups=[g.strip() for g in args.groups.split(",") if g.strip()], lookback=args.lookback,
+            args.region,
+            args.namespace,
+            state_machine_arn=args.state_machine_arn,
+            schema=args.schema,
+            groups=[g.strip() for g in args.groups.split(",") if g.strip()],
+            lookback=args.lookback,
             alarm_arns=alarm_arns,
             links=monitoring.console_links(
-                args.region, state_machine_arn=args.state_machine_arn, bucket=args.bucket,
+                args.region,
+                state_machine_arn=args.state_machine_arn,
+                bucket=args.bucket,
                 trigger_function_name=args.trigger_function_name,
-                sfn_log_group=args.sfn_log_group))
+                sfn_log_group=args.sfn_log_group,
+            ),
+        )
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}") from err
     if not args.state_machine_arn:

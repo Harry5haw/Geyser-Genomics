@@ -71,7 +71,7 @@ def test_planted_duplicates_are_exact_copies_of_their_original(tmp_path):
     assert len(reads) == n_original + len(dups)
     assert 0.1 * n_original < len(dups) < 0.3 * n_original
     for name, seq in dups:
-        assert by_name[name[:-len("_dup")]] == seq  # same sequence AND strand: a true duplicate
+        assert by_name[name[: -len("_dup")]] == seq  # same sequence AND strand: a true duplicate
 
 
 def revcomp(seq):
@@ -79,8 +79,9 @@ def revcomp(seq):
 
 
 def test_paired_writes_matching_mates_from_one_fragment(tmp_path):
-    make_test_data.main(["--root", str(tmp_path), "--length", "5000", "--snps", "2", "--paired",
-                         "--error-rate", "0", "--sample", "P1"])
+    make_test_data.main(
+        ["--root", str(tmp_path), "--length", "5000", "--snps", "2", "--paired", "--error-rate", "0", "--sample", "P1"]
+    )
     r1 = read_fastq(tmp_path / "raw_reads" / "P1_R1.fastq.gz")
     r2 = read_fastq(tmp_path / "raw_reads" / "P1_R2.fastq.gz")
     assert not (tmp_path / "raw_reads" / "P1.fastq.gz").exists()
@@ -107,12 +108,25 @@ def test_paired_writes_matching_mates_from_one_fragment(tmp_path):
 
 
 def test_paired_duplicates_copy_both_mates(tmp_path):
-    make_test_data.main(["--root", str(tmp_path), "--length", "5000", "--snps", "2", "--paired",
-                         "--duplicate-rate", "0.2", "--sample", "P1"])
+    make_test_data.main(
+        [
+            "--root",
+            str(tmp_path),
+            "--length",
+            "5000",
+            "--snps",
+            "2",
+            "--paired",
+            "--duplicate-rate",
+            "0.2",
+            "--sample",
+            "P1",
+        ]
+    )
     r1 = dict(read_fastq(tmp_path / "raw_reads" / "P1_R1.fastq.gz"))
     r2 = dict(read_fastq(tmp_path / "raw_reads" / "P1_R2.fastq.gz"))
     dups = [n for n in r1 if n.endswith("_dup")]
     assert json.loads((tmp_path / "truth" / "P1.json").read_text())["planted_duplicates"] == len(dups) > 0
     for name in dups:
-        original = name[:-len("_dup")]
+        original = name[: -len("_dup")]
         assert r1[name] == r1[original] and r2[name] == r2[original]

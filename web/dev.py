@@ -24,8 +24,12 @@ REPO_ROOT = os.path.dirname(WEB_DIR)
 def image_exists(image):
     if not shutil.which("docker"):
         return False
-    return subprocess.run(["docker", "image", "inspect", image], stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL).returncode == 0
+    return (
+        subprocess.run(
+            ["docker", "image", "inspect", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        ).returncode
+        == 0
+    )
 
 
 def main(argv=None):
@@ -50,8 +54,11 @@ def main(argv=None):
     env.setdefault("REFERENCE_NAME", "synthetic_ref.fa")
 
     if not a.no_worker and a.runner == "docker" and not image_exists(a.image):
-        print(f"WARNING: Docker image '{a.image}' not found, so pipeline runs will fail.\n"
-              f"         Build it first:  docker build -f Dockerfile -t {a.image} .\n", flush=True)
+        print(
+            f"WARNING: Docker image '{a.image}' not found, so pipeline runs will fail.\n"
+            f"         Build it first:  docker build -f Dockerfile -t {a.image} .\n",
+            flush=True,
+        )
 
     manage = [sys.executable, os.path.join(WEB_DIR, "manage.py")]
     procs = []

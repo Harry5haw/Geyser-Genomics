@@ -113,7 +113,7 @@ def describe_jobs(batch_client, job_ids) -> dict:
     ids = [j for j in dict.fromkeys(job_ids) if j]
     found = {}
     for i in range(0, len(ids), 100):  # describe_jobs takes at most 100 IDs
-        for job in batch_client.describe_jobs(jobs=ids[i:i + 100]).get("jobs", []):
+        for job in batch_client.describe_jobs(jobs=ids[i : i + 100]).get("jobs", []):
             found[job["jobId"]] = job
     return found
 
@@ -148,8 +148,9 @@ def fargate_cost(run_seconds, vcpu, memory_gb, prices: Prices = DEFAULT_PRICES, 
         return None
     billed_hours = max(run_seconds, FARGATE_MINIMUM_SECONDS) / 3600
     extra_storage = max(0.0, (storage_gb or 0) - FARGATE_FREE_STORAGE_GB)
-    return billed_hours * (vcpu * prices.vcpu_hour + memory_gb * prices.gb_hour
-                           + extra_storage * prices.storage_gb_hour)
+    return billed_hours * (
+        vcpu * prices.vcpu_hour + memory_gb * prices.gb_hour + extra_storage * prices.storage_gb_hour
+    )
 
 
 def _seconds(start_ms, end_ms):
@@ -202,8 +203,7 @@ def execution_stages(sfn_client, batch_client, execution_arn, prices: Prices = D
             live = describe_jobs(batch_client, [t["job_id"] for t in tasks])
         except Exception:  # noqa: BLE001 - fall back to the copies in the history
             live = {}
-    return [stage_row(t["stage"], live.get(t["job_id"]) or t["job"] or {"JobId": t["job_id"]}, prices)
-            for t in tasks]
+    return [stage_row(t["stage"], live.get(t["job_id"]) or t["job"] or {"JobId": t["job_id"]}, prices) for t in tasks]
 
 
 def totals(rows: list) -> dict:
@@ -211,5 +211,4 @@ def totals(rows: list) -> dict:
         values = [r[key] for r in rows]
         return None if not values or any(v is None for v in values) else sum(values)
 
-    return {"wait_seconds": total("wait_seconds"), "run_seconds": total("run_seconds"),
-            "cost_usd": total("cost_usd")}
+    return {"wait_seconds": total("wait_seconds"), "run_seconds": total("run_seconds"), "cost_usd": total("cost_usd")}
