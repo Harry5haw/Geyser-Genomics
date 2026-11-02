@@ -13,7 +13,7 @@ about 10 GB.
 
 Storage and metrics come from `app/storage.py`, `app/metrics.py` and the helpers in `app/tasks.py`, which are copied into the image unchanged. Local and S3 storage both work the same way they do for every other stage.
 
-The stage uses the stored `.crai` that the align stage writes. If the input is a BAM stored without its `.bai`, it builds the index itself (`samtools index`).
+The stage indexes the alignment it downloaded (`samtools index`, seconds) rather than trusting a stored `.crai`: after a re-run that failed between its two uploads, the stored index could belong to the previous file.
 
 ## Run it locally
 

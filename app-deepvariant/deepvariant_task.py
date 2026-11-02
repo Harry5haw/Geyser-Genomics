@@ -5,7 +5,7 @@ Runs in its own image (app-deepvariant/Dockerfile, built on google/deepvariant) 
     /opt/geyser-venv/bin/python deepvariant_task.py <sample_id> <reference_name>
 
 Same storage contract as the other stages (app/storage.py, via app/tasks.py):
-    reads  alignments/{id}.cram (+ .crai), or a BAM if that is all there is (tasks.alignment_input),
+    reads  alignments/{id}.cram, or a BAM if that is all there is (tasks.alignment_input),
            and reference/{reference_name} (+ optional .fai)
     writes variants_deepvariant/{id}.vcf.gz   (beside, not instead of, variants/{id}.vcf.gz)
 
@@ -37,8 +37,7 @@ import subprocess
 import sys
 import time
 
-from storage import ObjectNotFound
-from tasks import (alignment_input, ensure_reference_local, keys_for, metrics, run_shell, storage,
+from tasks import (ensure_reference_local, fetch_alignment, keys_for, metrics, run_shell, storage,
                    timed_stage, work_dir)
 
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
@@ -175,19 +174,13 @@ def _call_variants(sample_id, reference_name, pangenome=None):
     keys = deepvariant_keys(sample_id, pangenome)
     wd = work_dir(sample_id)
     try:
-        aln_key, index_key = alignment_input(sample_id)
-        bam = os.path.join(wd, os.path.basename(aln_key))  # a .cram or a .bam: DeepVariant reads both
         vcf = os.path.join(wd, f"{sample_id}.{'pangenome' if pangenome else 'deepvariant'}.vcf.gz")
         intermediate = os.path.join(wd, "intermediate")
         os.makedirs(intermediate)
 
-        print(f"Fetching alignment {storage().describe(aln_key)}", flush=True)
-        storage().download(aln_key, bam)
+        # The CRAM (or an imported BAM: DeepVariant reads both), indexed here for random access.
+        bam = fetch_alignment(sample_id, wd, need_index=True, indexer=index_bam)
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
-        try:  # DeepVariant needs random access: use the stored index (the align stage writes .crai)
-            storage().download(index_key, os.path.join(wd, os.path.basename(index_key)))
-        except ObjectNotFound:
-            index_bam(bam)  # e.g. a fetched BAM stored without its .bai
         graph = None
         if pangenome:
             graph = os.path.join(wd, os.path.basename(pangenome))

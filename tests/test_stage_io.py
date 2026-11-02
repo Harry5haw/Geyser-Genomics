@@ -402,15 +402,16 @@ def test_effective_aligner_leaves_bwa_alone(tmp_path):
 
 # --- alignment input (CRAM, else BAM) ------------------------------------------
 
-def test_alignment_input_prefers_the_cram():
+def test_alignment_input_prefers_the_cram_and_warns_about_a_bam_beside_it(capsys):
     present = {"alignments/S1.cram", "alignments/S1.bam"}
-    assert tasks.alignment_input("S1", present.__contains__) == ("alignments/S1.cram", "alignments/S1.cram.crai")
+    assert tasks.alignment_input("S1", present.__contains__) == "alignments/S1.cram"
+    assert "WARNING" in capsys.readouterr().out  # an imported BAM next to an old CRAM is easy to miss
 
 
-def test_alignment_input_falls_back_to_a_bam():
+def test_alignment_input_falls_back_to_a_bam_quietly(capsys):
     # fetch_dv_testdata.py writes alignments/<id>.bam, and runs from before CRAM left BAMs.
-    assert tasks.alignment_input("S1", {"alignments/S1.bam"}.__contains__) == (
-        "alignments/S1.bam", "alignments/S1.bam.bai")
+    assert tasks.alignment_input("S1", {"alignments/S1.bam"}.__contains__) == "alignments/S1.bam"
+    assert "WARNING" not in capsys.readouterr().out
 
 
 def test_alignment_input_without_either_names_both(local_env):
@@ -418,15 +419,32 @@ def test_alignment_input_without_either_names_both(local_env):
         tasks.alignment_input("S1")
 
 
-def test_fetch_alignment_uses_a_stored_index(local_env, tool_calls, shell_commands, tmp_path):
+def test_fetch_alignment_indexes_what_it_downloaded_not_the_stored_index(local_env, tool_calls, shell_commands,
+                                                                         tmp_path):
+    # A stored .crai can belong to the previous CRAM if a re-run failed between its two uploads.
     put(local_env, "alignments/S1.cram", b"CRAM")
-    put(local_env, "alignments/S1.cram.crai", b"CRAI")
+    put(local_env, "alignments/S1.cram.crai", b"STALE")
 
     path = tasks.fetch_alignment("S1", str(tmp_path), need_index=True)
 
     assert path == str(tmp_path / "S1.cram")
-    assert (tmp_path / "S1.cram.crai").read_bytes() == b"CRAI"
-    assert shell_commands == []
+    assert not (tmp_path / "S1.cram.crai").exists()  # not downloaded
+    assert [shlex.split(c) for c in shell_commands] == [["samtools", "index", path]]
+
+
+def test_fetch_alignment_uses_the_given_indexer(local_env, tool_calls, shell_commands, tmp_path):
+    put(local_env, "alignments/S1.cram", b"CRAM")
+    indexed = []
+
+    tasks.fetch_alignment("S1", str(tmp_path), need_index=True, indexer=indexed.append)
+
+    assert indexed == [str(tmp_path / "S1.cram")] and shell_commands == []
+
+
+def test_one_alignment_rule_for_stages_web_and_reconcile():
+    # status.py and reconcile.py import ALIGNMENT_FORMS; this pins the order readers rely on.
+    assert tasks.ALIGNMENT_FORMS == ("cram", "bam")
+    assert all(form in tasks.keys_for("S1") for form in tasks.ALIGNMENT_FORMS)
 
 
 def test_fetch_alignment_indexes_a_bam_without_one(local_env, tool_calls, shell_commands, tmp_path):

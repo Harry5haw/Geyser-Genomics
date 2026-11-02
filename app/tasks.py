@@ -116,37 +116,42 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     return keys
 
 
-def alignment_input(sample_id: str, exists=None) -> tuple:
-    """(key, index_key) of the alignment a caller should read: the CRAM, else a BAM. exists(key) -> bool.
+# keys_for() names a sample's alignment can be stored as, in the order readers prefer them. The one
+# rule for "is this sample aligned, and from what": alignment_input, the web status and reconcile.
+ALIGNMENT_FORMS = ("cram", "bam")
 
-    CRAM first: it is what the align stage writes. A BAM is legacy or imported input; its index
-    (.bam.bai) may or may not be stored. Neither present is an error naming both keys.
+
+def alignment_input(sample_id: str, exists=None) -> str:
+    """Key of the alignment a caller should read: the CRAM, else a BAM. exists(key) -> bool.
+
+    CRAM first: it is what the align stage writes. A BAM is legacy or imported input (runs from
+    before CRAM, fetch_dv_testdata.py). If both exist the CRAM wins, with a warning, because an
+    imported BAM next to an older CRAM is easy to mistake for the input. Neither is an error.
     """
     exists = exists or storage().exists
     keys = keys_for(sample_id)
-    if exists(keys["cram"]):
-        return keys["cram"], keys["crai"]
-    if exists(keys["bam"]):
-        return keys["bam"], keys["bam"] + ".bai"
-    raise FileNotFoundError(f"No alignment for {sample_id}: neither {storage().describe(keys['cram'])} "
-                            f"nor {storage().describe(keys['bam'])}")
+    found = [keys[form] for form in ALIGNMENT_FORMS if exists(keys[form])]
+    if not found:
+        raise FileNotFoundError(f"No alignment for {sample_id}: none of "
+                                + ", ".join(storage().describe(keys[f]) for f in ALIGNMENT_FORMS))
+    if len(found) > 1:
+        print(f"WARNING: {sample_id} has {' and '.join(found)}; reading {found[0]}", flush=True)
+    return found[0]
 
 
-def fetch_alignment(sample_id: str, wd: str, need_index: bool = False) -> str:
+def fetch_alignment(sample_id: str, wd: str, need_index: bool = False, indexer=None) -> str:
     """Download the sample's alignment (alignment_input) into wd, keeping its name. Returns the local path.
 
-    need_index: also fetch the stored index, or build it with samtools index if there is none
-    (callers that need random access, e.g. DeepVariant).
+    need_index: index the downloaded file (indexer(path), default samtools index) for callers that
+    need random access, e.g. DeepVariant. The stored .crai is deliberately not used: if a re-run
+    failed between its two uploads it can belong to the previous file, and indexing takes seconds.
     """
-    key, index_key = alignment_input(sample_id)
+    key = alignment_input(sample_id)
     local = os.path.join(wd, os.path.basename(key))
     print(f"Fetching alignment {storage().describe(key)}", flush=True)
     storage().download(key, local)
     if need_index:
-        try:
-            storage().download(index_key, os.path.join(wd, os.path.basename(index_key)))
-        except ObjectNotFound:
-            run_shell(f"samtools index {shlex.quote(local)}")
+        (indexer or (lambda path: run_shell(f"samtools index {shlex.quote(path)}")))(local)
     return local
 
 
@@ -439,7 +444,8 @@ def align_task(sample_id, reference_name):
         run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
         run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
         # Index first: the CRAM is what marks the stage done (web status, reconcile, the variants
-        # stage), so it must never be there without its index.
+        # stage), so it should not appear without its index. The pipeline's own readers never use
+        # the stored index (fetch_alignment), so a re-run that fails in between can't mislead them.
         storage().upload(crai, keys["crai"])
         storage().upload(cram, keys["cram"])
     finally:

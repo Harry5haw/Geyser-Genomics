@@ -15,8 +15,8 @@ import json
 from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
-from geyser_web.pipeline import (SINGLE, LayoutError, ObjectNotFound, keys_for, keys_of, layout_from_raw,
-                                 parse_raw_key)
+from geyser_web.pipeline import (ALIGNMENT_FORMS, SINGLE, LayoutError, ObjectNotFound, keys_for, keys_of,
+                                 layout_from_raw, parse_raw_key)
 
 from .runs import is_valid_sample_id, read_all_runs, read_run
 
@@ -37,7 +37,7 @@ class Stage(NamedTuple):
 STAGES = (
     Stage("qc", "QualityControl", "Quality control", ("qc_html",)),
     # The CRAM the align stage writes, or a BAM (runs from before CRAM, fetched benchmark data).
-    Stage("align", "Align", "Alignment", ("cram", "bam")),
+    Stage("align", "Align", "Alignment", ALIGNMENT_FORMS),
     # Reads only the alignment, but the state machine starts it after its Parallel state, i.e. after both.
     Stage("variants", "CallVariants", "Variant calling", ("vcf",), after=("qc", "align")),
 )

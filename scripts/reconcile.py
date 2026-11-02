@@ -48,7 +48,7 @@ for _sub in ("app", "app-deepvariant"):
         sys.path.insert(0, _path)
 
 from storage import LocalStorage, S3Storage, storage_from_env  # noqa: E402
-from tasks import MATES, PAIRED, PER_MATE_KEYS, SINGLE, keys_for, keys_of  # noqa: E402
+from tasks import ALIGNMENT_FORMS, MATES, PAIRED, PER_MATE_KEYS, SINGLE, keys_for, keys_of  # noqa: E402
 
 DEFAULT_REGION = "eu-west-2"
 _SENTINEL = "SAMPLEIDSENTINEL"
@@ -58,7 +58,7 @@ STAGE_OUTPUTS = (("qc_html", "Q"), ("cram", "A"), ("vcf", "V"))
 STAGE_NAMES = {"qc_html": "qc", "cram": "align", "vcf": "variants"}
 # Keys that also count as a stage's output: a BAM is an alignment too (runs from before CRAM,
 # fetched benchmark data). Its .crai / .tbi indexes are matched as sample outputs but never count.
-OUTPUT_ALTERNATIVES = {"cram": ("cram", "bam")}
+OUTPUT_ALTERNATIVES = {"cram": ALIGNMENT_FORMS}
 
 
 def output_keys(expected: dict, name: str) -> list:
