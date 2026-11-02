@@ -1,0 +1,23 @@
+sample,coverage,run,configuration,aligner,caller,caller_settings,snp_f1,indel_f1,snp_fn,snp_fp,indel_fn,indel_fp,errors,snp_errors_alldifficultregions,snp_errors_segdups,snp_errors_lowmappabilityall,date,source
+HG003,30x,HG003_30x_chr20,bwa + bcftools,bwa,bcftools,,0.991795,0.94893,397,758,609,497,2261,1022,462,635,2026-11-02,#95
+HG003,30x,HG003_30x_chr20,bwa + linear DV,bwa,deepvariant,,0.997474,0.995766,273,81,63,28,445,314,66,286,2026-11-02,#95
+HG003,30x,HG003_30x_chr20,bwa + pangenome DV,bwa,pangenome,,0.997575,0.996235,250,90,53,28,421,307,38,277,2026-11-02,#95
+HG003,30x,HG003_30x_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.99771,0.996189,251,70,53,29,403,285,45,253,2026-11-02,#95
+HG003,35x,HG003_chr20,bwa + bcftools,bwa,bcftools,,0.991511,0.950708,361,835,582,487,2265,,,,2026-11-01,#70
+HG003,35x,HG003_chr20,bwa + linear DV,bwa,deepvariant,,0.997752,0.997061,263,52,48,15,378,281,52,257,2026-11-02,#70
+HG003,35x,HG003_chr20,bwa + pangenome DV,bwa,pangenome,,0.997718,0.997206,242,78,42,18,380,302,41,266,2026-11-02,#70
+HG003,35x,HG003_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.997881,0.997114,235,62,43,19,359,276,46,240,2026-11-02,#145
+HG003,35x,HG003_chr20_vg,"vg giraffe + linear DV, VG flags",vg giraffe,deepvariant,VG flags,0.999152,0.996899,75,44,40,27,186,58,7,46,2026-11-02,#145
+HG003,35x,HG003_chr20_vg,vg giraffe + pangenome DV,vg giraffe,pangenome,,0.998747,0.997593,72,104,30,22,228,120,69,70,2026-11-02,#145
+HG003,35x,HG003_chr20_vg_mq5,"vg giraffe + pangenome DV, MAPQ>=5",vg giraffe,pangenome,MAPQ>=5,0.998697,0.996949,96,87,36,30,249,124,55,79,2026-11-02,#145
+HG003,35x,HG003_chr20_bwa,bwa + bcftools,bwa,bcftools,,0.989582,0.951429,350,1121,570,484,2525,,,,2026-11-02,#110
+HG003,35x,HG003_chr20_bwamem2,bwa-mem2 + bcftools,bwa-mem2,bcftools,,0.989582,0.951429,350,1121,570,484,2525,,,,2026-11-02,"#110, #129"
+HG003,35x,HG003_chr20_bwa,bwa + linear DV,bwa,deepvariant,,0.997247,0.996831,266,120,50,18,454,,,,2026-11-02,#110
+HG003,35x,HG003_chr20_bwamem2,bwa-mem2 + linear DV,bwa-mem2,deepvariant,,0.997247,0.996831,266,120,50,18,454,352,79,323,2026-11-02,"#110, #129"
+HG003,35x,HG003_chr20_bwamem2,bwa-mem2 + pangenome DV,bwa-mem2,pangenome,,0.99744,0.997299,251,108,41,17,417,339,45,304,2026-11-02,"#110, #129"
+HG003,35x,HG003_chr20_giraffe,"vg giraffe + linear DV, VG flags",vg giraffe,deepvariant,VG flags,0.997811,0.997169,216,91,40,21,368,242,25,230,2026-11-02,#129
+HG003,35x,HG003_chr20_giraffe,vg giraffe + pangenome DV,vg giraffe,pangenome,,0.997606,0.99759,190,146,31,21,388,283,76,237,2026-11-02,#129
+HG005,30x,HG005_chr20,bwa + bcftools,bwa,bcftools,,0.992337,0.955805,357,697,415,342,1811,932,413,612,2026-11-02,#95
+HG005,30x,HG005_chr20,bwa + linear DV,bwa,deepvariant,,0.997876,0.996461,233,58,49,11,351,275,77,247,2026-11-02,#95
+HG005,30x,HG005_chr20,bwa + pangenome DV,bwa,pangenome,,0.997526,0.997111,244,95,39,10,388,331,55,303,2026-11-02,#95
+HG005,30x,HG005_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.998051,0.996993,221,46,41,10,318,259,62,231,2026-11-02,#95
