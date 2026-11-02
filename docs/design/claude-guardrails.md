@@ -33,15 +33,15 @@ could create a service role without a boundary and attach it to a Lambda.
 
 | Capacity | Cap | Worst case if fully used (eu-west-2 list prices, approximate) |
 |---|---|---|
-| Fargate compute environment | `max_vcpus = 16`: 8 jobs at 2 vCPU / 4 GB | 8 × ~$0.11/h ≈ **$0.9/h** |
-| GPU compute environment | `max_vcpus = var.gpu_max_vcpus` (8, was 64): two g5.xlarge or one g5.2xlarge | ≈ **$2.3/h** with EBS |
+| Fargate compute environment | `max_vcpus = var.fargate_max_vcpus` (8, was 16): 4 jobs at 2 vCPU / 4 GB | 4 × ~$0.11/h ≈ **$0.45/h** |
+| GPU compute environment | `max_vcpus = var.gpu_max_vcpus` (4, was 64): one g5.xlarge or g4dn.xlarge | ≈ **$1.2/h** with EBS |
 | Public IPv4 per task or instance | | ~$0.005/h each |
-| **Total at both caps** | | **≈ $3.2/h** |
+| **Total at both caps** | | **≈ $1.7/h** |
 
 Changing `max_vcpus` is an in-place update. In provider 5.100.0 `max_vcpus` has no ForceNew, and the
 CustomizeDiff that forces replacement for environments with a custom service role covers only instance
 types, subnets, security groups, allocation strategy and similar fields. The plan must show
-`~ update in-place` for `aws_batch_compute_environment.gpu_env`. **Stop if it shows a replacement.**
+`~ update in-place` for `aws_batch_compute_environment.gpu_env` and `aws_batch_compute_environment.geyser_fargate`. **Stop if it shows a replacement.**
 
 Both environments scale to zero when idle (`min_vcpus = 0`), and every Batch job has an attempt timeout of
 1-4 hours, so nothing runs indefinitely without a queue of work.
@@ -54,7 +54,7 @@ Both environments scale to zero when idle (`min_vcpus = 0`), and every Batch job
   start date and resets on 2 Nov 2027. After the apply, check the period the console shows. If AWS aligned
   it to a calendar year, set `claude_project_cap_start` to a period AWS accepts.
 - Emails at 50% and 80% actual and 100% forecast, to `var.budget_alert_email`.
-- **Budget action:** when actual spend passes `var.claude_kill_switch_usd` ($12), AWS Budgets
+- **Budget action:** when actual spend passes `var.claude_kill_switch_usd` ($8), AWS Budgets
   automatically attaches the deny-all policy `geyser-claude-kill-switch` to the role. An explicit deny wins
   over everything, including sessions already open.
 - Cost: regular budgets are free, and the first two action-enabled budgets are free (AWS Budgets pricing).
@@ -63,12 +63,12 @@ Both environments scale to zero when idle (`min_vcpus = 0`), and every Batch job
 ### What the billing lag means
 
 Budgets refresh a few times a day, and cost data can trail usage by up to about 24 hours. If both
-environments ran flat out from the moment spend passed $12:
+environments ran flat out from the moment spend passed $8:
 
 | Lag before the action fires | Spend when it fires |
 |---|---|
-| 8 h | $12 + 8 × $3.2 ≈ **$38** |
-| 24 h | $12 + 24 × $3.2 ≈ **$89** |
+| 8 h | $8 + 8 × $1.7 ≈ **$22** |
+| 24 h | $8 + 24 × $1.7 ≈ **$49** |
 
 So the **kill switch alone does not hold a $20 line** against sustained full-capacity use. It also stops
 only geyser-claude: jobs already queued keep running until they finish or time out. The $20 holds because of
@@ -79,18 +79,21 @@ the other layers:
 - the GPU environment needs explicit GPU jobs (no state-machine stage yet, #44), and today it can't even
   pull images from the private subnet (#43), so a GPU job must not be submitted before #43;
 - the local hook (below) refuses new runs when the budget is close;
-- for tighter bounds, lower `gpu_max_vcpus` to 4 (one g5.xlarge, ≈ $1.2/h) and the Fargate `max_vcpus` to
-  8, which gives ≈ $1.7/h at both caps.
+- the caps were tightened on 2 Nov 2026 (GPU 64 → 4, Fargate 16 → 8, kill switch $12 → $8) at the user's request;
+  full use of both for a whole day is what the hook below exists to prevent.
 
 ## Local hook (Claude Code, not Terraform)
 
-A PreToolUse hook in `.claude/` (outside this repo's tracked files) acts before Claude's own commands:
+A PreToolUse hook in `.claude/` (outside this repo's tracked files, `guard_aws.py`) acts before Claude's own
+commands, so it trips **before** the kill switch, on spend AWS has already recorded:
 
-- refuses `terraform destroy`, and any apply whose plan destroys or replaces a bucket, the VPC, a compute
-  environment, a queue or `random_id`, or adds a NAT gateway;
-- reads the budget (`aws budgets describe-budget`, free) and refuses applies, Step Functions starts and
-  Batch submissions once actual plus forecast spend is close to the cap;
-- refuses GPU-queue submissions until #43 is done.
+- **No new runs at $6 actual:** refuses uploads to `raw_reads/` (which start the pipeline), Step Functions
+  `start-execution`/`redrive-execution` and Batch `submit-job` once the budget's actual spend is $6 or more,
+  or when the budget can't be read (fails closed).
+- **One run at a time:** refuses starting a run while a pipeline execution is `RUNNING`.
+- **No GPU jobs until #43:** refuses `submit-job` to the GPU queue.
+- refuses `terraform destroy`, and any apply whose saved-plan check shows a destroy or replace of a bucket,
+  the VPC, a compute environment, a queue or `random_id`, or a new NAT gateway.
 
 It only sees commands Claude types: boto3 scripts and other indirect calls are bounded by layers 1-3.
 

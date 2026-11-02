@@ -174,7 +174,7 @@ resource "aws_batch_compute_environment" "geyser_fargate" {
   service_role             = aws_iam_role.geyser_batch_service_role.arn
   compute_resources {
     type      = "FARGATE"
-    max_vcpus = 16
+    max_vcpus = var.fargate_max_vcpus # spend-rate cap, see docs/design/claude-guardrails.md
     # Public subnet + assignPublicIp (job definition) so tasks reach ECR, S3 and
     # CloudWatch through the internet gateway without a NAT gateway. The VPC
     # default security group allows no inbound traffic from the internet.

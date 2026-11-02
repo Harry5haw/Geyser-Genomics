@@ -43,7 +43,13 @@ variable "budget_alert_email" {
 # --- Claude Code guardrails (#73, claude_guardrails.tf) ---
 
 variable "gpu_max_vcpus" {
-  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 8 = two g5.xlarge or one g5.2xlarge at a time."
+  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 4 = one g5.xlarge (or g4dn.xlarge) at a time."
+  type        = number
+  default     = 4
+}
+
+variable "fargate_max_vcpus" {
+  description = "Max vCPUs of the Fargate Batch compute environment. Caps the CPU spend rate: 8 = four 2-vCPU stage jobs at a time."
   type        = number
   default     = 8
 }
@@ -69,7 +75,7 @@ variable "claude_project_cap_start" {
 variable "claude_kill_switch_usd" {
   description = "Actual spend (USD, since claude_project_cap_start) at which AWS Budgets attaches the deny-all kill switch to geyser-claude. Below the cap to leave room for the 8-24 h billing lag."
   type        = number
-  default     = 12
+  default     = 8
 
   validation {
     condition     = var.claude_kill_switch_usd > 0 && var.claude_kill_switch_usd < var.claude_project_cap_usd
