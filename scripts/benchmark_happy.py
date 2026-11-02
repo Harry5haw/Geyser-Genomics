@@ -22,6 +22,7 @@ summary. The overall numbers are unchanged: hap.py reports stratified rows next 
 
 import argparse
 import csv
+import math
 import os
 import subprocess
 import sys
@@ -91,14 +92,29 @@ def happy_command(sample_id, reference_name, vcf_key, out_prefix, region=None, s
     return cmd
 
 
+def read_stratification(path):
+    """[(region name, BED path)] from a hap.py stratification TSV, in file order. Relative BED paths are resolved
+    against the TSV's folder, as hap.py does."""
+    entries = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if line.strip() and not line.startswith("#"):
+                name, bed = line.rstrip("\r\n").split("\t")[:2]
+                entries.append((name, os.path.join(os.path.dirname(path), *bed.split("/"))))
+    return entries
+
+
 def read_stratification_names(path):
     """Region names from a hap.py stratification TSV (first column), in file order."""
-    with open(path, encoding="utf-8") as fh:
-        return [line.split("\t")[0] for line in fh if line.strip() and not line.startswith("#")]
+    return [name for name, _ in read_stratification(path)]
 
 
 def _number(text, kind=float):
-    return kind(float(text)) if text not in ("", ".", None) else None
+    """A hap.py CSV cell as a number; None for empty, '.' or NaN cells."""
+    if text in ("", ".", None):
+        return None
+    value = float(text)
+    return None if math.isnan(value) else kind(value)
 
 
 def read_extended(path, subsets):
@@ -190,10 +206,17 @@ def main(argv=None):
     root = os.path.abspath(a.root)
     subsets = None
     if a.stratification:
+        # a key, not a host path: always '/' (hap.py sees it inside the Linux container)
+        a.stratification = a.stratification.replace("\\", "/")
         tsv = os.path.join(root, *a.stratification.split("/"))
         if not os.path.exists(tsv):
             p.error(f"no {tsv}: run fetch_dv_testdata.py --stratifications first")
-        subsets = ["*"] + read_stratification_names(tsv)
+        entries = read_stratification(tsv)
+        missing = [bed for _, bed in entries if not os.path.exists(bed)]
+        if missing:
+            p.error(f"{len(missing)} BED(s) listed in {tsv} are missing, e.g. {missing[0]}: "
+                    "run fetch_dv_testdata.py --stratifications again")
+        subsets = ["*"] + [name for name, _ in entries]
     ref = os.path.join(root, "reference", a.reference)
     if not os.path.exists(ref + ".fai"):
         print(f"Writing {ref}.fai")

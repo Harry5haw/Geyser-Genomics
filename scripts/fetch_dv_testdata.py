@@ -275,10 +275,11 @@ def bam_region_command(root, url, key, contig, image=APP_IMAGE):
     """docker run that copies one contig's reads out of a remote indexed BAM to <root>/<key>.
 
     samtools reads the remote .bai, then fetches only that contig's byte ranges over HTTP. Reads whose mate maps to
-    another contig are kept, as in Google's own per-chromosome BAMs. The result is checked with samtools quickcheck.
+    another contig are kept, as in Google's own per-chromosome BAMs. The result is checked with samtools quickcheck;
+    a failed fetch (e.g. a dropped connection) removes its partial file.
     """
     out = f"/data/{key}"
-    script = (f"set -e; cd /tmp; samtools view -b -o {out}.part {url} {contig}; "
+    script = (f"set -e; cd /tmp; trap 'rm -f {out}.part' ERR; samtools view -b -o {out}.part {url} {contig}; "
               f"samtools quickcheck {out}.part; mv {out}.part {out}")
     return ["docker", "run", "--rm",
             "--mount", f"type=bind,source={os.path.abspath(root)},target=/data",
@@ -330,6 +331,9 @@ def fetch_dataset(name, root, force=False, pangenome=None, stratifications=False
         elif how.startswith("region:"):
             contig = how.split(":", 1)[1]
             print(f"    {contig} only, with samtools in {app_image} (about 1 GB for 30x chr20)", flush=True)
+            if subprocess.run(["docker", "image", "inspect", app_image], capture_output=True).returncode != 0:
+                raise RuntimeError(f"Docker image {app_image} not found: build it first "
+                                   f"(docker build -f Dockerfile -t {app_image} .) or pass --app-image")
             subprocess.run(bam_region_command(root, url, key, contig, app_image), check=True)
         else:
             raw = dest + ".download"

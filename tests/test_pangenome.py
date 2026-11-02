@@ -406,3 +406,48 @@ def test_read_stratification_names(tmp_path):
     tsv = tmp_path / "s.tsv"
     tsv.write_text("segdups\tGRCh38_chr20/segdups.bed\n\nlowmap\tGRCh38_chr20/lowmap.bed\n")
     assert benchmark_happy.read_stratification_names(str(tsv)) == ["segdups", "lowmap"]
+
+
+def test_bam_region_command_removes_partial_file_on_failure(tmp_path):
+    script = fetch.bam_region_command(str(tmp_path), "https://h/x.bam", "alignments/S.bam", "chr20")[-1]
+    assert "trap 'rm -f /data/alignments/S.bam.part' ERR" in script
+    assert script.index("trap") < script.index("samtools view")
+
+
+def test_region_fetch_needs_the_app_image(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return type("R", (), {"returncode": 1})()
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    monkeypatch.setattr(fetch, "dataset_files", lambda *a: [("https://h/x.bam", None, "alignments/S.bam", "region:chr20")])
+    with pytest.raises(RuntimeError, match="docker build"):
+        fetch.fetch_dataset("hg005-chr20", str(tmp_path), app_image="missing-image")
+    assert calls == [["docker", "image", "inspect", "missing-image"]]
+
+
+def test_number_treats_nan_as_missing():
+    assert benchmark_happy._number("nan", int) is None
+    assert benchmark_happy._number("NaN") is None
+    assert benchmark_happy._number("12.0", int) == 12
+
+
+def test_read_stratification_resolves_beds_next_to_the_tsv(tmp_path):
+    tsv = tmp_path / "s.tsv"
+    tsv.write_text("segdups\tGRCh38_chr20/segdups.bed\r\n")
+    [(name, bed)] = benchmark_happy.read_stratification(str(tsv))
+    assert name == "segdups"
+    assert bed == str(tmp_path / "GRCh38_chr20" / "segdups.bed")
+
+
+def test_stratification_with_missing_bed_stops_before_hap_py(tmp_path, monkeypatch):
+    (tmp_path / "stratifications").mkdir()
+    (tmp_path / "stratifications" / "GRCh38_chr20.tsv").write_text("segdups\tGRCh38_chr20/segdups.bed\n")
+    ran = []
+    monkeypatch.setattr(benchmark_happy.subprocess, "run", lambda *a, **k: ran.append(a))
+    with pytest.raises(SystemExit):
+        benchmark_happy.main(["--root", str(tmp_path), "--sample", "S", "--reference", "r.fa",
+                              "--stratification", r"stratifications\GRCh38_chr20.tsv"])
+    assert ran == []
