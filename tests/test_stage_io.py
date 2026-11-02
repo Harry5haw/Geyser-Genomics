@@ -1,6 +1,6 @@
 """Stage plumbing around the bioinformatics tools: what each stage downloads, uploads and cleans up.
 
-The tools themselves (bwa, samtools, bcftools, fastqc) are faked, so these run anywhere.
+The tools themselves (bwa-mem2, bwa, samtools, bcftools, fastqc) are faked, so these run anywhere.
 The Docker end-to-end test covers the real tools.
 """
 import gzip
@@ -13,6 +13,10 @@ import pytest
 import tasks
 
 REF = "ref.fa"
+# The default aligner's index files (bwa-mem2: .0123, .amb, .ann, .bwt.2bit.64, .pac).
+INDEX_EXTS = tasks.ALIGNER_INDEX_EXTS[tasks.DEFAULT_ALIGNER]
+# A reference whose first contig starts with a gap, like a human chromosome: bwa-mem2 is safe on it.
+GAPPED_REF = b">c\n" + b"N" * tasks.BWA_MEM2_SAFE_N_PREFIX + b"\nACGT\n"
 
 
 def put(root, key, data=b"x"):
@@ -29,8 +33,8 @@ def tool_calls(monkeypatch):
     def fake_run(cmd, check=False, timeout=None, **kwargs):
         calls.append(list(cmd))
         tool = cmd[0]
-        if tool == "bwa" and cmd[1] == "index":
-            for ext in tasks.BWA_INDEX_EXTS:
+        if tool in tasks.ALIGNER_INDEX_EXTS and cmd[1] == "index":
+            for ext in tasks.ALIGNER_INDEX_EXTS[tool]:
                 open(cmd[2] + ext, "wb").close()
         elif tool == "samtools" and cmd[1] == "faidx":
             open(cmd[2] + ".fai", "wb").close()
@@ -75,8 +79,8 @@ def work_dir_is_empty(local_env):
 # --- ensure_reference_local ---------------------------------------------------
 
 def test_stored_indexes_are_downloaded_not_rebuilt(local_env, tool_calls, tmp_path):
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
-    for ext in [".fai"] + tasks.BWA_INDEX_EXTS:
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+    for ext in [".fai"] + INDEX_EXTS:
         put(local_env, f"reference/{REF}{ext}")
     dest = tmp_path / "dest"
     dest.mkdir()
@@ -85,29 +89,98 @@ def test_stored_indexes_are_downloaded_not_rebuilt(local_env, tool_calls, tmp_pa
 
     assert path == str(dest / REF)
     assert tool_calls == []
-    assert all((dest / f"{REF}{ext}").exists() for ext in [".fai"] + tasks.BWA_INDEX_EXTS)
+    assert all((dest / f"{REF}{ext}").exists() for ext in [".fai"] + INDEX_EXTS)
 
 
 def test_missing_indexes_are_built(local_env, tool_calls, tmp_path):
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
     dest = tmp_path / "dest"
     dest.mkdir()
 
     tasks.ensure_reference_local(REF, str(dest))
 
-    assert [c[:2] for c in tool_calls] == [["bwa", "index"], ["samtools", "faidx"]]
+    assert [c[:2] for c in tool_calls] == [["samtools", "faidx"], ["bwa-mem2", "index"]]
 
 
-def test_one_missing_bwa_index_file_triggers_a_rebuild(local_env, tool_calls, tmp_path):
-    put(local_env, f"reference/{REF}", b">c\nACGT\n")
-    for ext in [".fai"] + tasks.BWA_INDEX_EXTS[:-1]:  # .sa missing
+@pytest.mark.parametrize("aligner, missing", [(a, ext) for a, exts in tasks.ALIGNER_INDEX_EXTS.items() for ext in exts])
+def test_one_missing_index_file_triggers_a_rebuild(local_env, tool_calls, tmp_path, monkeypatch, aligner, missing):
+    monkeypatch.setenv("ALIGNER", aligner)
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+    for ext in [".fai"] + [e for e in tasks.ALIGNER_INDEX_EXTS[aligner] if e != missing]:
         put(local_env, f"reference/{REF}{ext}")
     dest = tmp_path / "dest"
     dest.mkdir()
 
     tasks.ensure_reference_local(REF, str(dest))
 
-    assert [c[:2] for c in tool_calls] == [["bwa", "index"]]
+    assert [c[:2] for c in tool_calls] == [[aligner, "index"]]
+    assert all((dest / f"{REF}{ext}").exists() for ext in tasks.ALIGNER_INDEX_EXTS[aligner])
+
+
+def test_a_partly_stored_index_is_not_downloaded(local_env, tool_calls, tmp_path, monkeypatch):
+    # Only bwa's index is stored: bwa-mem2 builds its own without first downloading the shared files.
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+    for ext in [".fai"] + tasks.ALIGNER_INDEX_EXTS["bwa"]:
+        put(local_env, f"reference/{REF}{ext}")
+    downloaded = []
+    real_download = tasks.storage().download
+    monkeypatch.setattr(tasks.storage(), "download", lambda key, path: downloaded.append(key) or real_download(key, path))
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    tasks.ensure_reference_local(REF, str(dest))
+
+    assert downloaded == [f"reference/{REF}", f"reference/{REF}.fai"]
+    assert [c[:2] for c in tool_calls] == [["bwa-mem2", "index"]]
+
+
+def test_a_stored_bwa_index_is_not_enough_for_bwa_mem2(local_env, tool_calls, tmp_path):
+    # The cloud reference/ prefix held only bwa's index before bwa-mem2: .amb/.ann/.pac are shared,
+    # but bwa-mem2 also needs .0123 and .bwt.2bit.64, so it must rebuild rather than fail in `mem`.
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+    for ext in [".fai"] + tasks.ALIGNER_INDEX_EXTS["bwa"]:
+        put(local_env, f"reference/{REF}{ext}")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    tasks.ensure_reference_local(REF, str(dest))
+
+    assert [c[:2] for c in tool_calls] == [["bwa-mem2", "index"]]
+    assert all((dest / f"{REF}{ext}").exists() for ext in INDEX_EXTS)
+
+
+
+
+def test_aligner_env_selects_which_index_is_fetched(local_env, tool_calls, tmp_path, monkeypatch):
+    monkeypatch.setenv("ALIGNER", "bwa")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    for ext in [".fai"] + tasks.ALIGNER_INDEX_EXTS["bwa"]:
+        put(local_env, f"reference/{REF}{ext}")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    tasks.ensure_reference_local(REF, str(dest))
+
+    assert tool_calls == []  # bwa's stored index is complete: nothing to build
+    assert not (dest / f"{REF}.0123").exists()
+
+
+def test_the_default_index_path_applies_the_bwa_mem2_guard(local_env, tool_calls, tmp_path):
+    # Not only the align stage: any caller asking for an aligner index on a reference that starts
+    # with sequence gets bwa's index, never a bwa-mem2 one it could misalign with (bwa-mem2#262).
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    dest = tmp_path / "dest"
+    dest.mkdir()
+
+    tasks.ensure_reference_local(REF, str(dest))
+
+    assert [c[:2] for c in tool_calls] == [["samtools", "faidx"], ["bwa", "index"]]
+
+
+def test_unknown_aligner_argument_fails_before_the_download(local_env, tool_calls, tmp_path):
+    # No reference stored: reaching the download would raise FileNotFoundError instead.
+    with pytest.raises(ValueError, match="minimap2"):
+        tasks.ensure_reference_local(REF, str(tmp_path), aligner="minimap2")
 
 
 def test_variant_calling_skips_the_bwa_index(local_env, tool_calls, tmp_path):
@@ -118,7 +191,7 @@ def test_variant_calling_skips_the_bwa_index(local_env, tool_calls, tmp_path):
     tasks.ensure_reference_local(REF, str(dest), need_bwa_index=False)
 
     assert [c[:2] for c in tool_calls] == [["samtools", "faidx"]]
-    assert not (dest / f"{REF}.bwt").exists()
+    assert not any((dest / f"{REF}{ext}").exists() for ext in INDEX_EXTS)
 
 
 def test_missing_reference_fasta_is_a_clear_error(local_env, tool_calls, tmp_path):
@@ -158,13 +231,48 @@ def test_qc_timeout_comes_from_environment(local_env, monkeypatch):
 
 def test_align_uploads_bam_under_the_stage_key(local_env, tool_calls, shell_commands):
     put(local_env, "raw_reads/S1.fastq.gz")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+
+    tasks.align_task("S1", REF)
+
+    assert len(shell_commands) == 1 and shell_commands[0].startswith("bwa-mem2 mem")
+    assert "S1.fastq.gz" in shell_commands[0].split(" | ")[0]  # the aligner reads the upload, still gzipped
+    assert (local_env / "alignments" / "S1.bam").read_bytes().startswith(b"output of: bwa-mem2 mem")
+    assert work_dir_is_empty(local_env)
+
+
+def test_align_with_aligner_bwa_builds_and_runs_bwa(local_env, tool_calls, shell_commands, monkeypatch):
+    monkeypatch.setenv("ALIGNER", "bwa")
+    put(local_env, "raw_reads/S1.fastq.gz")
     put(local_env, f"reference/{REF}", b">c\nACGT\n")
 
     tasks.align_task("S1", REF)
 
-    assert len(shell_commands) == 1 and shell_commands[0].startswith("bwa mem")
-    assert "S1.fastq.gz" in shell_commands[0].split(" | ")[0]  # bwa reads the upload, still gzipped
-    assert (local_env / "alignments" / "S1.bam").read_bytes().startswith(b"output of: bwa mem")
+    assert [c[:2] for c in tool_calls] == [["samtools", "faidx"], ["bwa", "index"]]
+    assert shell_commands[0].startswith("bwa mem")
+
+
+def test_align_falls_back_to_bwa_when_the_first_contig_starts_with_sequence(
+        local_env, tool_calls, shell_commands, capsys):
+    # bwa-mem2#262: reads at the very start of the first contig get misplaced. ACGT... has no gap.
+    put(local_env, "raw_reads/S1.fastq.gz")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+
+    tasks.align_task("S1", REF)
+
+    assert shell_commands[0].startswith("bwa mem ")
+    assert ["bwa", "index"] in [c[:2] for c in tool_calls]
+    assert not any(c[0] == "bwa-mem2" for c in tool_calls)  # no wasted bwa-mem2 index build
+    assert "bwa-mem2#262" in capsys.readouterr().out
+
+
+def test_unknown_aligner_fails_before_any_download(local_env, tool_calls, monkeypatch):
+    monkeypatch.setenv("ALIGNER", "bowtie2")
+    put(local_env, "raw_reads/S1.fastq.gz")
+
+    with pytest.raises(ValueError, match="bowtie2"):
+        tasks.align_task("S1", REF)  # no reference stored: a download would fail differently
+    assert tool_calls == []
     assert work_dir_is_empty(local_env)
 
 
@@ -177,7 +285,7 @@ def test_variants_calls_bcftools_on_the_aligned_bam(local_env, tool_calls, shell
     (command,) = shell_commands
     assert command.startswith("bcftools mpileup") and "bcftools call -mv" in command
     assert (local_env / "variants" / "S1.vcf.gz").exists()
-    # variant calling must not build the (slow) BWA index
+    # variant calling must not build the (slow) aligner index
     assert [c[:2] for c in tool_calls] == [["samtools", "faidx"]]
     assert work_dir_is_empty(local_env)
 
@@ -226,3 +334,42 @@ def test_keys_follow_the_documented_layout():
         "bam": "alignments/S1.bam",
         "vcf": "variants/S1.vcf.gz",
     }
+
+
+# --- bwa-mem2 guard (bwa-mem2#262) ---------------------------------------------
+
+def write_ref(tmp_path, text, name="r.fa"):
+    path = tmp_path / name
+    if name.endswith(".gz"):
+        import gzip
+        with gzip.open(path, "wt") as fh:
+            fh.write(text)
+    else:
+        path.write_text(text)
+    return str(path)
+
+
+def test_first_contig_prefix_joins_lines_and_stops_at_the_next_contig(tmp_path):
+    ref = write_ref(tmp_path, ">a desc\nnnAC\nGT\n>b\nTTTT\n")
+    assert tasks.first_contig_prefix(ref, 5) == "NNACG"
+    assert tasks.first_contig_prefix(ref, 100) == "NNACGT"  # never reads into contig b
+
+
+def test_first_contig_prefix_reads_gzipped_fasta(tmp_path):
+    assert tasks.first_contig_prefix(write_ref(tmp_path, ">a\nNNNA\n", "r.fa.gz"), 3) == "NNN"
+
+
+@pytest.mark.parametrize("first_contig, expected", [
+    ("N" * 1000 + "ACGT", "bwa-mem2"),           # human-like leading gap
+    ("n" * 600 + "\n" + "N" * 400, "bwa-mem2"),  # soft-masked, split over lines
+    ("N" * 999 + "A", "bwa"),                    # gap one base too short
+    ("ACGT" + "N" * 2000, "bwa"),                # sequence at position 1
+    ("N" * 500, "bwa"),                          # contig shorter than the window: can't tell, be safe
+])
+def test_effective_aligner(tmp_path, first_contig, expected):
+    ref = write_ref(tmp_path, f">c\n{first_contig}\n>d\n{'N' * 2000}\n")
+    assert tasks.effective_aligner("bwa-mem2", ref) == expected
+
+
+def test_effective_aligner_leaves_bwa_alone(tmp_path):
+    assert tasks.effective_aligner("bwa", write_ref(tmp_path, ">c\nACGT\n")) == "bwa"

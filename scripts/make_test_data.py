@@ -118,13 +118,22 @@ def main(argv=None):
                    help="write paired-end reads as <sample>_R1.fastq.gz and <sample>_R2.fastq.gz "
                         "(same total coverage)")
     p.add_argument("--insert-size", type=int, default=400, help="mean fragment length for --paired")
+    p.add_argument("--leading-gap", type=int, default=0, metavar="N",
+                   help="start the reference with N Ns, like the gap at the start of a human chromosome "
+                        "(the align stage only uses bwa-mem2 on such references; see BWA_MEM2_SAFE_N_PREFIX "
+                        "in app/tasks.py). Reads and SNPs are the same, the SNPs N positions later; default 0")
     a = p.parse_args(argv)
+    if a.leading_gap < 0:
+        p.error("--leading-gap must be >= 0")
 
     rng = random.Random(a.seed)
     reference = make_reference(rng, a.length)
     sample_genome, snps = plant_snps(rng, reference, a.snps, a.read_length)
+    # The gap goes into the FASTA only, after simulation, so the reads (and the rng) are unchanged.
+    for snp in snps:
+        snp["pos"] += a.leading_gap
 
-    write_fasta(os.path.join(a.root, "reference", a.reference), a.contig, reference)
+    write_fasta(os.path.join(a.root, "reference", a.reference), a.contig, "N" * a.leading_gap + reference)
 
     raw_dir = os.path.join(a.root, "raw_reads")
     os.makedirs(raw_dir, exist_ok=True)
@@ -155,7 +164,8 @@ def main(argv=None):
                    "planted_duplicates": n_dup}, fh, indent=2)
 
     unit = "pairs" if a.paired else "reads"
-    print(f"reference : {os.path.join(a.root, 'reference', a.reference)} ({a.length:,} bp)")
+    gap = f", starting with {a.leading_gap:,} Ns" if a.leading_gap else ""
+    print(f"reference : {os.path.join(a.root, 'reference', a.reference)} ({a.length + a.leading_gap:,} bp{gap})")
     print(f"reads     : {', '.join(fastq_paths)} ({n:,} {unit} x {a.read_length} bp, "
           f"{n_dup:,} planted duplicates)")
     print(f"truth     : {truth_path} ({len(snps)} SNPs)")

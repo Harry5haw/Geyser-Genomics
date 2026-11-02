@@ -29,6 +29,22 @@ def test_is_deterministic(tmp_path):
     assert a == b
 
 
+def test_leading_gap_pads_the_reference_and_shifts_the_truth_only(tmp_path):
+    args = ["--length", "3000", "--snps", "2", "--coverage", "5"]
+    make_test_data.main(["--root", str(tmp_path / "a")] + args)
+    make_test_data.main(["--root", str(tmp_path / "b"), "--leading-gap", "1000"] + args)
+    ref_a = read_fasta(tmp_path / "a" / "reference" / "synthetic_ref.fa")
+    ref_b = read_fasta(tmp_path / "b" / "reference" / "synthetic_ref.fa")
+    assert ref_b == "N" * 1000 + ref_a
+    snps_a = json.loads((tmp_path / "a" / "truth" / "SYNTH001.json").read_text())["snps"]
+    snps_b = json.loads((tmp_path / "b" / "truth" / "SYNTH001.json").read_text())["snps"]
+    assert [s["pos"] + 1000 for s in snps_a] == [s["pos"] for s in snps_b]
+    for snp in snps_b:
+        assert ref_b[snp["pos"] - 1] == snp["ref"]
+    reads = [(tmp_path / r / "raw_reads" / "SYNTH001.fastq.gz").read_bytes() for r in ("a", "b")]
+    assert gzip.decompress(reads[0]) == gzip.decompress(reads[1])  # same reads, only the reference moved
+
+
 def read_fastq(path):
     with gzip.open(path, "rt") as fh:
         lines = fh.read().splitlines()
