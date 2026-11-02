@@ -676,12 +676,32 @@ def align_task(sample_id, reference_name):
 # the unsharded ones (checked with SNPs on window boundaries; tests/test_e2e_docker.py).
 SHARD_METRIC = "CallVariantsShard"  # its own metric (and dashboard group); the merge is CallVariants
 DEFAULT_REGION_WINDOW = 50_000_000  # bp per region: GRCh38 chr20 (64.4 Mb) -> 2 shards
-PARTS_PREFIX = "variants/{sample_id}/parts/"
+# Parts live per run (RUN_NAME: the Step Functions execution, or run_local's run), so a merge only ever
+# sees its own run's shards: the job role can't delete objects, and an earlier run's parts stay behind.
+# Without RUN_NAME they share "unnamed", and a re-run that skips some shards could merge stale ones.
+PARTS_PREFIX = "variants/{sample_id}/parts/{run}/"
+
+
+def parts_prefix(sample_id: str) -> str:
+    return PARTS_PREFIX.format(sample_id=sample_id, run=_safe_name(os.environ.get("RUN_NAME") or "unnamed"))
+
+
+def _safe_name(text: str) -> str:
+    return "".join(c if c.isalnum() or c in "._-" else "_" for c in text)
 
 
 def contig_lengths_from_fai(text: str) -> list:
-    """[(contig, length)] in reference order, from a .fai."""
-    return [(cols[0], int(cols[1])) for cols in (line.split("\t") for line in text.splitlines() if line.strip())]
+    """[(contig, length)] in reference order, from a .fai. A malformed line is a ValueError naming it."""
+    lengths = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        cols = line.split("\t")
+        try:
+            lengths.append((cols[0], int(cols[1])))
+        except (IndexError, ValueError) as err:
+            raise ValueError(f"Malformed .fai line {number}: {line[:80]!r}") from err
+    return lengths
 
 
 def contig_lengths_from_fasta(path: str) -> list:
@@ -693,6 +713,8 @@ def contig_lengths_from_fasta(path: str) -> list:
             if line.startswith(">"):
                 if name is not None:
                     lengths.append((name, total))
+                if not line[1:].split():
+                    raise ValueError(f"FASTA header without a name in {os.path.basename(path)}")
                 name, total = line[1:].split()[0], 0
             else:
                 total += len(line.strip())
@@ -719,9 +741,8 @@ def regions_from_lengths(lengths, window: int) -> list:
 
 def region_part_key(sample_id: str, region: str) -> str:
     """variants/{id}/parts/<region>.vcf.gz; the name is the region made filename-safe plus a short hash."""
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in region)
-    digest = hashlib.md5(region.encode("utf-8")).hexdigest()[:8]
-    return PARTS_PREFIX.format(sample_id=sample_id) + f"{safe}-{digest}.vcf.gz"
+    digest = hashlib.md5(region.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]  # a name, not security
+    return parts_prefix(sample_id) + f"{_safe_name(region)}-{digest}.vcf.gz"
 
 
 def reference_regions(local_ref: str, window: int) -> list:
@@ -797,13 +818,18 @@ def variants_task(sample_id, reference_name, window=None):
         else:
             regions = reference_regions(ref, window)
             part_keys = [region_part_key(sample_id, r) for r in regions]
-            missing = [r for r, k in zip(regions, part_keys, strict=True) if not storage().exists(k)]
+            stored = set(storage().list_keys(parts_prefix(sample_id)))  # one listing, not a HEAD per part
+            missing = [r for r, k in zip(regions, part_keys, strict=True) if k not in stored]
             if missing:
                 raise FileNotFoundError(
                     f"{len(missing)} of {len(regions)} region parts missing for {sample_id} "
                     f"(window {window}): {', '.join(missing[:5])}{' ...' if len(missing) > 5 else ''}"
                 )
             provenance.note(regions=len(regions), region_window=window)
+            try:  # the alignment the shards read, for the record (not downloaded here; never fails the merge)
+                provenance.note_input(alignment_input(sample_id))
+            except FileNotFoundError:
+                print(f"Note: no alignment for {sample_id} to name in the run record", flush=True)
             listing = os.path.join(wd, "parts.txt")
             with open(listing, "w") as fh:
                 for i, key in enumerate(part_keys):
@@ -851,18 +877,20 @@ def main(argv=None) -> int:
     parser.add_argument("--region", help="variants: call only this region (a scatter-gather shard)")
     parser.add_argument("--window", type=int, help="variants: merge the shards of regions planned with this window")
     args = parser.parse_args(argv)
-    if (args.region or args.window) and args.task_name != "variants":
+    if (args.region is not None or args.window is not None) and args.task_name != "variants":
         parser.error("--region and --window only apply to 'variants'")
-    if args.region and args.window:
+    if args.region is not None and args.window is not None:
         parser.error("--region (call one shard) and --window (merge the shards) are different jobs")
+    if args.window is not None and args.window < 1:
+        parser.error("--window must be >= 1")
 
     func, needs_reference = TASKS[args.task_name]
     if needs_reference:
         if not args.reference_name:
             parser.error(f"'{args.task_name}' requires reference_name")
-        if args.region:
+        if args.region is not None:
             variants_shard_task(args.srr_id, args.reference_name, args.region)
-        elif args.window:
+        elif args.window is not None:
             func(args.srr_id, args.reference_name, window=args.window)
         else:
             func(args.srr_id, args.reference_name)

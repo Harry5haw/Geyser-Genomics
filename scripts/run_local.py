@@ -441,7 +441,10 @@ def main(argv=None):
             pg_image=a.pg_image,
             pangenome=a.pangenome,
             pg_shm=a.pg_shm_size,
-            regions=local_regions(a.root, reference, a.shard_window) if a.shard_window else None,
+            # Only when there is a bcftools stage to shard (not --caller deepvariant/pangenome).
+            regions=local_regions(a.root, reference, a.shard_window)
+            if a.shard_window and "bcftools" in CALLER_SETS[a.caller]
+            else None,
             shard_window=a.shard_window,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]

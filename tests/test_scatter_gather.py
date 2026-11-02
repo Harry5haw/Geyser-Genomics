@@ -170,6 +170,8 @@ def test_cli_dispatches_shard_merge_and_plain_variants(dispatched):
         ["qc", "S1", "--region", "c:1-10"],
         ["align", "S1", "r.fa", "--window", "5"],
         ["variants", "S1", "r.fa", "--region", "c:1-2", "--window", "5"],
+        ["variants", "S1", "r.fa", "--window", "0"],  # 0 is falsy: must not fall through to an unsharded call
+        ["qc", "S1", "--window", "0"],
     ],
 )
 def test_cli_rejects_shard_options_where_they_do_not_apply(argv, dispatched):
@@ -206,3 +208,64 @@ def test_an_empty_index_is_an_error_not_an_empty_merge(tmp_path):
     (tmp_path / "r.fa.fai").write_bytes(b"")
     with pytest.raises(ValueError, match="No regions"):
         tasks.reference_regions(str(ref), 100)
+
+
+# --- review fixes -----------------------------------------------------------------------
+
+
+def test_parts_are_kept_per_run(monkeypatch):
+    monkeypatch.setenv("RUN_NAME", "S1-20261102T100000Z-abc")
+    first = tasks.region_part_key("S1", "c:1-10")
+    monkeypatch.setenv("RUN_NAME", "S1-20261102T110000Z-def")
+    second = tasks.region_part_key("S1", "c:1-10")
+    assert first.startswith("variants/S1/parts/S1-20261102T100000Z-abc/") and first != second
+    monkeypatch.delenv("RUN_NAME")
+    assert tasks.region_part_key("S1", "c:1-10").startswith("variants/S1/parts/unnamed/")
+
+
+def test_the_merge_never_uses_another_runs_parts(local_env, tool_calls, shell_commands, uploads, monkeypatch):
+    put_reference(local_env)
+    regions = tasks.regions_from_lengths([("c", 1004)], 300)
+    monkeypatch.setenv("RUN_NAME", "old-run")
+    for region in regions:
+        put(local_env, tasks.region_part_key("S1", region), b"stale")
+    monkeypatch.setenv("RUN_NAME", "new-run")
+    for region in regions[:2]:  # the new run's shards for two regions didn't happen
+        put(local_env, tasks.region_part_key("S1", region), b"fresh")
+
+    with pytest.raises(FileNotFoundError, match="2 of 4 region parts missing"):
+        tasks.variants_task("S1", REF, window=300)
+    assert uploads == []
+
+
+def test_the_merge_names_the_alignment_its_shards_read(local_env, tool_calls, shell_commands):
+    put_reference(local_env)
+    put(local_env, "alignments/S1.cram", b"CRAM")
+    for region in tasks.regions_from_lengths([("c", 1004)], 600):
+        put(local_env, tasks.region_part_key("S1", region), b"x")
+    tasks.variants_task("S1", REF, window=600)
+    part = json.loads((local_env / "runs" / "S1.provenance" / "CallVariants.json").read_text())
+    assert "alignments/S1.cram" in [i["key"] for i in part["inputs"]]
+
+
+def test_a_malformed_fai_names_the_line():
+    with pytest.raises(ValueError, match="Malformed .fai line 2"):
+        tasks.contig_lengths_from_fai("a\t6\t8\t4\t5\nbroken\n")
+
+
+def test_a_fasta_header_without_a_name_is_a_clear_error(tmp_path):
+    fasta = tmp_path / "r.fa"
+    fasta.write_text(">\nACGT\n")
+    with pytest.raises(ValueError, match="header without a name"):
+        tasks.contig_lengths_from_fasta(str(fasta))
+
+
+def test_run_local_plans_regions_only_for_a_bcftools_stage(tmp_path, monkeypatch):
+    planned = []
+    monkeypatch.setattr(run_local, "local_regions", lambda *a: planned.append(a) or ["c:1-10"])
+    monkeypatch.setattr(run_local, "run_job", lambda *a, **k: 0)
+    monkeypatch.setattr(run_local, "sample_keys", lambda *a: ["raw_reads/S1.fastq.gz"])
+    run_local.main(["--root", str(tmp_path), "--sample", "S1", "--caller", "deepvariant", "--shard-window", "10"])
+    assert planned == []  # no bcftools stage: nothing to shard, the local reference isn't read
+    run_local.main(["--root", str(tmp_path), "--sample", "S1", "--shard-window", "10"])
+    assert len(planned) == 1
