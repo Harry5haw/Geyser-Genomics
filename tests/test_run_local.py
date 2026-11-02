@@ -153,3 +153,8 @@ def test_every_job_of_a_run_gets_the_same_run_name(monkeypatch):
 def test_deepvariant_owns_the_samples_stats_only_without_bcftools(caller, expected):
     jobs = run_local.pipeline_jobs("S1", "ref.fa", caller=caller)
     assert {j["name"]: j["env"] for j in jobs if "env" in j} == expected
+
+
+def test_a_caller_added_to_an_earlier_run_does_not_claim_its_stats():
+    jobs = run_local.pipeline_jobs("S1", "ref.fa", caller="deepvariant", skip_to_variants=True)
+    assert [(j["name"], j["env"]) for j in jobs] == [("deepvariant", {})]

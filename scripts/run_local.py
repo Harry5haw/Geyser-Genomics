@@ -166,7 +166,8 @@ def pipeline_jobs(
             }
         )
     # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
-    caller_env = {} if "bcftools" in sets else {"PIPELINE_CALLER": sets[0]}
+    # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
+    caller_env = {} if "bcftools" in sets or skip_to_variants else {"PIPELINE_CALLER": sets[0]}
     if "deepvariant" in sets:
         jobs.append(
             {

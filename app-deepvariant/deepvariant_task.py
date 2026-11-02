@@ -37,6 +37,7 @@ import subprocess
 import sys
 import time
 
+import provenance
 from tasks import (
     _log_summary,
     _run_stats_tool,
@@ -106,16 +107,29 @@ def pipeline_caller() -> str:
     return os.environ.get("PIPELINE_CALLER", "").strip().lower()
 
 
+# Written as the sample's stats when the run's caller couldn't produce any: an earlier run's file would
+# otherwise stay in place (no s3:DeleteObject) and, inherited through the run record, pass for this run's.
+NO_STATS_NOTE = "# No bcftools stats: {caller} was this run's caller and its stats step failed (see the job log).\n"
+
+
 def caller_stats(ref: str, vcf: str, wd: str, keys: dict, pangenome=None) -> list:
     """(local file, key) pairs to upload: PASS-call stats as stats/{id}/bcftools.stats.<caller>.txt, and,
     when this is the run's caller (pipeline_caller), also as the sample's stats/{id}/bcftools.stats.txt,
     which the quality gate and the dashboard's quality widgets read. Otherwise the bcftools stage owns
-    that file, so a benchmark running both callers never overwrites it. Best effort, like all stats."""
+    that file, so a benchmark running both callers never overwrites it. Best effort, like all stats:
+    if they fail for the run's caller, the sample's file becomes NO_STATS_NOTE, which the gate rejects
+    as not bcftools output instead of accepting an earlier run's numbers."""
     caller = CALLER_NAME[bool(pangenome)]
+    primary = pipeline_caller() == caller
+    provenance.note_tool_as("bcftools (DeepVariant image)", "bcftools")
     out = os.path.join(wd, os.path.basename(keys["caller_stats"]))
     if not _run_stats_tool(f"bcftools stats ({caller}, PASS calls)", pass_stats_command(ref, vcf, out)):
-        return []
-    primary = pipeline_caller() == caller
+        if not primary:
+            return []
+        note = os.path.join(wd, "bcftools.stats.none.txt")
+        with open(note, "w") as fh:
+            fh.write(NO_STATS_NOTE.format(caller=caller))
+        return [(note, keys["bcftools_stats"])]
     # "bcftools stats: ..." is the line the quality widgets parse (scripts/monitoring.py QUALITY_PARSE).
     _log_summary("bcftools stats" if primary else f"bcftools stats {caller}", parse_bcftools_stats, out)
     return [(out, keys["caller_stats"])] + ([(out, keys["bcftools_stats"])] if primary else [])
