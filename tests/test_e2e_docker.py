@@ -5,6 +5,7 @@ Opt in with GEYSER_E2E=1 after:  docker build -f Dockerfile -t geyser-app .
 
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -33,6 +34,7 @@ def test_pipeline_recovers_planted_snps(tmp_path, capfd):
     _check_cram_and_indexes(root, "SYNTH001", reads=10_000)
     _check_stats(root, "SYNTH001", paired=False)
     _check_run_record(root, "SYNTH001", aligner="bwa")
+    _check_gate(root, "SYNTH001", layout="single")
 
 
 def _check_run_record(root, sample, aligner):
@@ -42,18 +44,31 @@ def _check_run_record(root, sample, aligner):
 
     record = json.loads((root / "runs" / f"{sample}.provenance.json").read_text())
     assert record["status"] == "succeeded" and record["complete"], record["stages"]
-    assert set(record["stages"]) == {"QualityControl", "Align", "CallVariants"}
+    assert set(record["stages"]) == {"QualityControl", "Align", "CallVariants", "QualityGate"}
     assert record["run_name"].startswith(f"{sample}-") and record["run_name"].endswith("-local")
     assert record["app_version"].startswith("local:")
     assert record["aligner"] == aligner
     ref = root / "reference" / "synthetic_ref.fa"
     assert record["reference"]["md5"] == hashlib.md5(ref.read_bytes()).hexdigest()
-    for tool in ("fastp", "samtools", "bcftools", "mosdepth", aligner):
+    for tool in ("fastp", "samtools", "bcftools", "mosdepth", "geyser-gate", aligner):
         assert record["tools"].get(tool), (tool, record["tools"])  # every tool reported a version
     assert record["tools"]["mosdepth release"] == "0.3.15"
     outputs = {o["key"] for o in record["outputs"]}
     assert {f"alignments/{sample}.cram", f"variants/{sample}.vcf.gz", f"stats/{sample}/flagstat.txt"} <= outputs
     assert record["stats"]["flagstat"]["in_total"] == 10_000
+    assert record["gate"]["verdict"] == "pass" and record["gate"]["mode"] == "warn", record["gate"]
+    assert f"qc_reports/{sample}.gate.json" in outputs
+
+
+def _check_gate(root, sample, layout):
+    """qc_reports/{id}.gate.json: the real binary's verdict, with run_local's synthetic thresholds."""
+    verdict = json.loads((root / "qc_reports" / f"{sample}.gate.json").read_text())
+    assert verdict["verdict"] == "pass", verdict["reasons"]
+    assert verdict["config"] == "/opt/geyser-gate/thresholds/synthetic.toml"
+    assert verdict["layout"] == layout
+    assert all(v["status"] == "ok" for v in verdict["inputs"].values()), verdict["inputs"]  # nothing stale
+    assert verdict["metrics"]["read_count_difference"] == 0  # no read lost between upload and alignment
+    assert verdict["metrics"]["reads"] == 10_000
 
 
 def _check_stats(root, sample, paired):
@@ -154,6 +169,21 @@ def test_planted_duplicates_are_marked_without_changing_calls(tmp_path, capfd):
     # Each planted copy adds one flagged read; single-end reads that merely share a start add a few more.
     assert planted <= marked < planted + 0.1 * 10_000
 
+    # The quality gate catches the duplicated library (synthetic thresholds: at most 6% duplicates).
+    # GATE_MODE=warn (default): the verdict is stored and recorded, and the run still succeeds.
+    verdict = json.loads((root / "qc_reports" / "SYNTH001.gate.json").read_text())
+    assert verdict["verdict"] == "fail"
+    assert any(r.startswith("duplicate_pct ") and "above the maximum 6" in r for r in verdict["reasons"])
+    assert "SYNTH001 failed the quality gate: " in out + err and "GATE_MODE=warn" in out + err
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert record["gate"]["verdict"] == "fail" and record["status"] == "succeeded"
+    # GATE_MODE=fail: the same verdict fails the stage (the container exits non-zero).
+    image = os.environ.get("GEYSER_IMAGE", "geyser-app")
+    env = {"GATE_MODE": "fail", "GATE_CONFIG": "/opt/geyser-gate/thresholds/synthetic.toml"}
+    cmd = run_local.docker_command(["python", "tasks.py", "gate", "SYNTH001"], str(root), image, extra_env=env)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode != 0 and "GateFailed: SYNTH001 failed the quality gate" in result.stdout + result.stderr
+
 
 def _run(root, sample, capfd, *extra):
     exit_code = run_local.main(
@@ -197,6 +227,7 @@ def test_paired_end_sample_runs_through_every_stage(tmp_path, capfd):
     _check_cram_and_indexes(root, "PAIRED001", reads=10_000)  # 5,000 pairs
     _check_stats(root, "PAIRED001", paired=True)
     _check_run_record(root, "PAIRED001", aligner="bwa-mem2")
+    _check_gate(root, "PAIRED001", layout="paired")
     report = json.loads((root / "qc_reports" / "PAIRED001.fastp.json").read_text())  # one report, both mates
     assert report["summary"]["before_filtering"]["total_reads"] == 10_000 and report["insert_size"]["peak"] > 0
     assert not list((root / "qc_reports").glob("PAIRED001_R*"))
