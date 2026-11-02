@@ -54,6 +54,10 @@ def _check_run_record(root, sample, aligner):
     outputs = {o["key"] for o in record["outputs"]}
     assert {f"alignments/{sample}.cram", f"variants/{sample}.vcf.gz", f"stats/{sample}/flagstat.txt"} <= outputs
     assert record["stats"]["flagstat"]["in_total"] == 10_000
+    for task, stage in record["stages"].items():  # #59: each job measured itself
+        usage = stage["resources"]
+        assert usage["cpu_seconds"] > 0 and usage["peak_memory_mib"] > 10, (task, usage)
+        print(f"{task} resources: {usage}")
 
 
 def _check_stats(root, sample, paired):
