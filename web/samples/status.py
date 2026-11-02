@@ -37,7 +37,8 @@ class Stage(NamedTuple):
 STAGES = (
     Stage("qc", "QualityControl", "Quality control", "qc_html"),
     Stage("align", "Align", "Alignment", "bam"),
-    Stage("variants", "CallVariants", "Variant calling", "vcf", after=("align",)),
+    # Reads only the BAM, but the state machine starts it after its Parallel state, i.e. after both.
+    Stage("variants", "CallVariants", "Variant calling", "vcf", after=("qc", "align")),
 )
 
 ACTIVE_STATES = ("queued", "running")
@@ -164,7 +165,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
     run_state = run.get("state") if run else None
     done = {s.name for s in stages if s.state == "done"}
     # Pending stages whose inputs exist: qc and align from the start (they run side by side in the
-    # cloud), variants once align is done.
+    # cloud), variants once both are done.
     ready = [view for view, st in zip(stages, STAGES)
              if view.state == "pending" and all(dep in done for dep in st.after)]
     first_pending = ready[0] if ready else None

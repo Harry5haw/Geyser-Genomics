@@ -29,7 +29,7 @@ def test_completed_stages_come_from_keys_and_durations_from_metrics(storage):
     write_metrics(storage, [metric("QualityControl", "S1", duration=5.5), metric("Align", "S1", duration=2.0),
                             metric("QualityControl", "OTHER", duration=99)])
     sample = status.load_one(storage, "S1")
-    assert states(sample) == ["done", "done", "running"]  # variants once align is done
+    assert states(sample) == ["done", "done", "running"]  # variants once qc and align are done
     assert [s.duration for s in sample.stages] == [5.5, 2.0, None]
     assert sample.duration == 7.5
 
@@ -40,7 +40,7 @@ def test_align_can_finish_before_qc(storage):
     put(storage, "alignments/S1.bam", b"x")
     sample = status.load_one(storage, "S1")
     assert sample.state == "running"
-    assert states(sample) == ["running", "done", "running"]
+    assert states(sample) == ["running", "done", "pending"]  # variants waits for both branches
 
 
 def test_local_run_shows_one_stage_at_a_time(storage):
