@@ -71,7 +71,7 @@ def test_align_command_marks_duplicates_after_coordinate_sort():
     cmd = tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.bam", 4, "/w", "S1")
     bwa, sort, markdup = _align_stages(cmd)
 
-    assert bwa[:4] == ["bwa", "mem", "-t", "4"] and bwa[-2:] == ["/w/ref.fa", "/w/S1.fastq"]
+    assert bwa[:4] == ["bwa-mem2", "mem", "-t", "4"] and bwa[-2:] == ["/w/ref.fa", "/w/S1.fastq"]
     assert bwa[bwa.index("-R") + 1] == "@RG\\tID:S1\\tSM:S1"  # literal backslash-t, as bwa expects
     assert "-p" not in bwa  # one FASTQ = single-end reads, never interleaved
     assert sort[:2] == ["samtools", "sort"] and "-u" in sort and sort[-1] == "-"
@@ -122,6 +122,42 @@ def test_align_command_paired_end_runs_fixmate_between_bwa_and_sort():
     assert bwa[-3:] == ["/w/ref.fa", "/w/S1_R1.fastq", "/w/S1_R2.fastq"]  # R1 then R2
     assert fixmate == ["samtools", "fixmate", "-m", "-u", "-", "-"]  # -m adds the ms/MC tags markdup needs
     assert sort[:2] == ["samtools", "sort"] and markdup[:2] == ["samtools", "markdup"]
+
+
+def test_align_command_runs_bwa_when_asked():
+    # Same arguments for both aligners: only the program name changes.
+    default = tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.bam", 4, "/w", "S1")
+    bwa = tasks.align_command("/w/ref.fa", "/w/S1.fastq", "/w/S1.bam", 4, "/w", "S1", aligner="bwa")
+    assert bwa.startswith("bwa mem ") and default.startswith("bwa-mem2 mem ")
+    assert bwa.replace("bwa mem ", "", 1) == default.replace("bwa-mem2 mem ", "", 1)
+
+
+def test_align_command_rejects_unknown_aligner():
+    with pytest.raises(ValueError, match="minimap2"):
+        tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1", aligner="minimap2")
+
+
+@pytest.mark.parametrize("value, expected", [(None, "bwa-mem2"), ("", "bwa-mem2"), ("bwa", "bwa"),
+                                             (" bwa-mem2 ", "bwa-mem2")])
+def test_aligner_from_env(monkeypatch, value, expected):
+    if value is None:
+        monkeypatch.delenv("ALIGNER", raising=False)
+    else:
+        monkeypatch.setenv("ALIGNER", value)
+    assert tasks.aligner_from_env() == expected
+
+
+def test_aligner_from_env_rejects_unknown_names(monkeypatch):
+    monkeypatch.setenv("ALIGNER", "BWA")  # names are exact: the value is the program that runs
+    with pytest.raises(ValueError, match="BWA"):
+        tasks.aligner_from_env()
+
+
+def test_every_aligner_index_has_the_files_bwa_mem_reads():
+    # .amb/.ann/.pac are common to both formats; each aligner adds its own suffix-array files.
+    for exts in tasks.ALIGNER_INDEX_EXTS.values():
+        assert {".amb", ".ann", ".pac"} <= set(exts) and len(set(exts)) == len(exts)
+    assert {".0123", ".bwt.2bit.64"} <= set(tasks.ALIGNER_INDEX_EXTS["bwa-mem2"])
 
 
 def test_align_command_rejects_wrong_number_of_fastqs():

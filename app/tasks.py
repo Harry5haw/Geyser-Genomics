@@ -8,9 +8,9 @@ Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> qc_reports/{id}_fastqc.{html,zip}     (qc)
                             -> alignments/{id}.bam                    (align: sorted, duplicates marked)
     alignments/{id}.bam     -> variants/{id}.vcf.gz                   (variants)
-    reference/{reference_name} (+ optional .fai / bwa indexes)
+    reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
-qc and align both read the gzipped upload directly (FastQC and bwa mem read gzip), so they don't
+qc and align both read the gzipped upload directly (FastQC, bwa-mem2 and bwa read gzip), so they don't
 depend on each other: the state machine runs them as two branches of a Parallel state. There is no
 decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
 
@@ -25,6 +25,7 @@ Functions definition (infrastructure/state_machine.asl.json) and scripts/run_loc
 """
 
 import argparse
+import gzip
 import os
 import shlex
 import shutil
@@ -38,7 +39,23 @@ from metrics import metrics_from_env
 from storage import ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
-BWA_INDEX_EXTS = [".amb", ".ann", ".bwt", ".pac", ".sa"]
+# Aligners the align stage can run, chosen by the ALIGNER env var. bwa-mem2 is the default: the
+# same algorithm as bwa mem and, apart from the case below, the same alignments, faster on
+# AVX2/AVX-512 CPUs. bwa stays for comparisons (the pangenome benchmark, #51). Each needs its own
+# index next to the FASTA, built by `<aligner> index` and stored under reference/ with these
+# extensions (.amb/.ann/.pac are shared; bwa-mem2's .0123 and .bwt.2bit.64 replace .bwt and .sa).
+ALIGNER_INDEX_EXTS = {
+    "bwa-mem2": [".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac"],
+    "bwa": [".amb", ".ann", ".bwt", ".pac", ".sa"],
+}
+DEFAULT_ALIGNER = "bwa-mem2"
+# bwa-mem2 (2.2.1 and 2.3) places reads that start in the first few bases of the FIRST contig of
+# the index at position 1, shifted, so they show up as false SNPs (upstream bwa-mem2#262, open;
+# on the synthetic data 3 of 10,000 reads, 5 false calls at positions 2-9; every other read is
+# identical to bwa). Human chromosomes start with long N gaps (chr1 10 kb, chr20 60 kb), where no
+# read aligns, so they are unaffected. When the first contig does not start with at least this
+# many Ns (bacteria, viruses, plasmids, the synthetic genome), the align stage uses bwa instead.
+BWA_MEM2_SAFE_N_PREFIX = 1000
 # samtools sort RAM budget in the align stage (see align_command).
 SORT_MAX_THREADS = 4
 SORT_MEMORY_PER_THREAD = "512M"
@@ -165,13 +182,61 @@ def timed_stage(task_name):
     return decorator
 
 
-def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True) -> str:
-    """Fetch reference/<name> and any stored indexes; build missing indexes. Returns the local FASTA path.
+def aligner_from_env() -> str:
+    """The aligner named by ALIGNER (default bwa-mem2). Unknown names fail before any download."""
+    return check_aligner(os.environ.get("ALIGNER", "").strip() or DEFAULT_ALIGNER)
 
-    Variant calling only needs the .fai; skipping the BWA index there saves minutes on a full chromosome.
+
+def check_aligner(name: str) -> str:
+    """name if it is an aligner the align stage knows (ALIGNER_INDEX_EXTS), else ValueError."""
+    if name not in ALIGNER_INDEX_EXTS:
+        raise ValueError(f"Unknown aligner {name!r} (ALIGNER); expected one of {sorted(ALIGNER_INDEX_EXTS)}")
+    return name
+
+
+def first_contig_prefix(fasta_path: str, length: int) -> str:
+    """The first `length` bases of the first sequence in a FASTA (plain or gzipped), upper-case."""
+    opener = gzip.open if fasta_path.endswith(".gz") else open
+    seen_header, parts, total = False, [], 0
+    with opener(fasta_path, "rt") as fh:
+        for line in fh:
+            if line.startswith(">"):
+                if seen_header:
+                    break  # the first contig ended before `length` bases
+                seen_header = True
+                continue
+            parts.append(line.strip())
+            total += len(parts[-1])
+            if total >= length:
+                break
+    return "".join(parts)[:length].upper()
+
+
+def effective_aligner(requested: str, local_ref: str) -> str:
+    """The aligner to run on this reference: bwa instead of bwa-mem2 where bwa-mem2#262 would bite."""
+    if requested != "bwa-mem2":
+        return requested
+    prefix = first_contig_prefix(local_ref, BWA_MEM2_SAFE_N_PREFIX)
+    if len(prefix) == BWA_MEM2_SAFE_N_PREFIX and set(prefix) == {"N"}:
+        return requested
+    print(f"WARNING: the first contig of {os.path.basename(local_ref)} does not start with "
+          f"{BWA_MEM2_SAFE_N_PREFIX} Ns; bwa-mem2 misplaces reads there (bwa-mem2#262), "
+          f"so aligning with bwa instead", flush=True)
+    return "bwa"
+
+
+def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True,
+                           aligner: str = None) -> str:
+    """Fetch reference/<name> and its .fai (built if missing). Returns the local FASTA path.
+
+    need_bwa_index: also prepare the aligner's index via prepare_aligner (so the bwa-mem2#262 guard
+    applies); aligner defaults to aligner_from_env(). Variant calling only needs the .fai; skipping
+    the aligner index there saves minutes on a full chromosome.
     """
     fasta_key = f"{REFERENCE_PREFIX}{reference_name}"
     local_ref = os.path.join(dest_dir, reference_name)
+    if need_bwa_index:
+        aligner = check_aligner(aligner) if aligner else aligner_from_env()  # before the (large) download
 
     try:
         print(f"Fetching reference {storage().describe(fasta_key)}")
@@ -179,19 +244,48 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     except ObjectNotFound as err:
         raise FileNotFoundError(f"Reference FASTA missing: {storage().describe(fasta_key)}") from err
 
-    for ext in [".fai"] + (BWA_INDEX_EXTS if need_bwa_index else []):
-        try:
-            storage().download(fasta_key + ext, local_ref + ext)
-        except ObjectNotFound:
-            pass  # built below
-
-    if need_bwa_index and any(not os.path.exists(local_ref + ext) for ext in BWA_INDEX_EXTS):
-        print("BWA index missing; running bwa index")
-        subprocess.run(["bwa", "index", local_ref], check=True)
-    if not os.path.exists(local_ref + ".fai"):
-        print("FASTA index missing; running samtools faidx")
-        subprocess.run(["samtools", "faidx", local_ref], check=True)
+    _fetch_or_build(fasta_key, local_ref, [".fai"], ["samtools", "faidx", local_ref], "FASTA index")
+    if need_bwa_index:
+        prepare_aligner(reference_name, local_ref, aligner)
     return local_ref
+
+
+def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
+    """Choose the aligner for this reference (effective_aligner) and fetch or build its index.
+
+    Returns the aligner to run. The only way to an aligner index, so the guard can't be skipped.
+    """
+    aligner = effective_aligner(requested, local_ref)
+    _ensure_aligner_index(reference_name, local_ref, aligner)
+    return aligner
+
+
+def _ensure_aligner_index(reference_name: str, local_ref: str, aligner: str) -> None:
+    """Fetch the aligner's stored index next to local_ref, or build it if any file is missing.
+
+    Building in the job is fine for one chromosome. bwa-mem2 index needs ~28 bytes of RAM per
+    reference base (~90 GB for a whole genome), so build that once elsewhere and upload it under
+    reference/.
+    """
+    _fetch_or_build(f"{REFERENCE_PREFIX}{reference_name}", local_ref, ALIGNER_INDEX_EXTS[aligner],
+                    [aligner, "index", local_ref], f"{aligner} index")
+
+
+def _fetch_or_build(fasta_key: str, local_ref: str, exts, build_cmd, what: str) -> None:
+    """Download a stored index if every file of it is stored; otherwise build it.
+
+    Checking first avoids downloading part of a set only to overwrite it (the cloud reference/
+    holds bwa's index, whose .amb/.ann/.pac bwa-mem2 index rewrites).
+    """
+    if all(storage().exists(fasta_key + ext) for ext in exts):
+        try:
+            for ext in exts:
+                storage().download(fasta_key + ext, local_ref + ext)
+            return
+        except ObjectNotFound:
+            pass  # deleted in between: build it
+    print(f"{what} missing; running {' '.join(build_cmd[:2])}")
+    subprocess.run(build_cmd, check=True)
 
 
 def download_raw_reads(keys: dict, wd: str) -> list:
@@ -226,10 +320,13 @@ def qc_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
-def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str) -> str:
+def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str,
+                  aligner: str = DEFAULT_ALIGNER) -> str:
     """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates.
 
-    fastqs is [reads] for single-end or [R1, R2] for paired-end.
+    fastqs is [reads] for single-end or [R1, R2] for paired-end. aligner is "bwa-mem2" (default)
+    or "bwa": both take the same `mem` arguments and write the same records, so everything below
+    applies to either.
 
     Paired-end: bwa mem gets both files and writes each pair's records together (name-grouped),
     which is what `samtools fixmate -m` needs. fixmate adds the mate tags (MC, ms) that markdup
@@ -255,12 +352,13 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
     which fits the 4 GB Fargate job and a shared local Docker VM.
     """
     fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    check_aligner(aligner)
     if len(fastqs) not in (1, 2):
         raise ValueError(f"align_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))
     tmp = os.path.join(tmp_dir, "tmp")
     read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
-    stages = [f"bwa mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+    stages = [f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
               + " ".join(shlex.quote(f) for f in fastqs)]
     if len(fastqs) == 2:
         stages.append("samtools fixmate -m -u - -")
@@ -271,14 +369,17 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa mem on the gzipped reads -> coordinate-sorted, duplicate-marked BAM (see align_command)."""
+    """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked BAM."""
+    aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
     keys = keys_for(sample_id, sample_layout(sample_id))
     wd = work_dir(sample_id)
     try:
         fastqs = download_raw_reads(keys, wd)
         bam = os.path.join(wd, f"{sample_id}.bam")
-        ref = ensure_reference_local(reference_name, wd)
-        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id))
+        ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
+        aligner = prepare_aligner(reference_name, ref, aligner)
+        print(f"Aligning with {aligner}", flush=True)
+        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id, aligner))
         storage().upload(bam, keys["bam"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
