@@ -91,6 +91,12 @@ GEYSER_STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "local").lower()
 GEYSER_LOCAL_STORAGE_DIR = Path(os.environ.get("LOCAL_STORAGE_DIR", REPO_ROOT / "local_bucket")).resolve()
 GEYSER_BUCKET_NAME = os.environ.get("BUCKET_NAME", "")
 GEYSER_AWS_REGION = os.environ.get("AWS_REGION", "eu-west-2")
+# Same order as storage.S3_ENDPOINT_VARS (boto3 obeys its own two variables either way).
+GEYSER_S3_ENDPOINT_URL = next(
+    (v.strip() for v in map(os.environ.get, ("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL")) if v and v.strip()),
+    "",
+)
+GEYSER_S3_ADDRESSING_STYLE = os.environ.get("S3_ADDRESSING_STYLE", "")
 
 GEYSER_MAX_UPLOAD_MB = int(os.environ.get("GEYSER_MAX_UPLOAD_MB", "200"))
 GEYSER_VARIANT_ROWS = int(os.environ.get("GEYSER_VARIANT_ROWS", "500"))

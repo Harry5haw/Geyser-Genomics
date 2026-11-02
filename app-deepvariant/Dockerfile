@@ -24,7 +24,7 @@ RUN apt-get update && \
 # Our code gets its own venv so boto3 can never disturb DeepVariant's pinned Python/TensorFlow packages.
 # boto3 is only imported for S3 storage / CloudWatch metrics; local runs never touch it.
 RUN python3 -m venv /opt/geyser-venv && \
-    /opt/geyser-venv/bin/pip install --no-cache-dir boto3
+    /opt/geyser-venv/bin/pip install --no-cache-dir "boto3>=1.36"
 
 WORKDIR /app
 COPY app/storage.py app/metrics.py app/tasks.py ./

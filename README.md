@@ -274,6 +274,8 @@ The platform's design is guided by modern cloud-native principles:
 | **Amazon S3**| **The Data Lake.** Holds the inputs, every intermediate file and the results, under fixed key prefixes. An upload to `raw_reads/` is the event that starts the pipeline. |
 | **Python**| The primary language for the bioinformatics application logic (`app/tasks.py`) and for interacting with AWS services via the `boto3` SDK. |
 
+**Why not Nextflow?** Most genomics pipelines are written for a workflow engine. [docs/design/why-not-nextflow.md](docs/design/why-not-nextflow.md) maps Geyser's pieces to Nextflow concepts, lists what an engine would and wouldn't have replaced, and says when the choice should change.
+
 ---
 
 ## 💻 Run It Locally in 2 Minutes (No AWS)
@@ -318,7 +320,9 @@ The storage and metrics backends are chosen by environment variables, so the sam
 | :--- | :--- | :--- |
 | `STORAGE_BACKEND` | `s3`, `local` | `s3` |
 | `LOCAL_STORAGE_DIR` | path to the local data lake | `local_bucket` |
-| `METRICS_BACKEND` | `cloudwatch`, `local`, `none` | `cloudwatch` for S3, `local` otherwise |
+| `S3_ENDPOINT_URL` | an S3-compatible endpoint (OVHcloud Object Storage, MinIO, LocalStack) instead of AWS; boto3's `AWS_ENDPOINT_URL_S3` and `AWS_ENDPOINT_URL` count too. Set `AWS_REGION` to the service's region (e.g. `gra`) and its keys in `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` | unset (AWS) |
+| `S3_ADDRESSING_STYLE` | `path`, `virtual`, `auto` | unset (botocore's `auto`) |
+| `METRICS_BACKEND` | `cloudwatch`, `local`, `none` | `cloudwatch` for S3 on AWS, `none` for S3 outside AWS, `local` otherwise |
 
 ### DeepVariant on a local NVIDIA GPU
 
