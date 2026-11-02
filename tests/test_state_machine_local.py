@@ -491,7 +491,8 @@ def test_a_failed_stage_notifies_and_ends_failed(sfn, case, failed_state):
     desc, events = run_case(sfn, case)
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
-    assert states[-2:] == ["Notify_Failure", "Pipeline_Failed"]
+    # Not states[-2:]: a cancelled Parallel branch can log its last StateEntered after Notify_Failure.
+    assert states[-1] == "Pipeline_Failed" and states.index("Notify_Failure") < states.index("Pipeline_Failed")
     if failed_state != "Call_Variants":
         assert "Call_Variants" not in states  # a failed branch stops the run before variants
 
@@ -556,7 +557,8 @@ def test_a_failed_planner_read_or_shard_notifies_and_never_merges(sfn, case):
     desc, events = run_case(sfn, case)
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
-    assert states[-2:] == ["Notify_Failure", "Pipeline_Failed"]
+    # Not states[-2:]: a cancelled Parallel branch can log its last StateEntered after Notify_Failure.
+    assert states[-1] == "Pipeline_Failed" and states.index("Notify_Failure") < states.index("Pipeline_Failed")
     assert "Call_Variants" not in states
     if case == "PlanFails":
         assert "Read_Regions" not in states and "Call_Variant_Shards" not in states
