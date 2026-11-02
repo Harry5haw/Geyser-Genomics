@@ -47,12 +47,26 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   name     = "${var.project_name}-pipeline-sfn-${var.environment}"
   role_arn = aws_iam_role.geyser_sfn_execution_role.arn
   # The definition lives in state_machine.asl.json so that tests/test_state_machine_local.py can run
-  # the very same file in Step Functions Local (Docker, no AWS). Only these three values are filled in.
+  # the very same file in Step Functions Local (Docker, no AWS). Only these values are filled in.
   definition = templatefile("${path.module}/state_machine.asl.json", {
-    job_definition = aws_batch_job_definition.geyser_app_job_def.name
-    job_queue      = aws_batch_job_queue.geyser_queue.name
-    sns_topic_arn  = aws_sns_topic.geyser_pipeline_status_topic.arn
+    job_definition           = aws_batch_job_definition.geyser_app_job_def.name
+    job_queue                = aws_batch_job_queue.geyser_queue.name
+    sns_topic_arn            = aws_sns_topic.geyser_pipeline_status_topic.arn
+    pipeline_timeout_seconds = var.pipeline_timeout_hours * 3600
+    qc_vcpu                  = var.stage_resources["qc"].vcpu
+    qc_memory_mb             = var.stage_resources["qc"].memory_mb
+    align_vcpu               = var.stage_resources["align"].vcpu
+    align_memory_mb          = var.stage_resources["align"].memory_mb
+    variants_vcpu            = var.stage_resources["variants"].vcpu
+    variants_memory_mb       = var.stage_resources["variants"].memory_mb
   })
+
+  lifecycle {
+    precondition {
+      condition     = var.stage_resources["qc"].vcpu + var.stage_resources["align"].vcpu <= var.fargate_max_vcpus
+      error_message = "QC and align run at the same time: their vCPUs together must fit in fargate_max_vcpus."
+    }
+  }
   logging_configuration {
     log_destination        = "${aws_cloudwatch_log_group.geyser_sfn_log_group.arn}:*"
     include_execution_data = true

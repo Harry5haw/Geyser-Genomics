@@ -112,6 +112,11 @@ resource "aws_lambda_function" "geyser_sfn_trigger" {
   runtime = "python3.11"
   timeout = 30
 
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.geyser_sfn_trigger.name
+  }
+
   environment {
     variables = {
       STATE_MACHINE_ARN = aws_sfn_state_machine.geyser_pipeline_state_machine.id

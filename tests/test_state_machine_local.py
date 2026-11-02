@@ -41,6 +41,11 @@ TEMPLATE_VARS = {
     "job_definition": "geyser-app-job-def",
     "job_queue": "geyser-job-queue",
     "sns_topic_arn": f"arn:aws:sns:{REGION}:{ACCOUNT}:geyser-PipelineStatus-local",
+    # The defaults of variables.tf (stage_resources, pipeline_timeout_hours).
+    "pipeline_timeout_seconds": "43200",
+    "qc_vcpu": "1", "qc_memory_mb": "2048",
+    "align_vcpu": "4", "align_memory_mb": "8192",
+    "variants_vcpu": "2", "variants_memory_mb": "4096",
 }
 BATCH_TASKS = ("Quality_Control", "Align_Genome", "Call_Variants")
 
@@ -52,6 +57,11 @@ TEST_CASES = {
     "VariantsFail": {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": FAIL, "Notify_Failure": "Published"},
     "NotifyFails": {"Quality_Control": FAIL, "Align_Genome": OK, "Call_Variants": OK,
                     "Notify_Failure": "PublishDenied"},
+    # A Batch API error (e.g. throttled SubmitJob) on the first try, then success: retried, run succeeds.
+    "AlignThrottledOnce": {"Quality_Control": OK, "Align_Genome": "ThrottledThenOk", "Call_Variants": OK},
+    # Batch API errors every time: retried MaxAttempts times, then the run fails through Notify_Failure.
+    "AlignAlwaysThrottled": {"Quality_Control": OK, "Align_Genome": "AlwaysThrottled", "Call_Variants": OK,
+                             "Notify_Failure": "Published"},
 }
 MOCK_CONFIG = {
     "StateMachines": {MACHINE: {"TestCases": TEST_CASES}},
@@ -61,6 +71,11 @@ MOCK_CONFIG = {
                                "Cause": "Essential container in task exited (exit code 1)"}}},
         "Published": {"0": {"Return": {"MessageId": "message-1"}}},
         "PublishDenied": {"0": {"Throw": {"Error": "SNS.AuthorizationErrorException", "Cause": "denied"}}},
+        "ThrottledThenOk": {
+            "0": {"Throw": {"Error": "Batch.AWSBatchException", "Cause": "Too Many Requests"}},
+            "1": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}},
+        },
+        "AlwaysThrottled": {"0-3": {"Throw": {"Error": "Batch.AWSBatchException", "Cause": "Too Many Requests"}}},
     },
 }
 
@@ -157,7 +172,7 @@ def sfn():
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
 
 
-def run_case(sfn, case, sample="S1", reference="chr20.fa"):
+def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
     try:
@@ -166,12 +181,12 @@ def run_case(sfn, case, sample="S1", reference="chr20.fa"):
             input=json.dumps({"srr_id": sample, "reference_name": reference}))["executionArn"]
     except Exception as err:  # noqa: BLE001 - the 500s say nothing; the container log does
         pytest.fail(f"StartExecution failed for {case}: {err}\n--- container log ---\n{container_logs(name)}")
-    deadline = time.time() + 60
+    deadline = time.time() + wait_seconds
     while True:
         desc = client.describe_execution(executionArn=execution)
         if desc["status"] != "RUNNING":
             break
-        assert time.time() < deadline, f"{case} still running after 60 s\n{container_logs(name)}"
+        assert time.time() < deadline, f"{case} still running after {wait_seconds} s\n{container_logs(name)}"
         time.sleep(0.5)
     events = client.get_execution_history(executionArn=execution, maxResults=1000)["events"]
     return desc, events
@@ -266,6 +281,53 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
         assert re.fullmatch(r"(QualityControl|AlignGenome|CallVariants)-SAMPLE7-HappyPath-\w+", p["JobName"])
     timeouts = {state: p["Timeout"]["AttemptDurationSeconds"] for state, p in params.items()}
     assert timeouts == {"Quality_Control": 3600, "Align_Genome": 14400, "Call_Variants": 7200}
+    # Each stage asks Batch for its own size (variables.tf stage_resources), as strings.
+    sizes = {state: {r["Type"]: r["Value"] for r in p["ContainerOverrides"]["ResourceRequirements"]}
+             for state, p in params.items()}
+    assert sizes == {"Quality_Control": {"VCPU": "1", "MEMORY": "2048"},
+                     "Align_Genome": {"VCPU": "4", "MEMORY": "8192"},
+                     "Call_Variants": {"VCPU": "2", "MEMORY": "4096"}}
+
+
+def attempts(events, state) -> int:
+    """How many times a task state called its service (TaskScheduled events), retries included."""
+    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    by_id = {e["id"]: e for e in events}
+    count = 0
+    for e in events:
+        if e["type"] != "TaskScheduled":
+            continue
+        cursor = e
+        while cursor is not None and cursor["id"] not in names:
+            cursor = by_id.get(cursor.get("previousEventId"))
+        count += cursor is not None and names[cursor["id"]] == state
+    return count
+
+
+def test_the_whole_run_has_a_time_limit():
+    definition = json.loads(render_definition())
+    assert definition["TimeoutSeconds"] == 12 * 3600
+
+
+def test_batch_api_errors_are_retried_and_the_run_succeeds(sfn):
+    desc, events = run_case(sfn, "AlignThrottledOnce")
+    assert desc["status"] == "SUCCEEDED"
+    assert attempts(events, "Align_Genome") == 2 and attempts(events, "Quality_Control") == 1
+
+
+def test_persistent_batch_api_errors_give_up_after_max_attempts(sfn):
+    # Back-off 10 s, 20 s, 40 s between the attempts: 70 s of waiting.
+    desc, events = run_case(sfn, "AlignAlwaysThrottled", wait_seconds=150)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert attempts(events, "Align_Genome") == 1 + 3  # first try + MaxAttempts retries
+    assert "Notify_Failure" in entered(events)
+
+
+def test_a_failed_job_is_not_retried_by_the_state_machine(sfn):
+    # States.TaskFailed means the job ran and failed. The job definition's retryStrategy already
+    # retried it if the cause was infrastructure; an application failure (corrupt upload) fails fast.
+    _, events = run_case(sfn, "AlignFails")
+    assert attempts(events, "Align_Genome") == 1
 
 
 @pytest.mark.parametrize("case,failed_state", [
