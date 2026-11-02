@@ -461,7 +461,7 @@ def vg_build_command(root, vg_key, gbz_key, memory="8g"):
     ]
 
 
-def gbz_chunk_command(root, gbz_key, out_key, path, memory="18g"):
+def gbz_chunk_command(root, gbz_key, out_key, path, memory="20g"):
     """docker run that cuts one chromosome out of a whole-genome GBZ, haplotypes included, into its own GBZ.
 
     vg chunk -C writes the connected component holding the reference path (Minigraph-Cactus graphs have one
