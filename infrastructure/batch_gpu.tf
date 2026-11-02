@@ -58,7 +58,10 @@ resource "aws_security_group" "batch_gpu_compute" {
 
 # The managed EC2 compute environment for running GPU jobs.
 resource "aws_batch_compute_environment" "gpu_env" {
-  name         = "${var.project_name}-gpu-env-${var.environment}" # provider 6: was compute_environment_name
+  # name_prefix + create_before_destroy: changing the instance types, subnets or launch template replaces the
+  # environment, and AWS won't delete one a job queue still uses. Terraform creates the new one, points
+  # gpu_queue at it, then deletes the old one. The name gets a generated suffix (#125).
+  name_prefix  = "${var.project_name}-gpu-env-${var.environment}-"
   type         = "MANAGED"
   state        = "ENABLED"
   service_role = aws_iam_role.geyser_batch_service_role.arn
@@ -98,6 +101,10 @@ resource "aws_batch_compute_environment" "gpu_env" {
   tags = {
     Project     = var.project_name
     Environment = var.environment
+  }
+
+  lifecycle {
+    create_before_destroy = true
   }
 }
 
