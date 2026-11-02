@@ -397,8 +397,9 @@ def _ensure_aligner_index(reference_name: str, local_ref: str, aligner: str) -> 
 def _fetch_or_build(fasta_key: str, local_ref: str, exts, build_cmd, what: str) -> None:
     """Download a stored index if every file of it is stored; otherwise build it.
 
-    Checking first avoids downloading part of a set only to overwrite it (the cloud reference/
-    holds bwa's index, whose .amb/.ann/.pac bwa-mem2 index rewrites).
+    Checking first avoids downloading part of a set only to overwrite it (e.g. a reference/ with
+    only bwa's index: bwa-mem2 index rewrites the shared .amb/.ann/.pac). The cloud reference/
+    holds both indexes for chr20.fa since 2 Nov 2026.
     """
     if all(storage().exists(fasta_key + ext) for ext in exts):
         try:
