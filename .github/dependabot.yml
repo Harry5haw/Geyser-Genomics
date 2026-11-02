@@ -1,10 +1,13 @@
 # Weekly dependency updates, one grouped PR per ecosystem. Each PR runs tests.yml like any other.
 # Terraform updates touch infrastructure/, so they follow the infrastructure rules: a reviewed
-# `terraform plan` before merge, never merged on CI alone.
+# `terraform plan` before merge, never merged on CI alone. boto3 is also installed in the DeepVariant
+# image (Python 3.10): the PR's DeepVariant CI job catches a release that drops 3.10.
 version: 2
 updates:
+  # "/" only: requirements-dev.txt includes app/ and web/requirements.txt with -r, and Dependabot
+  # follows the includes. Listing those directories too would open overlapping PRs for one bump.
   - package-ecosystem: pip
-    directories: ["/", "/app", "/web"]
+    directory: "/"
     schedule:
       interval: weekly
       day: monday
@@ -42,7 +45,8 @@ updates:
       docker:
         patterns: ["*"]
     ignore:
-      # python:3.11-slim-trixie: patch rebuilds only; a Python minor upgrade is a decision of its own.
+      # The FROM line is pinned by digest: Dependabot proposes new digests of python:3.11-slim-trixie
+      # (security rebuilds). A Python minor upgrade is a decision of its own.
       - dependency-name: python
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
     labels: ["dependencies", "docker"]
