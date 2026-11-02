@@ -5,17 +5,17 @@ Each stage is run as its own container job (AWS Batch in the cloud, `docker run`
 locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 
 Stages communicate only through storage keys:
-    raw_reads/{id}.fastq.gz -> qc_reports/{id}_fastqc.{html,zip}     (qc)
+    raw_reads/{id}.fastq.gz -> qc_reports/{id}.fastp.{html,json}     (qc: fastp, report only)
                             -> alignments/{id}.bam                    (align: sorted, duplicates marked)
     alignments/{id}.bam     -> variants/{id}.vcf.gz                   (variants)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
-qc and align both read the gzipped upload directly (FastQC, bwa-mem2 and bwa read gzip), so they don't
+qc and align both read the gzipped upload directly (fastp, bwa-mem2 and bwa read gzip), so they don't
 depend on each other and can run in parallel (the three-stage state machine, #84). There is no
 decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
 
-Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
-the QC reports come in an _R1/_R2 pair too (see keys_for). qc and align detect the layout from
+Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz (see
+keys_for); everything after them is one file per sample, the QC report included. qc and align detect the layout from
 which raw keys exist (sample_layout), so the CLI and the Step Functions input are the same for
 both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
 
@@ -56,6 +56,8 @@ DEFAULT_ALIGNER = "bwa-mem2"
 # read aligns, so they are unaffected. When the first contig does not start with at least this
 # many Ns (bacteria, viruses, plasmids, the synthetic genome), the align stage uses bwa instead.
 BWA_MEM2_SAFE_N_PREFIX = 1000
+# fastp (QC) threads; it uses at most 16.
+QC_MAX_THREADS = 16
 # samtools sort RAM budget in the align stage (see align_command).
 SORT_MAX_THREADS = 4
 SORT_MEMORY_PER_THREAD = "512M"
@@ -82,7 +84,8 @@ def metrics():
 SINGLE, PAIRED = "single", "paired"
 MATES = ("R1", "R2")
 # Keys that exist once per read file: plain for single-end, <name>_R1/<name>_R2 for paired-end.
-PER_MATE_KEYS = ("raw", "qc_html", "qc_zip")
+# Only the raw reads: fastp writes one QC report for both mates of a pair.
+PER_MATE_KEYS = ("raw",)
 
 
 class LayoutError(ValueError):
@@ -92,8 +95,7 @@ class LayoutError(ValueError):
 def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     """Single source of truth for every storage key a sample touches.
 
-    Paired-end samples get raw_R1/raw_R2, qc_html_R1/qc_html_R2, ... instead of raw, qc_html, ...
-    (FastQC names its reports after the input file, so {id}_R1.fastq.gz -> {id}_R1_fastqc.html).
+    Paired-end samples get raw_R1/raw_R2 instead of raw; every other key is one per sample.
     Use keys_of() to get a stage's keys without caring about the layout.
     """
     if layout not in (SINGLE, PAIRED):
@@ -103,8 +105,8 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     for mate, stem in stems.items():
         suffix = f"_{mate}" if mate else ""
         keys[f"raw{suffix}"] = f"raw_reads/{stem}.fastq.gz"
-        keys[f"qc_html{suffix}"] = f"qc_reports/{stem}_fastqc.html"
-        keys[f"qc_zip{suffix}"] = f"qc_reports/{stem}_fastqc.zip"
+    keys["qc_html"] = f"qc_reports/{sample_id}.fastp.html"
+    keys["qc_json"] = f"qc_reports/{sample_id}.fastp.json"
     keys["bam"] = f"alignments/{sample_id}.bam"
     keys["vcf"] = f"variants/{sample_id}.vcf.gz"
     return keys
@@ -307,25 +309,41 @@ def download_raw_reads(keys: dict, wd: str) -> list:
     return paths
 
 
+def qc_command(fastqs, html: str, json_path: str, threads: int, sample_id: str) -> list:
+    """fastp in report-only mode: read quality, GC, duplication, adapters, overrepresented sequences.
+
+    No -o/-O, so fastp writes no reads; and trimming and filtering are switched off (-A -Q -L -G),
+    so the report describes the upload exactly as align reads it. Paired-end gives both files
+    (-i/-I) and one report, with insert sizes from read overlap. The JSON report is the
+    machine-readable one (#58).
+    """
+    fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    if len(fastqs) not in (1, 2):
+        raise ValueError(f"qc_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
+    cmd = ["fastp", "-i", fastqs[0]]
+    if len(fastqs) == 2:
+        cmd += ["-I", fastqs[1]]
+    return cmd + ["--disable_adapter_trimming", "--disable_quality_filtering", "--disable_length_filtering",
+                  "--disable_trim_poly_g", "--overrepresentation_analysis",
+                  "--thread", str(max(1, min(threads, QC_MAX_THREADS))),
+                  "--json", json_path, "--html", html, "--report_title", f"{sample_id} (fastp)"]
+
+
 @timed_stage("QualityControl")
 def qc_task(sample_id):
-    """FastQC on each gzipped read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
+    """fastp report (HTML + JSON) for the sample's gzipped read file(s): one report, either layout."""
     keys = keys_for(sample_id, sample_layout(sample_id))
     wd = work_dir(sample_id)
     try:
-        out_dir = os.path.join(wd, "qc")
-        os.makedirs(out_dir)
         fastqs = download_raw_reads(keys, wd)
-        # FastQC can hang (not exit) if its report thread crashes, so bound it. It now also
-        # decompresses the reads itself, so it gets the hour the decompress stage used to have
-        # (keep in step with the stage's Step Functions timeout). One thread per file (-t) processes R1 and R2 at
-        # the same time, so a paired sample fits the same timeout as a single-end one
-        # (FastQC reserves ~250 MB per thread; 2 fit the 4 GB job easily).
+        html, json_path = (os.path.join(wd, os.path.basename(keys[k])) for k in ("qc_html", "qc_json"))
+        # Bounded in case fastp ever hangs; keep in step with the stage's Step Functions timeout.
+        # fastp fails on a truncated upload ("igzip: unexpected eof", exit 255) and writes no report.
         timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "3600"))
-        subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
-        for name in ("qc_html", "qc_zip"):
-            for key in keys_of(keys, name):
-                storage().upload(os.path.join(out_dir, os.path.basename(key)), key)
+        subprocess.run(qc_command(fastqs, html, json_path, os.cpu_count() or 1, sample_id),
+                       check=True, timeout=timeout)
+        storage().upload(html, keys["qc_html"])
+        storage().upload(json_path, keys["qc_json"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 

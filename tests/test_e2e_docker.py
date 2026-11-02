@@ -2,6 +2,7 @@
 
 Opt in with GEYSER_E2E=1 after:  docker build -f Dockerfile -t geyser-app .
 """
+import json
 import os
 
 import pytest
@@ -21,7 +22,11 @@ def test_pipeline_recovers_planted_snps(tmp_path, capfd):
     exit_code, log = _run(root, "SYNTH001", capfd)
 
     assert exit_code == 0
-    assert (root / "qc_reports" / "SYNTH001_fastqc.html").exists()
+    assert (root / "qc_reports" / "SYNTH001.fastp.html").exists()
+    report = json.loads((root / "qc_reports" / "SYNTH001.fastp.json").read_text())
+    # Report only: every read is counted and none is filtered out (the same reads align sees).
+    assert report["summary"]["before_filtering"]["total_reads"] == 10_000
+    assert report["filtering_result"]["passed_filter_reads"] == 10_000
     # This reference starts with sequence, so the align stage must have fallen back to bwa (bwa-mem2#262).
     assert "bwa-mem2#262" in log and "Aligning with bwa\n" in log.replace("\r", "")
 
@@ -93,8 +98,9 @@ def test_paired_end_sample_runs_through_every_stage(tmp_path, capfd):
     assert exit_code == 0  # --check: 10/10 planted SNPs, nothing unexpected
     assert "Aligning with bwa-mem2" in log
     assert "samtools fixmate -m" in log
-    for mate in ("R1", "R2"):
-        assert (root / "qc_reports" / f"PAIRED001_{mate}_fastqc.html").exists()
+    report = json.loads((root / "qc_reports" / "PAIRED001.fastp.json").read_text())  # one report, both mates
+    assert report["summary"]["before_filtering"]["total_reads"] == 10_000 and report["insert_size"]["peak"] > 0
+    assert not list((root / "qc_reports").glob("PAIRED001_R*"))
     assert _markdup_stat(log, "PAIRED") == 10_000 and _markdup_stat(log, "SINGLE") == 0
     # With both ends required to match, chance duplicates nearly vanish (single-end: ~485 of 10,000).
     assert _markdup_stat(log, "DUPLICATE TOTAL") < 50
@@ -118,7 +124,7 @@ def test_paired_end_planted_duplicates_are_marked_as_pairs(tmp_path, capfd):
 @pytest.mark.parametrize("leading_gap", [0, 1000], ids=["bwa-fallback", "bwa-mem2"])
 def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
     # There is no decompress stage to trip over a cut-off upload any more, so both stages that read
-    # the .gz must fail on it themselves (FastQC: "file is probably truncated"; bwa and bwa-mem2:
+    # the .gz must fail on it themselves (fastp: "igzip: unexpected eof"; bwa and bwa-mem2:
     # gzclose error), rather than align quietly writing a BAM of the reads before the cut. The
     # leading gap decides which aligner runs (bwa-mem2#262 guard), so both are covered.
     import subprocess
@@ -136,4 +142,4 @@ def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
         result = subprocess.run(run_local.docker_command(cmd, str(root), image), capture_output=True, text=True)
         assert result.returncode != 0, f"{stage} accepted a truncated upload:\n{result.stdout}{result.stderr}"
     assert not (root / "alignments" / "SYNTH001.bam").exists()
-    assert not (root / "qc_reports" / "SYNTH001_fastqc.html").exists()
+    assert not list((root / "qc_reports").glob("SYNTH001*")) if (root / "qc_reports").exists() else True
