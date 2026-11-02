@@ -141,13 +141,14 @@ def _stream_transfer_config():
 ADDRESSING_STYLES = ("auto", "path", "virtual")
 
 
-def s3_endpoint_from_env(env) -> str:
-    """The S3 endpoint the environment asks for, or None for AWS's default.
+# Checked in this order. The last two are boto3's own variables: boto3 obeys them even if we don't, so
+# they must also switch on the S3-compatible settings below and the metrics default in metrics.py.
+S3_ENDPOINT_VARS = ("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL")
 
-    ``S3_ENDPOINT_URL`` is this project's variable; boto3's own ``AWS_ENDPOINT_URL_S3`` is honoured too,
-    so either one also switches on the S3-compatible settings below and in metrics.py.
-    """
-    for var in ("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3"):
+
+def s3_endpoint_from_env(env) -> str:
+    """The S3 endpoint the environment asks for (see ``S3_ENDPOINT_VARS``), or None for AWS's default."""
+    for var in S3_ENDPOINT_VARS:
         value = (env.get(var) or "").strip()
         if value:
             return value
@@ -181,6 +182,8 @@ class S3Storage:
         from botocore.config import Config
 
         endpoint_url = (endpoint_url or "").strip() or None
+        if endpoint_url and not endpoint_url.lower().startswith(("http://", "https://")):
+            raise ValueError(f"S3 endpoint must start with http:// or https://: {endpoint_url!r}")
         addressing_style = (addressing_style or "").strip().lower() or None
         if addressing_style and addressing_style not in ADDRESSING_STYLES:
             raise ValueError(f"Unknown S3 addressing style {addressing_style!r} (expected one of {ADDRESSING_STYLES})")
@@ -259,7 +262,7 @@ def storage_from_env(env=None):
     BUCKET_NAME         required for s3
     AWS_REGION          s3 region, default eu-west-2 (an S3-compatible service's own region name, e.g. gra)
     S3_ENDPOINT_URL     s3 only, optional: an S3-compatible endpoint instead of AWS (boto3's
-                        AWS_ENDPOINT_URL_S3 works too; S3_ENDPOINT_URL wins if both are set)
+                        AWS_ENDPOINT_URL_S3 / AWS_ENDPOINT_URL count too, in that order after it)
     S3_ADDRESSING_STYLE s3 only, optional: path, virtual or auto (botocore's default)
     LOCAL_STORAGE_DIR   root directory for local, default ./local_bucket
 

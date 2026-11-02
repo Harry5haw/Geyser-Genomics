@@ -314,7 +314,7 @@ The storage and metrics backends are chosen by environment variables, so the sam
 | :--- | :--- | :--- |
 | `STORAGE_BACKEND` | `s3`, `local` | `s3` |
 | `LOCAL_STORAGE_DIR` | path to the local data lake | `local_bucket` |
-| `S3_ENDPOINT_URL` | an S3-compatible endpoint (OVHcloud Object Storage, MinIO, LocalStack) instead of AWS; boto3's `AWS_ENDPOINT_URL_S3` also works. Set `AWS_REGION` to the service's region (e.g. `gra`) and its keys in `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` | unset (AWS) |
+| `S3_ENDPOINT_URL` | an S3-compatible endpoint (OVHcloud Object Storage, MinIO, LocalStack) instead of AWS; boto3's `AWS_ENDPOINT_URL_S3` and `AWS_ENDPOINT_URL` count too. Set `AWS_REGION` to the service's region (e.g. `gra`) and its keys in `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` | unset (AWS) |
 | `S3_ADDRESSING_STYLE` | `path`, `virtual`, `auto` | unset (botocore's `auto`) |
 | `METRICS_BACKEND` | `cloudwatch`, `local`, `none` | `cloudwatch` for S3 on AWS, `none` for S3 outside AWS, `local` otherwise |
 

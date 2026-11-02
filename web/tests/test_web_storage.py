@@ -3,15 +3,25 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def no_ambient_aws_endpoint(monkeypatch, tmp_path):
-    for var in ("AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-aws-config"))
-    # boto3 caches one default session (and the config it read) for the process: use a fresh one
-    # here, and monkeypatch puts the old one back afterwards.
+def no_ambient_aws(monkeypatch, tmp_path):
+    """As in tests/test_storage.py: no developer AWS endpoints, profile or credentials; a fresh boto3
+    session; and a fresh storage cache, so each test builds its own client."""
     import boto3
 
+    from geyser_web.pipeline import _build_storage
+    from storage import S3_ENDPOINT_VARS
+
+    for var in (*S3_ENDPOINT_VARS, "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SESSION_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "credentials"))
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setattr(boto3, "DEFAULT_SESSION", None)
+    _build_storage.cache_clear()
+    yield
+    _build_storage.cache_clear()
 
 
 def test_web_storage_passes_the_s3_endpoint_through(settings):

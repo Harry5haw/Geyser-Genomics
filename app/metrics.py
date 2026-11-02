@@ -6,7 +6,8 @@
 Select with ``METRICS_BACKEND=cloudwatch|local|none``. The default follows STORAGE_BACKEND:
 S3 storage on AWS reports to CloudWatch, S3 storage on an S3-compatible service elsewhere
 (``S3_ENDPOINT_URL``, see storage.py) records nothing, and local storage writes
-``<LOCAL_STORAGE_DIR>/metrics/metrics.jsonl``. ``cloudwatch`` always means AWS CloudWatch in AWS_REGION.
+``<LOCAL_STORAGE_DIR>/metrics/metrics.jsonl``. ``cloudwatch`` is boto3's CloudWatch client in
+AWS_REGION: AWS, unless boto3's generic AWS_ENDPOINT_URL redirects every client.
 
 Publishing is best effort: a metrics outage must never fail a pipeline stage.
 """
