@@ -45,6 +45,8 @@ descriptions have the detail and the test results). There are no tagged releases
   ([#54](../../pull/54))
 
 ### Benchmarks
+- **bwa vs bwa-mem2 on HG003 chr20:** bwa-mem2 makes the align stage 1.56× faster (812 s → 521 s) for
+  2.3 GiB more peak memory, with equivalent calls by hap.py. ([#110](../../pull/110))
 - **HG005 pangenome benchmark** against a same-data HG003 control, with GIAB stratifications by region type.
   ([#95](../../pull/95))
 
