@@ -44,6 +44,16 @@ RUN curl -fsSL "https://github.com/bwa-mem2/bwa-mem2/releases/download/v${BWA_ME
     /opt/bwa-mem2/bwa-mem2 version
 ENV PATH="/opt/bwa-mem2:${PATH}"
 
+# mosdepth: coverage statistics after align (stats/{id}/mosdepth.*.txt). Not packaged in Debian 13;
+# the upstream release is a single static binary, checksum-pinned like bwa-mem2.
+ARG MOSDEPTH_VERSION=0.3.15
+ARG MOSDEPTH_SHA256=8abd890f5ceeddebc10315cfdef5b909713be4fb67610b7d089f4dc25cf0cde2
+RUN curl -fsSL "https://github.com/brentp/mosdepth/releases/download/v${MOSDEPTH_VERSION}/mosdepth" \
+        -o /usr/local/bin/mosdepth && \
+    echo "${MOSDEPTH_SHA256}  /usr/local/bin/mosdepth" | sha256sum -c - && \
+    chmod +x /usr/local/bin/mosdepth && \
+    mosdepth --version
+
 WORKDIR /app
 
 COPY app/requirements.txt .

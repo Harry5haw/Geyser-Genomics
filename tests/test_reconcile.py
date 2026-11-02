@@ -205,3 +205,10 @@ def test_indexes_belong_to_their_sample_but_are_not_outputs():
     expected = reconcile.keys_for("ABC")
     assert reconcile.output_keys(expected, "cram") == [["alignments/ABC.cram"], ["alignments/ABC.bam"]]
     assert reconcile.output_keys(expected, "vcf") == [["variants/ABC.vcf.gz"]]
+
+
+def test_stats_files_belong_to_their_sample():
+    patterns = reconcile.key_patterns(reconcile.extra_outputs())
+    for name in ("flagstat.txt", "mosdepth.summary.txt", "mosdepth.global.dist.txt", "bcftools.stats.txt"):
+        assert reconcile.match_sample(f"stats/ABC/{name}", patterns) == "ABC"
+    assert reconcile.match_sample("stats/ABC/other.txt", patterns) is None

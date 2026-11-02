@@ -13,6 +13,14 @@ import pytest
 import tasks
 
 REF = "ref.fa"
+# Real samtools 1.21 / mosdepth 0.3.15 / bcftools 1.21 output for the synthetic sample (single-end and
+# paired-end, both with --leading-gap 1000), so the parsers are tested on the tools' actual formats.
+STATS_FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "stats")
+
+
+def stats_fixture(layout, name):
+    with open(os.path.join(STATS_FIXTURES, f"{layout}.{name}"), "rb") as fh:
+        return fh.read()
 # The default aligner's index files (bwa-mem2: .0123, .amb, .ann, .bwt.2bit.64, .pac).
 INDEX_EXTS = tasks.ALIGNER_INDEX_EXTS[tasks.DEFAULT_ALIGNER]
 # A reference whose first contig starts with a gap, like a human chromosome: bwa-mem2 is safe on it.
@@ -57,15 +65,29 @@ def tool_calls(monkeypatch):
 
 @pytest.fixture
 def shell_commands(monkeypatch):
-    """Fake run_shell: records each pipeline and creates the output file named after -o / the last argument."""
+    """Fake run_shell: records each pipeline and creates the output file named after -o / the last argument.
+
+    Stats tools get real output (the fixtures): mosdepth writes <prefix>.mosdepth.*.txt (its last
+    argument is the input), flagstat and bcftools stats write the file after '>'.
+    """
     commands = []
 
     def fake_run_shell(command):
         commands.append(command)
         words = shlex.split(command)
+        if words[0] == "mosdepth":
+            prefix = words[-2]
+            for name in ("mosdepth.summary.txt", "mosdepth.global.dist.txt"):
+                with open(f"{prefix}.{name}", "wb") as fh:
+                    fh.write(stats_fixture("single", name))
+            return
         out = words[words.index("-o") + 1] if "-o" in words else words[-1]
         with open(out, "wb") as fh:
-            fh.write(b"output of: " + command.encode())
+            name = os.path.basename(out)
+            if name in ("flagstat.txt", "bcftools.stats.txt"):
+                fh.write(stats_fixture("single", name))
+            else:
+                fh.write(b"output of: " + command.encode())
 
     monkeypatch.setattr(tasks, "run_shell", fake_run_shell)
     return commands
@@ -245,7 +267,7 @@ def test_align_uploads_cram_and_its_index(local_env, tool_calls, shell_commands,
 
     tasks.align_task("S1", REF)
 
-    align, index = shell_commands
+    align, index, flagstat, mosdepth = shell_commands
     assert align.startswith("bwa-mem2 mem")
     assert "S1.fastq.gz" in align.split(" | ")[0]  # the aligner reads the upload, still gzipped
     assert "-O cram" in align.split(" | ")[-1]
@@ -254,7 +276,11 @@ def test_align_uploads_cram_and_its_index(local_env, tool_calls, shell_commands,
     assert (local_env / "alignments" / "S1.cram.crai").exists()
     assert not (local_env / "alignments" / "S1.bam").exists()
     # The CRAM marks the stage done, so its index must already be there when it appears.
-    assert uploads == ["alignments/S1.cram.crai", "alignments/S1.cram"]
+    assert flagstat.startswith("samtools flagstat ") and mosdepth.startswith("mosdepth ")
+    # Stats and index before the CRAM: once a sample shows as aligned, everything about it is there.
+    assert uploads == ["stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt", "stats/S1/mosdepth.global.dist.txt",
+                       "alignments/S1.cram.crai", "alignments/S1.cram"]
+    assert (local_env / "stats" / "S1" / "flagstat.txt").read_bytes() == stats_fixture("single", "flagstat.txt")
     assert work_dir_is_empty(local_env)
 
 
@@ -301,12 +327,13 @@ def test_variants_calls_bcftools_on_the_alignment_and_indexes_the_vcf(
 
     tasks.variants_task("S1", REF)
 
-    call, index = shell_commands
+    call, index, stats = shell_commands
     assert call.startswith("bcftools mpileup") and "bcftools call -mv" in call
     assert shlex.split(call.split(" | ")[0])[-1].endswith(stored)  # the stored CRAM, or a BAM if that's all
     assert index.startswith("bcftools index -t ")
     assert (local_env / "variants" / "S1.vcf.gz").exists()
-    assert uploads == ["variants/S1.vcf.gz.tbi", "variants/S1.vcf.gz"]
+    assert stats.startswith("bcftools stats ")
+    assert uploads == ["stats/S1/bcftools.stats.txt", "variants/S1.vcf.gz.tbi", "variants/S1.vcf.gz"]
     # variant calling must not build the (slow) aligner index
     assert [c[:2] for c in tool_calls] == [["samtools", "faidx"]]
     assert work_dir_is_empty(local_env)
@@ -358,6 +385,10 @@ def test_keys_follow_the_documented_layout():
         "bam": "alignments/S1.bam",
         "vcf": "variants/S1.vcf.gz",
         "tbi": "variants/S1.vcf.gz.tbi",
+        "flagstat": "stats/S1/flagstat.txt",
+        "mosdepth_summary": "stats/S1/mosdepth.summary.txt",
+        "mosdepth_dist": "stats/S1/mosdepth.global.dist.txt",
+        "bcftools_stats": "stats/S1/bcftools.stats.txt",
     }
 
 
@@ -465,3 +496,87 @@ def test_fetch_alignment_reuses_a_bams_stored_index(local_env, tool_calls, shell
         assert command[:2] == ["samtools", "index"] and command[-1] == path
 
 
+
+
+# --- QC statistics (flagstat, mosdepth, bcftools stats) ------------------------
+
+def text_fixture(layout, name):
+    return stats_fixture(layout, name).decode()
+
+
+def test_parse_flagstat_single_and_paired_end():
+    single = tasks.parse_flagstat(text_fixture("single", "flagstat.txt"))
+    assert single["in_total"] == 10_000 and single["mapped_pct"] == 100.0
+    assert single["duplicates"] == 485  # chance duplicates of single-end reads (see align_command)
+    assert single["paired_in_sequencing"] == 0 and "properly_paired_pct" not in single  # N/A
+    paired = tasks.parse_flagstat(text_fixture("paired", "flagstat.txt"))
+    assert paired["properly_paired"] == 10_000 and paired["properly_paired_pct"] == 100.0
+    assert paired["duplicates"] == 4
+
+
+def test_parse_mosdepth_summary_uses_the_total_row():
+    # 10,000 x 150 bp over 51,000 bp (1,000 of them the leading N gap), duplicates excluded.
+    assert tasks.parse_mosdepth_summary(text_fixture("single", "mosdepth.summary.txt")) == {
+        "length": 51_000, "bases": 1_427_250, "mean_depth": 27.99}
+
+
+def test_parse_bcftools_stats():
+    assert tasks.parse_bcftools_stats(text_fixture("single", "bcftools.stats.txt")) == {
+        "records": 10, "snps": 10, "indels": 0, "tstv": 1.5}
+
+
+def test_failed_stats_tools_warn_but_the_alignment_is_still_uploaded(local_env, tool_calls, monkeypatch,
+                                                                   capsys, uploads):
+    put(local_env, "raw_reads/S1.fastq.gz")
+    put(local_env, f"reference/{REF}", GAPPED_REF)
+
+    def run_shell(command):
+        words = shlex.split(command)
+        if words[0] in ("mosdepth",) or words[:2] == ["samtools", "flagstat"]:
+            raise subprocess.CalledProcessError(1, command)
+        out = words[words.index("-o") + 1] if "-o" in words else words[-1]
+        with open(out, "wb") as fh:
+            fh.write(b"data")
+
+    monkeypatch.setattr(tasks, "run_shell", run_shell)
+
+    tasks.align_task("S1", REF)
+
+    assert uploads == ["alignments/S1.cram.crai", "alignments/S1.cram"]  # no stats, but the alignment
+    out = capsys.readouterr().out
+    assert "WARNING: samtools flagstat failed" in out and "WARNING: mosdepth failed" in out
+
+
+def test_parse_bcftools_stats_all_transitions_has_no_tstv():
+    # 3 transitions, 0 transversions: bcftools prints ts/tv 0.00, but the ratio is undefined.
+    text = "SN\t0\tnumber of SNPs:\t3\nTSTV\t0\t3\t0\t0.00\t3\t0\t0.00\n"
+    assert tasks.parse_bcftools_stats(text)["tstv"] is None
+
+
+def test_parse_bcftools_stats_without_snps_has_no_tstv():
+    text = "SN\t0\tnumber of records:\t0\nSN\t0\tnumber of SNPs:\t0\nTSTV\t0\t0\t0\t0.00\t0\t0\t0.00\n"
+    assert tasks.parse_bcftools_stats(text)["tstv"] is None
+
+
+def test_a_stats_file_that_does_not_parse_only_warns(tmp_path, capsys):
+    bad = tmp_path / "flagstat.txt"
+    bad.write_text("not flagstat")
+    tasks._log_summary("mosdepth", tasks.parse_mosdepth_summary, str(bad))  # must not raise
+    assert "WARNING: could not summarise flagstat.txt" in capsys.readouterr().out
+
+
+def test_alignment_stats_commands(shell_commands, tmp_path):
+    files = tasks.alignment_stats("/w/ref.fa", "/w/S1.cram", str(tmp_path), 16, tasks.keys_for("S1"))
+    flagstat, mosdepth = (shlex.split(c) for c in shell_commands)
+    assert flagstat[:2] == ["samtools", "flagstat"] and "reference=/w/ref.fa" in flagstat  # CRAM needs it
+    assert mosdepth[:2] == ["mosdepth", "-n"]  # summary only: no per-base bedGraph
+    assert "--fast-mode" not in mosdepth  # it would count overlapping mates twice (paired-end depth too high)
+    assert mosdepth[mosdepth.index("-t") + 1] == str(tasks.MOSDEPTH_MAX_THREADS)
+    assert mosdepth[mosdepth.index("-f") + 1] == "/w/ref.fa" and mosdepth[-1] == "/w/S1.cram"
+    assert [key for _, key in files] == ["stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt",
+                                         "stats/S1/mosdepth.global.dist.txt"]
+
+
+def test_stats_are_per_sample_not_per_mate():
+    keys = tasks.keys_for("S1", "paired")
+    assert keys["flagstat"] == "stats/S1/flagstat.txt" and "flagstat_R1" not in keys
