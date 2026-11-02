@@ -151,3 +151,14 @@ variable "log_retention_days" {
     error_message = "log_retention_days must be a value CloudWatch Logs accepts (1, 3, 5, 7, 14, 30, 60, 90, ...)."
   }
 }
+
+variable "intermediate_expiry_days" {
+  description = "Days before the data lake's disposable intermediates (intermediate/, decompressed/) expire and unfinished multipart uploads are aborted (storage_lifecycle.tf). Outputs and raw reads never expire."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.intermediate_expiry_days >= 1
+    error_message = "intermediate_expiry_days must be at least 1: a merge must still find its parts."
+  }
+}
