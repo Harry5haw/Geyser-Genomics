@@ -248,7 +248,9 @@ table.variants td { font-family: var(--pico-font-family-monospace); }
 tr.planted td:first-child::after { content: " ★"; color: var(--geyser-queued); }
 
 details > summary { color: var(--geyser-text); }
-iframe.fastqc { width: 100%; height: 75vh; border: 1px solid var(--geyser-line); border-radius: .6rem; background: #fff; }
+.qc-summary { width: auto; margin-bottom: 1rem; }
+.qc-summary th { font-weight: 600; padding-right: 2rem; }
+iframe.qc-report { width: 100%; height: 75vh; border: 1px solid var(--geyser-line); border-radius: .6rem; background: #fff; }
 pre.log { max-height: 28rem; overflow: auto; font-size: .75rem; white-space: pre-wrap; word-break: break-all;
           background: var(--geyser-bg-deep); color: #cfe9dc; border: 1px solid var(--geyser-line); border-radius: .6rem; padding: .75rem 1rem; }
 

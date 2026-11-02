@@ -176,7 +176,7 @@ def run_job(job, runner, root, dv_memory=None):
     if job["name"] in ("deepvariant", "pangenome"):
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
-    # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastqc) must be on PATH. bwa-mem2 has no
+    # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastp) must be on PATH. bwa-mem2 has no
     # apt package (the image installs the upstream release); without it, set ALIGNER=bwa.
     host_env = {**os.environ, "STORAGE_BACKEND": "local", "METRICS_BACKEND": "local",
                 "LOCAL_STORAGE_DIR": os.path.abspath(root)}
