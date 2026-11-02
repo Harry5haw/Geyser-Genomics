@@ -17,14 +17,16 @@ def make_bucket(tmp_path, keys):
 
 
 def full_sample(sample_id):
-    return [f"raw_reads/{sample_id}.fastq.gz", f"decompressed/{sample_id}.fastq",
+    return [f"raw_reads/{sample_id}.fastq.gz",
             f"qc_reports/{sample_id}_fastqc.html", f"qc_reports/{sample_id}_fastqc.zip",
             f"alignments/{sample_id}.bam", f"variants/{sample_id}.vcf.gz"]
 
 
 KEYS = (full_sample("S1") + ["variants_deepvariant/S1.vcf.gz"]
         + ["raw_reads/S2.fastq.gz"]                                                    # not started
-        + ["raw_reads/S3.fastq.gz", "decompressed/S3.fastq", "qc_reports/S3_fastqc.html"]  # stopped after qc
+        + ["raw_reads/S3.fastq.gz", "qc_reports/S3_fastqc.html"]                     # align failed
+        + ["raw_reads/S10.fastq.gz", "alignments/S10.bam"]                            # qc failed, align ran
+        + ["decompressed/OLD.fastq"]                       # left over from the four-stage layout: ignored
         + ["raw_reads/S4.fq.gz", "raw_reads/notes.txt", "raw_reads/sub/S5.fastq.gz", "raw_reads/S7.v2.fastq.gz"]
         + ["variants/S6.vcf.gz", "variants_pangenome/S9.vcf.gz"]                       # orphans
         + ["metrics/metrics.jsonl"])
@@ -38,10 +40,13 @@ def test_statuses_and_upload_problems(tmp_path):
     result = reconcile.reconcile(make_bucket(tmp_path, KEYS).list_keys(""))
     rows = by_sample(result)
     assert {s: r["status"] for s, r in rows.items()} == {
-        "S1": "complete", "S2": "not started", "S3": "incomplete", "S6": "orphan", "S9": "orphan"}
+        "S1": "complete", "S2": "not started", "S3": "incomplete", "S6": "orphan", "S9": "orphan",
+        "S10": "incomplete"}
     assert rows["S1"]["extra_outputs"] == {"dv": True, "pg": False} and rows["S1"]["problem"] is None
     assert rows["S9"]["extra_outputs"] == {"dv": False, "pg": True}
-    assert "last output from 'qc'" in rows["S3"]["note"]
+    # qc and align run side by side, so either can be the one missing.
+    assert rows["S3"]["note"] == "no VCF; output from qc; none from align, variants"
+    assert rows["S10"]["note"] == "no VCF; output from align; none from qc, variants"
     assert rows["S6"]["problem"] is None  # worth knowing, not a failure
 
     problems = {p["key"]: p for p in result["upload_problems"]}
@@ -49,8 +54,8 @@ def test_statuses_and_upload_problems(tmp_path):
     for key, sample in (("raw_reads/S4.fq.gz", "S4"), ("raw_reads/sub/S5.fastq.gz", "S5"),
                         ("raw_reads/S7.v2.fastq.gz", "S7")):
         assert problems[key]["problem"] == "will fail"
-        assert f"decompress reads raw_reads/{sample}.fastq.gz" in problems[key]["detail"]
-    assert result["problem_count"] == 4 + 2  # 4 upload problems + S2 and S3
+        assert f"the stages read raw_reads/{sample}.fastq.gz" in problems[key]["detail"]
+    assert result["problem_count"] == 4 + 3  # 4 upload problems + S2, S3 and S10
 
 
 def fake_sfn(running_inputs):
@@ -83,12 +88,13 @@ def test_cli_report_json_and_exit_code(tmp_path, capsys, monkeypatch):
     make_bucket(tmp_path, KEYS)
     assert reconcile.main(["--local-dir", str(tmp_path)]) == 0
     out = capsys.readouterr().out
-    assert "S1" in out and "complete" in out and "Upload problems:" in out and "6 problem(s)" in out
-    assert " S1                      complete     D Q A V dv" in out
-    assert "!S3                      incomplete   D Q . . .." in out
+    assert "S1" in out and "complete" in out and "Upload problems:" in out and "7 problem(s)" in out
+    assert " S1                      complete     Q A V dv .." in out
+    assert "!S3                      incomplete   Q . . .. .." in out
+    assert "!S10                     incomplete   . A . .. .." in out
 
     assert reconcile.main(["--local-dir", str(tmp_path), "--json", "--fail-on-problems"]) == 1
-    assert json.loads(capsys.readouterr().out)["problem_count"] == 6
+    assert json.loads(capsys.readouterr().out)["problem_count"] == 7
 
 
 def test_clean_bucket_passes(tmp_path, capsys, monkeypatch):
@@ -111,14 +117,13 @@ def test_patterns_follow_keys_for():
     assert not any(p.match("raw_reads/ABC.fastq.gz") for p in patterns)
     assert not any(p.match("raw_reads/ABC_R1.fastq.gz") for p in patterns)
     assert not any(p.match("alignments/sub/ABC.bam") for p in patterns)
-    assert reconcile.match_sample("decompressed/ABC_R2.fastq", patterns) == "ABC"
+    assert reconcile.match_sample("decompressed/ABC_R2.fastq", patterns) is None  # no longer a stage output
     assert reconcile.match_sample("qc_reports/ABC_R1_fastqc.zip", patterns) == "ABC"
     assert reconcile.match_sample("qc_reports/ABC_fastqc.zip", patterns) == "ABC"
 
 
 def paired_sample(sample_id):
     return ([f"raw_reads/{sample_id}_{m}.fastq.gz" for m in ("R1", "R2")]
-            + [f"decompressed/{sample_id}_{m}.fastq" for m in ("R1", "R2")]
             + [f"qc_reports/{sample_id}_{m}_fastqc.{ext}" for m in ("R1", "R2") for ext in ("html", "zip")]
             + [f"alignments/{sample_id}.bam", f"variants/{sample_id}.vcf.gz"])
 
@@ -126,11 +131,10 @@ def paired_sample(sample_id):
 PAIRED_KEYS = (paired_sample("P1")
                + ["raw_reads/P2_R1.fastq.gz"]                                           # lone mate
                + ["raw_reads/P3_R1.fastq.gz", "raw_reads/P3_R2.fastq.gz",
-                  "decompressed/P3_R1.fastq", "decompressed/P3_R2.fastq",
                   "qc_reports/P3_R1_fastqc.html"]                                       # QC for R1 only
                + ["raw_reads/P4.fastq.gz", "raw_reads/P4_R1.fastq.gz", "raw_reads/P4_R2.fastq.gz"]
                + ["raw_reads/P5_R1.fq.gz", "raw_reads/sub/P6_R1.fastq.gz"]
-               + ["decompressed/P7_R1.fastq", "decompressed/P7_R2.fastq"]               # orphan, paired
+               + ["qc_reports/P7_R1_fastqc.html", "qc_reports/P7_R2_fastqc.html"]       # orphan, paired
                + full_sample("run_1"))  # SRA-style _1 is not a mate: run_1 is a single-end sample
 
 
@@ -145,10 +149,10 @@ def test_paired_end_samples(tmp_path):
     assert rows["run_1"]["layout"] == "single"
     assert rows["P2"]["problem"] == "lone mate" and "R2 missing" in rows["P2"]["note"]
     # One mate's QC report is not a QC output, but it does show the run reached qc.
-    assert rows["P3"]["outputs"] == {"fastq": True, "qc_html": False, "bam": False, "vcf": False}
-    assert "last output from 'qc'" in rows["P3"]["note"]
+    assert rows["P3"]["outputs"] == {"qc_html": False, "bam": False, "vcf": False}
+    assert "output from qc; none from align, variants" in rows["P3"]["note"]
     assert rows["P4"]["problem"] == "both layouts" and rows["P4"]["layout"] is None
-    assert rows["P7"]["raw"] is False and rows["P7"]["outputs"]["fastq"] is True
+    assert rows["P7"]["raw"] is False and rows["P7"]["outputs"]["qc_html"] is True
     # Per-mate keys never show up as samples of their own.
     assert not any(s.endswith(("_R1", "_R2")) for s in rows)
 
@@ -167,7 +171,7 @@ def test_paired_end_report(tmp_path, capsys, monkeypatch):
     make_bucket(tmp_path, paired_sample("P1"))
     assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 0
     out = capsys.readouterr().out
-    assert " P1                      complete     D Q A V .. ..  paired-end" in out
+    assert " P1                      complete     Q A V .. ..  paired-end" in out
     assert "1 complete; 0 problem(s)" in out
 
 
@@ -185,8 +189,8 @@ def test_warns_when_open_runs_are_not_checked(tmp_path, capsys, monkeypatch):
     assert "open runs aren't checked" not in capsys.readouterr().err
 
 
-def test_one_decompressed_mate_is_incomplete_not_unstarted():
+def test_one_mates_report_is_incomplete_not_unstarted():
     rows = by_sample(reconcile.reconcile(["raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz",
-                                          "decompressed/S1_R1.fastq"]))
-    assert rows["S1"]["status"] == "incomplete" and rows["S1"]["outputs"]["fastq"] is False
-    assert "last output from 'decompress'" in rows["S1"]["note"]
+                                          "qc_reports/S1_R1_fastqc.html"]))
+    assert rows["S1"]["status"] == "incomplete" and rows["S1"]["outputs"]["qc_html"] is False
+    assert "output from qc" in rows["S1"]["note"]

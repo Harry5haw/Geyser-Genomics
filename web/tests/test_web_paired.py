@@ -21,7 +21,6 @@ def finished_pair(storage):
     for key in (R1, R2):
         put(storage, key, fastq_gz())
     for mate in ("R1", "R2"):
-        put(storage, f"decompressed/P1_{mate}.fastq", b"data")
         put(storage, f"qc_reports/P1_{mate}_fastqc.html", f"<html>report {mate}</html>")
         put(storage, f"qc_reports/P1_{mate}_fastqc.zip", b"zip")
     put(storage, "alignments/P1.bam", b"bam")
@@ -87,12 +86,12 @@ def test_sample_uploaded_both_ways_is_not_listed(storage):
 def test_paired_stage_is_done_only_when_both_mates_are(storage):
     for key in (R1, R2):
         put(storage, key, fastq_gz())
-    put(storage, "decompressed/P1_R1.fastq", b"data")
+    put(storage, "qc_reports/P1_R1_fastqc.html", b"data")
     (sample,) = status.load_all(storage)
     assert sample.layout == "paired"
     assert sample.stages[0].state != "done"
 
-    put(storage, "decompressed/P1_R2.fastq", b"data")
+    put(storage, "qc_reports/P1_R2_fastqc.html", b"data")
     assert status.load_one(storage, "P1").stages[0].state == "done"
 
 
@@ -126,7 +125,7 @@ def test_detail_page_shows_both_mates_reports_and_files(client, storage):
     for mate in ("R1", "R2"):
         assert f'src="/samples/P1/files/qc_html_{mate}/?inline=1"' in body
         assert f"FastQC report ({mate})" in body
-        for kind in ("raw", "fastq", "qc_html", "qc_zip"):
+        for kind in ("raw", "qc_html", "qc_zip"):
             assert f"/samples/P1/files/{kind}_{mate}/" in body
     assert "/samples/P1/files/bam/" in body and "/samples/P1/files/vcf/" in body
     assert "/samples/P1/files/raw/" not in body

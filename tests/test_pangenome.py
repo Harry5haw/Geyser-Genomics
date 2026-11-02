@@ -137,7 +137,7 @@ def names(jobs):
 
 def test_pangenome_caller_replaces_variants_stage_and_uses_gpu_and_shm():
     jobs = run_local.pipeline_jobs("S1", "ref.fa", caller="pangenome")
-    assert names(jobs) == ["decompress", "qc", "align", "pangenome"]
+    assert names(jobs) == ["qc", "align", "pangenome"]
     pg = jobs[-1]
     assert pg["image"] == "geyser-deepvariant-pangenome" and pg["gpus"] and pg["shm"] == "12g"
     assert pg["cmd"] == ["/opt/geyser-venv/bin/python", "deepvariant_task.py", "S1", "ref.fa",

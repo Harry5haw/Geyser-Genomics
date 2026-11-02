@@ -113,3 +113,27 @@ def test_paired_end_planted_duplicates_are_marked_as_pairs(tmp_path, capfd):
     # markdup counts reads, so each duplicate pair is 2; the rest are the few chance pairs seen above.
     marked_reads = _markdup_stat(log, "DUPLICATE PAIR")
     assert 2 * planted_pairs <= marked_reads < 2 * planted_pairs + 50
+
+
+@pytest.mark.parametrize("leading_gap", [0, 1000], ids=["bwa-fallback", "bwa-mem2"])
+def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
+    # There is no decompress stage to trip over a cut-off upload any more, so both stages that read
+    # the .gz must fail on it themselves (FastQC: "file is probably truncated"; bwa and bwa-mem2:
+    # gzclose error), rather than align quietly writing a BAM of the reads before the cut. The
+    # leading gap decides which aligner runs (bwa-mem2#262 guard), so both are covered.
+    import subprocess
+
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root), "--leading-gap", str(leading_gap)])
+    raw = root / "raw_reads" / "SYNTH001.fastq.gz"
+    data = raw.read_bytes()
+    raw.write_bytes(data[:len(data) // 2])
+
+    image = os.environ.get("GEYSER_IMAGE", "geyser-app")
+    for stage, needs_ref in run_local.STAGES[:2]:
+        assert stage in ("qc", "align")
+        cmd = run_local.stage_command(stage, "SYNTH001", "synthetic_ref.fa", needs_ref)
+        result = subprocess.run(run_local.docker_command(cmd, str(root), image), capture_output=True, text=True)
+        assert result.returncode != 0, f"{stage} accepted a truncated upload:\n{result.stdout}{result.stderr}"
+    assert not (root / "alignments" / "SYNTH001.bam").exists()
+    assert not (root / "qc_reports" / "SYNTH001_fastqc.html").exists()
