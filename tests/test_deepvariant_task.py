@@ -495,3 +495,10 @@ def test_run_local_passes_the_limits_through():
 
     for name in dv.LIMIT_VARS.values():
         assert name in run_local.DEEPVARIANT_ENV_VARS
+
+
+def test_run_streaming_cleans_up_the_group_after_a_normal_exit(monkeypatch):
+    sent = []
+    monkeypatch.setattr(dv.os, "killpg", lambda pid, sig: sent.append(pid), raising=False)
+    code, _, _ = dv.run_streaming(py("print('ok', flush=True)"), limits=dv.WrapperLimits(), poll=0.2)
+    assert code == 0 and len(sent) == 1  # stray steps of a finished run do not keep the GPU

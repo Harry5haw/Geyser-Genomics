@@ -380,8 +380,9 @@ def run_streaming(cmd, limits=None, clock=time.monotonic, poll=1.0, drain=5.0, s
         ) from None
     if reason:
         raise WrapperStopped(f"{os.path.basename(cmd[0])} {reason} (exit code {code} after being stopped)")
-    if exited_at is not None:
-        signal_group(proc, "SIGKILL")  # stray leftovers of a finished run (no-op if the group is gone)
+    # Steps left behind by a finished run (they may hold the GPU even after the pipe closes): stop the group.
+    # A no-op once the group is gone.
+    signal_group(proc, "SIGKILL")
     return code, events, time.time()
 
 
