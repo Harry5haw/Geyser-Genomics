@@ -68,7 +68,7 @@ Anything under `infrastructure/` (and `.github/workflows/deploy-platform.yml`) i
   `random_id`; that stops the change.
 - Nothing that bills by the hour while idle (NAT gateways, for example) goes in without an explicit decision.
 
-Dependabot's weekly Terraform update PRs follow the same rules (see `.github/dependabot.yml`).
+Dependabot's monthly Terraform update PRs follow the same rules (see `.github/dependabot.yml`).
 
 ## Secrets and data
 

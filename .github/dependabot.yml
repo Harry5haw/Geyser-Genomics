@@ -1,4 +1,4 @@
-# Weekly dependency updates, one grouped PR per ecosystem. Each PR runs tests.yml like any other.
+# Dependency updates, one grouped PR per ecosystem: weekly, Terraform monthly. Each PR runs tests.yml like any other.
 # Terraform updates touch infrastructure/, so they follow the infrastructure rules: a reviewed
 # `terraform plan` before merge, never merged on CI alone. boto3 is also installed in the DeepVariant
 # image (Python 3.10): the PR's DeepVariant CI job catches a release that drops 3.10.
@@ -53,11 +53,11 @@ updates:
     commit-message:
       prefix: "Docker"
 
+  # Monthly: every Terraform update needs a reviewed plan, and the AWS provider is pinned on purpose.
   - package-ecosystem: terraform
     directory: "/infrastructure"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
     groups:
       terraform:
         patterns: ["*"]
