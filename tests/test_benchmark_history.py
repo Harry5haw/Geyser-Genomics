@@ -194,15 +194,13 @@ def test_benchmark_happy_records_the_graph_for_pangenome_rows_only(tmp_path, mon
         write_happy(str(root / out[len("/data/") :]))
         return subprocess.CompletedProcess(cmd, 0)
 
-    commits = []
     monkeypatch.setattr(benchmark_happy.subprocess, "run", fake_happy)
-    monkeypatch.setattr(bh, "git_commit", lambda repo=None: commits.append(1) or "abc1234")
+    monkeypatch.setattr(bh, "git_commit", lambda repo=None: "abc1234")
     r2 = "hprc-v2.0-mc-grch38-eval.chr20.gbz"
     args = ["--root", str(root), "--sample", "S1", "--reference", "r.fa", "--graph", r2]
     assert benchmark_happy.main(args + ["--callers", "deepvariant", "pangenome"]) == 0
     graphs = {(r["caller"], r["graph"], r["commit"]) for r in bh.read_history(bh.HISTORY)}
     assert graphs == {("deepvariant", "", "abc1234"), ("pangenome", bh.GRAPH_LABELS[r2], "abc1234")}
-    assert commits == [1]  # once per run, before the first record() rewrites the history
 
 
 def test_git_commit_ignores_the_history_itself(tmp_path):
@@ -237,6 +235,40 @@ def test_a_rescore_with_other_settings_supersedes_and_a_sub_region_stays_separat
         ("bwa + linear DV (chr20:1-1000000)", "1"),
         ("bwa + linear DV, VG flags", "7"),
     ]
+
+
+def test_a_whole_region_scoring_is_one_configuration_with_or_without_region(tmp_path):
+    history = str(tmp_path / "history.csv")
+    prefix = str(tmp_path / "b" / "deepvariant")
+    meta = bh.run_metadata("S1", "deepvariant", aligner="bwa")
+    write_happy(prefix, snp_fn=10, region="")  # scored without --region
+    bh.record(prefix, meta, history)
+    write_happy(prefix, snp_fn=4, timestamp="Tue Nov 03 09:00:00 2026", region="chr20")
+    bh.record(prefix, meta, history)
+    configs = bh.configurations(bh.read_history(history))
+    assert [(c["configuration"], c["snp_fn"]) for c in configs] == [("bwa + linear DV", "4")]
+    assert "## Re-scored configurations" in bh.report_markdown(bh.read_history(history))
+
+
+def test_benchmark_happy_keeps_known_settings_when_no_flags_are_set(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    (root / "reference").mkdir(parents=True)
+    (root / "reference" / "r.fa.fai").write_text("c\t10\t3\t10\t11\n")
+    vcf = run_local.vcf_path(str(root), "deepvariant", "HG003_chr20_vg")
+    os.makedirs(os.path.dirname(vcf), exist_ok=True)
+    open(vcf, "wb").close()
+
+    def fake_happy(cmd, *a, **k):
+        out = next(c for c in cmd if c.startswith("/data/benchmarks/"))
+        write_happy(str(root / out[len("/data/") :]))
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(benchmark_happy.subprocess, "run", fake_happy)
+    monkeypatch.setattr(bh, "git_commit", lambda repo=None: "abc1234")
+    monkeypatch.delenv("DEEPVARIANT_EXTRA_ARGS", raising=False)
+    args = ["--root", str(root), "--sample", "HG003_chr20_vg", "--reference", "r.fa", "--callers", "deepvariant"]
+    assert benchmark_happy.main(args) == 0
+    assert {r["caller_settings"] for r in bh.read_history(bh.HISTORY)} == {bh.VG_FLAGS}  # not wiped to ''
 
 
 def test_metadata_explicit_empty_clears_a_known_value_and_graphs_get_labels():

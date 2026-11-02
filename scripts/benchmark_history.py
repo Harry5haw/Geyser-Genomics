@@ -8,8 +8,10 @@ tracked in git, so a change in accuracy shows up as a diff and the series keeps 
     python scripts/benchmark_history.py backfill --root ../geyser-data   # the benchmarks scored before this script
     python scripts/benchmark_history.py report                          # README.md + figure CSV next to the history
 
-benchmark_happy.py appends each caller it scores, and so do benchmark_giraffe.py / benchmark_calls.py, which run it
-through benchmark_giraffe.score_config(history=...) with the aligner, alignment, coverage and (pangenome) graph. Re-scoring the same run and caller on the same day replaces those rows; a later day adds new ones.
+benchmark_happy.py appends each caller it scores, and so do benchmark_giraffe.py / benchmark_calls.py, which run
+it through benchmark_giraffe.score_config(history=...) with the aligner, alignment, coverage and (pangenome) graph.
+The history is day-granular: re-scoring a configuration (run, caller, sub-region) on the same day replaces its rows,
+whatever the settings; a later day adds new ones.
 
 Numbers come from hap.py's extended.csv (PASS calls, all subtypes and genotypes), which also has the GIAB
 stratification rows when hap.py ran with them; summary.csv is the fallback for the whole region only.
@@ -52,11 +54,9 @@ FIELDS = [
     "precision",
     "f1",
 ]
-# One configuration: a run's caller over one region. Its settings are part of what a scoring records, not of its
-# identity, so a re-score with other settings supersedes the old one (and a sub-region scoring stays separate).
-CONFIG_KEY = ("run", "caller", "region")
-# Rows that identify one scoring of one configuration: re-recording them (a re-score the same day) replaces them.
-RUN_KEY = ("date",) + CONFIG_KEY
+# One configuration: a run's caller over its whole region, or over a sub-region ("chr20:1-1000000"; a scoring with
+# no --region and one with --region chr20 are the same configuration). Its settings are part of what a scoring
+# records, not of its identity, so a re-score with other settings supersedes the old one.
 CALLERS = ("bcftools", "deepvariant", "pangenome")
 CALLER_LABELS = {"bcftools": "bcftools", "deepvariant": "linear DV", "pangenome": "pangenome DV"}
 PANGENOME_GRAPH = "HPRC v1.1 MC GRCh38, chr20"
@@ -250,7 +250,10 @@ def read_history(path=None) -> list:
 def write_history(rows, path=None) -> None:
     path = path or HISTORY
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    rows = sorted(rows, key=lambda r: (r["date"], r["run"], r["caller"], r["caller_settings"], r["subset"], r["type"]))
+    rows = sorted(
+        rows,
+        key=lambda r: (r["date"], r["run"], r["caller"], r["region"], r["caller_settings"], r["subset"], r["type"]),
+    )
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=FIELDS, lineterminator="\n")
         writer.writeheader()
@@ -266,8 +269,8 @@ def record(prefix, meta: dict, path=None) -> int:
     new = [{**base, **{k: str(v) for k, v in r.items()}} for r in read_happy(prefix)]
     if not new:
         return 0
-    key = tuple(base[k] for k in RUN_KEY)
-    kept = [r for r in read_history(path) if tuple(r[k] for k in RUN_KEY) != key]
+    key = (base["date"], *config_key(base))
+    kept = [r for r in read_history(path) if (r["date"], *config_key(r)) != key]
     write_history(kept + new, path)
     return len(new)
 
@@ -288,14 +291,20 @@ def backfill(root, path=None) -> int:
 # ---------- report ----------
 
 
+def sub_region(r) -> str:
+    """The scored sub-region, or '' for a whole region (hap.py's locations are a chromosome or chr:start-end)."""
+    region = r.get("region", "")
+    return region if ":" in region else ""
+
+
 def config_key(r) -> tuple:
-    return tuple(r[k] for k in CONFIG_KEY)
+    return r["run"], r["caller"], sub_region(r)
 
 
 def configuration_label(r) -> str:
     label = f"{r['aligner'] or '?'} + {CALLER_LABELS.get(r['caller'], r['caller'])}"
     label += f", {r['caller_settings']}" if r["caller_settings"] else ""
-    return label + (f" ({r['region']})" if ":" in r.get("region", "") else "")  # only a sub-region is named
+    return label + (f" ({sub_region(r)})" if sub_region(r) else "")
 
 
 def latest(rows) -> list:
@@ -327,6 +336,7 @@ def configurations(rows) -> list:
                 "aligner": r["aligner"],
                 "caller": r["caller"],
                 "caller_settings": r["caller_settings"],
+                "region": sub_region(r),
                 "configuration": configuration_label(r),
                 "alignment": r["alignment"],
                 "date": r["date"],
@@ -345,7 +355,10 @@ def configurations(rows) -> list:
         errors = [_int(c.get(k)) for k in ("snp_fn", "snp_fp", "indel_fn", "indel_fp")]
         c["errors"] = "" if None in errors else sum(errors)
         out.append(c)
-    return sorted(out, key=lambda c: (c["sample"], c["coverage"], c["alignment"], c["caller"], c["caller_settings"]))
+    return sorted(
+        out,
+        key=lambda c: (c["sample"], c["coverage"], c["alignment"], c["caller"], c["caller_settings"], c["region"]),
+    )
 
 
 FIGURE_FIELDS = [

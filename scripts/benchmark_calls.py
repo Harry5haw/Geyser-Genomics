@@ -87,6 +87,8 @@ def history_metadata(aligner, source):
     of the alignment it reuses when that one is a known benchmark run (a configuration's own sample name, e.g. an
     _mq5 one, is only a link to it)."""
     known = benchmark_history.KNOWN_RUNS.get(source, {})
+    # No "graph": every preset's pangenome caller uses run_local's default graph, the history's default. A preset
+    # with its own graph passes it as "graph" (a GBZ name under pangenome/ or a label; benchmark_happy --graph).
     return {
         "aligner": bg.ALIGNER_NAMES.get(aligner, aligner),
         **{k: known[k] for k in ("alignment", "coverage") if k in known},

@@ -278,8 +278,6 @@ def main(argv=None):
     os.makedirs(os.path.join(root, *out_dir.split("/")), exist_ok=True)
 
     results, stratified = {}, {}
-    # Once, before any caller is recorded: each record() rewrites the tracked history.
-    commit = "" if a.no_history else benchmark_history.git_commit()
     for caller in a.callers:
         vcf_key = run_local.VCF_KEYS[caller].format(id=a.sample)
         if not os.path.exists(os.path.join(root, *vcf_key.split("/"))):
@@ -296,8 +294,9 @@ def main(argv=None):
         results[caller] = read_summary(os.path.join(root, *f"{prefix}.summary.csv".split("/")))
         if not a.no_history:
             settings = a.caller_settings
-            if settings is None and caller != "bcftools":
-                settings = benchmark_history.settings_tag(os.environ.get("DEEPVARIANT_EXTRA_ARGS", ""))
+            if settings is None and caller != "bcftools" and "DEEPVARIANT_EXTRA_ARGS" in os.environ:
+                # unset: not given, so a known run keeps its recorded settings (run_metadata)
+                settings = benchmark_history.settings_tag(os.environ["DEEPVARIANT_EXTRA_ARGS"])
             meta = benchmark_history.run_metadata(
                 a.sample,
                 caller,
@@ -306,7 +305,7 @@ def main(argv=None):
                 coverage=a.coverage,
                 graph=a.graph if caller == "pangenome" else None,
                 caller_settings=settings,
-                commit=commit,
+                commit=benchmark_history.git_commit(),
                 source="benchmark_happy.py",
             )
             written = benchmark_history.record(os.path.join(root, *prefix.split("/")), meta, a.history)
