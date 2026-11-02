@@ -182,8 +182,11 @@ def main(argv=None):
 
     write_fasta(os.path.join(a.root, "reference", a.reference), a.contig, "N" * a.leading_gap + reference)
     genes = gene_models(snps, a.length, a.leading_gap) if a.gff else []
+    gff_path = os.path.join(a.root, "reference", a.reference + ".gff3.gz")
     if genes:
-        write_gff(os.path.join(a.root, "reference", a.reference + ".gff3.gz"), a.contig, genes)
+        write_gff(gff_path, a.contig, genes)
+    elif os.path.exists(gff_path):
+        os.remove(gff_path)  # an earlier --gff run's models describe a different genome now
 
     raw_dir = os.path.join(a.root, "raw_reads")
     os.makedirs(raw_dir, exist_ok=True)

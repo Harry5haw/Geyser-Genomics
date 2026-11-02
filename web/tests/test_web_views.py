@@ -185,3 +185,20 @@ def test_detail_page_without_annotation_has_no_consequence_column(client, storag
     finished_sample(storage)
     body = client.get("/samples/S1/").content.decode()
     assert "Consequence" not in body and "/samples/S1/files/csq_vcf/" not in body
+
+
+def test_an_annotated_vcf_from_an_earlier_run_is_not_shown(client, storage):
+    # A later run that didn't annotate leaves the old csq VCF in place (nothing deletes it); the run
+    # record's outputs say what the latest run wrote.
+    import gzip
+
+    finished_sample(storage)
+    put(storage, "variants/S1.csq.vcf.gz", gzip.compress(CSQ_VCF.encode()))
+    record = {"run_name": "S1-run2", "status": "succeeded", "outputs": [{"key": "variants/S1.vcf.gz", "bytes": 1}]}
+    put(storage, "runs/S1.provenance.json", json.dumps(record))
+    body = client.get("/samples/S1/").content.decode()
+    assert "<th>Consequence</th>" not in body
+
+    record["outputs"].append({"key": "variants/S1.csq.vcf.gz", "bytes": 1})
+    put(storage, "runs/S1.provenance.json", json.dumps(record))
+    assert "<th>Consequence</th>" in client.get("/samples/S1/").content.decode()

@@ -247,7 +247,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
         record["stats"].update(p.get("stats") or {})
-        for field in ("reference", "layout", "aligner"):
+        for field in ("reference", "layout", "aligner", "annotation"):
             if p.get(field) is not None:
                 record[field] = p[field]
     return record

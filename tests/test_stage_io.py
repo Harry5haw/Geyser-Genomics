@@ -682,7 +682,8 @@ def test_a_failed_annotation_warns_and_keeps_the_vcf(
     monkeypatch.setattr(tasks, "run_shell", csq_fails)
     tasks.variants_task("S1", REF)
 
-    assert "WARNING: bcftools csq failed" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "WARNING: bcftools csq failed (exit 1); no annotated VCF this run" in out  # not "stats"
     assert "variants/S1.csq.vcf.gz" not in uploads and uploads[-1] == "variants/S1.vcf.gz"
 
 
@@ -693,3 +694,33 @@ def test_annotate_rejects_unknown_modes(monkeypatch):
     monkeypatch.setenv("ANNOTATE", "")
     assert tasks.annotate_mode() == "auto"
     assert tasks.annotation_key("chr20.fa") == "reference/chr20.fa.gff3.gz"
+
+
+def test_a_mistyped_annotate_fails_before_any_calling(local_env, tool_calls, shell_commands, monkeypatch):
+    monkeypatch.setenv("ANNOTATE", "no")
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    with pytest.raises(ValueError, match="ANNOTATE must be one of"):
+        tasks.variants_task("S1", REF)
+    assert shell_commands == []  # nothing ran: no chromosome's worth of calling thrown away
+
+
+def test_storage_trouble_reading_the_gff_keeps_the_vcf(
+    local_env, tool_calls, shell_commands, uploads, monkeypatch, capsys
+):
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}.gff3.gz", b"GFF")
+    store = tasks.storage()
+    real_download = store.download
+
+    def flaky(key, path):
+        if key.endswith(".gff3.gz"):
+            raise RuntimeError("SlowDown")
+        real_download(key, path)
+
+    monkeypatch.setattr(store, "download", flaky)
+    tasks.variants_task("S1", REF)
+    out = capsys.readouterr().out
+    assert "no annotated VCF this run" in out
+    assert "variants/S1.csq.vcf.gz" not in uploads and uploads[-1] == "variants/S1.vcf.gz"

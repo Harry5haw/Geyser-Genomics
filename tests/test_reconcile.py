@@ -371,3 +371,9 @@ def test_annotated_vcf_shows_as_its_own_column_only_when_present(tmp_path, capsy
     reconcile.main(["--local-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert "csq annotated VCF" in out
+
+
+def test_annotated_vcf_is_not_mistaken_for_another_samples_vcf(tmp_path):
+    keys = full_sample("S1") + ["variants/S1.csq.vcf.gz", "variants/S1.csq.vcf.gz.tbi"]
+    rows = by_sample(reconcile.reconcile(make_bucket(tmp_path, keys).list_keys("")))
+    assert set(rows) == {"S1"}  # no phantom orphan "S1.csq"

@@ -23,6 +23,7 @@ from geyser_web.pipeline import (
     keys_for,
     keys_of,
     layout_from_raw,
+    read_record,
 )
 
 from . import status as status_mod
@@ -169,13 +170,32 @@ def _status_context(storage, sample):
     }
 
 
+def _current_annotated_vcf(storage, sample):
+    """The annotated VCF's key if it belongs to the sample's latest run, else None.
+
+    Nothing deletes an old one when a later run doesn't annotate (no GFF, ANNOTATE=off, csq failed),
+    so its presence alone could show an earlier run's calls. The run record's outputs list what the
+    latest run wrote. Without a record (imported data), the file is trusted.
+    """
+    key = sample.keys["csq_vcf"]
+    if not storage.exists(key):
+        return None
+    try:
+        record = read_record(storage, sample.sample_id)
+    except Exception:  # noqa: BLE001 - the record is a hint here; never fail the page over it
+        record = None
+    if record is None:
+        return key
+    return key if any(o.get("key") == key for o in record.get("outputs") or []) else None
+
+
 @require_GET
 def sample_detail(request, sample_id):
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
     truth = read_truth(storage, sample_id)
-    # The annotated VCF has the same records plus consequences: show it when it exists.
-    variants_key = sample.keys["csq_vcf"] if storage.exists(sample.keys["csq_vcf"]) else sample.keys["vcf"]
+    # The annotated VCF has the same records plus consequences: show it when the latest run wrote it.
+    variants_key = _current_annotated_vcf(storage, sample) or sample.keys["vcf"]
     variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     downloads = []

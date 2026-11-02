@@ -48,15 +48,21 @@ def _info_field(info: str, name: str):
     return None
 
 
-def _consequence(bcsq) -> str:
-    """'missense|SYNTHG1|SYNTHG1T|protein_coding|+|...,...' -> 'missense SYNTHG1' (each consequence once).
+def _consequence(bcsq, alt: str = None) -> str:
+    """'missense|SYNTHG1|SYNTHG1T|protein_coding|+|...|100A>G,...' -> 'missense SYNTHG1' (each once).
 
+    alt: keep only the entries for that allele (their last field, the DNA change, ends '>ALT'), so
+    each allele of a multi-allelic site shows its own consequences; if none match, all are shown.
     A leading '*' (bcftools: downstream of an earlier stop) or '@' (see another record) is kept off.
     """
     if not bcsq:
         return ""
+    entries = bcsq.split(",")
+    if alt:
+        mine = [e for e in entries if e.split("|")[-1].endswith(">" + alt)]
+        entries = mine or entries
     seen = []
-    for entry in bcsq.split(","):
+    for entry in entries:
         parts = entry.split("|")
         if len(parts) < 2 or not parts[0].lstrip("*@"):
             continue
@@ -83,7 +89,7 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
             if "GT" in fmt and fmt.index("GT") < len(sample):
                 genotype = sample[fmt.index("GT")]
         depth = _info_field(info, "DP")
-        consequence = _consequence(_info_field(info, "BCSQ"))
+        bcsq = _info_field(info, "BCSQ")
         for alt in alts.split(","):
             table.total += 1
             table.calls.add((pos, ref, alt))
@@ -98,7 +104,7 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
                         depth=int(depth) if depth and depth.isdigit() else None,
                         genotype=genotype,
                         kind=_kind(ref, alt),
-                        consequence=consequence,
+                        consequence=_consequence(bcsq, alt),
                     )
                 )
     return table

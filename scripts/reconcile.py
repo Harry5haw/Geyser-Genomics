@@ -77,6 +77,11 @@ def load_trigger():
     return module
 
 
+EXTRA_LEGEND = {"csq": "annotated VCF", "dv": "DeepVariant VCF", "pg": "pangenome DeepVariant VCF"}
+# Columns shown only once some sample has the output: most references have no gene models.
+OPTIONAL_LABELS = {"csq"}
+
+
 def extra_outputs() -> dict:
     """Optional outputs beyond the core stages, keyed by column label: the consequence-annotated VCF
     (csq, only when the reference has gene models), DeepVariant (dv) and pangenome-aware DeepVariant
@@ -101,7 +106,9 @@ def key_patterns(extras: dict) -> list:
     templates = [v for k, v in keys_for(_SENTINEL).items() if k != "raw"]
     templates += [k for k in legacy_qc_keys(_SENTINEL, PAIRED) + legacy_qc_keys(_SENTINEL)]
     templates += [fn(_SENTINEL) for fn in extras.values()]
-    return [re.compile("^" + re.escape(t).replace(_SENTINEL, r"(?P<id>[^/]+)") + "$") for t in templates]
+    # [^/.]: sample IDs have no dots (the trigger cuts at the first one), so variants/S1.csq.vcf.gz
+    # is S1's annotated VCF, not the VCF of a sample "S1.csq".
+    return [re.compile("^" + re.escape(t).replace(_SENTINEL, r"(?P<id>[^/.]+)") + "$") for t in templates]
 
 
 def match_sample(key: str, patterns) -> str:
@@ -305,9 +312,14 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
 
 def print_report(result: dict) -> None:
     labels = [label for _, label in STAGE_OUTPUTS]
-    # csq only appears once some sample has an annotated VCF: most references have no gene models.
+    # Optional outputs (OPTIONAL_LABELS) only get a column once some sample has one.
     extra_labels = sorted(
-        {label for r in result["samples"] for label, present in r["extra_outputs"].items() if label != "csq" or present}
+        {
+            label
+            for r in result["samples"]
+            for label, present in r["extra_outputs"].items()
+            if label not in OPTIONAL_LABELS or present
+        }
     )
     width = 2 * len(labels) + 3 * len(extra_labels) + 2
     print(f"{'Sample':<24} {'Status':<12} {'Outputs':<{width}} Note")
@@ -321,8 +333,7 @@ def print_report(result: dict) -> None:
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{width}} {note}")
     print(
         "Outputs: Q QC report (fastp), A alignment, V VCF"
-        + (", csq annotated VCF" if "csq" in extra_labels else "")
-        + (", dv DeepVariant VCF, pg pangenome DeepVariant VCF" if "dv" in extra_labels else "")
+        + "".join(f", {label} {EXTRA_LEGEND[label]}" for label in extra_labels)
         + ", R run record (r: incomplete or failed)"
     )
     if result["upload_problems"]:

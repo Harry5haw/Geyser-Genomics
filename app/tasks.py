@@ -604,14 +604,15 @@ def _log_summary(label, parse, path):
         print(f"WARNING: could not summarise {os.path.basename(path)}: {err}", flush=True)
 
 
-def _run_stats_tool(label: str, command: str) -> bool:
-    """Run one QC statistics command. Best effort: its failure warns, never fails the stage, because
-    the stage's real output (CRAM, VCF) is already built and worth more than a side report."""
+def _run_stats_tool(label: str, command: str, skipped: str = "its stats are skipped for this run") -> bool:
+    """Run one best-effort command (QC statistics, annotation): its failure warns, never fails the
+    stage, because the stage's real output (CRAM, VCF) is already built and worth more than a side
+    report. `skipped` says what the run goes without."""
     try:
         run_shell(command)
         return True
     except subprocess.CalledProcessError as err:
-        print(f"WARNING: {label} failed (exit {err.returncode}); its stats are skipped for this run", flush=True)
+        print(f"WARNING: {label} failed (exit {err.returncode}); {skipped}", flush=True)
         return False
 
 
@@ -797,12 +798,17 @@ def annotate_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) -
         provenance.note(annotation="off")
         return []
     gff_key = annotation_key(reference_name)
-    if not storage().exists(gff_key):
-        print(f"No gene models at {storage().describe(gff_key)}; skipping annotation", flush=True)
-        provenance.note(annotation="skipped: no GFF")
-        return []
     gff = os.path.join(wd, os.path.basename(gff_key))
-    storage().download(gff_key, gff)
+    try:  # storage trouble (throttling, a GFF deleted mid-run) must not cost the VCF either
+        if not storage().exists(gff_key):
+            print(f"No gene models at {storage().describe(gff_key)}; skipping annotation", flush=True)
+            provenance.note(annotation="skipped: no GFF")
+            return []
+        storage().download(gff_key, gff)
+    except Exception as err:  # noqa: BLE001 - best effort, see the docstring
+        print(f"WARNING: could not read {storage().describe(gff_key)} ({err}); no annotated VCF this run", flush=True)
+        provenance.note(annotation="failed")
+        return []
     provenance.note_input(gff_key, gff)
     csq = os.path.join(wd, os.path.basename(keys["csq_vcf"]))
     csq_tbi = os.path.join(wd, os.path.basename(keys["csq_tbi"]))
@@ -810,7 +816,10 @@ def annotate_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) -
         f"bcftools csq -f {shlex.quote(ref)} -g {shlex.quote(gff)} -p a -Oz -o {shlex.quote(csq)} {shlex.quote(vcf)}"
     )
     index = f"bcftools index -t -o {shlex.quote(csq_tbi)} {shlex.quote(csq)}"
-    if not (_run_stats_tool("bcftools csq", annotate) and _run_stats_tool("bcftools index (csq)", index)):
+    skipped = "no annotated VCF this run"
+    if not (
+        _run_stats_tool("bcftools csq", annotate, skipped) and _run_stats_tool("bcftools index (csq)", index, skipped)
+    ):
         provenance.note(annotation="failed")
         return []
     provenance.note(annotation="done")
@@ -860,6 +869,7 @@ def variants_task(sample_id, reference_name, window=None):
     (the missing ones are named); the window must be the one the regions were planned with.
     """
     keys = keys_for(sample_id)
+    annotate_mode()  # a mistyped ANNOTATE fails now, not after a chromosome's worth of calling
     wd = work_dir(sample_id)
     try:
         provenance.note_tools("bcftools")

@@ -165,3 +165,10 @@ def test_gff_coordinates_follow_the_leading_gap(tmp_path):
     for g in truth["genes"]:
         assert g["start"] > 1000
     assert truth["genes"][0]["start"] <= truth["snps"][1]["pos"] <= truth["genes"][0]["end"]
+
+
+def test_a_run_without_gff_removes_gene_models_left_by_an_earlier_one(tmp_path):
+    make_test_data.main(["--root", str(tmp_path), "--gff"])
+    assert (tmp_path / "reference" / "synthetic_ref.fa.gff3.gz").exists()
+    make_test_data.main(["--root", str(tmp_path), "--seed", "2"])
+    assert not (tmp_path / "reference" / "synthetic_ref.fa.gff3.gz").exists()
