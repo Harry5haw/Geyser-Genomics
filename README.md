@@ -270,6 +270,8 @@ The platform's design is guided by modern cloud-native principles:
 | **Amazon S3**| **The Data Lake.** Holds the inputs, every intermediate file and the results, under fixed key prefixes. An upload to `raw_reads/` is the event that starts the pipeline. |
 | **Python**| The primary language for the bioinformatics application logic (`app/tasks.py`) and for interacting with AWS services via the `boto3` SDK. |
 
+**Why not Nextflow?** Most genomics pipelines are written for a workflow engine. [docs/design/why-not-nextflow.md](docs/design/why-not-nextflow.md) maps Geyser's pieces to Nextflow concepts, lists what an engine would and wouldn't have replaced, and says when the choice should change.
+
 ---
 
 ## 💻 Run It Locally in 2 Minutes (No AWS)
