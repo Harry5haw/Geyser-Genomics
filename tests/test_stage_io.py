@@ -318,6 +318,8 @@ def test_keys_follow_the_documented_layout():
         "bam": "alignments/S1.bam",
         "vcf": "variants/S1.vcf.gz",
         "tbi": "variants/S1.vcf.gz.tbi",
+        "csq_vcf": "variants/S1.csq.vcf.gz",
+        "csq_tbi": "variants/S1.csq.vcf.gz.tbi",
         "flagstat": "stats/S1/flagstat.txt",
         "mosdepth_summary": "stats/S1/mosdepth.summary.txt",
         "mosdepth_dist": "stats/S1/mosdepth.global.dist.txt",
@@ -613,3 +615,112 @@ def test_a_broken_run_record_never_fails_the_stage(local_env, tool_calls, monkey
     tasks.qc_task("S1")  # must not raise
 
     assert (local_env / tasks.keys_for("S1")["qc_html"]).exists()
+
+
+# --- consequence annotation (bcftools csq) --------------------------------------------------------------
+
+
+def test_variants_without_gene_models_skips_annotation(local_env, tool_calls, shell_commands, uploads):
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+
+    tasks.variants_task("S1", REF)
+
+    assert not any(c.startswith("bcftools csq") for c in shell_commands)
+    assert "variants/S1.csq.vcf.gz" not in uploads
+    assert uploads[-1] == "variants/S1.vcf.gz"
+
+
+def test_variants_with_gene_models_annotates_before_the_vcf_marks_the_stage_done(
+    local_env, tool_calls, shell_commands, uploads
+):
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}.gff3.gz", b"GFF")
+
+    tasks.variants_task("S1", REF)
+
+    (csq,) = [c for c in shell_commands if c.startswith("bcftools csq")]
+    words = shlex.split(csq)
+    assert (
+        words[words.index("-g") + 1].endswith(f"{REF}.gff3.gz")
+        and "-p" in words
+        and words[words.index("-p") + 1] == "a"
+    )
+    assert words[-1].endswith("S1.vcf.gz")  # annotates the finished VCF
+    order = [uploads.index(k) for k in ("variants/S1.csq.vcf.gz.tbi", "variants/S1.csq.vcf.gz", "variants/S1.vcf.gz")]
+    assert order == sorted(order)  # the annotated VCF (and its index) before the VCF that marks the stage done
+    assert uploads[-1] == "variants/S1.vcf.gz"
+    assert (local_env / "variants" / "S1.csq.vcf.gz").exists()
+
+
+def test_annotate_off_skips_even_with_gene_models(local_env, tool_calls, shell_commands, uploads, monkeypatch):
+    monkeypatch.setenv("ANNOTATE", "off")
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}.gff3.gz", b"GFF")
+
+    tasks.variants_task("S1", REF)
+
+    assert not any(c.startswith("bcftools csq") for c in shell_commands)
+    assert "variants/S1.csq.vcf.gz" not in uploads
+
+
+def test_a_failed_annotation_warns_and_keeps_the_vcf(
+    local_env, tool_calls, shell_commands, uploads, monkeypatch, capsys
+):
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}.gff3.gz", b"GFF")
+    fake = tasks.run_shell
+
+    def csq_fails(command):
+        if command.startswith("bcftools csq"):
+            raise subprocess.CalledProcessError(1, command)
+        fake(command)
+
+    monkeypatch.setattr(tasks, "run_shell", csq_fails)
+    tasks.variants_task("S1", REF)
+
+    out = capsys.readouterr().out
+    assert "WARNING: bcftools csq failed (exit 1); no annotated VCF this run" in out  # not "stats"
+    assert "variants/S1.csq.vcf.gz" not in uploads and uploads[-1] == "variants/S1.vcf.gz"
+
+
+def test_annotate_rejects_unknown_modes(monkeypatch):
+    monkeypatch.setenv("ANNOTATE", "maybe")
+    with pytest.raises(ValueError, match="ANNOTATE must be one of"):
+        tasks.annotate_mode()
+    monkeypatch.setenv("ANNOTATE", "")
+    assert tasks.annotate_mode() == "auto"
+    assert tasks.annotation_key("chr20.fa") == "reference/chr20.fa.gff3.gz"
+
+
+def test_a_mistyped_annotate_fails_before_any_calling(local_env, tool_calls, shell_commands, monkeypatch):
+    monkeypatch.setenv("ANNOTATE", "no")
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    with pytest.raises(ValueError, match="ANNOTATE must be one of"):
+        tasks.variants_task("S1", REF)
+    assert shell_commands == []  # nothing ran: no chromosome's worth of calling thrown away
+
+
+def test_storage_trouble_reading_the_gff_keeps_the_vcf(
+    local_env, tool_calls, shell_commands, uploads, monkeypatch, capsys
+):
+    put(local_env, "alignments/S1.cram", b"ALN")
+    put(local_env, f"reference/{REF}", b">c\nACGT\n")
+    put(local_env, f"reference/{REF}.gff3.gz", b"GFF")
+    store = tasks.storage()
+    real_download = store.download
+
+    def flaky(key, path):
+        if key.endswith(".gff3.gz"):
+            raise RuntimeError("SlowDown")
+        real_download(key, path)
+
+    monkeypatch.setattr(store, "download", flaky)
+    tasks.variants_task("S1", REF)
+    out = capsys.readouterr().out
+    assert "no annotated VCF this run" in out
+    assert "variants/S1.csq.vcf.gz" not in uploads and uploads[-1] == "variants/S1.vcf.gz"

@@ -374,7 +374,7 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
             "--window",
             window,
             "--output-key",
-            f"variants/SAMPLE7/regions/{params['Plan_Regions']['JobName'].split('-', 2)[2]}.json",
+            f"intermediate/variant-regions/SAMPLE7/{params['Plan_Regions']['JobName'].split('-', 2)[2]}.json",
         ],
         "Call_Variants": ["python", "tasks.py", "variants", "SAMPLE7", "ref.fa", "--window", window],
     }
@@ -433,6 +433,18 @@ def attempts(events, state) -> int:
     )
 
 
+def history_text(events) -> str:
+    """One line per event (id, previous id, type, state name, error) for assertion messages."""
+    lines = []
+    for e in events:
+        details = e.get("stateEnteredEventDetails") or e.get("stateExitedEventDetails") or {}
+        error = (e.get("taskFailedEventDetails") or {}).get("error", "")
+        lines.append(
+            f"{e['id']:>3} <- {e.get('previousEventId', ''):>3} {e['type']:<24} {details.get('name', '')} {error}"
+        )
+    return "execution history:\n" + "\n".join(lines)
+
+
 def test_the_whole_run_has_a_time_limit():
     definition = json.loads(render_definition())
     assert definition["TimeoutSeconds"] == 12 * 3600
@@ -448,7 +460,10 @@ def test_persistent_batch_api_errors_give_up_after_max_attempts(sfn):
     # Back-off 10 s, 20 s, 40 s between the attempts: 70 s of waiting.
     desc, events = run_case(sfn, "AlignAlwaysThrottled", wait_seconds=150)
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
-    assert attempts(events, "Align_Genome") == 1 + 3  # first try + MaxAttempts retries
+    # first try + MaxAttempts retries. Once in CI (2 Nov 2026, push run of a docs-only commit whose
+    # pull_request run passed) this counted 5; it never has locally. The message has the history so
+    # a repeat shows where the extra TaskScheduled comes from.
+    assert attempts(events, "Align_Genome") == 1 + 3, history_text(events)
     assert "Notify_Failure" in entered(events)
 
 
@@ -521,7 +536,10 @@ def test_the_map_calls_every_region_once_then_merges(sfn):
     names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
     (read,) = [e for e in events if e["type"] == "TaskScheduled" and names.get(e["previousEventId"]) == "Read_Regions"]
     params = json.loads(read["taskScheduledEventDetails"]["parameters"])
-    assert params == {"Bucket": TEMPLATE_VARS["bucket"], "Key": f"variants/SAMPLE7/regions/{desc['name']}.json"}
+    assert params == {
+        "Bucket": TEMPLATE_VARS["bucket"],
+        "Key": f"intermediate/variant-regions/SAMPLE7/{desc['name']}.json",
+    }
 
 
 def test_the_map_runs_at_most_the_configured_shards_at_once():

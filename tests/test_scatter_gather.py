@@ -61,7 +61,7 @@ def test_fai_and_fasta_give_the_same_lengths(tmp_path):
 def test_part_keys_are_safe_and_distinct():
     a = tasks.region_part_key("S1", "{HLA-A*01:01}:1-3")
     b = tasks.region_part_key("S1", "{HLA-A*01_01}:1-3")  # same after sanitising, different region
-    assert a.startswith("variants/S1/parts/") and a.endswith(".vcf.gz") and a != b
+    assert a.startswith("intermediate/variant-parts/S1/") and a.endswith(".vcf.gz") and a != b
     assert all(c.isalnum() or c in "._-/" for c in a)
     assert tasks.region_part_key("S1", "c:1-10") == tasks.region_part_key("S1", "c:1-10")  # deterministic
 
@@ -218,9 +218,9 @@ def test_parts_are_kept_per_run(monkeypatch):
     first = tasks.region_part_key("S1", "c:1-10")
     monkeypatch.setenv("RUN_NAME", "S1-20261102T110000Z-def")
     second = tasks.region_part_key("S1", "c:1-10")
-    assert first.startswith("variants/S1/parts/S1-20261102T100000Z-abc/") and first != second
+    assert first.startswith("intermediate/variant-parts/S1/S1-20261102T100000Z-abc/") and first != second
     monkeypatch.delenv("RUN_NAME")
-    assert tasks.region_part_key("S1", "c:1-10").startswith("variants/S1/parts/unnamed/")
+    assert tasks.region_part_key("S1", "c:1-10").startswith("intermediate/variant-parts/S1/unnamed/")
 
 
 def test_the_merge_never_uses_another_runs_parts(local_env, tool_calls, shell_commands, uploads, monkeypatch):
@@ -274,7 +274,7 @@ def test_run_local_plans_regions_only_for_a_bcftools_stage(tmp_path, monkeypatch
 def test_cli_regions_stores_the_list_for_the_state_machine(local_env, tool_calls, capsys):
     # The Map's planner: a Batch job can't return output, so Read_Regions reads this key from S3.
     put_reference(local_env)
-    key = "variants/S1/regions/S1-20261102T100000Z-abc.json"
+    key = "intermediate/variant-regions/S1/S1-20261102T100000Z-abc.json"
     assert tasks.main(["regions", REF, "--window", "600", "--output-key", key]) == 0
     assert json.loads((local_env / key).read_text()) == ["c:1-600", "c:601-1004"]
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == ["c:1-600", "c:601-1004"]
@@ -283,3 +283,13 @@ def test_cli_regions_stores_the_list_for_the_state_machine(local_env, tool_calls
 def test_cli_regions_rejects_a_zero_window(local_env, tool_calls):
     with pytest.raises(SystemExit):
         tasks.main(["regions", REF, "--window", "0"])
+
+
+def test_parts_are_intermediate_and_never_under_an_output_prefix():
+    # #62: the lifecycle rule expires intermediate/; outputs (variants/, alignments/, ...) must never be there,
+    # and parts must never sit under an output prefix, where no lifecycle rule can reach them.
+    key = tasks.region_part_key("S1", "chr20:1-100")
+    assert key.startswith(tasks.INTERMEDIATE_PREFIX)
+    outputs = {k: v for k, v in tasks.keys_for("S1").items() if not k.startswith("raw")}
+    assert not any(v.startswith(tasks.INTERMEDIATE_PREFIX) for v in outputs.values())
+    assert not any(key.startswith(v.split("/")[0] + "/") for v in outputs.values())

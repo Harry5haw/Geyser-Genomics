@@ -77,8 +77,9 @@ DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.chr20.gbz"
 DEFAULT_PANGENOME_SHM = "12g"
 DEEPVARIANT_PYTHON = "/opt/geyser-venv/bin/python"
 DEEPVARIANT_ENV_VARS = ("DEEPVARIANT_EXTRA_ARGS", "DEEPVARIANT_SHARDS", "DEEPVARIANT_MODEL_TYPE")
-# Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2.
-PIPELINE_ENV_VARS = ("ALIGNER",)
+# Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2;
+# ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz).
+PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE")
 # ALTs that are not real variants (gVCF-style placeholders, DeepVariant RefCall rows).
 NON_VARIANT_ALTS = {".", "<*>", "<NON_REF>"}
 

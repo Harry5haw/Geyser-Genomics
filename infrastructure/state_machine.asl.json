@@ -110,7 +110,7 @@
       "Parameters": {
         "JobName.$": "States.Format('PlanRegions-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
-          "Command.$": "States.Array('python', 'tasks.py', 'regions', $.reference_name, '--window', '${variant_region_window}', '--output-key', States.Format('variants/{}/regions/{}.json', $.srr_id, $$.Execution.Name))",
+          "Command.$": "States.Array('python', 'tasks.py', 'regions', $.reference_name, '--window', '${variant_region_window}', '--output-key', States.Format('intermediate/variant-regions/{}/{}.json', $.srr_id, $$.Execution.Name))",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
             { "Type": "VCPU", "Value": "${qc_vcpu}" },
@@ -152,7 +152,7 @@
       "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
       "Parameters": {
         "Bucket": "${bucket}",
-        "Key.$": "States.Format('variants/{}/regions/{}.json', $.srr_id, $$.Execution.Name)"
+        "Key.$": "States.Format('intermediate/variant-regions/{}/{}.json', $.srr_id, $$.Execution.Name)"
       },
       "ResultSelector": { "regions.$": "States.StringToJson($.Body)" },
       "ResultPath": "$.plan",
@@ -166,7 +166,7 @@
     },
     "Call_Variant_Shards": {
       "Type": "Map",
-      "Comment": "Scatter: one variants --region job per region, at most variants_max_concurrency at a time. Each writes variants/<id>/parts/<RUN_NAME>/.",
+      "Comment": "Scatter: one variants --region job per region, at most variants_max_concurrency at a time. Each writes intermediate/variant-parts/<id>/<RUN_NAME>/ (expired by #62's lifecycle rule).",
       "ItemsPath": "$.plan.regions",
       "Parameters": {
         "srr_id.$": "$.srr_id",
