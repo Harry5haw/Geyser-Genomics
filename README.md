@@ -303,6 +303,31 @@ python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --ch
 > The align stage uses [bwa-mem2](https://github.com/bwa-mem2/bwa-mem2), which runs the same algorithm as `bwa mem` faster on modern CPUs. The image picks the fastest build for the CPU it runs on. Set `ALIGNER=bwa` (e.g. `ALIGNER=bwa python scripts/run_local.py ...`) to align with classic `bwa mem` instead.
 >
 > bwa-mem2 has one known bug ([bwa-mem2#262](https://github.com/bwa-mem2/bwa-mem2/issues/262)): it shifts reads that start in the first few bases of the reference's first contig, which shows up as false SNPs. Human chromosomes start with long N gaps, so they are unaffected. For any reference whose first contig doesn't start with at least 1,000 Ns, the align stage uses bwa instead and logs why. The default synthetic genome is such a reference. `make_test_data.py --leading-gap 1000` gives it a human-like gap, and then bwa-mem2 produces the same 10,000 alignments as bwa. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
+>
+> **bwa vs bwa-mem2, measured** (`scripts/benchmark_aligners.py`). HG003 chr20: 19.0 M reads, paired FASTQs recovered from the 35x case-study BAM, aligned to chr20 by the real align stage. Each aligner ran once, with 16 threads, on an AMD Ryzen 7 3700X (bwa-mem2 picked its AVX2 build):
+>
+> | | bwa 0.7.18 | bwa-mem2 2.3 |
+> | :--- | ---: | ---: |
+> | Align stage, wall clock | 812 s | **521 s (1.56× faster)** |
+> | Aligner alone | 759 s | **460 s (1.65×)** |
+> | Peak process memory (whole stage) | **5.2 GiB** | 7.4 GiB |
+> | Index build, chr20 | 52 s, 93 MiB | 28 s, 1.5 GiB |
+> | hap.py, bcftools and DeepVariant | identical | identical |
+>
+> - **The calls are equivalent.** hap.py gives the same TP/FN/FP for both aligners with both callers. Comparing the PASS calls directly: bcftools 139,132 identical with none different; DeepVariant 109,228 shared, 2 only with bwa, none only with bwa-mem2. Both BAMs have the same 18,997,779 reads and 2,083,409 marked duplicates.
+> - **The price is memory:** about 2.3 GiB more at peak, and a much larger index (1.5 GiB of RAM to build for one chromosome, ~90 GB for a whole genome). bwa-mem2 spent 159 s of its 460 s writing SAM into the pipe, so `sort` and `markdup` downstream partly limit the gain.
+> - **Caveats:**
+>   - One run each.
+>   - bwa-mem2 2.3 reports itself as 2.2.1, so the CSV's version column says 2.2.1.
+>   - Against a chr20-only reference, reads from other chromosomes have nowhere else to go. DeepVariant's SNP false positives rise from 52 on Google's whole-genome BAM to 120 here, for both aligners alike.
+>
+> Results: `benchmarks/aligners_<base>.csv` and `benchmarks/aligners_<base>/summary.md` under the storage root:
+>
+> ```bash
+> python scripts/fetch_dv_testdata.py --dataset hg003-chr20
+> python scripts/benchmark_aligners.py --root <root> --from-bam alignments/HG003_chr20.bam \
+>     --base HG003_chr20 --reference GRCh38_chr20.fa --region chr20
+> ```
 
 **Tests:**
 
