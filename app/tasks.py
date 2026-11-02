@@ -8,6 +8,7 @@ Stages communicate only through storage keys:
     raw_reads/{id}.fastq.gz -> qc_reports/{id}_fastqc.{html,zip}     (qc)
                             -> alignments/{id}.cram + .cram.crai     (align: sorted, duplicates marked)
     alignments/{id}.cram    -> variants/{id}.vcf.gz + .vcf.gz.tbi    (variants)
+    stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
 qc and align both read the gzipped upload directly (FastQC, bwa-mem2 and bwa read gzip), so they don't
@@ -27,6 +28,7 @@ Functions definition (infrastructure/step_functions.tf) and scripts/run_local.py
 import argparse
 import gzip
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -80,6 +82,14 @@ def metrics():
 
 
 SINGLE, PAIRED = "single", "paired"
+# keys_for() name -> file under stats/{id}/. Names are the tools' own output names where they have one.
+STATS_FILES = {
+    "flagstat": "flagstat.txt",
+    "mosdepth_summary": "mosdepth.summary.txt",
+    "mosdepth_dist": "mosdepth.global.dist.txt",
+    "bcftools_stats": "bcftools.stats.txt",
+}
+MOSDEPTH_MAX_THREADS = 4  # mosdepth -t only adds decompression threads; more doesn't help
 MATES = ("R1", "R2")
 # Keys that exist once per read file: plain for single-end, <name>_R1/<name>_R2 for paired-end.
 PER_MATE_KEYS = ("raw", "qc_html", "qc_zip")
@@ -113,6 +123,9 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     keys["bam"] = f"alignments/{sample_id}.bam"
     keys["vcf"] = f"variants/{sample_id}.vcf.gz"
     keys["tbi"] = f"variants/{sample_id}.vcf.gz.tbi"
+    # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
+    for name, filename in STATS_FILES.items():
+        keys[name] = f"stats/{sample_id}/{filename}"
     return keys
 
 
@@ -440,6 +453,70 @@ def align_command(ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample
     return " | ".join(stages)
 
 
+def parse_flagstat(text: str) -> dict:
+    """samtools flagstat (default text output) -> counts and percentages (None where flagstat says N/A)."""
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"^(\d+) \+ \d+ (in total|mapped|primary mapped|duplicates|paired in sequencing|properly paired)"
+                     r"(?: \(([\d.]+)%| \(N/A)?", line)
+        if m:
+            key = m.group(2).replace(" ", "_")
+            out[key] = int(m.group(1))
+            if m.group(3) is not None:
+                out[key + "_pct"] = float(m.group(3))
+    return out
+
+
+def parse_mosdepth_summary(text: str) -> dict:
+    """mosdepth's <prefix>.mosdepth.summary.txt -> the 'total' row (length, bases, mean, min, max)."""
+    rows = [line.split("\t") for line in text.splitlines() if line.strip()]
+    header, total = rows[0], next(r for r in rows[1:] if r[0] == "total")
+    return {"length": int(total[header.index("length")]), "bases": int(total[header.index("bases")]),
+            "mean_depth": float(total[header.index("mean")])}
+
+
+def parse_bcftools_stats(text: str) -> dict:
+    """bcftools stats -> record/SNP/indel counts and Ti/Tv (None when there are no SNPs)."""
+    out = {}
+    for line in text.splitlines():
+        cols = line.split("\t")
+        if cols[0] == "SN" and len(cols) >= 4:
+            label = cols[2].rstrip(":")
+            for name, key in (("number of records", "records"), ("number of SNPs", "snps"),
+                              ("number of indels", "indels")):
+                if label == name:
+                    out[key] = int(cols[3])
+        elif cols[0] == "TSTV" and len(cols) >= 5:
+            out["tstv"] = float(cols[4]) if out.get("snps") else None
+    return out
+
+
+def _log_summary(label, parse, path):
+    """Print one headline line from a stats file. Best effort: a format change never fails the stage."""
+    try:
+        with open(path) as fh:
+            values = parse(fh.read())
+        print(f"{label}: " + ", ".join(f"{k}={v}" for k, v in values.items()), flush=True)
+    except Exception as err:  # noqa: BLE001 - the stats file itself is still uploaded
+        print(f"WARNING: could not summarise {os.path.basename(path)}: {err}", flush=True)
+
+
+def alignment_stats(ref: str, cram: str, wd: str, threads: int, keys: dict) -> list:
+    """samtools flagstat + mosdepth (no per-base output; duplicates excluded) -> [(local path, key)]."""
+    flagstat = os.path.join(wd, STATS_FILES["flagstat"])
+    prefix = os.path.join(wd, "stats")
+    run_shell(f"samtools flagstat -@ {threads} --input-fmt-option reference={shlex.quote(ref)} "
+              f"{shlex.quote(cram)} > {shlex.quote(flagstat)}")
+    run_shell(f"mosdepth -n --fast-mode -t {min(threads, MOSDEPTH_MAX_THREADS)} -f {shlex.quote(ref)} "
+              f"{shlex.quote(prefix)} {shlex.quote(cram)}")
+    files = [(flagstat, keys["flagstat"]),
+             (f"{prefix}.mosdepth.summary.txt", keys["mosdepth_summary"]),
+             (f"{prefix}.mosdepth.global.dist.txt", keys["mosdepth_dist"])]
+    _log_summary("flagstat", parse_flagstat, flagstat)
+    _log_summary("mosdepth", parse_mosdepth_summary, files[1][0])
+    return files
+
+
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
     """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked CRAM + .crai."""
@@ -456,6 +533,9 @@ def align_task(sample_id, reference_name):
         print(f"Aligning with {aligner}", flush=True)
         run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
         run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
+        stats = alignment_stats(ref, cram, wd, threads, keys)
+        for path, key in stats:  # before the CRAM: a sample that shows as aligned has its stats
+            storage().upload(path, key)
         # Index first, so a first run never shows a CRAM (the stage-done marker) without its index.
         # On a re-run that fails between the two uploads, the stored pair can disagree (new .crai,
         # old CRAM; the job role can't delete objects to avoid it). The pipeline's own readers are
@@ -468,7 +548,7 @@ def align_task(sample_id, reference_name):
 
 @timed_stage("CallVariants")
 def variants_task(sample_id, reference_name):
-    """bcftools on the sample's CRAM (or BAM) -> variants/{id}.vcf.gz + its tabix index."""
+    """bcftools on the sample's CRAM (or BAM) -> variants/{id}.vcf.gz + its tabix index + bcftools stats."""
     keys = keys_for(sample_id)
     wd = work_dir(sample_id)
     try:
@@ -481,7 +561,11 @@ def variants_task(sample_id, reference_name):
             f"| bcftools call -mv -Oz -o {shlex.quote(vcf)}"
         )
         run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
-        storage().upload(tbi, keys["tbi"])  # index first, as in align: the VCF marks the stage done
+        stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
+        run_shell(f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}")
+        _log_summary("bcftools stats", parse_bcftools_stats, stats)
+        storage().upload(stats, keys["bcftools_stats"])
+        storage().upload(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
         storage().upload(vcf, keys["vcf"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
