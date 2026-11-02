@@ -6,14 +6,14 @@ about 10 GB.
 
 | | |
 |---|---|
-| Reads | `alignments/{id}.bam`, `reference/{name}` (+ `.fai` if stored) |
+| Reads | `alignments/{id}.cram` + `.crai` (or `alignments/{id}.bam`, for imported data), `reference/{name}` (+ `.fai` if stored) |
 | Writes | `variants_deepvariant/{id}.vcf.gz`, beside the bcftools `variants/{id}.vcf.gz` |
 | Command | `/opt/geyser-venv/bin/python deepvariant_task.py <id> <reference_name>` |
 | Metrics | `DeepVariant` (whole stage) plus `DeepVariant.MakeExamples`, `DeepVariant.CallVariants` and `DeepVariant.PostprocessVariants` |
 
 Storage and metrics come from `app/storage.py`, `app/metrics.py` and the helpers in `app/tasks.py`, which are copied into the image unchanged. Local and S3 storage both work the same way they do for every other stage.
 
-The stage indexes the BAM itself (`samtools index`), because the bcftools path never needed an index.
+The stage indexes the alignment it downloaded (`samtools index`, seconds) rather than trusting a stored `.crai`: after a re-run that failed between its two uploads, the stored index could belong to the previous file.
 
 ## Run it locally
 
@@ -73,7 +73,7 @@ mismap (segmental duplications). Output stays in GRCh38 coordinates.
 | | |
 |---|---|
 | Image | `app-deepvariant/Dockerfile` built with `--build-arg DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu` (tag it `geyser-deepvariant-pangenome`). For CPU only, use `pangenome_aware_deepvariant-1.10.0` and `run_local.py --no-gpu`. |
-| Reads | `alignments/{id}.bam`, `reference/{name}` and `pangenome/{graph}.gbz` |
+| Reads | `alignments/{id}.cram` (or `.bam`), `reference/{name}` and `pangenome/{graph}.gbz` |
 | Writes | `variants_pangenome/{id}.vcf.gz` |
 | Command | `/opt/geyser-venv/bin/python deepvariant_task.py <id> <reference_name> --pangenome <graph>` |
 | Metrics | `PangenomeDeepVariant` plus `.MakeExamples`, `.CallVariants`, `.PostprocessVariants` |

@@ -7,7 +7,7 @@ from samples.status import STAGES
 
 
 def test_stage_order_matches_local_runner_and_state_machine():
-    # tests/test_consistency.py already ties run_local.STAGES to step_functions.tf
+    # tests/test_consistency.py already ties run_local.STAGES to infrastructure/state_machine.asl.json
     assert [s.name for s in STAGES] == [name for name, _ in run_local.STAGES]
 
 
@@ -22,4 +22,4 @@ def test_metric_names_match_tasks_py():
 def test_stage_outputs_are_real_keys():
     keys = keys_for("X")
     for st in STAGES:
-        assert st.output in keys
+        assert all(name in keys for name in st.output)

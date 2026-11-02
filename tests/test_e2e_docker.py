@@ -2,6 +2,7 @@
 
 Opt in with GEYSER_E2E=1 after:  docker build -f Dockerfile -t geyser-app .
 """
+import json
 import os
 
 import pytest
@@ -21,9 +22,79 @@ def test_pipeline_recovers_planted_snps(tmp_path, capfd):
     exit_code, log = _run(root, "SYNTH001", capfd)
 
     assert exit_code == 0
-    assert (root / "qc_reports" / "SYNTH001_fastqc.html").exists()
+    assert (root / "qc_reports" / "SYNTH001.fastp.html").exists()
+    report = json.loads((root / "qc_reports" / "SYNTH001.fastp.json").read_text())
+    # Report only: every read is counted and none is filtered out (the same reads align sees).
+    assert report["summary"]["before_filtering"]["total_reads"] == 10_000
+    assert report["filtering_result"]["passed_filter_reads"] == 10_000
     # This reference starts with sequence, so the align stage must have fallen back to bwa (bwa-mem2#262).
     assert "bwa-mem2#262" in log and "Aligning with bwa\n" in log.replace("\r", "")
+    _check_cram_and_indexes(root, "SYNTH001", reads=10_000)
+    _check_stats(root, "SYNTH001", paired=False)
+    _check_run_record(root, "SYNTH001", aligner="bwa")
+
+
+def _check_run_record(root, sample, aligner):
+    """runs/<id>.provenance.json: one complete run, with real tool versions and the reference's MD5."""
+    import hashlib
+    import json
+
+    record = json.loads((root / "runs" / f"{sample}.provenance.json").read_text())
+    assert record["status"] == "succeeded" and record["complete"], record["stages"]
+    assert set(record["stages"]) == {"QualityControl", "Align", "CallVariants"}
+    assert record["run_name"].startswith(f"{sample}-") and record["run_name"].endswith("-local")
+    assert record["app_version"].startswith("local:")
+    assert record["aligner"] == aligner
+    ref = root / "reference" / "synthetic_ref.fa"
+    assert record["reference"]["md5"] == hashlib.md5(ref.read_bytes()).hexdigest()
+    for tool in ("fastp", "samtools", "bcftools", "mosdepth", aligner):
+        assert record["tools"].get(tool), (tool, record["tools"])  # every tool reported a version
+    assert record["tools"]["mosdepth release"] == "0.3.15"
+    outputs = {o["key"] for o in record["outputs"]}
+    assert {f"alignments/{sample}.cram", f"variants/{sample}.vcf.gz", f"stats/{sample}/flagstat.txt"} <= outputs
+    assert record["stats"]["flagstat"]["in_total"] == 10_000
+
+
+def _check_stats(root, sample, paired):
+    """stats/{id}/ holds all four files and they describe the synthetic data: 30x reads, 10 SNPs."""
+    import tasks
+
+    stats = {name: (root / key).read_text() for name, key in tasks.keys_for(sample).items()
+             if name in tasks.STATS_FILES}
+    assert set(stats) == set(tasks.STATS_FILES)
+    flagstat = tasks.parse_flagstat(stats["flagstat"])
+    assert flagstat["in_total"] == 10_000 and flagstat["mapped_pct"] >= 99.5
+    if paired:
+        assert flagstat["properly_paired_pct"] >= 99.0
+    depth = tasks.parse_mosdepth_summary(stats["mosdepth_summary"])["mean_depth"]
+    assert 25 <= depth <= 31, depth  # simulated 30x, duplicates and the leading gap (if any) not counted
+    at_1x = next(float(line.split("\t")[2]) for line in stats["mosdepth_dist"].splitlines()
+                 if line.startswith("total\t1\t"))
+    assert at_1x >= 0.95, at_1x  # nearly every base covered (only a leading N gap, if any, is not)
+    variants = tasks.parse_bcftools_stats(stats["bcftools_stats"])
+    assert variants["snps"] == 10 and variants["indels"] == 0 and variants["tstv"] is not None
+
+
+def _check_cram_and_indexes(root, sample, reads):
+    """CRAM + .crai and VCF + .tbi, no BAM; the CRAM decodes against the reference, both indexes answer a region."""
+    import subprocess
+
+    for key in (f"alignments/{sample}.cram", f"alignments/{sample}.cram.crai",
+                f"variants/{sample}.vcf.gz", f"variants/{sample}.vcf.gz.tbi"):
+        assert (root / key).stat().st_size > 0, key
+    assert not (root / "alignments" / f"{sample}.bam").exists()
+    script = (f"set -e; cd /data; samtools quickcheck -v alignments/{sample}.cram; "
+              f"samtools view -c -T reference/synthetic_ref.fa alignments/{sample}.cram; "
+              f"samtools view -c -T reference/synthetic_ref.fa alignments/{sample}.cram synth1:20000-30000; "
+              f"bcftools view -H -r synth1:1-60000 variants/{sample}.vcf.gz | wc -l")
+    out = subprocess.run(run_local.docker_command(["bash", "-c", script], str(root),
+                                                  os.environ.get("GEYSER_IMAGE", "geyser-app")),
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    total, region, calls = (int(x) for x in out.stdout.split())
+    assert total == reads  # every read decodes against the reference
+    assert 0 < region < total  # the .crai serves a region query
+    assert calls >= 10  # the .tbi serves a region query (every planted SNP is in it)
 
 
 def test_bwa_mem2_aligns_a_reference_that_starts_with_a_gap(tmp_path, capfd):
@@ -93,8 +164,12 @@ def test_paired_end_sample_runs_through_every_stage(tmp_path, capfd):
     assert exit_code == 0  # --check: 10/10 planted SNPs, nothing unexpected
     assert "Aligning with bwa-mem2" in log
     assert "samtools fixmate -m" in log
-    for mate in ("R1", "R2"):
-        assert (root / "qc_reports" / f"PAIRED001_{mate}_fastqc.html").exists()
+    _check_cram_and_indexes(root, "PAIRED001", reads=10_000)  # 5,000 pairs
+    _check_stats(root, "PAIRED001", paired=True)
+    _check_run_record(root, "PAIRED001", aligner="bwa-mem2")
+    report = json.loads((root / "qc_reports" / "PAIRED001.fastp.json").read_text())  # one report, both mates
+    assert report["summary"]["before_filtering"]["total_reads"] == 10_000 and report["insert_size"]["peak"] > 0
+    assert not list((root / "qc_reports").glob("PAIRED001_R*"))
     assert _markdup_stat(log, "PAIRED") == 10_000 and _markdup_stat(log, "SINGLE") == 0
     # With both ends required to match, chance duplicates nearly vanish (single-end: ~485 of 10,000).
     assert _markdup_stat(log, "DUPLICATE TOTAL") < 50
@@ -118,10 +193,12 @@ def test_paired_end_planted_duplicates_are_marked_as_pairs(tmp_path, capfd):
 @pytest.mark.parametrize("leading_gap", [0, 1000], ids=["bwa-fallback", "bwa-mem2"])
 def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
     # There is no decompress stage to trip over a cut-off upload any more, so both stages that read
-    # the .gz must fail on it themselves (FastQC: "file is probably truncated"; bwa and bwa-mem2:
+    # the .gz must fail on it themselves (fastp: "igzip: unexpected eof"; bwa and bwa-mem2:
     # gzclose error), rather than align quietly writing a BAM of the reads before the cut. The
     # leading gap decides which aligner runs (bwa-mem2#262 guard), so both are covered.
     import subprocess
+
+    import tasks
 
     root = tmp_path / "bucket"
     make_test_data.main(["--root", str(root), "--leading-gap", str(leading_gap)])
@@ -135,5 +212,7 @@ def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
         cmd = run_local.stage_command(stage, "SYNTH001", "synthetic_ref.fa", needs_ref)
         result = subprocess.run(run_local.docker_command(cmd, str(root), image), capture_output=True, text=True)
         assert result.returncode != 0, f"{stage} accepted a truncated upload:\n{result.stdout}{result.stderr}"
-    assert not (root / "alignments" / "SYNTH001.bam").exists()
-    assert not (root / "qc_reports" / "SYNTH001_fastqc.html").exists()
+    for name in ("SYNTH001.cram", "SYNTH001.cram.crai", "SYNTH001.bam"):
+        assert not (root / "alignments" / name).exists()
+    keys = tasks.keys_for("SYNTH001")
+    assert not (root / keys["qc_html"]).exists() and not (root / keys["qc_json"]).exists()

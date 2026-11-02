@@ -5,28 +5,31 @@ Each stage is run as its own container job (AWS Batch in the cloud, `docker run`
 locally) with:   python tasks.py <stage> <sample_id> [reference_name]
 
 Stages communicate only through storage keys:
-    raw_reads/{id}.fastq.gz -> qc_reports/{id}_fastqc.{html,zip}     (qc)
-                            -> alignments/{id}.bam                    (align: sorted, duplicates marked)
-    alignments/{id}.bam     -> variants/{id}.vcf.gz                   (variants)
+    raw_reads/{id}.fastq.gz -> qc_reports/{id}.fastp.{html,json}     (qc: fastp, report only)
+                            -> alignments/{id}.cram + .cram.crai     (align: sorted, duplicates marked)
+    alignments/{id}.cram    -> variants/{id}.vcf.gz + .vcf.gz.tbi    (variants)
+    stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
+    runs/{id}.provenance.json: the run record (inputs, reference MD5, tools, timings, stats; provenance.py)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
-qc and align both read the gzipped upload directly (FastQC, bwa-mem2 and bwa read gzip), so they don't
-depend on each other and can run in parallel (the three-stage state machine, #84). There is no
+qc and align both read the gzipped upload directly (fastp, bwa-mem2 and bwa read gzip), so they don't
+depend on each other: the state machine runs them as two branches of a Parallel state. There is no
 decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
 
-Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
-the QC reports come in an _R1/_R2 pair too (see keys_for). qc and align detect the layout from
+Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz (see
+keys_for); everything after them is one file per sample, the QC report included. qc and align detect the layout from
 which raw keys exist (sample_layout), so the CLI and the Step Functions input are the same for
 both. The trigger Lambda parses the same _R1/_R2 names (tests check they agree).
 
 Where those keys live is chosen by STORAGE_BACKEND (see storage.py); metrics by
 METRICS_BACKEND (see metrics.py). If you rename a stage or key, update the Step
-Functions definition (infrastructure/step_functions.tf) and scripts/run_local.py too.
+Functions definition (infrastructure/state_machine.asl.json) and scripts/run_local.py too.
 """
 
 import argparse
 import gzip
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -35,6 +38,7 @@ import tempfile
 import time
 from functools import wraps
 
+import provenance
 from metrics import metrics_from_env
 from storage import ObjectNotFound, storage_from_env
 
@@ -56,6 +60,8 @@ DEFAULT_ALIGNER = "bwa-mem2"
 # read aligns, so they are unaffected. When the first contig does not start with at least this
 # many Ns (bacteria, viruses, plasmids, the synthetic genome), the align stage uses bwa instead.
 BWA_MEM2_SAFE_N_PREFIX = 1000
+# fastp (QC) threads; it uses at most 16.
+QC_MAX_THREADS = 16
 # samtools sort RAM budget in the align stage (see align_command).
 SORT_MAX_THREADS = 4
 SORT_MEMORY_PER_THREAD = "512M"
@@ -80,9 +86,18 @@ def metrics():
 
 
 SINGLE, PAIRED = "single", "paired"
+# keys_for() name -> file under stats/{id}/. Names are the tools' own output names where they have one.
+STATS_FILES = {
+    "flagstat": "flagstat.txt",
+    "mosdepth_summary": "mosdepth.summary.txt",
+    "mosdepth_dist": "mosdepth.global.dist.txt",
+    "bcftools_stats": "bcftools.stats.txt",
+}
+MOSDEPTH_MAX_THREADS = 4  # mosdepth -t only adds decompression threads; more doesn't help
 MATES = ("R1", "R2")
 # Keys that exist once per read file: plain for single-end, <name>_R1/<name>_R2 for paired-end.
-PER_MATE_KEYS = ("raw", "qc_html", "qc_zip")
+# Only the raw reads: fastp writes one QC report for both mates of a pair.
+PER_MATE_KEYS = ("raw",)
 
 
 class LayoutError(ValueError):
@@ -92,8 +107,7 @@ class LayoutError(ValueError):
 def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     """Single source of truth for every storage key a sample touches.
 
-    Paired-end samples get raw_R1/raw_R2, qc_html_R1/qc_html_R2, ... instead of raw, qc_html, ...
-    (FastQC names its reports after the input file, so {id}_R1.fastq.gz -> {id}_R1_fastqc.html).
+    Paired-end samples get raw_R1/raw_R2 instead of raw; every other key is one per sample.
     Use keys_of() to get a stage's keys without caring about the layout.
     """
     if layout not in (SINGLE, PAIRED):
@@ -103,11 +117,73 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     for mate, stem in stems.items():
         suffix = f"_{mate}" if mate else ""
         keys[f"raw{suffix}"] = f"raw_reads/{stem}.fastq.gz"
-        keys[f"qc_html{suffix}"] = f"qc_reports/{stem}_fastqc.html"
-        keys[f"qc_zip{suffix}"] = f"qc_reports/{stem}_fastqc.zip"
+    keys["qc_html"] = f"qc_reports/{sample_id}.fastp.html"
+    keys["qc_json"] = f"qc_reports/{sample_id}.fastp.json"
+    # The align stage writes CRAM (reference-compressed, ~1/3 of a BAM) and its index; readers go
+    # through alignment_input(), which also accepts a BAM: no stage writes one any more, but fetched
+    # benchmark data (fetch_dv_testdata.py) and runs from before CRAM have alignments/{id}.bam.
+    keys["cram"] = f"alignments/{sample_id}.cram"
+    keys["crai"] = f"alignments/{sample_id}.cram.crai"
     keys["bam"] = f"alignments/{sample_id}.bam"
     keys["vcf"] = f"variants/{sample_id}.vcf.gz"
+    keys["tbi"] = f"variants/{sample_id}.vcf.gz.tbi"
+    # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
+    for name, filename in STATS_FILES.items():
+        keys[name] = f"stats/{sample_id}/{filename}"
     return keys
+
+
+# keys_for() names a sample's alignment can be stored as, in the order readers prefer them. The one
+# rule for "is this sample aligned, and from what": alignment_input, the web status and reconcile.
+ALIGNMENT_FORMS = ("cram", "bam")
+
+
+def alignment_input(sample_id: str, exists=None) -> str:
+    """Key of the alignment a caller should read: the CRAM, else a BAM. exists(key) -> bool.
+
+    CRAM first: it is what the align stage writes. A BAM is legacy or imported input (runs from
+    before CRAM, fetch_dv_testdata.py). If both exist the CRAM wins and a note says so (normal for a
+    sample re-aligned since CRAM; worth knowing if a BAM was imported on purpose). If there is no
+    alignment at all, FileNotFoundError naming every key tried.
+    """
+    exists = exists or storage().exists
+    keys = keys_for(sample_id)
+    found = [keys[form] for form in ALIGNMENT_FORMS if exists(keys[form])]
+    if not found:
+        raise FileNotFoundError(f"No alignment for {sample_id}: none of "
+                                + ", ".join(storage().describe(keys[f]) for f in ALIGNMENT_FORMS))
+    if len(found) > 1:
+        print(f"Note: {sample_id} has {' and '.join(found)}; reading {found[0]}", flush=True)
+    return found[0]
+
+
+def index_alignment(path: str) -> None:
+    """samtools index a local CRAM or BAM (.crai / .bai next to it). Needs no reference, even for CRAM."""
+    run_shell(f"samtools index -@ {os.cpu_count() or 1} {shlex.quote(path)}")
+
+
+def fetch_alignment(sample_id: str, wd: str, need_index: bool = False, indexer=None) -> str:
+    """Download the sample's alignment (alignment_input) into wd, keeping its name. Returns the local path.
+
+    need_index: also provide an index, for callers that need random access (DeepVariant). A CRAM is
+    always indexed here (indexer(path), default index_alignment), never paired with the stored
+    .crai: if a re-run failed between its two uploads, that .crai can belong to the previous CRAM.
+    A BAM is imported, never half-written by a stage, so its stored .bai is used when there is one.
+    """
+    key = alignment_input(sample_id)
+    local = os.path.join(wd, os.path.basename(key))
+    print(f"Fetching alignment {storage().describe(key)}", flush=True)
+    storage().download(key, local)
+    provenance.note_input(key, local)
+    if need_index:
+        if key.endswith(".bam"):
+            try:
+                storage().download(key + ".bai", local + ".bai")
+                return local
+            except ObjectNotFound:
+                pass
+        (indexer or index_alignment)(local)
+    return local
 
 
 def keys_of(keys: dict, name: str) -> list:
@@ -115,6 +191,24 @@ def keys_of(keys: dict, name: str) -> list:
     if name in keys:
         return [keys[name]]
     return [keys[f"{name}_{m}"] for m in MATES]
+
+
+def legacy_qc_keys(sample_id: str, layout: str = SINGLE) -> list:
+    """FastQC's HTML report(s), from samples run before fastp replaced it (#100): one per read file."""
+    stems = [sample_id] if layout == SINGLE else [f"{sample_id}_{m}" for m in MATES]
+    return [f"qc_reports/{stem}_fastqc.html" for stem in stems]
+
+
+def output_present(sample_id: str, layout: str, name: str, exists) -> bool:
+    """Whether a sample has its `name` output (keys_for name). exists(key) -> bool.
+
+    QC also counts as done when the sample has FastQC's reports from before #100, so samples that
+    finished then don't look unfinished now. Their reports stay where they are; re-running
+    `tasks.py qc <id>` writes the fastp ones.
+    """
+    if all(exists(k) for k in keys_of(keys_for(sample_id, layout), name)):
+        return True
+    return name == "qc_html" and all(exists(k) for k in legacy_qc_keys(sample_id, layout))
 
 
 def all_raw_keys(sample_id: str) -> list:
@@ -160,17 +254,24 @@ def work_dir(sample_id: str) -> str:
 
 
 def timed_stage(task_name):
-    """Time a stage and record a Success/Failure metric. Metric errors never fail the stage."""
+    """Time a stage, record a Success/Failure metric and its run-record part (provenance.py).
+
+    Neither the metric nor the run record can fail the stage.
+    """
     def decorator(func):
         @wraps(func)
         def wrapper(sample_id, *args, **kwargs):
             print(f"--- Starting '{task_name}' for sample '{sample_id}' ---", flush=True)
             start = time.time()
-            status = "Failure"
+            status, error = "Failure", None
+            provenance.begin(task_name, sample_id)
             try:
                 result = func(sample_id, *args, **kwargs)
                 status = "Success"
                 return result
+            except BaseException as err:
+                error = f"{type(err).__name__}: {err}"[:500]
+                raise
             finally:
                 duration = time.time() - start
                 print(f"--- '{task_name}' for '{sample_id}': {status} in {duration:.2f}s ---", flush=True)
@@ -178,6 +279,10 @@ def timed_stage(task_name):
                     metrics().record(task_name, sample_id, status, duration)
                 except Exception as err:  # noqa: BLE001 - metrics are best effort
                     print(f"WARNING: could not record metric: {err}", flush=True)
+                try:
+                    provenance.finish(storage(), status, duration, error)
+                except Exception as err:  # noqa: BLE001 - provenance is best effort (finish never raises)
+                    print(f"WARNING: could not write the run record: {err}", flush=True)
         return wrapper
     return decorator
 
@@ -245,9 +350,16 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
         raise FileNotFoundError(f"Reference FASTA missing: {storage().describe(fasta_key)}") from err
 
     _fetch_or_build(fasta_key, local_ref, [".fai"], ["samtools", "faidx", local_ref], "FASTA index")
+    provenance.note_reference(reference_name, local_ref)
     if need_bwa_index:
         prepare_aligner(reference_name, local_ref, aligner)
     return local_ref
+
+
+def upload_output(local_path: str, key: str) -> None:
+    """Upload a stage output and list it (with its size) in the run record."""
+    storage().upload(local_path, key)
+    provenance.note_output(key, local_path)
 
 
 def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
@@ -288,51 +400,65 @@ def _fetch_or_build(fasta_key: str, local_ref: str, exts, build_cmd, what: str) 
     subprocess.run(build_cmd, check=True)
 
 
-def decompress_task(sample_id):
-    """No-op, kept so a new image still works under the old four-stage state machine.
-
-    qc and align now read raw_reads/ directly. Remove this (and its TASKS entry) once the
-    three-stage state machine is applied; it records no metric, so dashboards never show it.
-    """
-    print(f"'decompress' is no longer a stage: qc and align read raw_reads/ directly. "
-          f"Nothing to do for '{sample_id}'.", flush=True)
-
-
 def download_raw_reads(keys: dict, wd: str) -> list:
     """Download the sample's gzipped read file(s) as-is into wd; returns the local paths (R1 first)."""
     paths = []
     for key in keys_of(keys, "raw"):
         paths.append(os.path.join(wd, os.path.basename(key)))
         storage().download(key, paths[-1])
+        provenance.note_input(key, paths[-1])
     return paths
+
+
+def qc_command(fastqs, html: str, json_path: str, threads: int, sample_id: str) -> list:
+    """fastp in report-only mode: read quality, GC, duplication, adapters, overrepresented sequences.
+
+    No -o/-O, so fastp writes no reads; and trimming and filtering are switched off (-A -Q -L -G),
+    so the report describes the upload exactly as align reads it. Paired-end gives both files
+    (-i/-I) and one report, with insert sizes from read overlap. The JSON report is the
+    machine-readable one (#58).
+    """
+    fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    if len(fastqs) not in (1, 2):
+        raise ValueError(f"qc_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
+    cmd = ["fastp", "-i", fastqs[0]]
+    if len(fastqs) == 2:
+        cmd += ["-I", fastqs[1]]
+    return cmd + ["--disable_adapter_trimming", "--disable_quality_filtering", "--disable_length_filtering",
+                  "--disable_trim_poly_g",
+                  "--thread", str(max(1, min(threads, QC_MAX_THREADS))),
+                  "--json", json_path, "--html", html, "--report_title", f"{sample_id} (fastp)"]
 
 
 @timed_stage("QualityControl")
 def qc_task(sample_id):
-    """FastQC on each gzipped read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
-    keys = keys_for(sample_id, sample_layout(sample_id))
+    """fastp report (HTML + JSON) for the sample's gzipped read file(s): one report, either layout."""
+    layout = sample_layout(sample_id)
+    keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
-        out_dir = os.path.join(wd, "qc")
-        os.makedirs(out_dir)
         fastqs = download_raw_reads(keys, wd)
-        # FastQC can hang (not exit) if its report thread crashes, so bound it. It now also
-        # decompresses the reads itself, so it gets the hour the decompress stage used to have
-        # (keep in step with the stage's Step Functions timeout). One thread per file (-t) processes R1 and R2 at
-        # the same time, so a paired sample fits the same timeout as a single-end one
-        # (FastQC reserves ~250 MB per thread; 2 fit the 4 GB job easily).
+        provenance.note(layout=layout)
+        provenance.note_tools("fastp")
+        html, json_path = (os.path.join(wd, os.path.basename(keys[k])) for k in ("qc_html", "qc_json"))
+        # Bounded in case fastp ever hangs; keep in step with the stage's Step Functions timeout.
+        # fastp fails on a truncated upload ("igzip: unexpected eof", exit 255) and writes no report.
         timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "3600"))
-        subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
-        for name in ("qc_html", "qc_zip"):
-            for key in keys_of(keys, name):
-                storage().upload(os.path.join(out_dir, os.path.basename(key)), key)
+        subprocess.run(qc_command(fastqs, html, json_path, os.cpu_count() or 1, sample_id),
+                       check=True, timeout=timeout)
+        upload_output(html, keys["qc_html"])
+        upload_output(json_path, keys["qc_json"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
 
-def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample_id: str,
+def align_command(ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample_id: str,
                   aligner: str = DEFAULT_ALIGNER) -> str:
-    """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates.
+    """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates -> out.
+
+    out ending in .cram makes markdup write CRAM against ref (what the align stage stores);
+    anything else is BAM. CRAM can only be decoded with the same reference, which every reader
+    here passes (bcftools -f, DeepVariant --ref); its header records the reference's MD5s.
 
     fastqs is [reads] for single-end or [R1, R2] for paired-end. aligner is "bwa-mem2" (default)
     or "bwa": both take the same `mem` arguments and write the same records, so everything below
@@ -373,48 +499,163 @@ def align_command(ref: str, fastqs, bam: str, threads: int, tmp_dir: str, sample
     if len(fastqs) == 2:
         stages.append("samtools fixmate -m -u - -")
     stages.append(f"samtools sort -u -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} -")
-    stages.append(f"samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} - {shlex.quote(bam)}")
+    cram = f"--reference {shlex.quote(ref)} -O cram " if out.endswith(".cram") else ""
+    stages.append(f"samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} {cram}- {shlex.quote(out)}")
     return " | ".join(stages)
+
+
+def parse_flagstat(text: str) -> dict:
+    """samtools flagstat (default text output) -> QC-passed counts, plus <name>_pct where flagstat gives one.
+
+    Keys: in_total, mapped, primary_mapped, duplicates, paired_in_sequencing, properly_paired. A
+    percentage flagstat prints as N/A (e.g. properly paired for single-end reads) has no _pct key.
+    """
+    out = {}
+    for line in text.splitlines():
+        m = re.match(r"^(\d+) \+ \d+ (in total|mapped|primary mapped|duplicates|paired in sequencing|properly paired)"
+                     r"(?: \(([\d.]+)%| \(N/A)?", line)
+        if m:
+            key = m.group(2).replace(" ", "_")
+            out[key] = int(m.group(1))
+            if m.group(3) is not None:
+                out[key + "_pct"] = float(m.group(3))
+    return out
+
+
+def parse_mosdepth_summary(text: str) -> dict:
+    """mosdepth's <prefix>.mosdepth.summary.txt -> length, bases and mean_depth of its 'total' row."""
+    rows = [line.split("\t") for line in text.splitlines() if line.strip()]
+    header, total = rows[0], next(r for r in rows[1:] if r[0] == "total")
+    return {"length": int(total[header.index("length")]), "bases": int(total[header.index("bases")]),
+            "mean_depth": float(total[header.index("mean")])}
+
+
+def parse_bcftools_stats(text: str) -> dict:
+    """bcftools stats -> record/SNP/indel counts and Ti/Tv.
+
+    Ti/Tv is computed from the TSTV row's counts (bcftools prints 0.00 when there are no
+    transversions); it is None when there are no transversions, i.e. undefined.
+    """
+    out = {}
+    for line in text.splitlines():
+        cols = line.split("\t")
+        if cols[0] == "SN" and len(cols) >= 4:
+            label = cols[2].rstrip(":")
+            for name, key in (("number of records", "records"), ("number of SNPs", "snps"),
+                              ("number of indels", "indels")):
+                if label == name:
+                    out[key] = int(cols[3])
+        elif cols[0] == "TSTV" and len(cols) >= 5:
+            ts, tv = int(cols[2]), int(cols[3])
+            out["tstv"] = round(ts / tv, 2) if tv else None
+    return out
+
+
+def _log_summary(label, parse, path):
+    """Print one headline line from a stats file. Best effort: a format change never fails the stage."""
+    try:
+        with open(path) as fh:
+            values = parse(fh.read())
+        print(f"{label}: " + ", ".join(f"{k}={v}" for k, v in values.items()), flush=True)
+        provenance.note_stats(label.replace(" ", "_"), values)
+    except Exception as err:  # noqa: BLE001 - the stats file itself is still uploaded
+        print(f"WARNING: could not summarise {os.path.basename(path)}: {err}", flush=True)
+
+
+def _run_stats_tool(label: str, command: str) -> bool:
+    """Run one QC statistics command. Best effort: its failure warns, never fails the stage, because
+    the stage's real output (CRAM, VCF) is already built and worth more than a side report."""
+    try:
+        run_shell(command)
+        return True
+    except subprocess.CalledProcessError as err:
+        print(f"WARNING: {label} failed (exit {err.returncode}); its stats are skipped for this run", flush=True)
+        return False
+
+
+def alignment_stats(ref: str, cram: str, wd: str, threads: int, keys: dict) -> list:
+    """samtools flagstat + mosdepth (no per-base output; duplicates excluded) -> [(local path, key)] produced.
+
+    mosdepth runs in its default mode, not --fast-mode: that corrects for overlapping mates of a
+    pair (counted once, not twice) and counts deletions, so paired-end depth is not overstated.
+    """
+    flagstat = os.path.join(wd, STATS_FILES["flagstat"])
+    prefix = os.path.join(wd, "stats")
+    summary, dist = f"{prefix}.mosdepth.summary.txt", f"{prefix}.mosdepth.global.dist.txt"
+    files = []
+    if _run_stats_tool("samtools flagstat",
+                       f"samtools flagstat -@ {threads} --input-fmt-option reference={shlex.quote(ref)} "
+                       f"{shlex.quote(cram)} > {shlex.quote(flagstat)}"):
+        files.append((flagstat, keys["flagstat"]))
+        _log_summary("flagstat", parse_flagstat, flagstat)
+    if _run_stats_tool("mosdepth",
+                       f"mosdepth -n -t {min(threads, MOSDEPTH_MAX_THREADS)} -f {shlex.quote(ref)} "
+                       f"{shlex.quote(prefix)} {shlex.quote(cram)}"):
+        files += [(summary, keys["mosdepth_summary"]), (dist, keys["mosdepth_dist"])]
+        _log_summary("mosdepth", parse_mosdepth_summary, summary)
+    return files
 
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked BAM."""
+    """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked CRAM + .crai."""
     aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
-    keys = keys_for(sample_id, sample_layout(sample_id))
+    layout = sample_layout(sample_id)
+    keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
         fastqs = download_raw_reads(keys, wd)
-        bam = os.path.join(wd, f"{sample_id}.bam")
+        cram = os.path.join(wd, os.path.basename(keys["cram"]))
+        crai = os.path.join(wd, os.path.basename(keys["crai"]))
+        threads = os.cpu_count() or 1
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         aligner = prepare_aligner(reference_name, ref, aligner)
         print(f"Aligning with {aligner}", flush=True)
-        run_shell(align_command(ref, fastqs, bam, os.cpu_count() or 1, wd, sample_id, aligner))
-        storage().upload(bam, keys["bam"])
+        provenance.note(aligner=aligner, layout=layout)
+        provenance.note_tools(aligner, "samtools", "mosdepth")
+        run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
+        run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
+        stats = alignment_stats(ref, cram, wd, threads, keys)
+        for path, key in stats:  # before the CRAM: a sample that shows as aligned has its stats
+            upload_output(path, key)
+        # Index first, so a first run never shows a CRAM (the stage-done marker) without its index.
+        # On a re-run that fails between the two uploads, the stored pair can disagree (new .crai,
+        # old CRAM; the job role can't delete objects to avoid it). The pipeline's own readers are
+        # immune, as fetch_alignment re-indexes; for people and browsers it is fixed by the next run.
+        upload_output(crai, keys["crai"])
+        upload_output(cram, keys["cram"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
 
 @timed_stage("CallVariants")
 def variants_task(sample_id, reference_name):
+    """bcftools on the sample's CRAM (or BAM) -> variants/{id}.vcf.gz + its tabix index + bcftools stats."""
     keys = keys_for(sample_id)
     wd = work_dir(sample_id)
     try:
-        bam = os.path.join(wd, f"{sample_id}.bam")
-        vcf = os.path.join(wd, f"{sample_id}.vcf.gz")
-        storage().download(keys["bam"], bam)
+        alignment = fetch_alignment(sample_id, wd)  # mpileup reads it front to back: no index needed
+        provenance.note_tools("bcftools")
+        vcf = os.path.join(wd, os.path.basename(keys["vcf"]))
+        tbi = os.path.join(wd, os.path.basename(keys["tbi"]))
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         run_shell(
-            f"bcftools mpileup -f {shlex.quote(ref)} {shlex.quote(bam)} "
+            f"bcftools mpileup -f {shlex.quote(ref)} {shlex.quote(alignment)} "
             f"| bcftools call -mv -Oz -o {shlex.quote(vcf)}"
         )
-        storage().upload(vcf, keys["vcf"])
+        run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
+        stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
+        if _run_stats_tool("bcftools stats",
+                           f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}"):
+            _log_summary("bcftools stats", parse_bcftools_stats, stats)
+            upload_output(stats, keys["bcftools_stats"])
+        upload_output(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
+        upload_output(vcf, keys["vcf"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
 
 TASKS = {
-    "decompress": (decompress_task, False),  # no-op until the three-stage state machine is applied
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),

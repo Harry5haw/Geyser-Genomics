@@ -4,9 +4,9 @@
 This plays the part of the cloud orchestration:
   * Lambda trigger  -> the sample ID is parsed from raw_reads/<id>.fastq.gz using the
                        same function the Lambda uses (lambda/trigger/index.py).
-  * Step Functions  -> the three stages run with the same commands (infrastructure/step_functions.tf);
-                       qc and align are independent (both read raw_reads/), so they can run in
-                       parallel; here they run one after the other. The first failure stops the run.
+  * Step Functions  -> the three stages run with the same commands (infrastructure/state_machine.asl.json);
+                       qc and align are independent (both read raw_reads/): the cloud runs them in
+                       parallel, here they run one after the other. The first failure stops the run.
   * AWS Batch       -> each stage runs in a fresh container from the same image.
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 
@@ -162,11 +162,23 @@ def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, sh
     return full + [image] + cmd
 
 
-def run_job(job, runner, root, dv_memory=None):
+def run_env(sample_id, image):
+    """RUN_NAME and APP_VERSION for one job: the stages put them in the run record (app/provenance.py).
+
+    One RUN_NAME per pipeline run, shaped like the cloud's <sample>-<UTC time>-<hash>, so the
+    record keeps the parts of one run together. APP_VERSION names the local image (the cloud: its tag).
+    """
+    return {"RUN_NAME": f"{sample_id}-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-local",
+            "APP_VERSION": f"local:{image}"}
+
+
+def run_job(job, runner, root, dv_memory=None, env=None):
+    """env: extra variables for the stage (run_env), on top of the pass-through knobs."""
     if runner == "docker":
         # Pipeline and DeepVariant knobs are passed through to the container when set on the host
         # (the host runner inherits the whole environment anyway).
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
+        extra.update(env or {})
         memory = None
         if job["name"] in ("deepvariant", "pangenome"):
             extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
@@ -176,9 +188,9 @@ def run_job(job, runner, root, dv_memory=None):
     if job["name"] in ("deepvariant", "pangenome"):
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
-    # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastqc) must be on PATH. bwa-mem2 has no
+    # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastp) must be on PATH. bwa-mem2 has no
     # apt package (the image installs the upstream release); without it, set ALIGNER=bwa.
-    host_env = {**os.environ, "STORAGE_BACKEND": "local", "METRICS_BACKEND": "local",
+    host_env = {**os.environ, **(env or {}), "STORAGE_BACKEND": "local", "METRICS_BACKEND": "local",
                 "LOCAL_STORAGE_DIR": os.path.abspath(root)}
     return subprocess.run([sys.executable, "tasks.py"] + job["cmd"][2:], cwd=os.path.join(REPO_ROOT, "app"),
                           env=host_env).returncode
@@ -301,7 +313,7 @@ def main(argv=None):
                    help="memory cap for the DeepVariant and pangenome containers, e.g. 12g. A whole chromosome can "
                         "otherwise take most of the Docker VM; 16 make_examples shards thrashed under 8g")
     p.add_argument("--skip-to-variants", action="store_true",
-                   help="start at variant calling, using an existing alignments/<sample>.bam")
+                   help="start at variant calling, using an existing alignments/<sample>.cram (or .bam)")
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     a = p.parse_args(argv)
 
@@ -321,9 +333,11 @@ def main(argv=None):
         jobs = pipeline_jobs(sample_id, reference, a.caller, a.image, a.dv_image,
                              gpus=not a.no_gpu, skip_to_variants=a.skip_to_variants,
                              pg_image=a.pg_image, pangenome=a.pangenome, pg_shm=a.pg_shm_size)
+        run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
-            if run_job(job, a.runner, a.root, a.dv_memory) != 0:
+            env = {**run_env(sample_id, job["image"]), "RUN_NAME": run_name}
+            if run_job(job, a.runner, a.root, a.dv_memory, env) != 0:
                 print(f"\nFAILED at stage '{job['name']}' for {sample_id} (in the cloud this goes to Notify_Failure)")
                 ok = False
                 break

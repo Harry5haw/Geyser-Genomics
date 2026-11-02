@@ -1,8 +1,9 @@
 """Paired-end samples in the web UI: upload both mates, list them as one sample, show both mates' files."""
+import json
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 
-from .web_helpers import fastq_gz, put, vcf_gz
+from .web_helpers import FASTP_PAIRED, fastq_gz, put, vcf_gz
 from samples import status
 from samples.worker import Worker
 
@@ -20,9 +21,8 @@ def upload_pair(client, r1="P1_R1.fastq.gz", r2="P1_R2.fastq.gz", sample_id=""):
 def finished_pair(storage):
     for key in (R1, R2):
         put(storage, key, fastq_gz())
-    for mate in ("R1", "R2"):
-        put(storage, f"qc_reports/P1_{mate}_fastqc.html", f"<html>report {mate}</html>")
-        put(storage, f"qc_reports/P1_{mate}_fastqc.zip", b"zip")
+    put(storage, "qc_reports/P1.fastp.html", "<html>fastp report for the pair</html>")
+    put(storage, "qc_reports/P1.fastp.json", json.dumps(FASTP_PAIRED))
     put(storage, "alignments/P1.bam", b"bam")
     put(storage, "variants/P1.vcf.gz", vcf_gz([(100, "A", "G")]))
 
@@ -83,15 +83,14 @@ def test_sample_uploaded_both_ways_is_not_listed(storage):
     assert status.list_sample_ids(storage) == []
 
 
-def test_paired_stage_is_done_only_when_both_mates_are(storage):
+def test_paired_qc_is_one_report_for_the_pair(storage):
     for key in (R1, R2):
         put(storage, key, fastq_gz())
-    put(storage, "qc_reports/P1_R1_fastqc.html", b"data")
     (sample,) = status.load_all(storage)
     assert sample.layout == "paired"
     assert sample.stages[0].state != "done"
 
-    put(storage, "qc_reports/P1_R2_fastqc.html", b"data")
+    put(storage, "qc_reports/P1.fastp.html", b"data")
     assert status.load_one(storage, "P1").stages[0].state == "done"
 
 
@@ -119,15 +118,16 @@ def test_worker_runs_a_pair_once_when_both_mates_exist(storage):
 
 # --- detail page and downloads -------------------------------------------------------
 
-def test_detail_page_shows_both_mates_reports_and_files(client, storage):
+def test_detail_page_shows_both_mates_reads_and_one_qc_report(client, storage):
     finished_pair(storage)
     body = client.get("/samples/P1/").content.decode()
+    assert 'src="/samples/P1/files/qc_html/?inline=1"' in body and "fastp report (both mates)" in body
+    assert "Insert size (peak)" in body and "218 bp" in body
     for mate in ("R1", "R2"):
-        assert f'src="/samples/P1/files/qc_html_{mate}/?inline=1"' in body
-        assert f"FastQC report ({mate})" in body
-        for kind in ("raw", "qc_html", "qc_zip"):
-            assert f"/samples/P1/files/{kind}_{mate}/" in body
-    assert "/samples/P1/files/bam/" in body and "/samples/P1/files/vcf/" in body
+        assert f"/samples/P1/files/raw_{mate}/" in body
+        assert f"/samples/P1/files/qc_html_{mate}/" not in body
+    for kind in ("qc_html", "qc_json", "bam", "vcf"):
+        assert f"/samples/P1/files/{kind}/" in body
     assert "/samples/P1/files/raw/" not in body
 
 
@@ -137,9 +137,10 @@ def test_mate_files_are_served_and_qc_inline_is_sandboxed(client, storage):
     assert resp.status_code == 200 and b"".join(resp.streaming_content) == fastq_gz()
     assert 'filename="P1_R2.fastq.gz"' in resp["Content-Disposition"]
 
-    qc = client.get("/samples/P1/files/qc_html_R1/?inline=1")
+    qc = client.get("/samples/P1/files/qc_html/?inline=1")
     assert qc["Content-Security-Policy"] == "sandbox"
-    assert b"report R1" in b"".join(qc.streaming_content)
+    assert b"fastp report for the pair" in b"".join(qc.streaming_content)
+    assert client.get("/samples/P1/files/qc_html_R1/").status_code == 404  # no per-mate QC any more
 
 
 def test_mate_kinds_are_404_for_single_end_and_vice_versa(client, storage):

@@ -28,7 +28,7 @@ def local_env(tmp_path, monkeypatch):
     import tasks
 
     for var in ("BUCKET_NAME", "AWS_REGION", "S3_ENDPOINT_URL", "S3_ADDRESSING_STYLE", "METRICS_BACKEND",
-                "METRICS_FILE", "ALIGNER"):
+                "METRICS_FILE", "ALIGNER", "RUN_NAME", "APP_VERSION"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("STORAGE_BACKEND", "local")
     monkeypatch.setenv("LOCAL_STORAGE_DIR", str(tmp_path / "bucket"))

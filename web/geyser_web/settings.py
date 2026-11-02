@@ -73,7 +73,7 @@ USE_TZ = True
 
 # --- Security ---------------------------------------------------------------
 CSRF_COOKIE_HTTPONLY = True
-X_FRAME_OPTIONS = "DENY"  # the FastQC report view relaxes this to SAMEORIGIN for its own iframe
+X_FRAME_OPTIONS = "DENY"  # the QC (fastp) report view relaxes this to SAMEORIGIN for its own iframe
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 if _env_bool("DJANGO_HTTPS"):  # set when served over TLS (not for plain-http local runs)
