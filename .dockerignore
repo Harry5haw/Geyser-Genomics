@@ -1,0 +1,3 @@
+# A local cargo build of the gate (gate/target, ~100s of MB) stays out of the build context; the
+# image builds the gate from source in its own stage (Dockerfile).
+gate/target/

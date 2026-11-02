@@ -90,7 +90,7 @@ def pg_inputs(local_env, monkeypatch):
 
 
 def fake_pangenome_run(seen, vcf_bytes, code=0):
-    def run(cmd):
+    def run(cmd, **_):
         seen.append(cmd)
         graph = next(c.split("=", 1)[1] for c in cmd if c.startswith("--pangenome="))
         with open(graph, "rb") as fh:
