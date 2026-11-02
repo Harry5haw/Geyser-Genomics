@@ -57,3 +57,18 @@ def test_dashboard_log_links_match_the_terraform_log_groups():
         template = re.search(r'name\s*=\s*"(' + re.escape(prefix) + r'[^"]+)"', tf).group(1)
         rendered = template.replace("${var.project_name}", "geyser").replace("${var.environment}", "dev")
         assert rendered == constant
+
+
+def test_quality_gate_reads_the_keys_the_stages_write():
+    # gate/ (Rust) hardcodes the stats and run record keys; a rename in tasks.py or provenance.py must reach it.
+    import provenance
+
+    with open(os.path.join(REPO_ROOT, "gate", "src", "inputs.rs"), encoding="utf-8") as fh:
+        rs = fh.read()
+    gate_keys = {k.replace("{sample_id}", "S1") for k in re.findall(r'format!\("((?:stats|runs)/[^"]+)"', rs)}
+    keys = tasks.keys_for("S1")
+    expected = {keys["flagstat"], keys["mosdepth_summary"], keys["bcftools_stats"], provenance.record_key("S1")}
+    assert gate_keys == expected
+    # The gate reads run record schema 1 only; a schema bump must update gate/src/inputs.rs (RunRecord::parse).
+    assert provenance.SCHEMA_VERSION == 1
+    assert "Some(1) | None => Ok(record)" in rs
