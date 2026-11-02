@@ -12,6 +12,7 @@ Stages communicate only through storage keys:
         then variants --window concatenates them in reference order (see regions_from_lengths)
     stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
     runs/{id}.provenance.json: the run record (inputs, reference MD5, tools, timings, stats; provenance.py)
+    fastp JSON + stats/{id}/ + run record -> qc_reports/{id}.gate.json   (gate: the quality gate's verdict)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
 qc and align both read the gzipped upload directly (fastp, bwa-mem2 and bwa read gzip), so they don't
@@ -138,6 +139,8 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
     for name, filename in STATS_FILES.items():
         keys[name] = f"stats/{sample_id}/{filename}"
+    # The quality gate's verdict on all of the above (gate_task, gate/README.md).
+    keys["gate_verdict"] = f"qc_reports/{sample_id}.gate.json"
     return keys
 
 
@@ -949,10 +952,220 @@ def regions_main(argv) -> int:
     return 0
 
 
+def finalize_main(argv) -> int:
+    """tasks.py finalize <srr_id> --status failed [--error E] [--cause C | --caught JSON]: close the run's record.
+
+    Closes a run whose failing job never wrote its run-record part (killed, out of memory, timed out, a step outside
+    the stages) as failed, with the failing stage and why (provenance.close_run): by hand, or for a local run. The
+    state machine's failure path writes the same closing part itself, straight to S3, without a Batch job (a
+    retried job's Cause can be too big for a command line). Once its arguments parse, it exits 0 whatever happens
+    (best effort).
+    """
+    parser = argparse.ArgumentParser(prog="tasks.py finalize", description=finalize_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("--status", choices=["failed"], required=True)
+    parser.add_argument("--error", help="the error name, e.g. States.TaskFailed")
+    parser.add_argument("--cause", help="the error's cause (a failed Batch job's description, as JSON)")
+    parser.add_argument(
+        "--caught",
+        help="a Step Functions Catch output as JSON ({Error, Cause}, e.g. copied from the execution's history); "
+        "--error / --cause override it",
+    )
+    parser.add_argument(
+        "--run-name",
+        help="the run to close: its execution name (default $RUN_NAME). Required one way or the other: the failed "
+        "job often wrote no part, so the latest part can be an earlier, successful run's",
+    )
+    args = parser.parse_args(argv)
+    run_name = args.run_name or os.environ.get("RUN_NAME")
+    if not run_name:
+        parser.error("which run? give --run-name (its execution name) or set RUN_NAME")
+    caught = {}
+    if args.caught:
+        try:
+            caught = json.loads(args.caught)
+        except ValueError:
+            caught = {"Cause": args.caught}  # not JSON: keep it as the cause
+        if not isinstance(caught, dict):
+            caught = {"Cause": args.caught}
+    error = args.error if args.error is not None else caught.get("Error")
+    cause = args.cause if args.cause is not None else caught.get("Cause")
+    try:
+        record = provenance.close_run(storage(), args.srr_id, args.status, error, cause, run_name=run_name)
+    except Exception as err:  # noqa: BLE001 - close_run never raises; storage() itself might
+        print(f"WARNING: could not close the run record for {args.srr_id}: {err}", flush=True)
+        return 0
+    failure = (record or {}).get("failure") or {}
+    print(
+        f"Run record for {args.srr_id} closed as {(record or {}).get('status', 'unknown')}"
+        f" (stage: {failure.get('stage') or 'unknown'}; {failure.get('reason') or failure.get('error') or ''})",
+        flush=True,
+    )
+    return 0
+
+
+# --------------------------------------------------------------------------------------- quality gate
+# The gate (gate/, a Rust binary in the image) checks a finished run's QC statistics against thresholds.
+# GATE_MODE=warn (default until the user decides, #144): the verdict is stored and recorded, and a
+# failed verdict, or a gate that can't run (an image without the binary), only warns. GATE_MODE=fail:
+# a failed verdict fails the stage with the gate's reasons. GATE_CONFIG: a thresholds file (default:
+# the binary's built-in human WGS thresholds; the image has the shipped ones in GATE_THRESHOLDS_DIR).
+GATE_MODES = ("warn", "fail")
+GATE_BINARY = "geyser-gate"
+# Its stage name (metrics, run record part): an extra stage after the core three, like the shards
+# (scripts/monitoring.py STAGE_GROUPS["gate"]).
+GATE_METRIC = "QualityGate"
+GATE_TIMEOUT_SECONDS = 300  # it parses a few small files; minutes means something is wrong
+# keys_for names the gate reads (the run record comes from provenance.read_record, assembled fresh).
+GATE_INPUTS = ("qc_json", "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats")
+
+
+class GateFailed(RuntimeError):
+    """The sample failed the quality gate and GATE_MODE=fail."""
+
+
+def gate_mode() -> str:
+    mode = os.environ.get("GATE_MODE", "warn").strip().lower() or "warn"
+    if mode not in GATE_MODES:
+        raise ValueError(f"GATE_MODE must be one of {GATE_MODES}, got {mode!r}")
+    return mode
+
+
+def fetch_gate_inputs(sample_id: str, root: str) -> list:
+    """The gate's inputs under a local root laid out like the bucket. Returns the keys fetched.
+
+    A missing file is left missing: the gate reports it (missing stats count as a failed check by
+    default). The run record is assembled from its stage parts, like every other reader of it, so a
+    stored copy that a failed re-assembly left behind can't mislead the gate.
+    """
+    keys = keys_for(sample_id)
+    fetched = []
+    for name in GATE_INPUTS:
+        key = keys[name]
+        local = os.path.join(root, *key.split("/"))
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        try:
+            storage().download(key, local)  # one request; a missing file is the gate's to report
+        except ObjectNotFound:
+            continue
+        provenance.note_input(key, local)
+        fetched.append(key)
+    record = provenance.read_record(storage(), sample_id)
+    if record is not None:
+        local = os.path.join(root, *provenance.record_key(sample_id).split("/"))
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, "w") as fh:
+            json.dump(record, fh)
+        fetched.append(provenance.record_key(sample_id))
+    return fetched
+
+
+def _store_no_verdict(sample_id: str, key: str, wd: str, mode: str, message: str) -> None:
+    """The gate gave no verdict: store that under the verdict key too, so an earlier run's verdict
+    there can't pass for this run's (nothing is ever deleted from the bucket), and record it."""
+    path = os.path.join(wd, "no-verdict.json")
+    with open(path, "w") as fh:
+        json.dump(
+            {
+                "sample_id": sample_id,
+                "run_name": os.environ.get("RUN_NAME") or None,
+                "verdict": None,
+                "mode": mode,
+                "error": message,
+            },
+            fh,
+        )
+    upload_output(path, key)
+    provenance.note(gate={"verdict": None, "mode": mode, "error": message, "key": key})
+
+
+def _gate_problem(sample_id: str, key: str, wd: str, mode: str, message: str) -> None:
+    """The gate couldn't give a verdict (not installed, timed out, crashed, unreadable verdict).
+    warn: say so, store and record it; fail: the same, then fail the stage."""
+    _store_no_verdict(sample_id, key, wd, mode, message)
+    if mode == "fail":
+        raise RuntimeError(f"quality gate: {message}")
+    print(f"WARNING: quality gate: {message} (GATE_MODE=warn: the run continues)", flush=True)
+
+
+def _read_verdict(path: str) -> dict:
+    """The verdict JSON, or ValueError if it isn't one (missing file, bad JSON, missing fields)."""
+    try:
+        with open(path) as fh:
+            verdict = json.load(fh)
+    except (OSError, json.JSONDecodeError) as err:
+        raise ValueError(f"no readable verdict: {err}") from err
+    missing = [k for k in ("verdict", "reasons", "config") if k not in verdict]
+    if missing or verdict["verdict"] not in ("pass", "fail"):
+        raise ValueError(f"not a gate verdict (missing {missing or 'a pass/fail verdict'})")
+    return verdict
+
+
+@timed_stage(GATE_METRIC)
+def gate_task(sample_id):
+    """geyser-gate on the sample's fastp report, stats/{id}/ and run record -> qc_reports/{id}.gate.json."""
+    mode = gate_mode()  # a mistyped GATE_MODE fails now, as ANNOTATE does
+    # Expanded here: Batch and `docker run -e` pass values as they are (e.g. $GATE_THRESHOLDS_DIR/...).
+    config = os.path.expandvars(os.environ.get("GATE_CONFIG", "").strip()) or None
+    key = keys_for(sample_id)["gate_verdict"]
+    wd = work_dir(sample_id)
+    try:
+        root = os.path.join(wd, "root")
+        os.makedirs(root)
+        fetched = fetch_gate_inputs(sample_id, root)
+        print(f"Quality gate ({mode}) on {len(fetched)} inputs: {', '.join(fetched) or 'none'}", flush=True)
+        verdict_path = os.path.join(wd, os.path.basename(key))
+        cmd = [GATE_BINARY, "--root", root, "--sample", sample_id, "--output", verdict_path]
+        if config:
+            cmd += ["--config", config]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=GATE_TIMEOUT_SECONDS)
+        except FileNotFoundError:
+            return _gate_problem(
+                sample_id, key, wd, mode, f"{GATE_BINARY} is not installed (an image from before #144?)"
+            )
+        except subprocess.TimeoutExpired:
+            return _gate_problem(sample_id, key, wd, mode, f"{GATE_BINARY} timed out after {GATE_TIMEOUT_SECONDS}s")
+        if result.stderr:
+            print(result.stderr.rstrip(), flush=True)  # one line per check, then PASS/FAIL
+        if result.returncode == 2:
+            # A usage or config error (e.g. a GATE_CONFIG with a typo): an operator setting, so it fails
+            # in either mode, like a mistyped GATE_MODE.
+            message = f"could not run (exit 2): {result.stderr.strip()}"
+            _store_no_verdict(sample_id, key, wd, mode, message)
+            raise RuntimeError(f"quality gate {message}")
+        if result.returncode not in (0, 1):
+            # A crash (e.g. a panic, which aborts: a negative code here) is the gate's problem, not the run's.
+            return _gate_problem(sample_id, key, wd, mode, f"{GATE_BINARY} exited {result.returncode}")
+        try:
+            verdict = _read_verdict(verdict_path)
+        except ValueError as err:
+            return _gate_problem(sample_id, key, wd, mode, str(err))
+        upload_output(verdict_path, key)
+        summary = {
+            "verdict": verdict["verdict"],
+            "reasons": verdict["reasons"],
+            "mode": mode,
+            "config": verdict["config"],
+            "gate_version": verdict.get("gate_version"),
+            "key": key,
+        }
+        provenance.note(gate=summary)
+        provenance.note_tools("geyser-gate")
+        if verdict["verdict"] != "pass":
+            reasons = "; ".join(verdict["reasons"])
+            if mode == "fail":
+                raise GateFailed(f"{sample_id} failed the quality gate: {reasons}")
+            print(f"WARNING: {sample_id} failed the quality gate: {reasons} (GATE_MODE=warn: the run continues)")
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+
 TASKS = {
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),
+    "gate": (gate_task, False),
 }
 
 
@@ -960,6 +1173,8 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["regions"]:
         return regions_main(argv[1:])
+    if argv[:1] == ["finalize"]:
+        return finalize_main(argv[1:])
     parser = argparse.ArgumentParser(description="Run one Geyser Genomics pipeline stage.")
     parser.add_argument("task_name", choices=sorted(TASKS))
     parser.add_argument("srr_id", help="Sample ID, e.g. SRR062634")

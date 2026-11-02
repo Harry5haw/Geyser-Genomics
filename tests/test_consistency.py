@@ -57,6 +57,13 @@ def test_state_machine_is_rendered_from_the_asl_file():
     assert "States.Array" not in tf  # no second copy of the stage commands
 
 
+def test_the_quality_gate_is_the_only_task_the_state_machine_does_not_run_yet():
+    # The gate stage (#144) runs locally (run_local.py) first; its Step Functions state is a later
+    # infrastructure change. When that lands, this set becomes empty: update tasks, the state machine
+    # and run_local together (the repo rule this test keeps visible).
+    assert set(tasks.TASKS) - {stage for stage, _ in state_machine_stages()} == {"gate"}
+
+
 def test_state_machine_stages_exist_in_tasks():
     for stage, needs_ref in state_machine_stages():
         assert stage in tasks.TASKS
@@ -147,3 +154,12 @@ def test_queue_wait_widgets_read_the_terraform_event_log_group():
     template = re.search(r'name\s*=\s*"(/aws/events/[^"]+)"', tf).group(1)
     rendered = template.replace("${var.project_name}", "geyser").replace("${var.environment}", "dev")
     assert rendered == monitoring.BATCH_EVENTS_LOG_GROUP
+
+
+def test_failure_parsing_knows_every_job_name_the_state_machine_sets():
+    # provenance.parse_failure names the failing stage from the Batch job name in a Catch's Cause, so every
+    # JobName prefix the state machine builds must map to a stage, and none may be stale.
+    import provenance
+
+    prefixes = set(re.findall(r"States\.Format\('(\w+)-\{\}", asl_text()))
+    assert prefixes and prefixes == {p.rstrip("-") for p, _ in provenance.JOB_NAME_STAGES}, prefixes

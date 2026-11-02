@@ -11,7 +11,14 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "app"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 sys.path.insert(0, os.path.join(REPO_ROOT, "app-deepvariant"))
 
+import benchmark_history  # noqa: E402 - needs scripts/ on sys.path (above)
 import tasks  # noqa: E402 - needs app/ on sys.path (above)
+
+
+@pytest.fixture(autouse=True)
+def _no_tracked_benchmark_history(tmp_path, monkeypatch):
+    """No test may append to docs/benchmarks/history.csv: benchmark_happy.py records every run it scores."""
+    monkeypatch.setattr(benchmark_history, "HISTORY", str(tmp_path / "benchmark-history.csv"))
 
 
 def load_module(name, *path_parts):

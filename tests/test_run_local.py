@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import os
 
 import pytest
 
@@ -158,3 +159,77 @@ def test_deepvariant_owns_the_samples_stats_only_without_bcftools(caller, expect
 def test_a_caller_added_to_an_earlier_run_does_not_claim_its_stats():
     jobs = run_local.pipeline_jobs("S1", "ref.fa", caller="deepvariant", skip_to_variants=True)
     assert [(j["name"], j["env"]) for j in jobs] == [("deepvariant", {})]
+
+
+# --- quality gate (#144) ---------------------------------------------------------------------------
+
+
+def test_the_gate_runs_after_variant_calling_when_asked():
+    jobs = run_local.pipeline_jobs("S1", "r.fa", gate=True)
+    assert [j["name"] for j in jobs] == ["qc", "align", "variants", "gate"]
+    assert jobs[-1]["cmd"] == ["python", "tasks.py", "gate", "S1"] and jobs[-1]["image"] == "geyser-app"
+    assert "env" not in jobs[-1], "no gate_config: the host's GATE_CONFIG or the built-in thresholds"
+
+
+def test_the_gate_runs_last_after_the_merge_of_a_scattered_call_and_deepvariant():
+    jobs = run_local.pipeline_jobs("S1", "r.fa", "both", regions=["c:1-10"], shard_window=10, gate=True)
+    assert [j["name"] for j in jobs] == ["qc", "align", "variants-shard", "variants", "deepvariant", "gate"]
+
+
+def test_a_deepvariant_only_run_is_gated_but_an_added_caller_is_not():
+    # DeepVariant-only: its PASS-call stats are the sample's (#147), and the cloud gates that path too.
+    jobs = run_local.pipeline_jobs("S1", "r.fa", "deepvariant", gate=True)
+    assert [j["name"] for j in jobs] == ["qc", "align", "deepvariant", "gate"]
+    # --skip-to-variants adds a caller to an earlier run: the stats stay that run's, so no new verdict.
+    jobs = run_local.pipeline_jobs("S1", "r.fa", "deepvariant", gate=True, skip_to_variants=True)
+    assert "gate" not in [j["name"] for j in jobs]
+
+
+def test_pipeline_jobs_default_is_still_the_state_machine():
+    assert "gate" not in [j["name"] for j in run_local.pipeline_jobs("S1", "r.fa")]
+
+
+def test_synthetic_samples_get_the_synthetic_thresholds(tmp_path, monkeypatch):
+    monkeypatch.delenv("GATE_CONFIG", raising=False)
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") is None, "real data: built-in thresholds"
+    (tmp_path / "truth").mkdir()
+    (tmp_path / "truth" / "S1.json").write_text("{}")
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/synthetic.toml"
+    assert run_local.gate_config_for(str(tmp_path), "S1", "host").endswith(
+        os.path.join("gate", "thresholds", "synthetic.toml")
+    )
+    monkeypatch.setenv("GATE_CONFIG", "/opt/geyser-gate/thresholds/default.toml")  # a container path already
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/default.toml"
+    assert run_local.gate_config_for(str(tmp_path), "S1", "host") is None, "the host runner inherits it"
+
+
+def test_host_gate_configs_become_container_paths(tmp_path, monkeypatch):
+    repo_file = os.path.join(run_local.REPO_ROOT, "gate", "thresholds", "default.toml")
+    monkeypatch.setenv("GATE_CONFIG", repo_file)
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/default.toml"
+    mine = tmp_path / "configs" / "strict.toml"
+    mine.parent.mkdir()
+    mine.write_text("[checks]\nsnps = { min = 1 }\n")
+    monkeypatch.setenv("GATE_CONFIG", str(mine))
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/data/configs/strict.toml", "under the root"
+
+
+def test_gate_settings_reach_the_gate_container(monkeypatch):
+    seen = []
+    monkeypatch.setattr(run_local.subprocess, "run", lambda cmd: seen.append(cmd) or type("R", (), {"returncode": 0}))
+    monkeypatch.setenv("GATE_MODE", "fail")
+    (job,) = [j for j in run_local.pipeline_jobs("S1", "r", gate=True, gate_config="/c.toml") if j["name"] == "gate"]
+    run_local.run_job(job, "docker", "root", env=run_local.run_env("S1", "geyser-app"))
+    assert "GATE_MODE=fail" in seen[0] and "GATE_CONFIG=/c.toml" in seen[0]
+
+
+def test_main_runs_the_gate_unless_no_gate(tmp_path, monkeypatch):
+    (tmp_path / "raw_reads").mkdir()
+    (tmp_path / "raw_reads" / "S1.fastq.gz").write_bytes(b"")
+    ran = []
+    monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: ran.append(job["name"]) or 0)
+    assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa"]) == 0
+    assert ran == ["qc", "align", "variants", "gate"]
+    ran.clear()
+    assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa", "--no-gate"]) == 0
+    assert ran == ["qc", "align", "variants"]

@@ -8,11 +8,20 @@ Writes into a storage root using the same key layout as the pipeline:
                                        (--paired: <sample>_R1.fastq.gz + <sample>_R2.fastq.gz)
     <root>/truth/<sample>.json         the SNPs that were planted (the expected VCF calls)
                                        and the number of planted duplicate reads/pairs (--duplicate-rate)
+    <root>/pangenome/<ref stem>.gbz    --pangenome: a small pangenome graph of the reference, for
+                                       run_local.py --caller pangenome --pangenome <ref stem>.gbz
 
 Deterministic for a given --seed, needs only the standard library, and runs in about a second.
 
     python scripts/make_test_data.py --root local_bucket
     python scripts/make_test_data.py --root local_bucket --sample PAIRED001 --paired
+    python scripts/make_test_data.py --root local_bucket --pangenome    # + graph (vg in Docker)
+
+--pangenome writes the graph as GFA (standard library) and converts it to GBZ with vg in Docker, as
+fetch_dv_testdata.py does for the HPRC chr20 graph. The reference is the GRCh38 path (the sample name
+pangenome-aware DeepVariant looks for by default) and PANEL_HAPLOTYPES panel haplotypes walk it. Most of them
+carry each planted SNP, and half of them carry DECOY_SNPS extra SNPs the sample does not have, so a correct
+pangenome-aware call set is still exactly the planted SNPs.
 """
 
 import argparse
@@ -20,8 +29,16 @@ import gzip
 import json
 import os
 import random
+import subprocess
 
 BASES = "ACGT"
+# --pangenome: the panel (diploid samples, two haplotypes each), the graph's reference sample name, extra SNPs only
+# the panel carries, and the vg release used for the HPRC graph in fetch_dv_testdata.py.
+PANEL_SAMPLES = ("PANEL1", "PANEL2", "PANEL3")
+PANEL_HAPLOTYPES = [(sample, hap) for sample in PANEL_SAMPLES for hap in (1, 2)]
+GRAPH_REFERENCE = "GRCh38"
+DECOY_SNPS = 5
+VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"
 COMPLEMENT = str.maketrans("ACGT", "TGCA")
 
 
@@ -122,6 +139,118 @@ def write_gff(path, contig, genes):
             fh.write(f"{contig}\tgeyser\tCDS\t{s}\t{e}\t.\t{strand}\t0\tID=CDS:{n}P;Parent=transcript:{n}T\n")
 
 
+def decoy_snps(rng, reference, planted, count, offset=0, gap=1000, attempts=10_000):
+    """SNPs only the graph's panel carries: at least `gap` bp from the planted ones and each other, and from the
+    contig ends. Positions are 1-based and include offset, like the planted SNPs after the leading gap is added.
+    ValueError if they do not fit (a short reference, or planted SNPs closer together than 2 x gap)."""
+    if len(reference) <= 2 * gap:
+        raise ValueError(f"a {len(reference):,} bp reference is too short for decoy SNPs (needs > {2 * gap:,} bp)")
+    taken = [snp["pos"] for snp in planted]
+    decoys = []
+    for _ in range(attempts):
+        if len(decoys) == count:
+            break
+        pos0 = rng.randrange(gap, len(reference) - gap)
+        pos = pos0 + 1 + offset
+        if all(abs(pos - t) >= gap for t in taken):
+            ref_base = reference[pos0]
+            decoys.append({"pos": pos, "ref": ref_base, "alt": rng.choice([b for b in BASES if b != ref_base])})
+            taken.append(pos)
+    if len(decoys) < count:
+        raise ValueError(
+            f"no room for {count} decoy SNPs {gap:,} bp from the planted ones: use fewer --snps or a longer --length"
+        )
+    return sorted(decoys, key=lambda d: d["pos"])
+
+
+def panel_carries(index, hap, decoy):
+    """Which panel haplotypes carry which variant: planted SNP i is on every haplotype but one (rotating); a decoy
+    is on the first half of the panel only."""
+    if decoy:
+        return hap < len(PANEL_HAPLOTYPES) // 2
+    return hap != index % len(PANEL_HAPLOTYPES)
+
+
+def pangenome_gfa(contig, sequence, planted, decoys):
+    """GFA 1.1 of the reference with one SNP bubble per variant, the reference as a GRCh38 walk and the panel
+    haplotypes as walks. sequence is the whole FASTA sequence (leading gap included); positions are 1-based.
+    Variants may be adjacent or at either end: no empty segment is written."""
+    variants = sorted([(v, False) for v in planted] + [(v, True) for v in decoys], key=lambda x: x[0]["pos"])
+    segments, links = [], []
+    ref_walk = []
+    hap_walks = [[] for _ in PANEL_HAPLOTYPES]
+    tails = []  # segments the walks are currently on (nothing before the first segment)
+
+    def add_segment(seq):
+        segments.append(seq)
+        return len(segments)
+
+    def append_shared(seq):
+        """A stretch every walk shares; skipped if empty."""
+        nonlocal tails
+        if not seq:
+            return
+        seg = add_segment(seq)
+        links.extend((t, seg) for t in tails)
+        ref_walk.append(seg)
+        for walk in hap_walks:
+            walk.append(seg)
+        tails = [seg]
+
+    start, planted_index = 0, 0
+    for variant, decoy in variants:
+        pos0 = variant["pos"] - 1
+        if pos0 < start:
+            raise ValueError(f"variants overlap at position {variant['pos']}")
+        if sequence[pos0] != variant["ref"]:
+            raise ValueError(f"reference base at {variant['pos']} is {sequence[pos0]}, not {variant['ref']}")
+        append_shared(sequence[start:pos0])
+        ref_seg, alt_seg = add_segment(variant["ref"]), add_segment(variant["alt"])
+        links.extend((t, seg) for t in tails for seg in (ref_seg, alt_seg))
+        ref_walk.append(ref_seg)
+        for hap, walk in enumerate(hap_walks):
+            walk.append(alt_seg if panel_carries(planted_index, hap, decoy) else ref_seg)
+        tails = [ref_seg, alt_seg]
+        planted_index += not decoy
+        start = pos0 + 1
+    append_shared(sequence[start:])
+
+    lines = ["H\tVN:Z:1.1"]
+    lines += [f"S\t{i}\t{seq}" for i, seq in enumerate(segments, start=1)]
+    lines += [f"L\t{a}\t+\t{b}\t+\t0M" for a, b in links]
+
+    def walk_line(sample, hap, walk):
+        length = sum(len(segments[i - 1]) for i in walk)
+        return f"W\t{sample}\t{hap}\t{contig}\t0\t{length}\t" + "".join(f">{i}" for i in walk)
+
+    lines.append(walk_line(GRAPH_REFERENCE, 0, ref_walk))
+    lines += [walk_line(sample, hap, walk) for (sample, hap), walk in zip(PANEL_HAPLOTYPES, hap_walks, strict=True)]
+    return "\n".join(lines) + "\n"
+
+
+def gbz_command(root, gfa_key, gbz_key, image=VG_IMAGE, memory="4g"):
+    """docker run converting the GFA to GBZ with the reference sample kept as the reference (vg gbwt -G). A failed
+    conversion removes its partial file. The GFA is kept next to the GBZ (about 50 KB, readable when debugging)."""
+    gfa, gbz = f"/data/{gfa_key}", f"/data/{gbz_key}"
+    script = (
+        f"set -e; trap 'rm -f {gbz}.part' ERR; "
+        f"vg gbwt -G {gfa} --gbz-format -g {gbz}.part --set-reference {GRAPH_REFERENCE}; mv {gbz}.part {gbz}"
+    )
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--memory",
+        memory,
+        "--mount",
+        f"type=bind,source={os.path.abspath(root)},target=/data",
+        image,
+        "bash",
+        "-c",
+        script,
+    ]
+
+
 def write_fasta(path, name, seq, width=60):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="ascii", newline="\n") as fh:
@@ -169,6 +298,12 @@ def main(argv=None):
         "(the align stage only uses bwa-mem2 on such references; see BWA_MEM2_SAFE_N_PREFIX "
         "in app/tasks.py). Reads and SNPs are the same, the SNPs N positions later; default 0",
     )
+    p.add_argument(
+        "--pangenome",
+        action="store_true",
+        help="also write a small pangenome graph, pangenome/<reference stem>.gbz (GFA built here, converted with vg "
+        "in Docker), for run_local.py --caller pangenome --pangenome <reference stem>.gbz",
+    )
     a = p.parse_args(argv)
     if a.leading_gap < 0:
         p.error("--leading-gap must be >= 0")
@@ -187,6 +322,19 @@ def main(argv=None):
         write_gff(gff_path, a.contig, genes)
     elif os.path.exists(gff_path):
         os.remove(gff_path)  # an earlier --gff run's models describe a different genome now
+
+    stem = os.path.splitext(a.reference)[0]
+    graph_keys = (f"pangenome/{stem}.gfa", f"pangenome/{stem}.gbz")
+    for key in graph_keys:  # an earlier --pangenome run's graph describes another genome now
+        if os.path.exists(os.path.join(a.root, *key.split("/"))):
+            os.remove(os.path.join(a.root, *key.split("/")))
+    gfa = None
+    if a.pangenome:  # before any reads are written: a graph that cannot be made stops the run here
+        try:
+            decoys = decoy_snps(random.Random(a.seed + 2), reference, snps, DECOY_SNPS, a.leading_gap)
+            gfa = pangenome_gfa(a.contig, "N" * a.leading_gap + reference, snps, decoys)
+        except ValueError as err:
+            p.error(f"--pangenome: {err}")
 
     raw_dir = os.path.join(a.root, "raw_reads")
     os.makedirs(raw_dir, exist_ok=True)
@@ -226,11 +374,22 @@ def main(argv=None):
             indent=2,
         )
 
+    graph_note = ""
+    if gfa is not None:
+        gfa_key, gbz_key = graph_keys
+        os.makedirs(os.path.join(a.root, "pangenome"), exist_ok=True)
+        with open(os.path.join(a.root, *gfa_key.split("/")), "w", encoding="ascii", newline="\n") as fh:
+            fh.write(gfa)
+        subprocess.run(gbz_command(a.root, gfa_key, gbz_key), check=True)
+        graph_note = f"{gbz_key} ({len(PANEL_HAPLOTYPES)} panel haplotypes, {DECOY_SNPS} decoy SNPs)"
+
     unit = "pairs" if a.paired else "reads"
     gap = f", starting with {a.leading_gap:,} Ns" if a.leading_gap else ""
     print(f"reference : {os.path.join(a.root, 'reference', a.reference)} ({a.length + a.leading_gap:,} bp{gap})")
     print(f"reads     : {', '.join(fastq_paths)} ({n:,} {unit} x {a.read_length} bp, {n_dup:,} planted duplicates)")
     print(f"truth     : {truth_path} ({len(snps)} SNPs)")
+    if graph_note:
+        print(f"pangenome : {os.path.join(a.root, graph_note)}")
 
 
 if __name__ == "__main__":

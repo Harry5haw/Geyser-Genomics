@@ -17,6 +17,7 @@
   --geyser-failed: #ffaa9c;
   --geyser-pending: #a8c8b9;
   --geyser-queued: #f2c94c;
+  --geyser-warn: #f5b041;
   --geyser-on-state: #042c20;
 
   /* Pico overrides */
@@ -190,6 +191,12 @@ small.error, .error { color: var(--geyser-failed); }
 .badge.running { background: var(--geyser-running); }
 .badge.queued { background: var(--geyser-queued); }
 .badge.failed { background: var(--geyser-failed); }
+.badge.warn { background: var(--geyser-warn); }
+.badge.notrun { background: var(--geyser-pending); }
+.badge.incomplete { background: var(--geyser-pending); }
+.gate-warn { border-left: .35rem solid var(--geyser-warn); }
+.gate-fail { border-left: .35rem solid var(--geyser-failed); }
+.gate-not_run { border-left: .35rem dashed var(--geyser-pending); }
 
 /* Tables sit on cards */
 table { --pico-background-color: transparent; }
