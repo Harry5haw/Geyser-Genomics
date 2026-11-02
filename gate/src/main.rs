@@ -98,7 +98,7 @@ fn main() -> ExitCode {
                 Some(v) => v.to_string(),
             };
             let reason = check.reason.as_deref().map(|r| format!("  ({r})")).unwrap_or_default();
-            eprintln!("  {mark}  {:<20} {value}{reason}", check.name);
+            eprintln!("  {mark}  {:<24} {value}{reason}", check.name);
         }
         let n_failed = verdict.reasons.len();
         match n_failed {

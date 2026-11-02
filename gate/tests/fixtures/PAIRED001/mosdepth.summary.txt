@@ -1,0 +1,3 @@
+chrom	length	bases	mean	min	max
+synth1	50000	1497064	29.94	0	54
+total	50000	1497064	29.94	0	54

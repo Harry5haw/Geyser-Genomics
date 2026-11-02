@@ -95,9 +95,11 @@ def test_quality_gate_reads_the_keys_the_stages_write():
 
     with open(os.path.join(REPO_ROOT, "gate", "src", "inputs.rs"), encoding="utf-8") as fh:
         rs = fh.read()
-    gate_keys = {k.replace("{sample_id}", "S1") for k in re.findall(r'format!\("((?:stats|runs)/[^"]+)"', rs)}
+    gate_keys = {
+        k.replace("{sample_id}", "S1") for k in re.findall(r'format!\("((?:qc_reports|stats|runs)/[^"]+)"', rs)
+    }
     keys = tasks.keys_for("S1")
-    expected = {keys["flagstat"], keys["mosdepth_summary"], keys["bcftools_stats"]}
+    expected = {keys[k] for k in ("qc_json", "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats")}
     expected |= {provenance.record_key("S1"), provenance.part_prefix("S1")}
     assert gate_keys == expected
     # The gate reads one run record schema; a schema bump in provenance.py must reach the gate.

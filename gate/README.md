@@ -1,7 +1,7 @@
 # geyser-gate: the quality gate
 
-A run can "succeed" and still be useless: 60% of reads mapped, 5x depth, or a VCF full of errors all
-end with a green Step Functions run. `geyser-gate` reads the QC statistics and the run record a run
+A run can "succeed" and still be useless: poor base qualities, 60% of reads mapped, 5x depth, or a VCF
+full of errors all end with a green Step Functions run. `geyser-gate` reads the QC statistics and the run record a run
 already leaves behind and gives a verdict: **pass**, or **fail with a named reason**, e.g.
 `mapped_pct 80 is below the minimum 95`.
 
@@ -19,8 +19,10 @@ The same keys the pipeline writes, under a folder laid out like the bucket (`--r
 
 | Input | Key | Written by | Gives |
 | :--- | :--- | :--- | :--- |
-| `flagstat` | `stats/<id>/flagstat.txt` | align (`samtools flagstat`) | `reads`, `mapped_pct`, `duplicate_pct`, `properly_paired_pct` |
+| `fastp` | `qc_reports/<id>.fastp.json` | qc (`fastp`, report-only) | `q30_pct`, `gc_pct`, `fastp_duplicate_pct` |
+| `flagstat` | `stats/<id>/flagstat.txt` | align (`samtools flagstat`) | `reads`, `mapped_pct`, `duplicate_pct`, `properly_paired_pct`; with fastp: `read_count_difference` |
 | `mosdepth_summary` | `stats/<id>/mosdepth.summary.txt` | align (`mosdepth -n`) | `mean_depth` |
+| `mosdepth_dist` | `stats/<id>/mosdepth.global.dist.txt` | align (`mosdepth -n`) | `breadth_1x_pct`, `breadth_10x_pct`, `breadth_20x_pct` |
 | `bcftools_stats` | `stats/<id>/bcftools.stats.txt` | variants (`bcftools stats`) | `variants`, `snps`, `indels`, `tstv` |
 | `run_record` | `runs/<id>.provenance.json` | every stage ([`app/provenance.py`](../app/provenance.py), schema 1) | `run_status` (`succeeded` / `failed` / `incomplete`), run name |
 
@@ -34,7 +36,7 @@ behind. With a run record, the gate therefore uses only what that run produced:
 - The stored record is a convenience copy that `app/provenance.py` rebuilds from the per-stage parts
   (`runs/<id>.provenance/*.json`). If a part finished after the record was assembled (its re-assembly
   failed), the record is **invalid** (stale), so a failed re-run can't pass on an old "succeeded".
-- If flagstat's layout disagrees with the record's, flagstat is **invalid**.
+- If fastp's or flagstat's layout disagrees with the record's, that input is **invalid**.
 - A record for another sample, or with a schema other than 1, is **invalid**.
 
 Without a run record (or one without `outputs`), the stats files are taken as they are.
@@ -64,14 +66,18 @@ reported in the verdict (see `on_missing`).
 The verdict JSON goes to stdout (or `--output`); a one-line-per-check summary goes to stderr:
 
 ```text
-  pass  run_status           succeeded
-  pass  mapped_pct           100.0
-  pass  duplicate_pct        0.04
-  pass  properly_paired_pct  100.0
-  pass  mean_depth           29.9413
-  pass  snps                 10
-  FAIL  tstv                 1.5  (tstv 1.5 is below the minimum 1.7)
-geyser-gate: PAIRED001: FAIL (1 of 7 checks)
+  pass  run_status               succeeded
+  pass  q30_pct                  100.0
+  pass  gc_pct                   49.4708
+  pass  read_count_difference    0
+  pass  mapped_pct               100.0
+  pass  duplicate_pct            0.04
+  pass  properly_paired_pct      100.0
+  pass  mean_depth               29.9413
+  pass  breadth_10x_pct          100.0
+  pass  snps                     10
+  FAIL  tstv                     1.5  (tstv 1.5 is below the minimum 1.7)
+geyser-gate: PAIRED001: FAIL (1 of 11 checks)
 ```
 
 Static binary for the image: `rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl`.
@@ -105,19 +111,47 @@ skipped or not applicable, e.g. a wrong `--root` with `skip`) is a fail.
 ### The built-in thresholds ([`thresholds/default.toml`](thresholds/default.toml))
 
 For human germline short-read WGS at ~30x, called by the pipeline's bcftools stage. They were checked
-against the stats of the two GIAB samples used in the benchmarks (`geyser-data`): HG003 and HG005, chr20,
-2 x 150 bp, aligned with bwa-mem2 and called with bcftools as the pipeline does. Both pass every check
-with a margin; their stats are test fixtures (`tests/fixtures/HG00{3,5}_chr20/`).
+against the two GIAB samples used in the benchmarks (`geyser-data`): HG003 and HG005, chr20, 2 x 151 bp,
+called with the pipeline's bcftools stage, with fastp run on their reads with the QC stage's own flags.
+HG003's alignment is the pipeline's align stage (bwa-mem2) on its reads, from the aligner benchmark.
+HG005's is the downloaded 30x BAM, not aligned by this pipeline, and its reads for fastp were extracted
+from that BAM. HG003 passes every check with a margin. HG005 passes every check but one,
+`read_count_difference`, because its alignment and its "upload" don't match (below). Their stats are
+test fixtures (`tests/fixtures/HG00{3,5}_chr20/`).
+
+A third real alignment checks that the defaults aren't tuned to one aligner: HG003's same reads aligned
+to the HPRC chr20 **graph** with vg giraffe (the giraffe benchmark, #129) and called with DeepVariant
+(`tests/fixtures/HG003_chr20_giraffe/`). It passes every default check: 98.74% mapped, 10.99%
+duplicates, 97.66% properly paired, 36.29x, 98% at 10x, read count difference 0, Ti/Tv 1.96 (PASS calls).
 
 | Check | Bound | HG003 chr20 | HG005 chr20 | Why this bound |
 | :--- | :--- | ---: | ---: | :--- |
 | `run_status` | `succeeded` | | | A failed or unfinished run has nothing to vouch for |
+| `q30_pct` | ≥ 80 | 91.39 | 91.76 | Below 80 (a typical Illumina spec for 2 x 150 bp) the sequencing run had a problem |
+| `gc_pct` | 35 – 50 | 43.86 | 44.07 | Human genome ~41, chr20 ~44. Outside 35-50 the library is GC-biased or contaminated (bacteria range from ~25 to ~70) |
+| `read_count_difference` | = 0 | 0 | +377,078 | Every read in the upload must reach the alignment, exactly. See below |
 | `mapped_pct` | ≥ 95 | 99.77 | 99.82 | Below 95: wrong reference, contamination or a broken alignment |
 | `duplicate_pct` | ≤ 20 | 10.99 | 10.24 | Above 20 the library is low-complexity or over-amplified, and much of the depth is copies |
 | `properly_paired_pct` | ≥ 90 | 99.05 | 96.97 | Paired-end only. Low values mean bad insert sizes, chimeras or the wrong reference |
 | `mean_depth` | ≥ 20 | 36.78 | 32.64 | Below 20x a 30x sample loses sensitivity, mostly for heterozygous calls |
+| `breadth_10x_pct` | ≥ 90 | 98 | 98 | Below 90 the depth is uneven: a mean of 30x can hide regions too thin to call. chr20 is ~1% N gap, never covered |
 | `snps` | ≥ 1 | 118,410 | 109,870 | A complete run with an empty VCF is broken whatever the other numbers say |
 | `tstv` | 1.7 – 2.4 | 1.81 | 1.85 | See below |
+
+Reported but not checked by default: `reads` (depends on the sample), `fastp_duplicate_pct` (5.79 / 5.64;
+`duplicate_pct` from the alignment is the better measure), `breadth_1x_pct` (99 / 99), `breadth_20x_pct`
+(97 / 95), `variants` and `indels`.
+
+**Read count.** bwa-mem2 writes unmapped reads too and `samtools markdup` only marks duplicates, so
+the alignment holds exactly the reads fastp counted in the upload: HG003, 18,960,080 = 18,960,080.
+`read_count_difference` is that comparison as an exact, signed count (flagstat's primary records,
+QC-failed included, minus fastp's total reads), not a percentage: rounded to 4 decimals, 9 reads lost
+among 19 million would show as 100.0000%. Below 0 the align stage lost reads (a truncated stream, a
+crashed step that still left a file); above 0 the alignment isn't from this upload. The HG005 fixture is
+the second case: its "upload" was extracted from the alignment itself, and `samtools fastq` dropped the
+377,078 reads whose mates map to other chromosomes, so the alignment has exactly 377,078 reads more.
+The check fails on it, as it should for mismatched inputs (a test asserts that this is its only
+failure). With samtools < 1.13 (no `primary` line in flagstat) the difference is undefined.
 
 **Ti/Tv.** The textbook value for human WGS is ~2.0-2.1, and a first draft of the defaults used 1.9-2.3.
 Measuring first showed that this would have failed every good run: the pipeline's bcftools calls are
@@ -138,8 +172,10 @@ filtered DeepVariant calls could tighten the lower bound to ~1.95.
 ### The synthetic profile ([`thresholds/synthetic.toml`](thresholds/synthetic.toml))
 
 For `make_test_data.py` data (10,000 reads, ~30x, 10 planted SNPs, no indels), single- or paired-end:
-the same bounds the Docker end-to-end test asserts. No Ti/Tv check: 10 SNPs are too few for the ratio
-to mean anything. The default thresholds fail synthetic data, by design (Ti/Tv 1.5).
+the alignment and variant bounds the Docker end-to-end test asserts, plus perfect base qualities, ~50% GC
+(a random reference), every read in the alignment and ≥ 95% at 10x (100% by default; 98% with
+`--leading-gap 1000`). No Ti/Tv check: 10 SNPs are too few for the ratio to mean anything. The default
+thresholds fail synthetic data, by design (Ti/Tv 1.5).
 
 ## Verdict
 
@@ -158,17 +194,22 @@ to mean anything. The default thresholds fail synthetic data, by design (Ti/Tv 1
     "flagstat": { "key": "stats/PAIRED001/flagstat.txt", "status": "ok" }, ...
   },
   "metrics": {                       // every metric, checked or not (null if unavailable)
-    "reads": 10000, "mapped_pct": 100.0, "duplicate_pct": 0.04, "properly_paired_pct": 100.0,
-    "mean_depth": 29.9413, "variants": 10, "snps": 10, "indels": 0, "tstv": 1.5
+    "q30_pct": 100.0, "gc_pct": 49.4708, "fastp_duplicate_pct": 0.0, "reads": 10000,
+    "read_count_difference": 0, "mapped_pct": 100.0, "duplicate_pct": 0.04, "properly_paired_pct": 100.0,
+    "mean_depth": 29.9413, "breadth_1x_pct": 100.0, "breadth_10x_pct": 100.0, "breadth_20x_pct": 97.0,
+    "variants": 10, "snps": 10, "indels": 0, "tstv": 1.5
   },
   "checks": [                        // the configured checks, run_status first
     { "name": "mean_depth", "status": "pass", "value": 29.9413, "min": 25.0, "max": 31.0,
       "source": "stats/PAIRED001/mosdepth.summary.txt", "reason": null }, ...
+    // a metric from two inputs names both: "source": "stats/PAIRED001/flagstat.txt, qc_reports/PAIRED001.fastp.json"
   ]
 }
 ```
 
 Check `status`: `pass`, `fail`, `skipped` (missing input with `on_missing = "skip"`) or `not_applicable`.
+Samples whose QC ran FastQC (before fastp, #100) have no fastp report: with the default thresholds their
+fastp checks fail as missing. Gate them with a config without those checks, or `on_missing = "skip"`.
 Counts are integers; percentages and ratios are rounded to 4 decimals, and the bounds apply to the
 rounded value shown.
 
@@ -176,11 +217,16 @@ rounded value shown.
 
 | Metric | From | Definition |
 | :--- | :--- | :--- |
+| `q30_pct` | fastp | Bases with quality ≥ 30 before filtering × 100 (the QC stage filters nothing, so this is the upload) |
+| `gc_pct` | fastp | GC content of the reads × 100 |
+| `fastp_duplicate_pct` | fastp | fastp's duplication estimate from the read sequences, before alignment × 100 |
+| `read_count_difference` | flagstat + fastp | flagstat's primary records (QC-passed + QC-failed) − fastp's total reads; both count each mate. An exact integer, never rounded |
 | `reads` | flagstat | Primary records, QC-passed (each mate counts). Supplementary and secondary alignments excluded |
 | `mapped_pct` | flagstat | primary mapped / primary × 100 (samtools < 1.13 has no primary lines: mapped / in total). This is the run record's `primary_mapped_pct`, not its `mapped_pct` (flagstat's own, over all records including supplementary) |
 | `duplicate_pct` | flagstat | primary duplicates / primary × 100 (marked by `samtools markdup`, not removed) |
 | `properly_paired_pct` | flagstat | properly paired / paired in sequencing × 100. Not applicable to single-end reads |
 | `mean_depth` | mosdepth | bases / length of the `total` row (mosdepth's `mean`, unrounded). Duplicates excluded |
+| `breadth_1x_pct`, `breadth_10x_pct`, `breadth_20x_pct` | mosdepth distribution | The `total` row's fraction of the reference at ≥ 1/10/20x × 100 (duplicates excluded). mosdepth prints 2 decimals, so these are whole percentages. mosdepth leaves out depths no base is exactly at; such a depth takes the next listed depth's value. Deeper than the deepest base: 0 |
 | `variants`, `snps`, `indels` | bcftools stats | `SN` counts of the first file (id 0) |
 | `tstv` | bcftools stats | transitions / transversions from the `TSTV` row. Undefined (not 0.00) with no transversions. The run record rounds it to 2 decimals, the verdict to 4 |
 
@@ -200,8 +246,9 @@ No Rust on the machine? The same commands work in Docker:
 `docker run --rm -v "$PWD:/repo" -w /repo/gate rust:1-slim-trixie sh -c "cargo test"`.
 
 The tests read only real tool output: the synthetic samples' stats shared with the Python tests
-(`../tests/fixtures/stats/`), run records from `run_local.py --check` (`tests/fixtures/*.provenance.json`)
-and the HG003/HG005 chr20 stats.
+(`../tests/fixtures/stats/`), everything one `run_local.py --check` run wrote for a single-end and a
+paired-end sample (`tests/fixtures/{SYNTH001,PAIRED001}/`, run records included), and the HG003/HG005
+chr20 stats and fastp reports.
 
 ## Not yet
 
@@ -212,7 +259,10 @@ and the HG003/HG005 chr20 stats.
   stage), the static binary copied into the image, and the verdict stored as `runs/<id>.gate.json`.
   A failed gate would end the run through `Notify_Failure` with its reasons. That touches `app/`, the
   Dockerfile and `infrastructure/`, so it is its own issue.
-- **fastp's JSON** (`qc_reports/<id>.fastp.json`): adapter content, read quality and duplication before
-  alignment.
-- **Breadth of coverage** (`mosdepth.global.dist.txt`, e.g. % of the reference at ≥ 10x).
-- Stats for the DeepVariant and pangenome VCFs (they have no `bcftools stats` yet), with their own Ti/Tv range.
+- **Adapter content:** the QC stage runs fastp with adapter trimming disabled (report-only), and then
+  fastp doesn't detect adapters, so the report has no adapter numbers. Checking them needs a QC-stage
+  change (e.g. let fastp detect adapters without writing trimmed reads).
+- Stats for the DeepVariant and pangenome VCFs (they have no `bcftools stats` yet). **They must count
+  PASS calls only** (`bcftools stats -f PASS`): DeepVariant's VCF also holds its RefCall candidates, and
+  over all records the giraffe + DeepVariant VCF has Ti/Tv 0.86 (PASS: 1.96), which would fail every
+  good run. A test pins this down.

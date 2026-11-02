@@ -1,21 +1,112 @@
-//! The four inputs the gate reads, as the pipeline writes them (app/tasks.py, app/provenance.py):
+//! The inputs the gate reads, as the pipeline writes them (app/tasks.py, app/provenance.py):
 //!
 //! ```text
-//! stats/{id}/flagstat.txt          samtools flagstat, default text output   (align stage)
-//! stats/{id}/mosdepth.summary.txt  mosdepth -n summary                      (align stage)
-//! stats/{id}/bcftools.stats.txt    bcftools stats -F <ref> -s -             (variants stage)
-//! runs/{id}.provenance.json        the provenance run record, schema 1      (every stage)
+//! qc_reports/{id}.fastp.json           fastp in report-only mode                 (qc stage)
+//! stats/{id}/flagstat.txt              samtools flagstat, default text output    (align stage)
+//! stats/{id}/mosdepth.summary.txt      mosdepth -n summary                       (align stage)
+//! stats/{id}/mosdepth.global.dist.txt  mosdepth -n cumulative depth distribution (align stage)
+//! stats/{id}/bcftools.stats.txt        bcftools stats -F <ref> -s -              (variants stage)
+//! runs/{id}.provenance.json            the provenance run record, schema 1       (every stage)
 //! ```
 //!
 //! The parsers take the tools' own output and nothing else: the gate never re-runs a tool.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+
+/// The read-level numbers from fastp's JSON report. The QC stage runs fastp report-only (no trimming
+/// or filtering), so "before filtering" is the upload as it is. With adapter trimming disabled, fastp
+/// doesn't detect adapters: the report has no adapter numbers to check.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fastp {
+    /// Reads in the upload (each mate counts).
+    pub total_reads: u64,
+    pub q30_rate: f64,
+    pub gc_content: f64,
+    pub duplication_rate: Option<f64>,
+    pub paired: bool,
+}
+
+#[derive(Deserialize)]
+struct FastpJson {
+    summary: FastpSummary,
+    duplication: Option<FastpDuplication>,
+}
+
+#[derive(Deserialize)]
+struct FastpSummary {
+    sequencing: String,
+    before_filtering: FastpCounts,
+}
+
+#[derive(Deserialize)]
+struct FastpCounts {
+    total_reads: u64,
+    q30_rate: f64,
+    gc_content: f64,
+}
+
+#[derive(Deserialize)]
+struct FastpDuplication {
+    rate: f64,
+}
+
+impl Fastp {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let json: FastpJson = serde_json::from_str(text).map_err(|e| format!("not a fastp JSON report: {e}"))?;
+        let paired = match json.summary.sequencing.split(" end").next() {
+            Some("paired") => true,
+            Some("single") => false,
+            _ => return Err(format!("unknown fastp sequencing {:?}", json.summary.sequencing)),
+        };
+        let b = json.summary.before_filtering;
+        Ok(Fastp {
+            total_reads: b.total_reads,
+            q30_rate: b.q30_rate,
+            gc_content: b.gc_content,
+            duplication_rate: json.duplication.map(|d| d.rate),
+            paired,
+        })
+    }
+}
+
+/// The `total` rows of `<prefix>.mosdepth.global.dist.txt`: depth -> fraction of the reference at
+/// least that deep. mosdepth writes the fractions with 2 decimals, and leaves out a depth when no
+/// base is at exactly that depth (the cumulative fraction doesn't change there): HG005 chr20 has 13
+/// such gaps above 1,800x.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MosdepthDist {
+    /// Fraction of the reference at >= depth, for the depths mosdepth lists.
+    pub at_least: BTreeMap<u64, f64>,
+}
+
+impl MosdepthDist {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut at_least = BTreeMap::new();
+        for line in text.lines() {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if let ["total", depth, fraction] = cols.as_slice() {
+                let bad = || format!("bad total row {line:?}");
+                at_least.insert(depth.parse::<u64>().map_err(|_| bad())?, fraction.parse::<f64>().map_err(|_| bad())?);
+            }
+        }
+        if at_least.is_empty() {
+            return Err("no 'total' rows: not a mosdepth global distribution".into());
+        }
+        Ok(MosdepthDist { at_least })
+    }
+
+    /// % of the reference covered at >= `depth`. A depth mosdepth left out has no base at exactly that
+    /// depth, so it has the fraction of the next listed depth above it; deeper than any base: 0.
+    pub fn breadth_pct(&self, depth: u64) -> f64 {
+        self.at_least.range(depth..).next().map_or(0.0, |(_, f)| f * 100.0)
+    }
+}
 
 /// The QC-passed counts from `samtools flagstat` that the gate uses.
 ///
@@ -24,6 +115,8 @@ use serde::Deserialize;
 pub struct Flagstat {
     pub in_total: u64,
     pub primary: Option<u64>,
+    /// The QC-failed column of the `primary` line (reads with flag 0x200; fastp still counts them).
+    pub primary_failed: Option<u64>,
     pub mapped: u64,
     pub primary_mapped: Option<u64>,
     pub duplicates: u64,
@@ -35,7 +128,7 @@ pub struct Flagstat {
 impl Flagstat {
     /// Parse the default text output: `<passed> + <failed> <label>[ (<percentages>)]` per line.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let mut counts: HashMap<&str, u64> = HashMap::new();
+        let mut counts: HashMap<&str, (u64, u64)> = HashMap::new();
         for line in text.lines() {
             let Some((passed, rest)) = line.split_once(" + ") else {
                 continue;
@@ -43,18 +136,19 @@ impl Flagstat {
             let Some((failed, label)) = rest.split_once(' ') else {
                 continue;
             };
-            let (Ok(passed), Ok(_)) = (passed.trim().parse::<u64>(), failed.parse::<u64>()) else {
+            let (Ok(passed), Ok(failed)) = (passed.trim().parse::<u64>(), failed.parse::<u64>()) else {
                 continue;
             };
             let label = label.split(" (").next().unwrap_or(label).trim();
             // First wins: "with mate mapped to a different chr" appears twice (the second is mapQ>=5).
-            counts.entry(label).or_insert(passed);
+            counts.entry(label).or_insert((passed, failed));
         }
-        let get = |label: &str| counts.get(label).copied();
+        let get = |label: &str| counts.get(label).map(|(passed, _)| *passed);
         let need = |label: &str| get(label).ok_or_else(|| format!("no '{label}' line: not samtools flagstat output"));
         Ok(Flagstat {
             in_total: need("in total")?,
             primary: get("primary"),
+            primary_failed: counts.get("primary").map(|(_, failed)| *failed),
             mapped: need("mapped")?,
             primary_mapped: get("primary mapped"),
             duplicates: need("duplicates")?,
@@ -83,6 +177,12 @@ impl Flagstat {
             (Some(dups), Some(primary)) => pct(dups, primary),
             _ => pct(self.duplicates, self.in_total),
         }
+    }
+
+    /// Every primary record, QC-passed and QC-failed: one per read in the input (unmapped reads
+    /// included). None without the `primary` line (samtools < 1.13), where only all-records counts exist.
+    pub fn primary_reads_all(&self) -> Option<u64> {
+        Some(self.primary? + self.primary_failed.unwrap_or(0))
     }
 
     pub fn is_paired(&self) -> bool {
@@ -261,19 +361,24 @@ impl<T> Loaded<T> {
 /// The inputs by name, in verdict order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Input {
+    Fastp,
     Flagstat,
     Mosdepth,
+    MosdepthDist,
     Bcftools,
     RunRecord,
 }
 
 impl Input {
-    pub const ALL: [Input; 4] = [Input::Flagstat, Input::Mosdepth, Input::Bcftools, Input::RunRecord];
+    pub const ALL: [Input; 6] =
+        [Input::Fastp, Input::Flagstat, Input::Mosdepth, Input::MosdepthDist, Input::Bcftools, Input::RunRecord];
 
     pub fn name(self) -> &'static str {
         match self {
+            Input::Fastp => "fastp",
             Input::Flagstat => "flagstat",
             Input::Mosdepth => "mosdepth_summary",
+            Input::MosdepthDist => "mosdepth_dist",
             Input::Bcftools => "bcftools_stats",
             Input::RunRecord => "run_record",
         }
@@ -282,8 +387,10 @@ impl Input {
     /// The storage key, as in tasks.keys_for / provenance.record_key.
     pub fn key(self, sample_id: &str) -> String {
         match self {
+            Input::Fastp => format!("qc_reports/{sample_id}.fastp.json"),
             Input::Flagstat => format!("stats/{sample_id}/flagstat.txt"),
             Input::Mosdepth => format!("stats/{sample_id}/mosdepth.summary.txt"),
+            Input::MosdepthDist => format!("stats/{sample_id}/mosdepth.global.dist.txt"),
             Input::Bcftools => format!("stats/{sample_id}/bcftools.stats.txt"),
             Input::RunRecord => format!("runs/{sample_id}.provenance.json"),
         }
@@ -300,8 +407,10 @@ impl fmt::Display for Input {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Inputs {
     pub sample_id: String,
+    pub fastp: Loaded<Fastp>,
     pub flagstat: Loaded<Flagstat>,
     pub mosdepth: Loaded<MosdepthSummary>,
+    pub mosdepth_dist: Loaded<MosdepthDist>,
     pub bcftools: Loaded<BcftoolsStats>,
     pub record: Loaded<RunRecord>,
 }
@@ -315,7 +424,7 @@ impl Inputs {
     /// - the record must be newer than every stage part (runs/{id}.provenance/*.json). The stored record
     ///   is a convenience copy; a stage whose re-assembly failed leaves it behind its parts.
     /// - a stats file must be among the record's outputs, otherwise it is from an earlier run (missing).
-    /// - flagstat's layout must agree with the record's.
+    /// - fastp's and flagstat's layouts must agree with the record's.
     pub fn load(root: &Path, sample_id: &str) -> Inputs {
         let mut record = load(root, sample_id, Input::RunRecord, RunRecord::parse);
         if let Loaded::Ok(r) = &record
@@ -325,11 +434,20 @@ impl Inputs {
         }
         let mut inputs = Inputs {
             sample_id: sample_id.to_string(),
+            fastp: load(root, sample_id, Input::Fastp, Fastp::parse),
             flagstat: load(root, sample_id, Input::Flagstat, Flagstat::parse),
             mosdepth: load(root, sample_id, Input::Mosdepth, MosdepthSummary::parse),
+            mosdepth_dist: load(root, sample_id, Input::MosdepthDist, MosdepthDist::parse),
             bcftools: load(root, sample_id, Input::Bcftools, BcftoolsStats::parse),
             record,
         };
+        // fastp and flagstat see the same reads: their layouts must agree, with or without a record.
+        if let (Loaded::Ok(fastp), Loaded::Ok(f)) = (&inputs.fastp, &inputs.flagstat)
+            && fastp.paired != f.is_paired()
+        {
+            let (seen, aligned) = (layout_name(fastp.paired), layout_name(f.is_paired()));
+            inputs.fastp = Loaded::Invalid(format!("shows {seen}-end reads, the alignment (flagstat) {aligned}-end"));
+        }
         if let Loaded::Ok(r) = &inputs.record {
             let run = r.run_name.as_deref().unwrap_or("in the run record");
             let stale = |input: Input| -> Option<String> {
@@ -342,15 +460,22 @@ impl Inputs {
                     *l = Loaded::Missing(why);
                 }
             }
+            drop_stale(&mut inputs.fastp, stale(Input::Fastp));
             drop_stale(&mut inputs.flagstat, stale(Input::Flagstat));
             drop_stale(&mut inputs.mosdepth, stale(Input::Mosdepth));
+            drop_stale(&mut inputs.mosdepth_dist, stale(Input::MosdepthDist));
             drop_stale(&mut inputs.bcftools, stale(Input::Bcftools));
 
-            if let (Loaded::Ok(f), Some(recorded)) = (&inputs.flagstat, r.layout.as_deref()) {
-                let seen = layout_of(f);
-                if seen != recorded {
-                    inputs.flagstat =
-                        Loaded::Invalid(format!("shows {seen}-end reads, the run record says {recorded}"));
+            if let Some(recorded) = r.layout.as_deref() {
+                let disagrees = |paired: bool| {
+                    let seen = layout_name(paired);
+                    (seen != recorded).then(|| format!("shows {seen}-end reads, the run record says {recorded}"))
+                };
+                if let Some(why) = inputs.flagstat.ok().and_then(|f| disagrees(f.is_paired())) {
+                    inputs.flagstat = Loaded::Invalid(why);
+                }
+                if let Some(why) = inputs.fastp.ok().and_then(|f| disagrees(f.paired)) {
+                    inputs.fastp = Loaded::Invalid(why);
                 }
             }
         }
@@ -359,24 +484,24 @@ impl Inputs {
 
     pub fn problem(&self, input: Input) -> Option<Problem<'_>> {
         match input {
+            Input::Fastp => self.fastp.problem(),
             Input::Flagstat => self.flagstat.problem(),
             Input::Mosdepth => self.mosdepth.problem(),
+            Input::MosdepthDist => self.mosdepth_dist.problem(),
             Input::Bcftools => self.bcftools.problem(),
             Input::RunRecord => self.record.problem(),
         }
     }
 
-    /// The layout: the alignment's (flagstat sees the reads), else the run record's.
+    /// The layout: the alignment's (flagstat sees the reads), else fastp's, else the run record's.
     pub fn layout(&self) -> Option<String> {
-        match &self.flagstat {
-            Loaded::Ok(f) => Some(layout_of(f).to_string()),
-            _ => self.record.ok().and_then(|r| r.layout.clone()),
-        }
+        let seen = self.flagstat.ok().map(|f| f.is_paired()).or(self.fastp.ok().map(|f| f.paired));
+        seen.map(|paired| layout_name(paired).to_string()).or_else(|| self.record.ok().and_then(|r| r.layout.clone()))
     }
 }
 
-fn layout_of(f: &Flagstat) -> &'static str {
-    if f.is_paired() { "paired" } else { "single" }
+fn layout_name(paired: bool) -> &'static str {
+    if paired { "paired" } else { "single" }
 }
 
 /// Why a parsed record can't be trusted: another sample's, or older than one of its stage parts.
@@ -425,6 +550,19 @@ mod tests {
     const PAIRED_MOSDEPTH: &str = include_str!("../../tests/fixtures/stats/paired.mosdepth.summary.txt");
     const PAIRED_BCFTOOLS: &str = include_str!("../../tests/fixtures/stats/paired.bcftools.stats.txt");
     const SINGLE_BCFTOOLS: &str = include_str!("../../tests/fixtures/stats/single.bcftools.stats.txt");
+    const SINGLE_DIST: &str = include_str!("../../tests/fixtures/stats/single.mosdepth.global.dist.txt");
+    // Everything one run_local.py --check run wrote for SYNTH001 (default synthetic data: 50 kb, no N
+    // gap). The shared fixtures above come from another run (--leading-gap 1000: 51 kb), so the load
+    // tests use only these, never a mix of the two.
+    const RUN_FLAGSTAT: &str = include_str!("../tests/fixtures/SYNTH001/flagstat.txt");
+    const RUN_MOSDEPTH: &str = include_str!("../tests/fixtures/SYNTH001/mosdepth.summary.txt");
+    const RUN_DIST: &str = include_str!("../tests/fixtures/SYNTH001/mosdepth.global.dist.txt");
+    const RUN_BCFTOOLS: &str = include_str!("../tests/fixtures/SYNTH001/bcftools.stats.txt");
+    const SINGLE_FASTP: &str = include_str!("../tests/fixtures/SYNTH001/fastp.json");
+    // fastp with the QC stage's flags on the HG003 chr20 benchmark reads.
+    const PAIRED_FASTP: &str = include_str!("../tests/fixtures/PAIRED001/fastp.json");
+    const HG003_FASTP: &str = include_str!("../tests/fixtures/HG003_chr20/fastp.json");
+    const HG003_DIST: &str = include_str!("../tests/fixtures/HG003_chr20/mosdepth.global.dist.txt");
 
     #[test]
     fn flagstat_single_end() {
@@ -562,9 +700,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let stats = dir.path().join("stats/S1");
         fs::create_dir_all(&stats).unwrap();
-        fs::write(stats.join("flagstat.txt"), SINGLE_FLAGSTAT).unwrap();
-        fs::write(stats.join("mosdepth.summary.txt"), SINGLE_MOSDEPTH).unwrap();
-        fs::write(stats.join("bcftools.stats.txt"), SINGLE_BCFTOOLS).unwrap();
+        fs::write(stats.join("flagstat.txt"), RUN_FLAGSTAT).unwrap();
+        fs::write(stats.join("mosdepth.summary.txt"), RUN_MOSDEPTH).unwrap();
+        fs::write(stats.join("bcftools.stats.txt"), RUN_BCFTOOLS).unwrap();
+        fs::write(stats.join("mosdepth.global.dist.txt"), RUN_DIST).unwrap();
+        fs::create_dir_all(dir.path().join("qc_reports")).unwrap();
+        fs::write(dir.path().join("qc_reports/S1.fastp.json"), SINGLE_FASTP).unwrap();
         let part_dir = dir.path().join("runs/S1.provenance");
         fs::create_dir_all(&part_dir).unwrap();
         fs::write(dir.path().join("runs/S1.provenance.json"), record.to_string()).unwrap();
@@ -591,6 +732,8 @@ mod tests {
             )
         );
         assert!(matches!(inputs.mosdepth, Loaded::Missing(_)));
+        assert!(matches!(inputs.mosdepth_dist, Loaded::Missing(_)));
+        assert!(matches!(inputs.fastp, Loaded::Missing(_)));
         assert!(matches!(inputs.bcftools, Loaded::Ok(_)));
         assert_eq!(inputs.layout(), None, "neither flagstat nor the record give one");
     }
@@ -621,6 +764,7 @@ mod tests {
         let dir = root_with(record, &[]);
         let inputs = Inputs::load(dir.path(), "S1");
         assert_eq!(inputs.flagstat, Loaded::Invalid("shows single-end reads, the run record says paired".into()));
+        assert_eq!(inputs.fastp, Loaded::Invalid("shows single-end reads, the run record says paired".into()));
         assert_eq!(inputs.layout().as_deref(), Some("paired"));
     }
 
@@ -628,5 +772,72 @@ mod tests {
     fn a_tstv_row_that_does_not_parse_is_invalid() {
         let text = "SN\t0\tnumber of records:\t2\nSN\t0\tnumber of SNPs:\t2\nSN\t0\tnumber of indels:\t0\nTSTV\t0\t2\tx\t0.00\n";
         assert!(BcftoolsStats::parse(text).unwrap_err().contains("bad TSTV count"));
+    }
+
+    #[test]
+    fn fastp_report() {
+        let single = Fastp::parse(SINGLE_FASTP).unwrap();
+        assert_eq!((single.total_reads, single.q30_rate, single.paired), (10_000, 1.0, false));
+        assert_eq!(single.duplication_rate, Some(0.0361));
+        let paired = Fastp::parse(PAIRED_FASTP).unwrap();
+        assert_eq!((paired.total_reads, paired.paired), (10_000, true), "both mates count, as in flagstat");
+        let hg003 = Fastp::parse(HG003_FASTP).unwrap();
+        assert_eq!(hg003.total_reads, 18_960_080, "= flagstat's primary reads for the same BAM");
+        assert!((hg003.q30_rate - 0.9139).abs() < 1e-4 && (hg003.gc_content - 0.4386).abs() < 1e-4);
+    }
+
+    #[test]
+    fn fastp_rejects_other_files() {
+        assert!(Fastp::parse(r#"{"schema": 1}"#).unwrap_err().contains("not a fastp JSON report"));
+        assert!(Fastp::parse(SINGLE_FLAGSTAT).is_err());
+        let odd = SINGLE_FASTP.replace("single end (150 cycles)", "long reads");
+        assert!(Fastp::parse(&odd).unwrap_err().contains("unknown fastp sequencing"));
+    }
+
+    #[test]
+    fn mosdepth_distribution() {
+        let hg003 = MosdepthDist::parse(HG003_DIST).unwrap();
+        assert_eq!((hg003.breadth_pct(1), hg003.breadth_pct(10), hg003.breadth_pct(20)), (99.0, 98.0, 97.0));
+        let single = MosdepthDist::parse(SINGLE_DIST).unwrap();
+        assert_eq!(single.breadth_pct(10), 98.0, "--leading-gap 1000: 1 kb of the 51 kb is N, never covered");
+        assert_eq!(MosdepthDist::parse(RUN_DIST).unwrap().breadth_pct(10), 100.0, "no N gap");
+        let deepest = *single.at_least.keys().last().unwrap();
+        assert_eq!(single.breadth_pct(deepest + 1), 0.0, "deeper than the deepest base");
+        assert!(MosdepthDist::parse(SINGLE_FLAGSTAT).unwrap_err().contains("no 'total' rows"));
+        assert!(MosdepthDist::parse("total\tten\t0.5\n").unwrap_err().contains("bad total row"));
+        // A depth mosdepth left out: no base exactly there, so >= 1x is the same as >= 5x.
+        let gap = MosdepthDist::parse("total\t5\t0.10\ntotal\t0\t1.00\n").unwrap();
+        assert_eq!(
+            (gap.breadth_pct(0), gap.breadth_pct(1), gap.breadth_pct(5), gap.breadth_pct(6)),
+            (100.0, 10.0, 10.0, 0.0)
+        );
+        let hg005 =
+            MosdepthDist::parse(include_str!("../tests/fixtures/HG005_chr20/mosdepth.global.dist.txt")).unwrap();
+        assert!(!hg005.at_least.contains_key(&1865), "real gaps exist");
+        assert_eq!(hg005.breadth_pct(1865), hg005.breadth_pct(1866));
+        assert_eq!(hg005.breadth_pct(10), 98.0);
+    }
+
+    #[test]
+    fn flagstat_counts_every_primary_record_for_the_read_count() {
+        let text = "1000 + 7 in total (QC-passed reads + QC-failed reads)\n990 + 7 primary\n10 + 0 supplementary\n\
+                    0 + 0 duplicates\n990 + 7 mapped (99.00% : N/A)\n";
+        assert_eq!(Flagstat::parse(text).unwrap().primary_reads_all(), Some(997), "QC-failed reads are reads too");
+        let old =
+            "200 + 3 in total (QC-passed reads + QC-failed reads)\n10 + 0 duplicates\n150 + 1 mapped (75.00% : N/A)\n";
+        assert_eq!(Flagstat::parse(old).unwrap().primary_reads_all(), None, "samtools < 1.13: no primary line");
+    }
+
+    #[test]
+    fn fastp_and_flagstat_must_agree_on_the_layout_without_a_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let stats = dir.path().join("stats/S1");
+        fs::create_dir_all(&stats).unwrap();
+        fs::write(stats.join("flagstat.txt"), PAIRED_FLAGSTAT).unwrap();
+        fs::create_dir_all(dir.path().join("qc_reports")).unwrap();
+        fs::write(dir.path().join("qc_reports/S1.fastp.json"), SINGLE_FASTP).unwrap();
+        let inputs = Inputs::load(dir.path(), "S1");
+        assert_eq!(inputs.fastp, Loaded::Invalid("shows single-end reads, the alignment (flagstat) paired-end".into()));
+        assert!(inputs.flagstat.ok().is_some());
     }
 }
