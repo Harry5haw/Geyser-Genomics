@@ -24,6 +24,29 @@ def test_pipeline_recovers_planted_snps(tmp_path, capfd):
     assert (root / "qc_reports" / "SYNTH001_fastqc.html").exists()
     # This reference starts with sequence, so the align stage must have fallen back to bwa (bwa-mem2#262).
     assert "bwa-mem2#262" in log and "Aligning with bwa\n" in log.replace("\r", "")
+    _check_cram_and_indexes(root, "SYNTH001", reads=10_000)
+
+
+def _check_cram_and_indexes(root, sample, reads):
+    """CRAM + .crai and VCF + .tbi, no BAM; the CRAM decodes against the reference, both indexes answer a region."""
+    import subprocess
+
+    for key in (f"alignments/{sample}.cram", f"alignments/{sample}.cram.crai",
+                f"variants/{sample}.vcf.gz", f"variants/{sample}.vcf.gz.tbi"):
+        assert (root / key).stat().st_size > 0, key
+    assert not (root / "alignments" / f"{sample}.bam").exists()
+    script = (f"set -e; cd /data; samtools quickcheck -v alignments/{sample}.cram; "
+              f"samtools view -c -T reference/synthetic_ref.fa alignments/{sample}.cram; "
+              f"samtools view -c -T reference/synthetic_ref.fa alignments/{sample}.cram synth1:20000-30000; "
+              f"bcftools view -H -r synth1:1-60000 variants/{sample}.vcf.gz | wc -l")
+    out = subprocess.run(run_local.docker_command(["bash", "-c", script], str(root),
+                                                  os.environ.get("GEYSER_IMAGE", "geyser-app")),
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    total, region, calls = (int(x) for x in out.stdout.split())
+    assert total == reads  # every read decodes against the reference
+    assert 0 < region < total  # the .crai serves a region query
+    assert calls >= 10  # the .tbi serves a region query (every planted SNP is in it)
 
 
 def test_bwa_mem2_aligns_a_reference_that_starts_with_a_gap(tmp_path, capfd):
@@ -93,6 +116,7 @@ def test_paired_end_sample_runs_through_every_stage(tmp_path, capfd):
     assert exit_code == 0  # --check: 10/10 planted SNPs, nothing unexpected
     assert "Aligning with bwa-mem2" in log
     assert "samtools fixmate -m" in log
+    _check_cram_and_indexes(root, "PAIRED001", reads=10_000)  # 5,000 pairs
     for mate in ("R1", "R2"):
         assert (root / "qc_reports" / f"PAIRED001_{mate}_fastqc.html").exists()
     assert _markdup_stat(log, "PAIRED") == 10_000 and _markdup_stat(log, "SINGLE") == 0
@@ -135,5 +159,6 @@ def test_truncated_upload_fails_both_qc_and_align(tmp_path, leading_gap):
         cmd = run_local.stage_command(stage, "SYNTH001", "synthetic_ref.fa", needs_ref)
         result = subprocess.run(run_local.docker_command(cmd, str(root), image), capture_output=True, text=True)
         assert result.returncode != 0, f"{stage} accepted a truncated upload:\n{result.stdout}{result.stderr}"
-    assert not (root / "alignments" / "SYNTH001.bam").exists()
+    for name in ("SYNTH001.cram", "SYNTH001.cram.crai", "SYNTH001.bam"):
+        assert not (root / "alignments" / name).exists()
     assert not (root / "qc_reports" / "SYNTH001_fastqc.html").exists()

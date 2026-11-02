@@ -28,8 +28,11 @@ FILE_KINDS = {
     "raw": ("Raw reads", "Gzipped FASTQ as uploaded"),
     "qc_html": ("FastQC report", "HTML"),
     "qc_zip": ("FastQC data", "ZIP"),
-    "bam": ("Alignments", "Coordinate-sorted, duplicate-marked BAM"),
+    "cram": ("Alignments", "Coordinate-sorted, duplicate-marked CRAM (decode with the same reference)"),
+    "crai": ("Alignment index", "CRAM index (.crai), for region queries and genome browsers"),
+    "bam": ("Alignments (BAM)", "From a run before CRAM, or imported benchmark data"),
     "vcf": ("Variants", "Gzipped VCF"),
+    "tbi": ("Variant index", "Tabix index (.tbi) of the VCF"),
     "truth": ("Planted SNPs", "Truth file for demo samples (JSON)"),
     "log": ("Run log", "Output of the local pipeline run"),
 }
