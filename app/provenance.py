@@ -4,13 +4,17 @@
     runs/{id}.provenance/{Task}.json   one part per stage (QualityControl, Align, CallVariants, DeepVariant ...)
     runs/{id}.provenance.json          the record: the parts of the sample's latest run, assembled
 
-Each stage writes its own part and then re-assembles the record. qc and align run side by side in
-the cloud, so a single shared object would lose one of their updates; the variants stage runs after
-both, so its assembly is the complete one. The record sits next to runs/{id}.json and runs/{id}.log,
-which belong to the local web worker (web/samples/runs.py).
+Each stage writes only its own part, so stages running side by side (qc and align in the cloud)
+can't lose each other's updates. The parts are the source of truth: read_record() assembles them
+on every read. Each stage also writes the assembled record as a convenience copy for people and
+other tools; two stages finishing at once can leave that copy one part behind until the next stage
+writes it. The record sits next to runs/{id}.json and runs/{id}.log, which belong to the local web
+worker (web/samples/runs.py).
 
 Parts belong to the same run when they share RUN_NAME (run_local.py sets one per run; in the cloud,
-the Step Functions execution name once the infrastructure passes it to the jobs). Without RUN_NAME
+the Step Functions execution name once the infrastructure passes it to the jobs). The record is the
+latest run; an upstream stage that run didn't include (run_local --skip-to-variants, variants
+re-run by hand) comes from the run that last ran it (UPSTREAM), and every stage entry names its run. Without RUN_NAME
 every part counts as one run, so after a partial re-run the record can mix runs; "run_name": null
 says that this is possible.
 
@@ -21,7 +25,7 @@ Record (schema 1):
     app_version (APP_VERSION: the image tag in the cloud), layout, aligner,
     reference {name, md5, bytes}, inputs [{key, bytes}], outputs [{key, bytes}],
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
-    stages {Task: {status, started, finished, duration_seconds, error}}
+    stages {Task: {status, started, finished, duration_seconds, error, run_name}}
 """
 
 import hashlib
@@ -37,6 +41,14 @@ SCHEMA_VERSION = 1
 RUN_PREFIX = "runs/"
 # The stages every pipeline run has (metric names, as in tasks.timed_stage). DeepVariant parts are extra.
 CORE_STAGES = ("QualityControl", "Align", "CallVariants")
+# Stages whose outputs a stage builds on. When the latest run starts part-way (run_local
+# --skip-to-variants, a stage re-run by hand), its upstream stages come from the run that last ran
+# them; downstream ones never do, so a run still in progress never borrows an old run's later stages.
+UPSTREAM = {
+    "CallVariants": ("QualityControl", "Align"),
+    "DeepVariant": ("QualityControl", "Align"),
+    "PangenomeDeepVariant": ("QualityControl", "Align"),
+}
 # name -> (command, regex on its combined output). Run once per process, outside the pipeline's
 # subprocess helpers, so a missing or odd tool can't affect a stage.
 TOOL_VERSION_COMMANDS = {
@@ -128,11 +140,19 @@ def note_reference(name: str, local_path: str) -> None:
 @lru_cache(maxsize=None)
 def tool_version(name: str):
     """The version a tool reports, or None if it isn't installed or its output isn't recognised."""
+    if name not in TOOL_VERSION_COMMANDS:
+        return None
     command, pattern = TOOL_VERSION_COMMANDS[name]
+    # Popen, not subprocess.run: tests replace subprocess.run for the stages' own tool calls.
     try:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except OSError:
+        return None
+    try:
         out, _ = proc.communicate(timeout=20)
-    except (OSError, subprocess.SubprocessError):
+    except subprocess.TimeoutExpired:
+        proc.kill()  # a hung --version must not keep running for the rest of the stage
+        proc.communicate()
         return None
     match = re.search(pattern, out.decode("utf-8", errors="replace"))
     return match.group(1) if match else None
@@ -175,15 +195,20 @@ def finish(storage, status: str, duration: float, error: str = None) -> None:
         _warn("write the run record", err)
 
 
-def assemble(storage, sample_id: str) -> dict:
-    """Build runs/{id}.provenance.json from the parts of the latest run, write it and return it."""
+def build(storage, sample_id: str) -> dict:
+    """The record from the parts (see the module docstring), or None if there are none. Doesn't write."""
     parts = [p for p in (_read_json(storage, k) for k in storage.list_keys(part_prefix(sample_id))
                          if k.endswith(".json")) if p]
     if not parts:
         return None
     latest = max(parts, key=lambda p: p.get("finished") or "")
     run = [p for p in parts if p.get("run_name") == latest.get("run_name")]
-    stages = {p["task"]: {k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error")}
+    # Upstream stages the latest run didn't include come from whichever run last ran them (one part per task).
+    in_run = {p["task"] for p in run}
+    upstream = {u for task in in_run for u in UPSTREAM.get(task, ())} - in_run
+    run += [p for p in parts if p["task"] in upstream]
+    stages = {p["task"]: {k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error",
+                                                "run_name")}
               for p in run}
     complete = all(stages.get(t, {}).get("status") == "Success" for t in CORE_STAGES)
     failed = any(s["status"] != "Success" for s in stages.values())
@@ -200,7 +225,14 @@ def assemble(storage, sample_id: str) -> dict:
         for field in ("reference", "layout", "aligner"):
             if p.get(field) is not None:
                 record[field] = p[field]
-    _put_json(storage, record_key(sample_id), record)
+    return record
+
+
+def assemble(storage, sample_id: str) -> dict:
+    """build() the record and store it as runs/{id}.provenance.json (the convenience copy)."""
+    record = build(storage, sample_id)
+    if record is not None:
+        _put_json(storage, record_key(sample_id), record)
     return record
 
 
@@ -214,8 +246,8 @@ def _union(lists) -> list:
 
 
 def read_record(storage, sample_id: str):
-    """The sample's run record, or None if no stage has written one."""
-    return _read_json(storage, record_key(sample_id))
+    """The sample's run record, assembled from its parts (or the stored copy if there are none), or None."""
+    return build(storage, sample_id) or _read_json(storage, record_key(sample_id))
 
 
 def summary(record: dict) -> dict:

@@ -403,13 +403,14 @@ def download_raw_reads(keys: dict, wd: str) -> list:
 @timed_stage("QualityControl")
 def qc_task(sample_id):
     """FastQC on each gzipped read file. Reports are named after the input: {id}_fastqc.* or {id}_R1_fastqc.*."""
-    keys = keys_for(sample_id, sample_layout(sample_id))
+    layout = sample_layout(sample_id)
+    keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
         out_dir = os.path.join(wd, "qc")
         os.makedirs(out_dir)
         fastqs = download_raw_reads(keys, wd)
-        provenance.note(layout=sample_layout(sample_id))
+        provenance.note(layout=layout)
         provenance.note_tools("fastqc")
         # FastQC can hang (not exit) if its report thread crashes, so bound it. It now also
         # decompresses the reads itself, so it gets the hour the decompress stage used to have
@@ -573,7 +574,8 @@ def alignment_stats(ref: str, cram: str, wd: str, threads: int, keys: dict) -> l
 def align_task(sample_id, reference_name):
     """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked CRAM + .crai."""
     aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
-    keys = keys_for(sample_id, sample_layout(sample_id))
+    layout = sample_layout(sample_id)
+    keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
         fastqs = download_raw_reads(keys, wd)
@@ -583,7 +585,7 @@ def align_task(sample_id, reference_name):
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         aligner = prepare_aligner(reference_name, ref, aligner)
         print(f"Aligning with {aligner}", flush=True)
-        provenance.note(aligner=aligner, layout=PAIRED if len(fastqs) == 2 else SINGLE)
+        provenance.note(aligner=aligner, layout=layout)
         provenance.note_tools(aligner, "samtools", "mosdepth")
         run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
         run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")

@@ -232,3 +232,33 @@ def test_run_records_show_in_the_report(tmp_path, capsys, monkeypatch):
     reconcile.main(["--local-dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert " S1 " in out and "Q A V .. .. R" in out and "Q A V .. .. r" in out
+
+
+def test_a_failed_latest_run_is_a_problem_even_with_all_outputs(tmp_path, capsys, monkeypatch):
+    import provenance
+
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    store = make_bucket(tmp_path, full_sample("S1"))
+    # QC, align and variants succeeded (complete), but DeepVariant in the same run failed.
+    for task, status in (("QualityControl", "Success"), ("Align", "Success"), ("CallVariants", "Success"),
+                         ("DeepVariant", "Failure")):
+        provenance._put_json(store, f"runs/S1.provenance/{task}.json", {
+            "task": task, "status": status, "run_name": "S1-run", "finished": "2026-11-02T10:00:00Z",
+            "inputs": [], "outputs": [], "tools": {}, "stats": {}})
+
+    assert reconcile.main(["--local-dir", str(tmp_path), "--fail-on-problems"]) == 1
+    out = capsys.readouterr().out
+    assert "!S1 " in out and "Q A V .. .. r" in out  # complete but failed: 'r', not 'R'
+
+
+def test_an_unreadable_run_record_is_skipped(tmp_path, monkeypatch, capsys):
+    import provenance
+
+    store = make_bucket(tmp_path, full_sample("S1") + ["runs/S1.provenance.json"])
+
+    def denied(storage, sample_id):
+        raise PermissionError("AccessDenied")
+
+    monkeypatch.setattr(provenance, "read_record", denied)
+    assert reconcile.run_records(store, set(store.list_keys(""))) == {}
+    assert "could not read the run record of S1" in capsys.readouterr().err

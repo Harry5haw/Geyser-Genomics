@@ -156,3 +156,54 @@ def test_summary_is_the_short_form():
               "stages": {"Align": {"status": "Failure", "duration_seconds": 3}}}
     assert provenance.summary(record) == {"status": "failed", "complete": False, "run_name": "r",
                                           "app_version": "v", "stages": {"Align": "Failure"}}
+
+
+def test_a_variants_only_run_inherits_its_upstream_stages(store):
+    # run_local --skip-to-variants: a new run name with only CallVariants, on an earlier run's alignment.
+    write_part(store, "QualityControl", run_name="first", finished="2026-11-02T10:00:00Z")
+    write_part(store, "Align", run_name="first", finished="2026-11-02T10:01:00Z")
+    write_part(store, "CallVariants", run_name="second", finished="2026-11-02T11:00:00Z")
+    record = provenance.build(store, "S1")
+    assert record["run_name"] == "second" and record["status"] == "succeeded" and record["complete"]
+    assert record["stages"]["Align"]["run_name"] == "first" and record["stages"]["CallVariants"]["run_name"] == "second"
+
+
+def test_readers_assemble_from_the_parts_not_the_stored_copy(store):
+    # Two stages finishing at once can leave the stored copy one part behind; the parts can't race.
+    write_part(store, "QualityControl")
+    provenance._put_json(store, "runs/S1.provenance.json", {"status": "stale copy"})
+    assert provenance.read_record(store, "S1")["stages"] == {
+        "QualityControl": {"status": "Success", "started": "2026-11-02T10:00:00Z", "finished": "2026-11-02T10:00:00Z",
+                           "duration_seconds": 1.0, "error": None, "run_name": None}}
+
+
+def test_the_stored_copy_is_used_only_without_parts(store):
+    provenance._put_json(store, "runs/S1.provenance.json", {"status": "succeeded"})
+    assert provenance.read_record(store, "S1") == {"status": "succeeded"}
+    assert provenance.read_record(store, "NOPE") is None
+
+
+def test_unknown_tool_is_none_not_an_error(store):
+    assert provenance.tool_version("minimap2") is None
+
+
+def test_a_hung_version_command_is_killed(monkeypatch):
+    killed = []
+
+    class Hung:
+        def __init__(self, *args, **kwargs):
+            self.calls = 0
+
+        def communicate(self, timeout=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise provenance.subprocess.TimeoutExpired("samtools", timeout)
+            return b"", None
+
+        def kill(self):
+            killed.append(True)
+
+    monkeypatch.setattr(provenance.subprocess, "Popen", Hung)
+    provenance.tool_version.cache_clear()
+    assert provenance.tool_version("samtools") is None and killed == [True]
+    provenance.tool_version.cache_clear()

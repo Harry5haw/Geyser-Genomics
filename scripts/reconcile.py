@@ -181,14 +181,27 @@ def open_runs(sfn_client, state_machine_arn: str) -> Counter:
 
 
 def run_records(storage, keys) -> dict:
-    """Summaries of the stages' run records (runs/<id>.provenance.json), by sample. Unreadable ones are skipped."""
-    out = {}
+    """Summaries of the stages' run records, by sample. Unreadable ones are skipped.
+
+    A sample has a record if it has parts (runs/<id>.provenance/<Task>.json) or the stored copy
+    (runs/<id>.provenance.json): the copy can be missing when the stage that would have written it failed.
+    """
+    sample_ids = set()
     for key in keys:
-        if key.startswith(provenance.RUN_PREFIX) and key.endswith(".provenance.json"):
-            sample_id = key[len(provenance.RUN_PREFIX):-len(".provenance.json")]
+        rest = key[len(provenance.RUN_PREFIX):] if key.startswith(provenance.RUN_PREFIX) else ""
+        if rest.endswith(".provenance.json"):
+            sample_ids.add(rest[:-len(".provenance.json")])
+        elif ".provenance/" in rest:
+            sample_ids.add(rest.split(".provenance/", 1)[0])
+    out = {}
+    for sample_id in sorted(sample_ids):
+        try:
             record = provenance.read_record(storage, sample_id)
-            if record:
-                out[sample_id] = provenance.summary(record)
+        except Exception as err:  # noqa: BLE001 - e.g. S3 AccessDenied or throttling on one record
+            print(f"WARNING: could not read the run record of {sample_id}: {err}", file=sys.stderr)
+            continue
+        if record:
+            out[sample_id] = provenance.summary(record)
     return out
 
 
@@ -247,9 +260,11 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
             problem = "concurrent runs"
         record = records.get(sample_id)
         if record and record["status"] == "failed":
+            # The latest run failed, even if an earlier run's outputs are all there.
             failed_stages = [t for t, st in record["stages"].items() if st != "Success"]
             note = "; ".join(n for n in (note, f"run record: {', '.join(failed_stages)} failed"
                                          + (f" in {record['run_name']}" if record["run_name"] else "")) if n)
+            problem = problem or "run failed"
         rows.append({"sample_id": sample_id, "status": status, "layout": layout, "raw": has_raw,
                      "outputs": outputs, "extra_outputs": extra, "open_runs": open_count, "note": note,
                      "problem": problem, "run_record": record})
@@ -267,7 +282,7 @@ def print_report(result: dict) -> None:
         marks = " ".join(label if r["outputs"][name] else "." for name, label in STAGE_OUTPUTS)
         marks += "".join(f" {label if r['extra_outputs'].get(label) else '.' * len(label)}" for label in extra_labels)
         record = r.get("run_record")
-        marks += " " + ("." if not record else "R" if record["complete"] else "r")
+        marks += " " + ("." if not record else "R" if record["status"] == "succeeded" else "r")
         flag = "!" if r["problem"] else " "
         note = "; ".join(n for n in ("paired-end" if r["layout"] == PAIRED else "", r["note"]) if n)
         print(f"{flag}{r['sample_id']:<23} {r['status']:<12} {marks:<{width}} {note}")
