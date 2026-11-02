@@ -1,7 +1,10 @@
 import gzip
 import json
 
+import pytest
+
 import make_test_data
+import make_test_data as mtd
 
 
 def read_fasta(path):
@@ -172,3 +175,78 @@ def test_a_run_without_gff_removes_gene_models_left_by_an_earlier_one(tmp_path):
     assert (tmp_path / "reference" / "synthetic_ref.fa.gff3.gz").exists()
     make_test_data.main(["--root", str(tmp_path), "--seed", "2"])
     assert not (tmp_path / "reference" / "synthetic_ref.fa.gff3.gz").exists()
+
+
+# ---- --pangenome: a small graph of the synthetic reference ----
+
+
+def _graph(seed=42):
+    import random
+
+    rng = random.Random(seed)
+    reference = mtd.make_reference(rng, 20_000)
+    _, snps = mtd.plant_snps(rng, reference, 4, 150)
+    decoys = mtd.decoy_snps(random.Random(seed + 2), reference, snps, 3)
+    return reference, snps, decoys, mtd.pangenome_gfa("synth1", reference, snps, decoys)
+
+
+def test_reference_walk_spells_the_reference():
+    reference, _, _, gfa = _graph()
+    assert mtd.walk_sequence(gfa, mtd.GRAPH_REFERENCE, 0) == reference
+    walks = [line for line in gfa.splitlines() if line.startswith("W\t")]
+    assert walks[0].split("\t")[1:6] == [mtd.GRAPH_REFERENCE, "0", "synth1", "0", str(len(reference))]
+    assert len(walks) == 1 + len(mtd.PANEL_HAPLOTYPES)
+
+
+def test_panel_haplotypes_carry_the_planted_snps_mostly_and_decoys_half():
+    reference, snps, decoys, gfa = _graph()
+    for hap, (sample, number) in enumerate(mtd.PANEL_HAPLOTYPES):
+        seq = mtd.walk_sequence(gfa, sample, number)
+        assert len(seq) == len(reference)
+        for i, snp in enumerate(snps):
+            base = seq[snp["pos"] - 1]
+            assert base == (snp["alt"] if mtd.panel_carries(i, hap, decoy=False) else snp["ref"])
+        for d in decoys:
+            assert seq[d["pos"] - 1] == (d["alt"] if hap < len(mtd.PANEL_HAPLOTYPES) // 2 else d["ref"])
+    # every planted SNP is on all but one panel haplotype; no haplotype differs from the reference elsewhere
+    for i in range(len(snps)):
+        assert sum(mtd.panel_carries(i, h, decoy=False) for h in range(len(mtd.PANEL_HAPLOTYPES))) == 5
+
+
+def test_decoys_keep_clear_of_planted_snps():
+    _, snps, decoys, _ = _graph()
+    assert len(decoys) == 3
+    for d in decoys:
+        assert all(abs(d["pos"] - s["pos"]) >= 1000 for s in snps)
+        assert d["alt"] != d["ref"]
+
+
+def test_gfa_rejects_a_variant_that_does_not_match_the_reference():
+    reference, snps, _, _ = _graph()
+    wrong = [{**snps[0], "ref": next(b for b in "ACGT" if b != snps[0]["ref"])}]
+    with pytest.raises(ValueError, match="reference base"):
+        mtd.pangenome_gfa("synth1", reference, wrong, [])
+
+
+def test_gbz_command_keeps_the_reference_sample(tmp_path):
+    cmd = mtd.gbz_command(str(tmp_path), "pangenome/x.gfa", "pangenome/x.gbz")
+    assert mtd.VG_IMAGE in cmd
+    script = cmd[-1]
+    assert "vg gbwt -G /data/pangenome/x.gfa --gbz-format" in script and "--set-reference GRCh38" in script
+    assert script.endswith("mv /data/pangenome/x.gbz.part /data/pangenome/x.gbz")
+
+
+def test_vg_image_matches_the_hprc_graph_builder():
+    import fetch_dv_testdata
+
+    assert mtd.VG_IMAGE == fetch_dv_testdata.VG_IMAGE
+
+
+def test_pangenome_flag_writes_gfa_and_runs_vg(tmp_path, monkeypatch):
+    ran = []
+    monkeypatch.setattr(mtd.subprocess, "run", lambda cmd, check: ran.append(cmd))
+    mtd.main(["--root", str(tmp_path), "--pangenome", "--leading-gap", "100"])
+    gfa = (tmp_path / "pangenome" / "synthetic_ref.gfa").read_text()
+    fasta = "".join((tmp_path / "reference" / "synthetic_ref.fa").read_text().splitlines()[1:])
+    assert mtd.walk_sequence(gfa, mtd.GRAPH_REFERENCE, 0) == fasta  # leading gap included
+    assert ran and ran[0][-1].endswith("/data/pangenome/synthetic_ref.gbz")

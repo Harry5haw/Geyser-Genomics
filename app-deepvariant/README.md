@@ -126,6 +126,7 @@ is, and so are the pipeline's own BAMs: the `align` stage marks duplicates with 
   - `GEYSER_GPU_E2E=1` uses the GPU image;
   - `GEYSER_DV_E2E=1` uses the CPU image;
   - `GEYSER_DV_TESTDATA=<root>` also runs the real-data slice.
+- `tests/test_e2e_pangenome.py` is opt-in (`GEYSER_PG_E2E=1`): the real pangenome-aware image on synthetic data. `make_test_data.py --pangenome` builds a small graph of the synthetic reference (vg in Docker): the reference as the `GRCh38` path, plus six panel haplotypes. Most of them carry each planted SNP, and half of them carry five decoy SNPs the sample does not have. The test requires exactly the 10 planted SNPs, so a decoy called from the graph alone fails it. It takes about a minute on an RTX 3080. The image is 38 GB, so it is not run in CI.
 - In CI, the CPU-image E2E runs only on pull requests and when started manually. GitHub runners have no GPU. The CPU image runs the same commands and wiring, so CI still catches integration breakage. The GPU path is tested locally before merging.
 
 ## Cloud: what the infrastructure work will need (not done here)
