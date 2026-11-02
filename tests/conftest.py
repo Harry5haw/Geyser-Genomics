@@ -35,6 +35,8 @@ def local_env(tmp_path, monkeypatch):
         "METRICS_BACKEND",
         "METRICS_FILE",
         "ALIGNER",
+        "RUN_NAME",
+        "APP_VERSION",
     ):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("STORAGE_BACKEND", "local")

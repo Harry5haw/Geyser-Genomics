@@ -36,7 +36,8 @@ RUN curl -fsSL "https://github.com/bwa-mem2/bwa-mem2/releases/download/v${BWA_ME
     tar -xjf /tmp/bwa-mem2.tar.bz2 -C /opt/bwa-mem2 --strip-components=1 --no-same-owner && \
     rm /tmp/bwa-mem2.tar.bz2 && \
     /opt/bwa-mem2/bwa-mem2 version
-ENV PATH="/opt/bwa-mem2:${PATH}"
+# The run record (app/provenance.py) shows the pinned release next to the version the binary reports.
+ENV PATH="/opt/bwa-mem2:${PATH}" GEYSER_BWA_MEM2_RELEASE=${BWA_MEM2_VERSION}
 
 # mosdepth: coverage statistics after align (stats/{id}/mosdepth.*.txt). Not packaged in Debian 13;
 # the upstream release is a single static binary, checksum-pinned like bwa-mem2.
@@ -47,6 +48,7 @@ RUN curl -fsSL "https://github.com/brentp/mosdepth/releases/download/v${MOSDEPTH
     echo "${MOSDEPTH_SHA256}  /usr/local/bin/mosdepth" | sha256sum -c - && \
     chmod +x /usr/local/bin/mosdepth && \
     mosdepth --version
+ENV GEYSER_MOSDEPTH_RELEASE=${MOSDEPTH_VERSION}
 
 WORKDIR /app
 
