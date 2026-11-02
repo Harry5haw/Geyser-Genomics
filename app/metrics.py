@@ -73,7 +73,12 @@ class CloudWatchMetrics:
 def metrics_from_env(env=None):
     env = os.environ if env is None else env
     storage_backend = env.get("STORAGE_BACKEND", "s3").lower()
-    default = "cloudwatch" if storage_backend == "s3" else "local"
+    if storage_backend != "s3":
+        default = "local"
+    elif env.get("S3_ENDPOINT_URL"):
+        default = "none"  # an S3-compatible service elsewhere has no CloudWatch; set METRICS_BACKEND to override
+    else:
+        default = "cloudwatch"
     backend = env.get("METRICS_BACKEND", default).lower()
     if backend == "none":
         return NullMetrics()

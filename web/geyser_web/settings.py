@@ -91,6 +91,8 @@ GEYSER_STORAGE_BACKEND = os.environ.get("STORAGE_BACKEND", "local").lower()
 GEYSER_LOCAL_STORAGE_DIR = Path(os.environ.get("LOCAL_STORAGE_DIR", REPO_ROOT / "local_bucket")).resolve()
 GEYSER_BUCKET_NAME = os.environ.get("BUCKET_NAME", "")
 GEYSER_AWS_REGION = os.environ.get("AWS_REGION", "eu-west-2")
+GEYSER_S3_ENDPOINT_URL = os.environ.get("S3_ENDPOINT_URL", "")
+GEYSER_S3_ADDRESSING_STYLE = os.environ.get("S3_ADDRESSING_STYLE", "")
 
 GEYSER_MAX_UPLOAD_MB = int(os.environ.get("GEYSER_MAX_UPLOAD_MB", "200"))
 GEYSER_VARIANT_ROWS = int(os.environ.get("GEYSER_VARIANT_ROWS", "500"))

@@ -48,12 +48,14 @@ parse_raw_key = _trigger.parse_raw_key
 
 
 @lru_cache(maxsize=4)
-def _build_storage(backend, local_dir, bucket, region):
+def _build_storage(backend, local_dir, bucket, region, endpoint_url="", addressing_style=""):
     return storage_from_env({
         "STORAGE_BACKEND": backend,
         "LOCAL_STORAGE_DIR": local_dir,
         "BUCKET_NAME": bucket or "",
         "AWS_REGION": region,
+        "S3_ENDPOINT_URL": endpoint_url or "",
+        "S3_ADDRESSING_STYLE": addressing_style or "",
     })
 
 
@@ -65,6 +67,8 @@ def get_storage():
         str(settings.GEYSER_LOCAL_STORAGE_DIR),
         settings.GEYSER_BUCKET_NAME,
         settings.GEYSER_AWS_REGION,
+        settings.GEYSER_S3_ENDPOINT_URL,
+        settings.GEYSER_S3_ADDRESSING_STYLE,
     )
 
 

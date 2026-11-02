@@ -277,3 +277,74 @@ def test_s3_describe_is_an_s3_url():
     from storage import S3Storage
 
     assert S3Storage("bucket", "eu-west-2").describe("variants/S1.vcf.gz") == "s3://bucket/variants/S1.vcf.gz"
+
+
+# --- S3-compatible endpoints (#80): OVHcloud Object Storage, MinIO, LocalStack ----------------------
+
+OVH_ENDPOINT = "https://s3.gra.io.cloud.ovh.net"
+
+
+class _Sent(Exception):
+    """Raised from botocore's before-send hook, so a test sees the real request and nothing goes out."""
+
+
+def _request_url(s3, monkeypatch, call):
+    """The URL botocore would send ``call(s3)`` to, with dummy credentials and no network."""
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+    seen = {}
+
+    def capture(request, **kwargs):
+        seen["url"] = request.url
+        raise _Sent()
+
+    s3._client.meta.events.register("before-send.s3", capture)
+    with pytest.raises(_Sent):
+        call(s3)
+    return seen["url"]
+
+
+def test_s3_defaults_to_aws_when_no_endpoint_is_set():
+    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket"})
+    assert s._client.meta.endpoint_url == "https://s3.eu-west-2.amazonaws.com"
+    assert s._client.meta.region_name == "eu-west-2"
+
+
+def test_s3_empty_endpoint_and_style_mean_unset():
+    # The web UI passes every variable, empty when not configured.
+    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket",
+                          "S3_ENDPOINT_URL": "", "S3_ADDRESSING_STYLE": ""})
+    assert s._client.meta.endpoint_url == "https://s3.eu-west-2.amazonaws.com"
+
+
+def test_s3_endpoint_url_and_region_reach_the_client():
+    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
+                          "S3_ENDPOINT_URL": OVH_ENDPOINT})
+    assert s._client.meta.endpoint_url == OVH_ENDPOINT
+    assert s._client.meta.region_name == "gra"
+    assert s.describe("variants/S1.vcf.gz") == "s3://bucket/variants/S1.vcf.gz"
+
+
+def test_s3_requests_go_to_the_custom_endpoint_path_style(monkeypatch):
+    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
+                          "S3_ENDPOINT_URL": OVH_ENDPOINT, "S3_ADDRESSING_STYLE": "PATH"})
+    url = _request_url(s, monkeypatch, lambda st: st.exists("raw_reads/S1.fastq.gz"))
+    assert url == f"{OVH_ENDPOINT}/bucket/raw_reads/S1.fastq.gz"
+
+
+def test_s3_requests_go_to_the_custom_endpoint_virtual_style(monkeypatch):
+    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "AWS_REGION": "gra",
+                          "S3_ENDPOINT_URL": OVH_ENDPOINT, "S3_ADDRESSING_STYLE": "virtual"})
+    url = _request_url(s, monkeypatch, lambda st: st.exists("raw_reads/S1.fastq.gz"))
+    assert url == "https://bucket.s3.gra.io.cloud.ovh.net/raw_reads/S1.fastq.gz"
+
+
+def test_s3_without_endpoint_still_sends_to_aws(monkeypatch):
+    s = storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket"})
+    url = _request_url(s, monkeypatch, lambda st: st.exists("raw_reads/S1.fastq.gz"))
+    assert url == "https://bucket.s3.eu-west-2.amazonaws.com/raw_reads/S1.fastq.gz"
+
+
+def test_s3_rejects_an_unknown_addressing_style():
+    with pytest.raises(ValueError, match="addressing style"):
+        storage_from_env({"STORAGE_BACKEND": "s3", "BUCKET_NAME": "bucket", "S3_ADDRESSING_STYLE": "dns"})

@@ -4,7 +4,8 @@ Stages only ever talk to each other through object keys such as
 ``raw_reads/<id>.fastq.gz`` or ``variants/<id>.vcf.gz``. This module hides where
 those keys live:
 
-* ``S3Storage``    - keys are objects in an S3 bucket (the cloud deployment).
+* ``S3Storage``    - keys are objects in an S3 bucket (the cloud deployment), on AWS or on any
+                     S3-compatible service via ``S3_ENDPOINT_URL``.
 * ``LocalStorage`` - keys are files under a local directory (offline development).
 
 Select one with ``STORAGE_BACKEND=s3|local``. See ``storage_from_env``.
@@ -137,14 +138,31 @@ def _stream_transfer_config():
     return _stream_config
 
 
-class S3Storage:
-    """Keys are objects in one S3 bucket. boto3 is imported lazily so local runs never need it."""
+ADDRESSING_STYLES = ("auto", "path", "virtual")
 
-    def __init__(self, bucket: str, region: str):
+
+class S3Storage:
+    """Keys are objects in one S3 bucket. boto3 is imported lazily so local runs never need it.
+
+    ``endpoint_url`` points the client at an S3-compatible service instead of AWS (OVHcloud Object
+    Storage, MinIO, LocalStack); ``addressing_style`` is botocore's ``path`` / ``virtual`` / ``auto``,
+    for services that only accept one. Both default to boto3's AWS behaviour.
+    """
+
+    def __init__(self, bucket: str, region: str, endpoint_url: str = None, addressing_style: str = None):
         import boto3
 
+        if addressing_style and addressing_style not in ADDRESSING_STYLES:
+            raise ValueError(f"Unknown S3 addressing style {addressing_style!r} (expected one of {ADDRESSING_STYLES})")
         self.bucket = bucket
-        self._client = boto3.client("s3", region_name=region)
+        kwargs = {"region_name": region}
+        if endpoint_url:
+            kwargs["endpoint_url"] = endpoint_url
+        if addressing_style:
+            from botocore.config import Config
+
+            kwargs["config"] = Config(s3={"addressing_style": addressing_style})
+        self._client = boto3.client("s3", **kwargs)
 
     def describe(self, key: str) -> str:
         return f"s3://{self.bucket}/{key}"
@@ -204,10 +222,15 @@ class S3Storage:
 def storage_from_env(env=None):
     """Build the storage backend described by environment variables.
 
-    STORAGE_BACKEND   s3 (default) or local
-    BUCKET_NAME       required for s3
-    AWS_REGION        s3 region, default eu-west-2
-    LOCAL_STORAGE_DIR root directory for local, default ./local_bucket
+    STORAGE_BACKEND     s3 (default) or local
+    BUCKET_NAME         required for s3
+    AWS_REGION          s3 region, default eu-west-2 (an S3-compatible service's own region name, e.g. gra)
+    S3_ENDPOINT_URL     s3 only, optional: an S3-compatible endpoint instead of AWS
+    S3_ADDRESSING_STYLE s3 only, optional: path, virtual or auto (botocore's default)
+    LOCAL_STORAGE_DIR   root directory for local, default ./local_bucket
+
+    Credentials come from boto3's usual chain (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY, profile, role),
+    which is also how an S3-compatible service's access keys are supplied.
     """
     env = os.environ if env is None else env
     backend = env.get("STORAGE_BACKEND", "s3").lower()
@@ -217,5 +240,10 @@ def storage_from_env(env=None):
         bucket = env.get("BUCKET_NAME")
         if not bucket:
             raise RuntimeError("BUCKET_NAME must be set when STORAGE_BACKEND=s3")
-        return S3Storage(bucket, env.get("AWS_REGION", "eu-west-2"))
+        return S3Storage(
+            bucket,
+            env.get("AWS_REGION", "eu-west-2"),
+            endpoint_url=env.get("S3_ENDPOINT_URL") or None,
+            addressing_style=(env.get("S3_ADDRESSING_STYLE") or "").lower() or None,
+        )
     raise RuntimeError(f"Unknown STORAGE_BACKEND {backend!r} (expected 's3' or 'local')")
