@@ -28,7 +28,9 @@ if not SECRET_KEY:
         raise ImproperlyConfigured("Set DJANGO_SECRET_KEY (or DJANGO_DEBUG=1 for local development).")
     SECRET_KEY = "insecure-dev-only-key"  # noqa: S105 - only reachable with DEBUG on
 
-ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+ALLOWED_HOSTS = [
+    h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()
+]
 
 INSTALLED_APPS = [
     "django.contrib.messages",
@@ -48,16 +50,20 @@ MIDDLEWARE = [
 ROOT_URLCONF = "geyser_web.urls"
 WSGI_APPLICATION = "geyser_web.wsgi.application"
 
-TEMPLATES = [{
-    "BACKEND": "django.template.backends.django.DjangoTemplates",
-    "DIRS": [],
-    "APP_DIRS": True,
-    "OPTIONS": {"context_processors": [
-        "django.template.context_processors.request",
-        "django.contrib.messages.context_processors.messages",
-        "samples.context_processors.geyser",
-    ]},
-}]
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [],
+        "APP_DIRS": True,
+        "OPTIONS": {
+            "context_processors": [
+                "django.template.context_processors.request",
+                "django.contrib.messages.context_processors.messages",
+                "samples.context_processors.geyser",
+            ]
+        },
+    }
+]
 
 DATABASES = {}
 MESSAGE_STORAGE = "django.contrib.messages.storage.cookie.CookieStorage"
@@ -93,7 +99,11 @@ GEYSER_BUCKET_NAME = os.environ.get("BUCKET_NAME", "")
 GEYSER_AWS_REGION = os.environ.get("AWS_REGION", "eu-west-2")
 # Same order as storage.S3_ENDPOINT_VARS (boto3 obeys its own two variables either way).
 GEYSER_S3_ENDPOINT_URL = next(
-    (v.strip() for v in map(os.environ.get, ("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL")) if v and v.strip()),
+    (
+        v.strip()
+        for v in map(os.environ.get, ("S3_ENDPOINT_URL", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL"))
+        if v and v.strip()
+    ),
     "",
 )
 GEYSER_S3_ADDRESSING_STYLE = os.environ.get("S3_ADDRESSING_STYLE", "")

@@ -150,8 +150,9 @@ def alignment_input(sample_id: str, exists=None) -> str:
     keys = keys_for(sample_id)
     found = [keys[form] for form in ALIGNMENT_FORMS if exists(keys[form])]
     if not found:
-        raise FileNotFoundError(f"No alignment for {sample_id}: none of "
-                                + ", ".join(storage().describe(keys[f]) for f in ALIGNMENT_FORMS))
+        raise FileNotFoundError(
+            f"No alignment for {sample_id}: none of " + ", ".join(storage().describe(keys[f]) for f in ALIGNMENT_FORMS)
+        )
     if len(found) > 1:
         print(f"Note: {sample_id} has {' and '.join(found)}; reading {found[0]}", flush=True)
     return found[0]
@@ -258,6 +259,7 @@ def timed_stage(task_name):
 
     Neither the metric nor the run record can fail the stage.
     """
+
     def decorator(func):
         @wraps(func)
         def wrapper(sample_id, *args, **kwargs):
@@ -283,7 +285,9 @@ def timed_stage(task_name):
                     provenance.finish(storage(), status, duration, error)
                 except Exception as err:  # noqa: BLE001 - provenance is best effort (finish never raises)
                     print(f"WARNING: could not write the run record: {err}", flush=True)
+
         return wrapper
+
     return decorator
 
 
@@ -324,14 +328,16 @@ def effective_aligner(requested: str, local_ref: str) -> str:
     prefix = first_contig_prefix(local_ref, BWA_MEM2_SAFE_N_PREFIX)
     if len(prefix) == BWA_MEM2_SAFE_N_PREFIX and set(prefix) == {"N"}:
         return requested
-    print(f"WARNING: the first contig of {os.path.basename(local_ref)} does not start with "
-          f"{BWA_MEM2_SAFE_N_PREFIX} Ns; bwa-mem2 misplaces reads there (bwa-mem2#262), "
-          f"so aligning with bwa instead", flush=True)
+    print(
+        f"WARNING: the first contig of {os.path.basename(local_ref)} does not start with "
+        f"{BWA_MEM2_SAFE_N_PREFIX} Ns; bwa-mem2 misplaces reads there (bwa-mem2#262), "
+        f"so aligning with bwa instead",
+        flush=True,
+    )
     return "bwa"
 
 
-def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True,
-                           aligner: str = None) -> str:
+def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: bool = True, aligner: str = None) -> str:
     """Fetch reference/<name> and its .fai (built if missing). Returns the local FASTA path.
 
     need_bwa_index: also prepare the aligner's index via prepare_aligner (so the bwa-mem2#262 guard
@@ -379,8 +385,13 @@ def _ensure_aligner_index(reference_name: str, local_ref: str, aligner: str) -> 
     reference base (~90 GB for a whole genome), so build that once elsewhere and upload it under
     reference/.
     """
-    _fetch_or_build(f"{REFERENCE_PREFIX}{reference_name}", local_ref, ALIGNER_INDEX_EXTS[aligner],
-                    [aligner, "index", local_ref], f"{aligner} index")
+    _fetch_or_build(
+        f"{REFERENCE_PREFIX}{reference_name}",
+        local_ref,
+        ALIGNER_INDEX_EXTS[aligner],
+        [aligner, "index", local_ref],
+        f"{aligner} index",
+    )
 
 
 def _fetch_or_build(fasta_key: str, local_ref: str, exts, build_cmd, what: str) -> None:
@@ -424,10 +435,20 @@ def qc_command(fastqs, html: str, json_path: str, threads: int, sample_id: str) 
     cmd = ["fastp", "-i", fastqs[0]]
     if len(fastqs) == 2:
         cmd += ["-I", fastqs[1]]
-    return cmd + ["--disable_adapter_trimming", "--disable_quality_filtering", "--disable_length_filtering",
-                  "--disable_trim_poly_g",
-                  "--thread", str(max(1, min(threads, QC_MAX_THREADS))),
-                  "--json", json_path, "--html", html, "--report_title", f"{sample_id} (fastp)"]
+    return cmd + [
+        "--disable_adapter_trimming",
+        "--disable_quality_filtering",
+        "--disable_length_filtering",
+        "--disable_trim_poly_g",
+        "--thread",
+        str(max(1, min(threads, QC_MAX_THREADS))),
+        "--json",
+        json_path,
+        "--html",
+        html,
+        "--report_title",
+        f"{sample_id} (fastp)",
+    ]
 
 
 @timed_stage("QualityControl")
@@ -444,16 +465,16 @@ def qc_task(sample_id):
         # Bounded in case fastp ever hangs; keep in step with the stage's Step Functions timeout.
         # fastp fails on a truncated upload ("igzip: unexpected eof", exit 255) and writes no report.
         timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "3600"))
-        subprocess.run(qc_command(fastqs, html, json_path, os.cpu_count() or 1, sample_id),
-                       check=True, timeout=timeout)
+        subprocess.run(qc_command(fastqs, html, json_path, os.cpu_count() or 1, sample_id), check=True, timeout=timeout)
         upload_output(html, keys["qc_html"])
         upload_output(json_path, keys["qc_json"])
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
 
-def align_command(ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample_id: str,
-                  aligner: str = DEFAULT_ALIGNER) -> str:
+def align_command(
+    ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample_id: str, aligner: str = DEFAULT_ALIGNER
+) -> str:
     """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates -> out.
 
     out ending in .cram makes markdup write CRAM against ref (what the align stage stores);
@@ -494,8 +515,10 @@ def align_command(ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))
     tmp = os.path.join(tmp_dir, "tmp")
     read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
-    stages = [f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
-              + " ".join(shlex.quote(f) for f in fastqs)]
+    stages = [
+        f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+        + " ".join(shlex.quote(f) for f in fastqs)
+    ]
     if len(fastqs) == 2:
         stages.append("samtools fixmate -m -u - -")
     stages.append(f"samtools sort -u -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} -")
@@ -512,8 +535,11 @@ def parse_flagstat(text: str) -> dict:
     """
     out = {}
     for line in text.splitlines():
-        m = re.match(r"^(\d+) \+ \d+ (in total|mapped|primary mapped|duplicates|paired in sequencing|properly paired)"
-                     r"(?: \(([\d.]+)%| \(N/A)?", line)
+        m = re.match(
+            r"^(\d+) \+ \d+ (in total|mapped|primary mapped|duplicates|paired in sequencing|properly paired)"
+            r"(?: \(([\d.]+)%| \(N/A)?",
+            line,
+        )
         if m:
             key = m.group(2).replace(" ", "_")
             out[key] = int(m.group(1))
@@ -526,8 +552,11 @@ def parse_mosdepth_summary(text: str) -> dict:
     """mosdepth's <prefix>.mosdepth.summary.txt -> length, bases and mean_depth of its 'total' row."""
     rows = [line.split("\t") for line in text.splitlines() if line.strip()]
     header, total = rows[0], next(r for r in rows[1:] if r[0] == "total")
-    return {"length": int(total[header.index("length")]), "bases": int(total[header.index("bases")]),
-            "mean_depth": float(total[header.index("mean")])}
+    return {
+        "length": int(total[header.index("length")]),
+        "bases": int(total[header.index("bases")]),
+        "mean_depth": float(total[header.index("mean")]),
+    }
 
 
 def parse_bcftools_stats(text: str) -> dict:
@@ -541,8 +570,11 @@ def parse_bcftools_stats(text: str) -> dict:
         cols = line.split("\t")
         if cols[0] == "SN" and len(cols) >= 4:
             label = cols[2].rstrip(":")
-            for name, key in (("number of records", "records"), ("number of SNPs", "snps"),
-                              ("number of indels", "indels")):
+            for name, key in (
+                ("number of records", "records"),
+                ("number of SNPs", "snps"),
+                ("number of indels", "indels"),
+            ):
                 if label == name:
                     out[key] = int(cols[3])
         elif cols[0] == "TSTV" and len(cols) >= 5:
@@ -583,14 +615,18 @@ def alignment_stats(ref: str, cram: str, wd: str, threads: int, keys: dict) -> l
     prefix = os.path.join(wd, "stats")
     summary, dist = f"{prefix}.mosdepth.summary.txt", f"{prefix}.mosdepth.global.dist.txt"
     files = []
-    if _run_stats_tool("samtools flagstat",
-                       f"samtools flagstat -@ {threads} --input-fmt-option reference={shlex.quote(ref)} "
-                       f"{shlex.quote(cram)} > {shlex.quote(flagstat)}"):
+    if _run_stats_tool(
+        "samtools flagstat",
+        f"samtools flagstat -@ {threads} --input-fmt-option reference={shlex.quote(ref)} "
+        f"{shlex.quote(cram)} > {shlex.quote(flagstat)}",
+    ):
         files.append((flagstat, keys["flagstat"]))
         _log_summary("flagstat", parse_flagstat, flagstat)
-    if _run_stats_tool("mosdepth",
-                       f"mosdepth -n -t {min(threads, MOSDEPTH_MAX_THREADS)} -f {shlex.quote(ref)} "
-                       f"{shlex.quote(prefix)} {shlex.quote(cram)}"):
+    if _run_stats_tool(
+        "mosdepth",
+        f"mosdepth -n -t {min(threads, MOSDEPTH_MAX_THREADS)} -f {shlex.quote(ref)} "
+        f"{shlex.quote(prefix)} {shlex.quote(cram)}",
+    ):
         files += [(summary, keys["mosdepth_summary"]), (dist, keys["mosdepth_dist"])]
         _log_summary("mosdepth", parse_mosdepth_summary, summary)
     return files
@@ -645,8 +681,9 @@ def variants_task(sample_id, reference_name):
         )
         run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
         stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
-        if _run_stats_tool("bcftools stats",
-                           f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}"):
+        if _run_stats_tool(
+            "bcftools stats", f"bcftools stats -F {shlex.quote(ref)} -s - {shlex.quote(vcf)} > {shlex.quote(stats)}"
+        ):
             _log_summary("bcftools stats", parse_bcftools_stats, stats)
             upload_output(stats, keys["bcftools_stats"])
         upload_output(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done

@@ -1,4 +1,5 @@
 """Settings are checked in a subprocess so each case gets a clean environment and a fresh import."""
+
 import os
 import subprocess
 import sys
@@ -37,7 +38,9 @@ def test_s3_endpoint_follows_the_pipelines_variable_order():
     code = "import geyser_web.settings as s; print(repr(s.GEYSER_S3_ENDPOINT_URL))"
 
     def endpoint(extra):
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("DJANGO_", "GEYSER_", "S3_", "AWS_ENDPOINT_URL"))}
+        env = {
+            k: v for k, v in os.environ.items() if not k.startswith(("DJANGO_", "GEYSER_", "S3_", "AWS_ENDPOINT_URL"))
+        }
         env.update({"DJANGO_SECRET_KEY": "x", **extra})
         result = subprocess.run([sys.executable, "-c", code], cwd=WEB_DIR, env=env, capture_output=True, text=True)
         assert result.returncode == 0, result.stderr
@@ -46,5 +49,7 @@ def test_s3_endpoint_follows_the_pipelines_variable_order():
     assert endpoint({}) == "''"
     assert endpoint({"AWS_ENDPOINT_URL": "http://y"}) == "'http://y'"
     assert endpoint({"AWS_ENDPOINT_URL_S3": " http://x ", "AWS_ENDPOINT_URL": "http://y"}) == "'http://x'"
-    assert endpoint({"S3_ENDPOINT_URL": "https://s3.gra.io.cloud.ovh.net", "AWS_ENDPOINT_URL_S3": "http://x"}) \
+    assert (
+        endpoint({"S3_ENDPOINT_URL": "https://s3.gra.io.cloud.ovh.net", "AWS_ENDPOINT_URL_S3": "http://x"})
         == "'https://s3.gra.io.cloud.ovh.net'"
+    )

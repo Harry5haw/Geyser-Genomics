@@ -1,5 +1,6 @@
-# Everything the tests need: the pipeline's and the web UI's pins, plus the test tools.
+# Everything the tests and the lint job need: the pipeline's and the web UI's pins, plus the tools.
 -r app/requirements.txt
 -r web/requirements.txt
 pytest==9.2.0
 pytest-django==4.14.0
+ruff==0.17.3

@@ -3,6 +3,7 @@
 The tools themselves (bwa-mem2, bwa, samtools, bcftools, fastp) are faked, so these run anywhere.
 The Docker end-to-end test covers the real tools.
 """
+
 import gzip
 import os
 import shlex
@@ -21,6 +22,8 @@ STATS_FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures", "stats")
 def stats_fixture(layout, name):
     with open(os.path.join(STATS_FIXTURES, f"{layout}.{name}"), "rb") as fh:
         return fh.read()
+
+
 # The default aligner's index files (bwa-mem2: .0123, .amb, .ann, .bwt.2bit.64, .pac).
 INDEX_EXTS = tasks.ALIGNER_INDEX_EXTS[tasks.DEFAULT_ALIGNER]
 # A reference whose first contig starts with a gap, like a human chromosome: bwa-mem2 is safe on it.
@@ -106,6 +109,7 @@ def work_dir_is_empty(local_env):
 
 # --- ensure_reference_local ---------------------------------------------------
 
+
 def test_stored_indexes_are_downloaded_not_rebuilt(local_env, tool_calls, tmp_path):
     put(local_env, f"reference/{REF}", GAPPED_REF)
     for ext in [".fai"] + INDEX_EXTS:
@@ -152,7 +156,9 @@ def test_a_partly_stored_index_is_not_downloaded(local_env, tool_calls, tmp_path
         put(local_env, f"reference/{REF}{ext}")
     downloaded = []
     real_download = tasks.storage().download
-    monkeypatch.setattr(tasks.storage(), "download", lambda key, path: downloaded.append(key) or real_download(key, path))
+    monkeypatch.setattr(
+        tasks.storage(), "download", lambda key, path: downloaded.append(key) or real_download(key, path)
+    )
     dest = tmp_path / "dest"
     dest.mkdir()
 
@@ -175,8 +181,6 @@ def test_a_stored_bwa_index_is_not_enough_for_bwa_mem2(local_env, tool_calls, tm
 
     assert [c[:2] for c in tool_calls] == [["bwa-mem2", "index"]]
     assert all((dest / f"{REF}{ext}").exists() for ext in INDEX_EXTS)
-
-
 
 
 def test_aligner_env_selects_which_index_is_fetched(local_env, tool_calls, tmp_path, monkeypatch):
@@ -229,6 +233,7 @@ def test_missing_reference_fasta_is_a_clear_error(local_env, tool_calls, tmp_pat
 
 # --- stages -------------------------------------------------------------------
 
+
 def test_qc_uploads_both_reports_and_cleans_up(local_env, tool_calls):
     put(local_env, "raw_reads/S1.fastq.gz", gzip.compress(b"@r\nA\n+\nI\n"))
 
@@ -274,8 +279,13 @@ def test_align_uploads_cram_and_its_index(local_env, tool_calls, shell_commands,
     # The CRAM marks the stage done, so its index must already be there when it appears.
     assert flagstat.startswith("samtools flagstat ") and mosdepth.startswith("mosdepth ")
     # Stats and index before the CRAM: once a sample shows as aligned, everything about it is there.
-    assert uploads == ["stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt", "stats/S1/mosdepth.global.dist.txt",
-                       "alignments/S1.cram.crai", "alignments/S1.cram"]
+    assert uploads == [
+        "stats/S1/flagstat.txt",
+        "stats/S1/mosdepth.summary.txt",
+        "stats/S1/mosdepth.global.dist.txt",
+        "alignments/S1.cram.crai",
+        "alignments/S1.cram",
+    ]
     assert (local_env / "stats" / "S1" / "flagstat.txt").read_bytes() == stats_fixture("single", "flagstat.txt")
     assert work_dir_is_empty(local_env)
 
@@ -292,7 +302,8 @@ def test_align_with_aligner_bwa_builds_and_runs_bwa(local_env, tool_calls, shell
 
 
 def test_align_falls_back_to_bwa_when_the_first_contig_starts_with_sequence(
-        local_env, tool_calls, shell_commands, capsys):
+    local_env, tool_calls, shell_commands, capsys
+):
     # bwa-mem2#262: reads at the very start of the first contig get misplaced. ACGT... has no gap.
     put(local_env, "raw_reads/S1.fastq.gz")
     put(local_env, f"reference/{REF}", b">c\nACGT\n")
@@ -317,7 +328,8 @@ def test_unknown_aligner_fails_before_any_download(local_env, tool_calls, monkey
 
 @pytest.mark.parametrize("stored", ["S1.cram", "S1.bam"])
 def test_variants_calls_bcftools_on_the_alignment_and_indexes_the_vcf(
-        local_env, tool_calls, shell_commands, uploads, stored):
+    local_env, tool_calls, shell_commands, uploads, stored
+):
     put(local_env, f"alignments/{stored}", b"ALN")
     put(local_env, f"reference/{REF}", b">c\nACGT\n")
 
@@ -351,6 +363,7 @@ def test_failed_tool_fails_the_stage_and_still_cleans_up(local_env, tool_calls, 
 
 
 # --- CLI ----------------------------------------------------------------------
+
 
 def test_main_dispatches_stage_with_reference(local_env, monkeypatch):
     called = []
@@ -390,10 +403,12 @@ def test_keys_follow_the_documented_layout():
 
 # --- bwa-mem2 guard (bwa-mem2#262) ---------------------------------------------
 
+
 def write_ref(tmp_path, text, name="r.fa"):
     path = tmp_path / name
     if name.endswith(".gz"):
         import gzip
+
         with gzip.open(path, "wt") as fh:
             fh.write(text)
     else:
@@ -411,13 +426,16 @@ def test_first_contig_prefix_reads_gzipped_fasta(tmp_path):
     assert tasks.first_contig_prefix(write_ref(tmp_path, ">a\nNNNA\n", "r.fa.gz"), 3) == "NNN"
 
 
-@pytest.mark.parametrize("first_contig, expected", [
-    ("N" * 1000 + "ACGT", "bwa-mem2"),           # human-like leading gap
-    ("n" * 600 + "\n" + "N" * 400, "bwa-mem2"),  # soft-masked, split over lines
-    ("N" * 999 + "A", "bwa"),                    # gap one base too short
-    ("ACGT" + "N" * 2000, "bwa"),                # sequence at position 1
-    ("N" * 500, "bwa"),                          # contig shorter than the window: can't tell, be safe
-])
+@pytest.mark.parametrize(
+    "first_contig, expected",
+    [
+        ("N" * 1000 + "ACGT", "bwa-mem2"),  # human-like leading gap
+        ("n" * 600 + "\n" + "N" * 400, "bwa-mem2"),  # soft-masked, split over lines
+        ("N" * 999 + "A", "bwa"),  # gap one base too short
+        ("ACGT" + "N" * 2000, "bwa"),  # sequence at position 1
+        ("N" * 500, "bwa"),  # contig shorter than the window: can't tell, be safe
+    ],
+)
 def test_effective_aligner(tmp_path, first_contig, expected):
     ref = write_ref(tmp_path, f">c\n{first_contig}\n>d\n{'N' * 2000}\n")
     assert tasks.effective_aligner("bwa-mem2", ref) == expected
@@ -428,6 +446,7 @@ def test_effective_aligner_leaves_bwa_alone(tmp_path):
 
 
 # --- alignment input (CRAM, else BAM) ------------------------------------------
+
 
 def test_alignment_input_prefers_the_cram_and_notes_a_bam_beside_it(capsys):
     present = {"alignments/S1.cram", "alignments/S1.bam"}
@@ -447,8 +466,9 @@ def test_alignment_input_without_either_names_both(local_env):
         tasks.alignment_input("S1")
 
 
-def test_fetch_alignment_indexes_what_it_downloaded_not_the_stored_index(local_env, tool_calls, shell_commands,
-                                                                         tmp_path):
+def test_fetch_alignment_indexes_what_it_downloaded_not_the_stored_index(
+    local_env, tool_calls, shell_commands, tmp_path
+):
     # A stored .crai can belong to the previous CRAM if a re-run failed between its two uploads.
     put(local_env, "alignments/S1.cram", b"CRAM")
     put(local_env, "alignments/S1.cram.crai", b"STALE")
@@ -492,9 +512,8 @@ def test_fetch_alignment_reuses_a_bams_stored_index(local_env, tool_calls, shell
         assert command[:2] == ["samtools", "index"] and command[-1] == path
 
 
-
-
 # --- QC statistics (flagstat, mosdepth, bcftools stats) ------------------------
+
 
 def text_fixture(layout, name):
     return stats_fixture(layout, name).decode()
@@ -513,16 +532,24 @@ def test_parse_flagstat_single_and_paired_end():
 def test_parse_mosdepth_summary_uses_the_total_row():
     # 10,000 x 150 bp over 51,000 bp (1,000 of them the leading N gap), duplicates excluded.
     assert tasks.parse_mosdepth_summary(text_fixture("single", "mosdepth.summary.txt")) == {
-        "length": 51_000, "bases": 1_427_250, "mean_depth": 27.99}
+        "length": 51_000,
+        "bases": 1_427_250,
+        "mean_depth": 27.99,
+    }
 
 
 def test_parse_bcftools_stats():
     assert tasks.parse_bcftools_stats(text_fixture("single", "bcftools.stats.txt")) == {
-        "records": 10, "snps": 10, "indels": 0, "tstv": 1.5}
+        "records": 10,
+        "snps": 10,
+        "indels": 0,
+        "tstv": 1.5,
+    }
 
 
-def test_failed_stats_tools_warn_but_the_alignment_is_still_uploaded(local_env, tool_calls, monkeypatch,
-                                                                   capsys, uploads):
+def test_failed_stats_tools_warn_but_the_alignment_is_still_uploaded(
+    local_env, tool_calls, monkeypatch, capsys, uploads
+):
     put(local_env, "raw_reads/S1.fastq.gz")
     put(local_env, f"reference/{REF}", GAPPED_REF)
 
@@ -569,8 +596,11 @@ def test_alignment_stats_commands(shell_commands, tmp_path):
     assert "--fast-mode" not in mosdepth  # it would count overlapping mates twice (paired-end depth too high)
     assert mosdepth[mosdepth.index("-t") + 1] == str(tasks.MOSDEPTH_MAX_THREADS)
     assert mosdepth[mosdepth.index("-f") + 1] == "/w/ref.fa" and mosdepth[-1] == "/w/S1.cram"
-    assert [key for _, key in files] == ["stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt",
-                                         "stats/S1/mosdepth.global.dist.txt"]
+    assert [key for _, key in files] == [
+        "stats/S1/flagstat.txt",
+        "stats/S1/mosdepth.summary.txt",
+        "stats/S1/mosdepth.global.dist.txt",
+    ]
 
 
 def test_stats_are_per_sample_not_per_mate():
@@ -580,8 +610,10 @@ def test_stats_are_per_sample_not_per_mate():
 
 # --- run record (provenance.py) --------------------------------------------------
 
+
 def read_json(root, key):
     import json
+
     return json.loads((root / key).read_text())
 
 
@@ -600,9 +632,13 @@ def test_align_writes_its_run_record_part(local_env, tool_calls, shell_commands,
     assert part["aligner"] == "bwa-mem2" and part["layout"] == "single" and part["app_version"] == "dev-local"
     assert part["inputs"] == [{"key": "raw_reads/S1.fastq.gz", "bytes": 5}]
     assert part["reference"] == {"name": REF, "md5": hashlib.md5(GAPPED_REF).hexdigest(), "bytes": len(GAPPED_REF)}
-    assert [o["key"] for o in part["outputs"]] == ["stats/S1/flagstat.txt", "stats/S1/mosdepth.summary.txt",
-                                                  "stats/S1/mosdepth.global.dist.txt", "alignments/S1.cram.crai",
-                                                  "alignments/S1.cram"]
+    assert [o["key"] for o in part["outputs"]] == [
+        "stats/S1/flagstat.txt",
+        "stats/S1/mosdepth.summary.txt",
+        "stats/S1/mosdepth.global.dist.txt",
+        "alignments/S1.cram.crai",
+        "alignments/S1.cram",
+    ]
     assert part["stats"]["flagstat"]["mapped_pct"] == 100.0  # the fixture's real flagstat output
     assert part["stats"]["mosdepth"]["mean_depth"] == 27.99
     assert set(part["tools"]) >= {"bwa-mem2", "samtools", "mosdepth"}

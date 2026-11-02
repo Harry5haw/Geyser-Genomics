@@ -22,8 +22,11 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description="Deploy the pipeline runtime dashboard (Step Functions metrics).")
     p.add_argument("--dashboard-name", default=os.environ.get("PIPELINE_DASHBOARD_NAME", "geyser-pipeline-runtime"))
     p.add_argument("--region", default=monitoring.DEFAULT_REGION, help="AWS region (default: eu-west-2)")
-    p.add_argument("--state-machine-arn", default=os.environ.get("SFN_ARN"),
-                   help="Step Functions state machine ARN (default: $SFN_ARN)")
+    p.add_argument(
+        "--state-machine-arn",
+        default=os.environ.get("SFN_ARN"),
+        help="Step Functions state machine ARN (default: $SFN_ARN)",
+    )
     p.add_argument("--lookback", default="-P14D", help="Default time range, e.g. -P3D or -P14D")
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
     return p.parse_args(argv)
@@ -41,6 +44,7 @@ def main(argv=None, client=None) -> int:
         return 0
     if client is None:
         import boto3
+
         client = boto3.client("cloudwatch", region_name=args.region)
     return deploy(client, args.dashboard_name, body)
 

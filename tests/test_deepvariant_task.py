@@ -1,4 +1,5 @@
 """DeepVariant stage logic, with run_deepvariant and samtools faked: no Docker, GPU or AWS needed."""
+
 import gzip
 import json
 
@@ -9,16 +10,25 @@ import deepvariant_task as dv
 # Shape of run_deepvariant's output: a banner, the command, the step's own logs, bash `time` lines.
 SAMPLE_OUTPUT = [
     (100.0, "***** Running the command:*****"),
-    (100.0, "time seq 0 15 | parallel -q --halt 2 --line-buffer /opt/deepvariant/bin/make_examples "
-            "--mode calling --ref /w/ref.fa --reads /w/S1.bam --examples /w/i/make_examples.tfrecord@16.gz"),
+    (
+        100.0,
+        "time seq 0 15 | parallel -q --halt 2 --line-buffer /opt/deepvariant/bin/make_examples "
+        "--mode calling --ref /w/ref.fa --reads /w/S1.bam --examples /w/i/make_examples.tfrecord@16.gz",
+    ),
     (130.0, "real\t0m30.000s"),
     (130.5, "***** Running the command:*****"),
-    (130.5, "time /opt/deepvariant/bin/call_variants --outfile /w/i/call_variants_output.tfrecord.gz "
-            "--examples /w/i/make_examples.tfrecord@16.gz --checkpoint /opt/models/wgs"),
+    (
+        130.5,
+        "time /opt/deepvariant/bin/call_variants --outfile /w/i/call_variants_output.tfrecord.gz "
+        "--examples /w/i/make_examples.tfrecord@16.gz --checkpoint /opt/models/wgs",
+    ),
     (150.5, "real\t0m20.000s"),
     (151.0, "***** Running the command:*****"),
-    (151.0, "time /opt/deepvariant/bin/postprocess_variants --ref /w/ref.fa "
-            "--infile /w/i/call_variants_output.tfrecord.gz --outfile /w/out.vcf.gz"),
+    (
+        151.0,
+        "time /opt/deepvariant/bin/postprocess_variants --ref /w/ref.fa "
+        "--infile /w/i/call_variants_output.tfrecord.gz --outfile /w/out.vcf.gz",
+    ),
 ]
 
 
@@ -42,26 +52,41 @@ def test_parse_step_timings_without_banners_is_empty():
 
 def test_parse_example_counts_sums_shard_summaries():
     # make_examples prints a tab-indented summary per shard (format seen in DeepVariant 1.10.0).
-    events = [(0.0, "I1101 ... Task 0/16: Summary stats:"), (0.0, "\t3 candidate variants found"),
-              (0.0, "\t2 examples written"), (0.0, "\t1 small model examples called"),
-              (0.0, "\t0 examples written"), (0.0, "\t4 small model examples called")]
+    events = [
+        (0.0, "I1101 ... Task 0/16: Summary stats:"),
+        (0.0, "\t3 candidate variants found"),
+        (0.0, "\t2 examples written"),
+        (0.0, "\t1 small model examples called"),
+        (0.0, "\t0 examples written"),
+        (0.0, "\t4 small model examples called"),
+    ]
     assert dv.parse_example_counts(events) == {"examples": 2, "small_model_calls": 5}
 
 
 def test_build_command_has_sample_name_shards_and_extra_args():
-    cmd = dv.build_run_deepvariant_cmd("/w/ref.fa", "/w/S1.bam", "/w/out.vcf.gz", "/w/i", "S1", 8,
-                                       extra_args="--disable_small_model=true")
+    cmd = dv.build_run_deepvariant_cmd(
+        "/w/ref.fa", "/w/S1.bam", "/w/out.vcf.gz", "/w/i", "S1", 8, extra_args="--disable_small_model=true"
+    )
     assert cmd[0] == dv.RUN_DEEPVARIANT
-    for flag in ("--model_type=WGS", "--ref=/w/ref.fa", "--reads=/w/S1.bam", "--output_vcf=/w/out.vcf.gz",
-                 "--intermediate_results_dir=/w/i", "--sample_name=S1", "--num_shards=8",
-                 "--disable_small_model=true"):
+    for flag in (
+        "--model_type=WGS",
+        "--ref=/w/ref.fa",
+        "--reads=/w/S1.bam",
+        "--output_vcf=/w/out.vcf.gz",
+        "--intermediate_results_dir=/w/i",
+        "--sample_name=S1",
+        "--num_shards=8",
+        "--disable_small_model=true",
+    ):
         assert flag in cmd
 
 
 def test_run_streaming_captures_timestamped_lines_and_exit_code():
     import sys
+
     code, events, end = dv.run_streaming(
-        [sys.executable, "-c", "import sys; print('a', flush=True); sys.stdout.buffer.write(b'\\xff\\n'); sys.exit(3)"])
+        [sys.executable, "-c", "import sys; print('a', flush=True); sys.stdout.buffer.write(b'\\xff\\n'); sys.exit(3)"]
+    )
     assert code == 3
     assert [line for _, line in events] == ["a", "�"]  # undecodable byte replaced, not fatal
     assert all(ts <= end for ts, _ in events)
@@ -92,6 +117,7 @@ def fake_run(vcf_bytes=None, code=0):
             with open(out, "wb") as fh:
                 fh.write(vcf_bytes)
         return code, SAMPLE_OUTPUT, 156.0
+
     return run
 
 
@@ -108,8 +134,12 @@ def test_stage_uploads_vcf_and_records_step_metrics(local_env, dv_inputs, monkey
     assert (local_env / "variants_deepvariant" / "S1.vcf.gz").read_bytes() == vcf
     assert len(dv_inputs) == 1 and dv_inputs[0].endswith("S1.bam")
     tasks_recorded = {m["task"]: m for m in metrics_lines(local_env)}
-    assert set(tasks_recorded) == {"DeepVariant.MakeExamples", "DeepVariant.CallVariants",
-                                   "DeepVariant.PostprocessVariants", "DeepVariant"}
+    assert set(tasks_recorded) == {
+        "DeepVariant.MakeExamples",
+        "DeepVariant.CallVariants",
+        "DeepVariant.PostprocessVariants",
+        "DeepVariant",
+    }
     assert tasks_recorded["DeepVariant"]["status"] == "Success"
     assert tasks_recorded["DeepVariant.CallVariants"]["duration_seconds"] == pytest.approx(20.5)
     assert not (local_env / "variants" / "S1.vcf.gz").exists()  # bcftools output untouched
@@ -155,7 +185,7 @@ def test_stage_reads_the_cram_and_indexes_it_itself(local_env, dv_inputs, monkey
 def test_stage_fails_without_bam(local_env, dv_inputs, monkeypatch):
     (local_env / "alignments" / "S1.bam").unlink()
     monkeypatch.setattr(dv, "run_streaming", fake_run(b"x"))
-    with pytest.raises(Exception):
+    with pytest.raises(FileNotFoundError, match="No alignment for S1"):
         dv.deepvariant_task("S1", "ref.fa")
 
 

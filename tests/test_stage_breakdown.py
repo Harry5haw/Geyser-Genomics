@@ -1,8 +1,9 @@
 """Per-stage queue wait, run time and cost (scripts/stage_breakdown.py, query_pipeline_duration --stages).
 Uses fake Step Functions / Batch clients; nothing reaches AWS."""
+
 import csv
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import pytest
@@ -26,8 +27,14 @@ def task_event(kind, payload, resource_type="batch"):
 
 def sfn_job(job_id, status, created, started, stopped, reqs=FARGATE):
     """Job description as Step Functions copies it (PascalCase)."""
-    return {"JobId": job_id, "Status": status, "CreatedAt": created, "StartedAt": started, "StoppedAt": stopped,
-            "Container": {"ResourceRequirements": reqs}}
+    return {
+        "JobId": job_id,
+        "Status": status,
+        "CreatedAt": created,
+        "StartedAt": started,
+        "StoppedAt": stopped,
+        "Container": {"ResourceRequirements": reqs},
+    }
 
 
 def history():
@@ -48,10 +55,11 @@ def history():
 
 
 def paged_sfn(events, page_size=5):
-    pages = [events[i:i + page_size] for i in range(0, len(events), page_size)]
+    pages = [events[i : i + page_size] for i in range(0, len(events), page_size)]
     client = mock.Mock()
     client.get_execution_history.side_effect = [
-        {"events": page, **({"nextToken": str(i + 1)} if i + 1 < len(pages) else {})} for i, page in enumerate(pages)]
+        {"events": page, **({"nextToken": str(i + 1)} if i + 1 < len(pages) else {})} for i, page in enumerate(pages)
+    ]
     return client
 
 
@@ -59,7 +67,9 @@ def test_batch_tasks_follow_history_across_pages():
     sfn = paged_sfn(history())
     tasks = sb.batch_tasks(sfn, "exec-1")
     assert [(t["stage"], t["job_id"], t["job"]["Status"]) for t in tasks] == [
-        ("Decompress_SRA", "j1", "SUCCEEDED"), ("Quality_Control", "j2", "FAILED")]
+        ("Decompress_SRA", "j1", "SUCCEEDED"),
+        ("Quality_Control", "j2", "FAILED"),
+    ]
     tokens = [c.kwargs.get("nextToken") for c in sfn.get_execution_history.call_args_list]
     assert tokens == [None, "1", "2"]
 
@@ -78,8 +88,14 @@ def test_rows_from_history_copies_when_batch_has_forgotten_the_jobs():
 
 
 def test_live_batch_description_preferred():
-    live = {"jobId": "j1", "status": "SUCCEEDED", "createdAt": T0, "startedAt": T0 + 5_000, "stoppedAt": T0 + 65_000,
-            "container": {"resourceRequirements": [{"type": "VCPU", "value": "4"}, {"type": "MEMORY", "value": "8192"}]}}
+    live = {
+        "jobId": "j1",
+        "status": "SUCCEEDED",
+        "createdAt": T0,
+        "startedAt": T0 + 5_000,
+        "stoppedAt": T0 + 65_000,
+        "container": {"resourceRequirements": [{"type": "VCPU", "value": "4"}, {"type": "MEMORY", "value": "8192"}]},
+    }
     batch = mock.Mock()
     batch.describe_jobs.return_value = {"jobs": [live]}
     decompress = sb.execution_stages(paged_sfn(history()), batch, "exec-1")[0]
@@ -93,15 +109,22 @@ def test_batch_error_falls_back_to_history():
 
 
 def test_gpu_jobs_have_no_fargate_cost():
-    job = sfn_job("g1", "SUCCEEDED", T0, T0 + 1000, T0 + 3_601_000,
-                  reqs=FARGATE + [{"Type": "GPU", "Value": "1"}])
+    job = sfn_job("g1", "SUCCEEDED", T0, T0 + 1000, T0 + 3_601_000, reqs=FARGATE + [{"Type": "GPU", "Value": "1"}])
     row = sb.stage_row("DeepVariant", job)
     assert row["gpus"] == 1 and row["cost_usd"] is None and row["run_seconds"] == 3600
 
 
 def test_missing_timestamps_give_none_and_totals_stay_honest():
-    running = sb.stage_row("Align_Genome", {"JobId": "j3", "Status": "RUNNING", "CreatedAt": T0, "StartedAt": T0 + 1000,
-                                            "Container": {"ResourceRequirements": FARGATE}})
+    running = sb.stage_row(
+        "Align_Genome",
+        {
+            "JobId": "j3",
+            "Status": "RUNNING",
+            "CreatedAt": T0,
+            "StartedAt": T0 + 1000,
+            "Container": {"ResourceRequirements": FARGATE},
+        },
+    )
     assert running["wait_seconds"] == 1 and running["run_seconds"] is None and running["cost_usd"] is None
     done = sb.stage_row("Decompress_SRA", sfn_job("j1", "SUCCEEDED", T0, T0 + 2000, T0 + 62_000))
     assert sb.totals([done, running]) == {"wait_seconds": 3, "run_seconds": None, "cost_usd": None}
@@ -120,16 +143,23 @@ def test_describe_jobs_batches_of_100():
 
 
 def test_query_cli_stage_breakdown_and_csv(tmp_path, capsys):
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     sfn = paged_sfn(history(), page_size=100)
     sfn.list_executions.return_value = {"executions": [{"executionArn": "exec-1", "name": "run-1"}]}
-    sfn.describe_execution.return_value = {"startDate": start, "stopDate": start + timedelta(minutes=17),
-                                           "status": "FAILED", "input": json.dumps({"srr_id": "SRR001"})}
+    sfn.describe_execution.return_value = {
+        "startDate": start,
+        "stopDate": start + timedelta(minutes=17),
+        "status": "FAILED",
+        "input": json.dumps({"srr_id": "SRR001"}),
+    }
     batch = mock.Mock()
     batch.describe_jobs.return_value = {"jobs": []}
     out_csv = tmp_path / "stages.csv"
-    query_pipeline_duration.main(["--state-machine-arn", SFN_ARN, "--status", "FAILED", "--stages-csv", str(out_csv)],
-                                 sfn_client=sfn, batch_client=batch)
+    query_pipeline_duration.main(
+        ["--state-machine-arn", SFN_ARN, "--status", "FAILED", "--stages-csv", str(out_csv)],
+        sfn_client=sfn,
+        batch_client=batch,
+    )
     out = capsys.readouterr().out
     assert "Stage breakdown" in out and "Decompress_SRA" in out and "Quality_Control" in out
     assert "Estimated cost per run" in out and "Queue wait per stage" in out
@@ -140,11 +170,15 @@ def test_query_cli_stage_breakdown_and_csv(tmp_path, capsys):
 
 
 def test_query_cli_without_stages_does_not_touch_batch(capsys):
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     sfn = mock.Mock()
     sfn.list_executions.return_value = {"executions": [{"executionArn": "exec-1", "name": "run-1"}]}
-    sfn.describe_execution.return_value = {"startDate": start, "stopDate": start + timedelta(minutes=2),
-                                           "status": "SUCCEEDED", "input": "{}"}
+    sfn.describe_execution.return_value = {
+        "startDate": start,
+        "stopDate": start + timedelta(minutes=2),
+        "status": "SUCCEEDED",
+        "input": "{}",
+    }
     batch = mock.Mock()
     query_pipeline_duration.main(["--state-machine-arn", SFN_ARN], sfn_client=sfn, batch_client=batch)
     batch.describe_jobs.assert_not_called()
@@ -153,21 +187,35 @@ def test_query_cli_without_stages_does_not_touch_batch(capsys):
 
 
 def test_failure_reason_from_last_attempt():
-    job = {"jobId": "j9", "status": "FAILED", "statusReason": "Essential container in task exited",
-           "attempts": [{"container": {"exitCode": 1}},
-                        {"container": {"exitCode": 137, "reason": "OutOfMemoryError: Container killed due to memory usage",
-                                       "logStreamName": "geyser/default/abc"}}],
-           "container": {"logStreamName": "geyser/default/abc", "resourceRequirements": []}}
+    job = {
+        "jobId": "j9",
+        "status": "FAILED",
+        "statusReason": "Essential container in task exited",
+        "attempts": [
+            {"container": {"exitCode": 1}},
+            {
+                "container": {
+                    "exitCode": 137,
+                    "reason": "OutOfMemoryError: Container killed due to memory usage",
+                    "logStreamName": "geyser/default/abc",
+                }
+            },
+        ],
+        "container": {"logStreamName": "geyser/default/abc", "resourceRequirements": []},
+    }
     row = sb.stage_row("Align_Genome", job)
     assert row["attempts"] == 2
-    assert row["reason"] == ("Essential container in task exited; "
-                             "OutOfMemoryError: Container killed due to memory usage (exit 137)")
+    assert row["reason"] == (
+        "Essential container in task exited; OutOfMemoryError: Container killed due to memory usage (exit 137)"
+    )
     assert row["log_stream"] == "geyser/default/abc"
 
 
 def test_failure_reason_without_attempts_and_for_success():
-    assert sb.failure_reason({"Status": "FAILED", "StatusReason": "CannotPullContainerError"}) == \
-        "CannotPullContainerError"
+    assert (
+        sb.failure_reason({"Status": "FAILED", "StatusReason": "CannotPullContainerError"})
+        == "CannotPullContainerError"
+    )
     assert sb.failure_reason({"Status": "FAILED", "Container": {"ExitCode": 2}}) == "exit 2"
     assert sb.failure_reason({"Status": "SUCCEEDED", "StatusReason": "Essential container in task exited"}) is None
     assert sb.stage_row("X", {"Status": "SUCCEEDED"})["attempts"] is None
@@ -176,18 +224,27 @@ def test_failure_reason_without_attempts_and_for_success():
 def test_query_cli_prints_failure_reason(capsys):
     events = history()
     failed = sfn_job("j2", "FAILED", T0 + 700_000, T0 + 1_000_000, T0 + 1_010_000)
-    failed.update({"StatusReason": "Essential container in task exited",
-                   "Attempts": [{"Container": {"ExitCode": 1, "Reason": None}}]})
+    failed.update(
+        {
+            "StatusReason": "Essential container in task exited",
+            "Attempts": [{"Container": {"ExitCode": 1, "Reason": None}}],
+        }
+    )
     events[8] = task_event("TaskFailed", failed)
-    start = datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc)
+    start = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
     sfn = paged_sfn(events, page_size=100)
     sfn.list_executions.return_value = {"executions": [{"executionArn": "exec-1", "name": "run-1"}]}
-    sfn.describe_execution.return_value = {"startDate": start, "stopDate": start + timedelta(minutes=17),
-                                           "status": "FAILED", "input": json.dumps({"srr_id": "SRR001"})}
+    sfn.describe_execution.return_value = {
+        "startDate": start,
+        "stopDate": start + timedelta(minutes=17),
+        "status": "FAILED",
+        "input": json.dumps({"srr_id": "SRR001"}),
+    }
     batch = mock.Mock()
     batch.describe_jobs.return_value = {"jobs": []}
-    query_pipeline_duration.main(["--state-machine-arn", SFN_ARN, "--status", "FAILED", "--stages"],
-                                 sfn_client=sfn, batch_client=batch)
+    query_pipeline_duration.main(
+        ["--state-machine-arn", SFN_ARN, "--status", "FAILED", "--stages"], sfn_client=sfn, batch_client=batch
+    )
     assert "reason: Essential container in task exited (exit 1)" in capsys.readouterr().out
 
 
@@ -219,4 +276,6 @@ def test_parallel_branches_are_credited_by_event_chain_not_order():
     ]
     tasks = sb.batch_tasks(paged_sfn(events), "exec-1")
     assert [(t["stage"], t["job_id"], t["job"]["JobId"]) for t in tasks] == [
-        ("Quality_Control", "qc-job", "qc-job"), ("Align_Genome", "align-job", "align-job")]
+        ("Quality_Control", "qc-job", "qc-job"),
+        ("Align_Genome", "align-job", "align-job"),
+    ]

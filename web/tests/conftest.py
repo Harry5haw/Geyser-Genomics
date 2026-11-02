@@ -11,4 +11,3 @@ def storage(tmp_path, settings):
     settings.GEYSER_STORAGE_BACKEND = "local"
     settings.GEYSER_LOCAL_STORAGE_DIR = tmp_path / "bucket"
     return get_storage()
-

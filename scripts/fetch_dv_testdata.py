@@ -58,8 +58,10 @@ GRCH38 = "case-study-testdata/GCA_000001405.15_GRCh38_no_alt_analysis_set.fa"
 
 # Pangenome graphs for pangenome-aware DeepVariant. Remote paths that are full URLs are fetched as-is (not under
 # BASE_URL). "build", when present, is the GBZ made from the download by build_chr20_gbz().
-HPRC_GRCH38 = ("https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/minigraph-cactus/"
-               "hprc-v1.1-mc-grch38/")
+HPRC_GRCH38 = (
+    "https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/minigraph-cactus/"
+    "hprc-v1.1-mc-grch38/"
+)
 PANGENOMES = {
     "chr20": {
         "url": HPRC_GRCH38 + "hprc-v1.1-mc-grch38.chroms/chr20.vg",
@@ -80,8 +82,9 @@ VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"
 REFERENCE_SAMPLES = ("GRCh38", "CHM13")
 
 # Whole-genome BWA BAMs of the GIAB samples in Google's public bucket (hs38DH, NovaSeq PCR-free), and GIAB's FTP.
-BRAIN_30X = ("https://storage.googleapis.com/brain-genomics-public/research/sequencing/grch38/bam/novaseq/"
-             "wgs_pcr_free/30x/")
+BRAIN_30X = (
+    "https://storage.googleapis.com/brain-genomics-public/research/sequencing/grch38/bam/novaseq/wgs_pcr_free/30x/"
+)
 GIAB = "https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/release/"
 HG005_TRUTH = GIAB + "ChineseTrio/HG005_NA24631_son/NISTv4.2.1/GRCh38/HG005_GRCh38_1_22_v4.2.1_benchmark"
 # samtools with HTTP support, for cutting one contig out of a remote BAM: the pipeline image has it.
@@ -109,8 +112,12 @@ DATASETS = {
         "reference": "ucsc.hg19.chr20.unittest.fasta",
         "files": [
             ("quickstart-testdata/NA12878_S1.chr20.10_10p1mb.bam", 3925783, "alignments/NA12878_S1.bam", "copy"),
-            ("quickstart-testdata/ucsc.hg19.chr20.unittest.fasta.gz", 606944,
-             "reference/ucsc.hg19.chr20.unittest.fasta", "gunzip"),
+            (
+                "quickstart-testdata/ucsc.hg19.chr20.unittest.fasta.gz",
+                606944,
+                "reference/ucsc.hg19.chr20.unittest.fasta",
+                "gunzip",
+            ),
             ("quickstart-testdata/test_nist.b37_chr20_100kbp_at_10mb.vcf.gz", 5898, "truth/NA12878_S1.vcf.gz", "copy"),
             ("quickstart-testdata/test_nist.b37_chr20_100kbp_at_10mb.bed", 264, "truth/NA12878_S1.bed", "copy"),
         ],
@@ -119,21 +126,37 @@ DATASETS = {
         "sample": "HG003_chr20",
         "reference": "GRCh38_chr20.fa",
         "files": [
-            ("case-study-testdata/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam", 1112015824,
-             "alignments/HG003_chr20.bam", "copy"),
+            (
+                "case-study-testdata/HG003.novaseq.pcr-free.35x.dedup.grch38_no_alt.chr20.bam",
+                1112015824,
+                "alignments/HG003_chr20.bam",
+                "copy",
+            ),
             (GRCH38, None, "reference/GRCh38_chr20.fa", "fasta:chr20"),
-            ("case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz", 147212428,
-             "truth/HG003_chr20.vcf.gz", "only:chr20"),
-            ("case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed", 13219856,
-             "truth/HG003_chr20.bed", "only:chr20"),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz",
+                147212428,
+                "truth/HG003_chr20.vcf.gz",
+                "only:chr20",
+            ),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed",
+                13219856,
+                "truth/HG003_chr20.bed",
+                "only:chr20",
+            ),
         ],
     },
     "hg005-chr20": {
         "sample": "HG005_chr20",
         "reference": "GRCh38_chr20.fa",
         "files": [
-            (BRAIN_30X + "HG005.novaseq.pcr-free.30x.dedup.grch38.bam", None, "alignments/HG005_chr20.bam",
-             "region:chr20"),
+            (
+                BRAIN_30X + "HG005.novaseq.pcr-free.30x.dedup.grch38.bam",
+                None,
+                "alignments/HG005_chr20.bam",
+                "region:chr20",
+            ),
             (GRCH38, None, "reference/GRCh38_chr20.fa", "fasta:chr20"),
             (HG005_TRUTH + ".vcf.gz", 139334496, "truth/HG005_chr20.vcf.gz", "only:chr20"),
             (HG005_TRUTH + ".bed", 18615340, "truth/HG005_chr20.bed", "only:chr20"),
@@ -143,13 +166,25 @@ DATASETS = {
         "sample": "HG003_30x_chr20",
         "reference": "GRCh38_chr20.fa",
         "files": [
-            (BRAIN_30X + "HG003.novaseq.pcr-free.30x.dedup.grch38.bam", None, "alignments/HG003_30x_chr20.bam",
-             "region:chr20"),
+            (
+                BRAIN_30X + "HG003.novaseq.pcr-free.30x.dedup.grch38.bam",
+                None,
+                "alignments/HG003_30x_chr20.bam",
+                "region:chr20",
+            ),
             (GRCH38, None, "reference/GRCh38_chr20.fa", "fasta:chr20"),
-            ("case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz", 147212428,
-             "truth/HG003_30x_chr20.vcf.gz", "only:chr20"),
-            ("case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed", 13219856,
-             "truth/HG003_30x_chr20.bed", "only:chr20"),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz",
+                147212428,
+                "truth/HG003_30x_chr20.vcf.gz",
+                "only:chr20",
+            ),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed",
+                13219856,
+                "truth/HG003_30x_chr20.bed",
+                "only:chr20",
+            ),
         ],
     },
 }
@@ -170,8 +205,10 @@ def download(url, dest, expected_size=None, byte_range=None):
             out.write(chunk)
             done += len(chunk)
             if done >= next_report:
-                print(f"    {done / 1e6:,.0f} MB" + (f" / {expected_size / 1e6:,.0f} MB" if expected_size else ""),
-                      flush=True)
+                print(
+                    f"    {done / 1e6:,.0f} MB" + (f" / {expected_size / 1e6:,.0f} MB" if expected_size else ""),
+                    flush=True,
+                )
                 next_report += 100_000_000
     if expected_size is not None and done != expected_size:
         raise RuntimeError(f"{url}: got {done} bytes, expected {expected_size}")
@@ -217,8 +254,10 @@ def keep_contig(src, dest, contig):
     open_out = gzip.open if dest.endswith(".gz") else open
     prefix, kept = contig + "\t", 0
     # newline="" keeps line endings byte-for-byte (no \r\n on Windows)
-    with open_in(src, "rt", encoding="utf-8", newline="") as fin, \
-            open_out(dest + ".part", "wt", encoding="utf-8", newline="") as fout:
+    with (
+        open_in(src, "rt", encoding="utf-8", newline="") as fin,
+        open_out(dest + ".part", "wt", encoding="utf-8", newline="") as fout,
+    ):
         for line in fin:
             if line.startswith("#") or line.startswith(prefix):
                 fout.write(line)
@@ -242,8 +281,10 @@ def dataset_contig(name):
 
 def stratification_files(contig):
     """File entries for the GIAB stratification BEDs, cut down to one contig as plain BEDs."""
-    return [(STRAT_BASE + path, None, f"stratifications/GRCh38_{contig}/{name}.bed", f"only:{contig}")
-            for name, path in STRATIFICATIONS]
+    return [
+        (STRAT_BASE + path, None, f"stratifications/GRCh38_{contig}/{name}.bed", f"only:{contig}")
+        for name, path in STRATIFICATIONS
+    ]
 
 
 def stratification_tsv(contig):
@@ -261,8 +302,9 @@ def dataset_files(name, pangenome=None, stratifications=False):
     files = list(DATASETS[name]["files"])
     if (pangenome or stratifications) and name not in GRCH38_DATASETS:
         flag = "--pangenome" if pangenome else "--stratifications"
-        raise ValueError(f"{flag} needs a GRCh38 dataset ({', '.join(sorted(GRCH38_DATASETS))}); "
-                         f"{name} is on another reference")
+        raise ValueError(
+            f"{flag} needs a GRCh38 dataset ({', '.join(sorted(GRCH38_DATASETS))}); {name} is on another reference"
+        )
     if pangenome:
         graph = PANGENOMES[pangenome]
         files.append((graph["url"], graph["size"], graph["key"], "copy"))
@@ -279,11 +321,21 @@ def bam_region_command(root, url, key, contig, image=APP_IMAGE):
     a failed fetch (e.g. a dropped connection) removes its partial file.
     """
     out = f"/data/{key}"
-    script = (f"set -e; cd /tmp; trap 'rm -f {out}.part' ERR; samtools view -b -o {out}.part {url} {contig}; "
-              f"samtools quickcheck {out}.part; mv {out}.part {out}")
-    return ["docker", "run", "--rm",
-            "--mount", f"type=bind,source={os.path.abspath(root)},target=/data",
-            image, "bash", "-c", script]
+    script = (
+        f"set -e; cd /tmp; trap 'rm -f {out}.part' ERR; samtools view -b -o {out}.part {url} {contig}; "
+        f"samtools quickcheck {out}.part; mv {out}.part {out}"
+    )
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--mount",
+        f"type=bind,source={os.path.abspath(root)},target=/data",
+        image,
+        "bash",
+        "-c",
+        script,
+    ]
 
 
 def vg_build_command(root, vg_key, gbz_key, memory="8g"):
@@ -295,11 +347,23 @@ def vg_build_command(root, vg_key, gbz_key, memory="8g"):
     vg, gbz = f"/data/{vg_key}", f"/data/{gbz_key}"
     gfa = gbz + ".gfa"
     refs = " ".join(f"--set-reference {s}" for s in REFERENCE_SAMPLES)
-    script = (f"set -e; vg convert -f {vg} > {gfa}; "
-              f"vg gbwt -G {gfa} --gbz-format -g {gbz}.part {refs}; mv {gbz}.part {gbz}; rm -f {gfa}")
-    return ["docker", "run", "--rm", "--memory", memory,
-            "--mount", f"type=bind,source={os.path.abspath(root)},target=/data",
-            VG_IMAGE, "bash", "-c", script]
+    script = (
+        f"set -e; vg convert -f {vg} > {gfa}; "
+        f"vg gbwt -G {gfa} --gbz-format -g {gbz}.part {refs}; mv {gbz}.part {gbz}; rm -f {gfa}"
+    )
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--memory",
+        memory,
+        "--mount",
+        f"type=bind,source={os.path.abspath(root)},target=/data",
+        VG_IMAGE,
+        "bash",
+        "-c",
+        script,
+    ]
 
 
 def build_chr20_gbz(root, force=False):
@@ -332,8 +396,10 @@ def fetch_dataset(name, root, force=False, pangenome=None, stratifications=False
             contig = how.split(":", 1)[1]
             print(f"    {contig} only, with samtools in {app_image} (about 1 GB for 30x chr20)", flush=True)
             if subprocess.run(["docker", "image", "inspect", app_image], capture_output=True).returncode != 0:
-                raise RuntimeError(f"Docker image {app_image} not found: build it first "
-                                   f"(docker build -f Dockerfile -t {app_image} .) or pass --app-image")
+                raise RuntimeError(
+                    f"Docker image {app_image} not found: build it first "
+                    f"(docker build -f Dockerfile -t {app_image} .) or pass --app-image"
+                )
             subprocess.run(bam_region_command(root, url, key, contig, app_image), check=True)
         else:
             raw = dest + ".download"
@@ -370,12 +436,20 @@ def main(argv=None):
     p.add_argument("--root", default="local_bucket", help="storage root (LOCAL_STORAGE_DIR)")
     p.add_argument("--dataset", choices=sorted(DATASETS), default="na12878-slice")
     p.add_argument("--force", action="store_true", help="download again even if the files exist")
-    p.add_argument("--pangenome", nargs="?", const="chr20", choices=sorted(PANGENOMES),
-                   help="also get the HPRC v1.1 GRCh38 pangenome graph for --caller pangenome: chr20 (default; "
-                        "built locally with vg, 72 MB) or full (3.29 GB, needs ~11 GB of shared memory)")
-    p.add_argument("--stratifications", action="store_true",
-                   help="also get GIAB v3.3 stratification BEDs (difficult regions, segdups, low mappability) "
-                        "for benchmark_happy.py --stratification")
+    p.add_argument(
+        "--pangenome",
+        nargs="?",
+        const="chr20",
+        choices=sorted(PANGENOMES),
+        help="also get the HPRC v1.1 GRCh38 pangenome graph for --caller pangenome: chr20 (default; "
+        "built locally with vg, 72 MB) or full (3.29 GB, needs ~11 GB of shared memory)",
+    )
+    p.add_argument(
+        "--stratifications",
+        action="store_true",
+        help="also get GIAB v3.3 stratification BEDs (difficult regions, segdups, low mappability) "
+        "for benchmark_happy.py --stratification",
+    )
     p.add_argument("--app-image", default=APP_IMAGE, help="image with samtools, for datasets cut from remote BAMs")
     a = p.parse_args(argv)
     try:

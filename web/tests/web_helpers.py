@@ -19,10 +19,7 @@ def fastq_gz(reads=2) -> bytes:
     return gz("".join(f"@r{i}\nACGTACGT\n+\nIIIIIIII\n" for i in range(reads)).encode())
 
 
-VCF_HEADER = (
-    "##fileformat=VCFv4.2\n"
-    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample\n"
-)
+VCF_HEADER = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample\n"
 
 
 def vcf_gz(records) -> bytes:
@@ -30,14 +27,19 @@ def vcf_gz(records) -> bytes:
     lines = []
     for rec in records:
         pos, ref, alt = rec[:3]
-        qual, dp, gt = (list(rec[3:]) + [225.4, 30, "1/1"][len(rec) - 3:])[:3]
+        qual, dp, gt = (list(rec[3:]) + [225.4, 30, "1/1"][len(rec) - 3 :])[:3]
         lines.append(f"synth1\t{pos}\t.\t{ref}\t{alt}\t{qual}\t.\tDP={dp};MQ=60\tGT:PL\t{gt}:255,90,0\n")
     return gz((VCF_HEADER + "".join(lines)).encode())
 
 
 def metric(task, sample_id, status="Success", duration=1.5, timestamp=1000.0):
-    return {"timestamp": timestamp, "task": task, "sample_id": sample_id, "status": status,
-            "duration_seconds": duration}
+    return {
+        "timestamp": timestamp,
+        "task": task,
+        "sample_id": sample_id,
+        "status": status,
+        "duration_seconds": duration,
+    }
 
 
 def write_metrics(storage, records):
@@ -46,13 +48,30 @@ def write_metrics(storage, records):
 
 # Trimmed-down fastp JSON reports, shaped like fastp 0.24.0's (summary / duplication / insert_size).
 FASTP_SINGLE = {
-    "summary": {"before_filtering": {"total_reads": 10000, "total_bases": 1500000, "q20_rate": 0.991,
-                                     "q30_rate": 0.934, "read1_mean_length": 150, "gc_content": 0.495339}},
+    "summary": {
+        "before_filtering": {
+            "total_reads": 10000,
+            "total_bases": 1500000,
+            "q20_rate": 0.991,
+            "q30_rate": 0.934,
+            "read1_mean_length": 150,
+            "gc_content": 0.495339,
+        }
+    },
     "duplication": {"rate": 0.0361},
 }
 FASTP_PAIRED = {
-    "summary": {"before_filtering": {"total_reads": 10000, "total_bases": 1500000, "q20_rate": 1, "q30_rate": 1,
-                                     "read1_mean_length": 150, "read2_mean_length": 150, "gc_content": 0.4952}},
+    "summary": {
+        "before_filtering": {
+            "total_reads": 10000,
+            "total_bases": 1500000,
+            "q20_rate": 1,
+            "q30_rate": 1,
+            "read1_mean_length": 150,
+            "read2_mean_length": 150,
+            "gc_content": 0.4952,
+        }
+    },
     "duplication": {"rate": 0.0012},
     "insert_size": {"peak": 218, "unknown": 12},
 }
