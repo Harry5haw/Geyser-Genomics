@@ -75,7 +75,7 @@ In the cloud design, uploading a file to S3 starts the run. AWS Step Functions t
 flowchart LR
     IN(["🧬 FASTQ.gz<br/>millions of raw reads"]) --> D["📦 Decompress"]
     D --> Q["🔍 Quality control<br/>FastQC"]
-    Q --> A["🧭 Align to reference<br/>BWA-MEM + samtools sort + markdup"]
+    Q --> A["🧭 Align to reference<br/>bwa-mem2 + samtools sort + markdup"]
     A --> V["🧪 Call variants<br/>bcftools"]
     V --> OUT(["📄 VCF.gz<br/>list of variants"])
     A -.->|"alternative caller"| DV["🧠 DeepVariant<br/>GPU"]
@@ -200,7 +200,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → BWA-MEM alignment (sorted, duplicate-marked BAM) → bcftools variant calling. |
+| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → bwa-mem2 alignment (sorted, duplicate-marked BAM) → bcftools variant calling. |
 | **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
 | **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
 | **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs the four stages in order on AWS Batch (Fargate), with failure notifications via SNS. |
@@ -264,7 +264,7 @@ The platform's design is guided by modern cloud-native principles:
 | **Terraform** | **The Cloud Architect.** Defines the AWS resources (VPC, S3, IAM, ECR, Batch, Step Functions, Lambda) as code, so the environment can be reviewed in a plan before anything changes. |
 | **AWS Step Functions** | **The Conductor.** Replaced a self-hosted Airflow setup from earlier in the project. A managed state machine runs the stages in order and routes any failure to an SNS notification. |
 | **AWS Batch + Fargate** | **The Compute Engine.** Runs each stage as a container job (2 vCPU / 4 GB) with queuing and scheduling handled by AWS. The compute environment is capped at 16 vCPUs, which keeps costs bounded. |
-| **Docker** | **The Reproducible Toolbox.** Packages all bioinformatics tools (`FastQC`, `BWA`, `Samtools`, etc.) and their specific dependencies into a single, portable container image. This guarantees scientific reproducibility. |
+| **Docker** | **The Reproducible Toolbox.** Packages all bioinformatics tools (`FastQC`, `bwa-mem2`, `Samtools`, etc.) and their specific dependencies into a single, portable container image. This guarantees scientific reproducibility. |
 | **GitHub Actions**| **The CI Engine.** Every push and pull request runs the offline test suite. A manual workflow can run `terraform plan` with short-lived OIDC credentials and a read-only role. It cannot apply changes. |
 | **pytest + synthetic data**| **The Safety Net.** A generator creates a small reference genome and simulated reads with known mutations. The end-to-end test runs every stage in Docker and requires the final VCF to contain exactly those mutations. |
 | **Amazon S3**| **The Data Lake.** Holds the inputs, every intermediate file and the results, under fixed key prefixes. An upload to `raw_reads/` is the event that starts the pipeline. |
@@ -279,7 +279,7 @@ The whole pipeline runs on a laptop. Each stage runs in its own container from t
 **Prerequisites:** Docker and Python 3.11.
 
 ```bash
-# 1. Build the pipeline image (FastQC, BWA, samtools, bcftools)
+# 1. Build the pipeline image (FastQC, bwa-mem2 and bwa, samtools, bcftools)
 docker build -f Dockerfile -t geyser-app .
 
 # 2. Create a synthetic genome and 30x reads with 10 known mutations planted in them
@@ -297,6 +297,8 @@ python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --ch
 > Expected result: `Truth check (bcftools): 10/10 planted SNPs called, 0 unexpected calls`
 >
 > `--duplicate-rate 0.1` plants exact read (or pair) copies, like PCR duplicates. The align stage's `samtools markdup` flags them, and the SNP calls stay the same.
+>
+> The align stage uses [bwa-mem2](https://github.com/bwa-mem2/bwa-mem2): the same algorithm and alignments as `bwa mem`, about twice as fast on modern CPUs. The image picks the fastest build for the CPU it runs on. Set `ALIGNER=bwa` (e.g. `ALIGNER=bwa python scripts/run_local.py ...`) to align with classic `bwa mem` instead. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
 
 **Tests:**
 
