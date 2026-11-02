@@ -21,12 +21,9 @@ def last_metric(root):
     return json.loads((root / "metrics" / "metrics.jsonl").read_text().splitlines()[-1])
 
 
-def test_decompress_is_a_no_op_that_records_nothing(local_env):
-    # Kept only so a new image works under the old four-stage state machine: it must not write
-    # anything (qc and align read raw_reads/) or record a metric the dashboards would show.
-    write_raw(local_env, "S1", gzip.compress(b"@r\nA\n+\nI\n"))
-    assert tasks.main(["decompress", "S1"]) == 0
-    assert sorted(p.name for p in local_env.iterdir()) == ["raw_reads"]
+def test_decompress_is_no_longer_a_stage():
+    with pytest.raises(SystemExit):
+        tasks.main(["decompress", "S1"])
 
 
 def test_failed_stage_raises_and_records_failure(local_env):
