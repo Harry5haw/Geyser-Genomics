@@ -12,6 +12,7 @@ Stages communicate only through storage keys:
         then variants --window concatenates them in reference order (see regions_from_lengths)
     stats/{id}/: flagstat.txt, mosdepth.{summary,global.dist}.txt (align); bcftools.stats.txt (variants)
     runs/{id}.provenance.json: the run record (inputs, reference MD5, tools, timings, stats; provenance.py)
+    fastp JSON + stats/{id}/ + run record -> qc_reports/{id}.gate.json   (gate: the quality gate's verdict)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
 qc and align both read the gzipped upload directly (fastp, bwa-mem2 and bwa read gzip), so they don't
@@ -137,6 +138,8 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
     for name, filename in STATS_FILES.items():
         keys[name] = f"stats/{sample_id}/{filename}"
+    # The quality gate's verdict on all of the above (gate_task, gate/README.md).
+    keys["gate_verdict"] = f"qc_reports/{sample_id}.gate.json"
     return keys
 
 
@@ -928,10 +931,123 @@ def regions_main(argv) -> int:
     return 0
 
 
+# --------------------------------------------------------------------------------------- quality gate
+# The gate (gate/, a Rust binary in the image) checks a finished run's QC statistics against thresholds.
+# GATE_MODE=warn (default until the user decides, #144): the verdict is stored and recorded, and a
+# failed verdict, or a gate that can't run (an image without the binary), only warns. GATE_MODE=fail:
+# a failed verdict fails the stage with the gate's reasons. GATE_CONFIG: a thresholds file (default:
+# the binary's built-in human WGS thresholds; the image has the shipped ones in GATE_THRESHOLDS_DIR).
+GATE_MODES = ("warn", "fail")
+GATE_BINARY = "geyser-gate"
+# Its stage name (metrics, run record part): an extra stage after the core three, like the shards
+# (scripts/monitoring.py STAGE_GROUPS["gate"]).
+GATE_METRIC = "QualityGate"
+GATE_TIMEOUT_SECONDS = 300  # it parses a few small files; minutes means something is wrong
+# keys_for names the gate reads (the run record comes from provenance.read_record, assembled fresh).
+GATE_INPUTS = ("qc_json", "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats")
+
+
+class GateFailed(RuntimeError):
+    """The sample failed the quality gate and GATE_MODE=fail."""
+
+
+def gate_mode() -> str:
+    mode = os.environ.get("GATE_MODE", "warn").strip().lower() or "warn"
+    if mode not in GATE_MODES:
+        raise ValueError(f"GATE_MODE must be one of {GATE_MODES}, got {mode!r}")
+    return mode
+
+
+def fetch_gate_inputs(sample_id: str, root: str) -> list:
+    """The gate's inputs under a local root laid out like the bucket. Returns the keys fetched.
+
+    A missing file is left missing: the gate reports it (missing stats count as a failed check by
+    default). The run record is assembled from its stage parts, like every other reader of it, so a
+    stored copy that a failed re-assembly left behind can't mislead the gate.
+    """
+    keys = keys_for(sample_id)
+    fetched = []
+    for name in GATE_INPUTS:
+        key = keys[name]
+        if storage().exists(key):
+            local = os.path.join(root, *key.split("/"))
+            os.makedirs(os.path.dirname(local), exist_ok=True)
+            storage().download(key, local)
+            provenance.note_input(key, local)
+            fetched.append(key)
+    record = provenance.read_record(storage(), sample_id)
+    if record is not None:
+        local = os.path.join(root, *provenance.record_key(sample_id).split("/"))
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, "w") as fh:
+            json.dump(record, fh)
+        fetched.append(provenance.record_key(sample_id))
+    return fetched
+
+
+def _gate_problem(mode: str, message: str) -> None:
+    """The gate couldn't give a verdict. warn: say so and record it; fail: fail the stage."""
+    provenance.note(gate={"verdict": None, "mode": mode, "error": message})
+    if mode == "fail":
+        raise RuntimeError(f"quality gate: {message}")
+    print(f"WARNING: quality gate: {message} (GATE_MODE=warn: the run continues)", flush=True)
+
+
+@timed_stage(GATE_METRIC)
+def gate_task(sample_id):
+    """geyser-gate on the sample's fastp report, stats/{id}/ and run record -> qc_reports/{id}.gate.json."""
+    mode = gate_mode()  # a mistyped GATE_MODE fails now, as ANNOTATE does
+    config = os.environ.get("GATE_CONFIG", "").strip() or None
+    key = keys_for(sample_id)["gate_verdict"]
+    wd = work_dir(sample_id)
+    try:
+        root = os.path.join(wd, "root")
+        os.makedirs(root)
+        fetched = fetch_gate_inputs(sample_id, root)
+        print(f"Quality gate ({mode}) on {len(fetched)} inputs: {', '.join(fetched) or 'none'}", flush=True)
+        verdict_path = os.path.join(wd, os.path.basename(key))
+        cmd = [GATE_BINARY, "--root", root, "--sample", sample_id, "--output", verdict_path]
+        if config:
+            cmd += ["--config", config]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=GATE_TIMEOUT_SECONDS)
+        except FileNotFoundError:
+            return _gate_problem(mode, f"{GATE_BINARY} is not installed (an image from before #144?)")
+        except subprocess.TimeoutExpired:
+            return _gate_problem(mode, f"{GATE_BINARY} timed out after {GATE_TIMEOUT_SECONDS}s")
+        if result.stderr:
+            print(result.stderr.rstrip(), flush=True)  # one line per check, then PASS/FAIL
+        if result.returncode not in (0, 1) or not os.path.exists(verdict_path):
+            # Exit 2: a usage or config error (e.g. a bad GATE_CONFIG). An operator setting, so it fails
+            # in either mode, like a mistyped GATE_MODE.
+            raise RuntimeError(f"quality gate could not run (exit {result.returncode}): {result.stderr.strip()}")
+        with open(verdict_path) as fh:
+            verdict = json.load(fh)
+        upload_output(verdict_path, key)
+        summary = {
+            "verdict": verdict["verdict"],
+            "reasons": verdict["reasons"],
+            "mode": mode,
+            "config": verdict["config"],
+            "gate_version": verdict.get("gate_version"),
+            "key": key,
+        }
+        provenance.note(gate=summary)
+        provenance.note_tools("geyser-gate")
+        if verdict["verdict"] != "pass":
+            reasons = "; ".join(verdict["reasons"])
+            if mode == "fail":
+                raise GateFailed(f"{sample_id} failed the quality gate: {reasons}")
+            print(f"WARNING: {sample_id} failed the quality gate: {reasons} (GATE_MODE=warn: the run continues)")
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+
 TASKS = {
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),
+    "gate": (gate_task, False),
 }
 
 

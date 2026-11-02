@@ -25,7 +25,10 @@ Record (schema 1):
     app_version (APP_VERSION: the image tag in the cloud), layout, aligner,
     reference {name, md5, bytes}, inputs [{key, bytes}], outputs [{key, bytes}],
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
-    stages {Task: {status, started, finished, duration_seconds, error, run_name}}
+    stages {Task: {status, started, finished, duration_seconds, error, run_name}},
+    gate {verdict (pass | fail | null when the gate couldn't run), reasons, mode, config, gate_version, key}:
+        the quality gate's verdict (tasks.gate_task), once the QualityGate stage has run. It doesn't
+        change the status: in GATE_MODE=fail a failed verdict fails the QualityGate stage itself.
 """
 
 import hashlib
@@ -50,6 +53,8 @@ UPSTREAM = {
     "CallVariants": ("QualityControl", "Align"),
     "DeepVariant": CORE_STAGES,
     "PangenomeDeepVariant": CORE_STAGES,
+    # The quality gate judges the core stages' outputs; a gate re-run by hand keeps them in the record.
+    "QualityGate": CORE_STAGES,
 }
 # name -> (command, regex on its combined output). Run once per process, outside the pipeline's
 # subprocess helpers, so a missing or odd tool can't affect a stage.
@@ -60,6 +65,7 @@ TOOL_VERSION_COMMANDS = {
     "bwa": (["bwa"], r"Version: (\S+)"),
     "fastp": (["fastp", "--version"], r"fastp (\S+)"),
     "mosdepth": (["mosdepth", "--version"], r"mosdepth (\S+)"),
+    "geyser-gate": (["geyser-gate", "--version"], r"geyser-gate (\S+)"),
 }
 # The image exports the release it pinned where the binary reports something else (bwa-mem2 2.3
 # says 2.2.1); recorded as "<tool> release" next to the reported version.
@@ -247,7 +253,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
         record["stats"].update(p.get("stats") or {})
-        for field in ("reference", "layout", "aligner", "annotation"):
+        for field in ("reference", "layout", "aligner", "annotation", "gate"):
             if p.get(field) is not None:
                 record[field] = p[field]
     return record
