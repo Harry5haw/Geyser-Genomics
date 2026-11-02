@@ -131,6 +131,9 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     keys["bam"] = f"alignments/{sample_id}.bam"
     keys["vcf"] = f"variants/{sample_id}.vcf.gz"
     keys["tbi"] = f"variants/{sample_id}.vcf.gz.tbi"
+    # Consequence annotation (bcftools csq), written only when the reference has a GFF (annotate_vcf).
+    keys["csq_vcf"] = f"variants/{sample_id}.csq.vcf.gz"
+    keys["csq_tbi"] = f"variants/{sample_id}.csq.vcf.gz.tbi"
     # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
     for name, filename in STATS_FILES.items():
         keys[name] = f"stats/{sample_id}/{filename}"
@@ -764,8 +767,58 @@ def reference_regions(local_ref: str, window: int) -> list:
     return regions
 
 
-def _finish_vcf(ref: str, vcf: str, wd: str, keys: dict) -> None:
-    """Index, stats and upload a finished VCF (the unsharded call and the merge end the same way)."""
+# Gene models for consequence annotation sit next to the reference: reference/<name>.gff3.gz, in
+# Ensembl GFF3 form (what bcftools csq reads). ANNOTATE=off skips annotation even when one exists.
+ANNOTATION_SUFFIX = ".gff3.gz"
+ANNOTATE_MODES = ("auto", "off")
+
+
+def annotation_key(reference_name: str) -> str:
+    return f"{REFERENCE_PREFIX}{reference_name}{ANNOTATION_SUFFIX}"
+
+
+def annotate_mode() -> str:
+    mode = os.environ.get("ANNOTATE", "auto").strip().lower() or "auto"
+    if mode not in ANNOTATE_MODES:
+        raise ValueError(f"ANNOTATE must be one of {ANNOTATE_MODES}, got {mode!r}")
+    return mode
+
+
+def annotate_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) -> list:
+    """bcftools csq on a finished VCF -> [(local path, key)] to upload: the annotated VCF and its index.
+
+    Optional and best effort, like the QC statistics: nothing happens when ANNOTATE=off or the
+    reference has no GFF (the cloud reference has none today), and a csq failure warns rather than
+    failing the stage, whose real output (the VCF) is already built. -p a takes genotypes as phased,
+    because bcftools call doesn't phase; consequences are per allele either way (BCSQ in INFO).
+    """
+    if annotate_mode() == "off":
+        print("Annotation off (ANNOTATE=off)", flush=True)
+        provenance.note(annotation="off")
+        return []
+    gff_key = annotation_key(reference_name)
+    if not storage().exists(gff_key):
+        print(f"No gene models at {storage().describe(gff_key)}; skipping annotation", flush=True)
+        provenance.note(annotation="skipped: no GFF")
+        return []
+    gff = os.path.join(wd, os.path.basename(gff_key))
+    storage().download(gff_key, gff)
+    provenance.note_input(gff_key, gff)
+    csq = os.path.join(wd, os.path.basename(keys["csq_vcf"]))
+    csq_tbi = os.path.join(wd, os.path.basename(keys["csq_tbi"]))
+    annotate = (
+        f"bcftools csq -f {shlex.quote(ref)} -g {shlex.quote(gff)} -p a -Oz -o {shlex.quote(csq)} {shlex.quote(vcf)}"
+    )
+    index = f"bcftools index -t -o {shlex.quote(csq_tbi)} {shlex.quote(csq)}"
+    if not (_run_stats_tool("bcftools csq", annotate) and _run_stats_tool("bcftools index (csq)", index)):
+        provenance.note(annotation="failed")
+        return []
+    provenance.note(annotation="done")
+    return [(csq_tbi, keys["csq_tbi"]), (csq, keys["csq_vcf"])]
+
+
+def _finish_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) -> None:
+    """Index, stats, annotation and upload of a finished VCF (the unsharded call and the merge end the same way)."""
     tbi = os.path.join(wd, os.path.basename(keys["tbi"]))
     run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
     stats = os.path.join(wd, STATS_FILES["bcftools_stats"])
@@ -774,7 +827,9 @@ def _finish_vcf(ref: str, vcf: str, wd: str, keys: dict) -> None:
     ):
         _log_summary("bcftools stats", parse_bcftools_stats, stats)
         upload_output(stats, keys["bcftools_stats"])
-    upload_output(tbi, keys["tbi"])  # index and stats first, as in align: the VCF marks the stage done
+    for local, key in annotate_vcf(reference_name, ref, vcf, wd, keys):
+        upload_output(local, key)
+    upload_output(tbi, keys["tbi"])  # index, stats and annotation first, as in align: the VCF marks the stage done
     upload_output(vcf, keys["vcf"])
 
 
@@ -840,7 +895,7 @@ def variants_task(sample_id, reference_name, window=None):
                     fh.write(local + "\n")
             print(f"Merging {len(regions)} region parts", flush=True)
             run_shell(f"bcftools concat -Oz -o {shlex.quote(vcf)} -f {shlex.quote(listing)}")
-        _finish_vcf(ref, vcf, wd, keys)
+        _finish_vcf(reference_name, ref, vcf, wd, keys)
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 

@@ -194,6 +194,8 @@ def test_single_end_keys_are_unchanged():
         "bam": "alignments/S1.bam",
         "vcf": "variants/S1.vcf.gz",
         "tbi": "variants/S1.vcf.gz.tbi",
+        "csq_vcf": "variants/S1.csq.vcf.gz",
+        "csq_tbi": "variants/S1.csq.vcf.gz.tbi",
         "flagstat": "stats/S1/flagstat.txt",
         "mosdepth_summary": "stats/S1/mosdepth.summary.txt",
         "mosdepth_dist": "stats/S1/mosdepth.global.dist.txt",

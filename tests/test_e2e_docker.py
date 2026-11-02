@@ -282,3 +282,32 @@ def test_sharded_calling_gives_the_same_calls_as_one_job(tmp_path, capfd, paired
     assert record["stages"]["CallVariants"]["run_name"] != record["stages"]["Align"]["run_name"]
     metrics = [json.loads(line) for line in (root / "metrics" / "metrics.jsonl").read_text().splitlines()]
     assert sum(m["task"] == tasks.SHARD_METRIC for m in metrics) == 8
+
+
+def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
+    # make_test_data --gff puts two genes (+ and - strand) around planted SNPs 2-5; the variants
+    # stage then runs bcftools csq. Same calls as without annotation (--check), plus BCSQ on exactly
+    # the SNPs inside a gene.
+    import gzip
+
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root), "--gff"])
+    exit_code, log = _run(root, "SYNTH001", capfd)
+    assert exit_code == 0  # --check on the plain VCF: 10/10 planted SNPs
+    assert "bcftools csq" in log
+
+    truth = json.loads((root / "truth" / "SYNTH001.json").read_text())
+    genic = {s["pos"] for s in truth["snps"][1:5]}
+    consequences = {}
+    with gzip.open(root / "variants" / "SYNTH001.csq.vcf.gz", "rt") as fh:
+        for line in fh:
+            if line.startswith("#"):
+                continue
+            cols = line.split("\t")
+            bcsq = [item[5:] for item in cols[7].split(";") if item.startswith("BCSQ=")]
+            if bcsq:
+                consequences[int(cols[1])] = bcsq[0]
+    assert set(consequences) == genic
+    genes = {c.split("|")[1] for c in consequences.values()}
+    assert genes == {"SYNTHG1", "SYNTHG2"}
+    assert (root / "variants" / "SYNTH001.csq.vcf.gz.tbi").exists()
