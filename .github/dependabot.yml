@@ -1,0 +1,62 @@
+# Weekly dependency updates, one grouped PR per ecosystem. Each PR runs tests.yml like any other.
+# Terraform updates touch infrastructure/, so they follow the infrastructure rules: a reviewed
+# `terraform plan` before merge, never merged on CI alone.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directories: ["/", "/app", "/web"]
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python:
+        patterns: ["*"]
+    ignore:
+      # 6.x needs Python 3.12; the image and CI run 3.11.
+      - dependency-name: django
+        update-types: ["version-update:semver-major"]
+    labels: ["dependencies"]
+    commit-message:
+      prefix: "Deps"
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["dependencies", "ci-cd"]
+    commit-message:
+      prefix: "CI"
+
+  # Root Dockerfile only: app-deepvariant/Dockerfile takes its base image from an ARG (DV_TAG),
+  # which is chosen deliberately against the GPU and benchmark results, not bumped automatically.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      docker:
+        patterns: ["*"]
+    ignore:
+      # python:3.11-slim-trixie: patch rebuilds only; a Python minor upgrade is a decision of its own.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "Docker"
+
+  - package-ecosystem: terraform
+    directory: "/infrastructure"
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      terraform:
+        patterns: ["*"]
+    labels: ["dependencies", "infrastructure"]
+    commit-message:
+      prefix: "Terraform"
