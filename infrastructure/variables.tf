@@ -163,20 +163,10 @@ variable "intermediate_expiry_days" {
   }
 }
 
-variable "anomaly_alert_usd" {
-  description = "Cost Anomaly Detection emails only for anomalies whose total impact is at least this many US dollars (console_extras.tf)."
-  type        = number
-  default     = 1
-}
 
 variable "aws_application_tag" {
-  description = "The myApplications tag, e.g. { awsApplication = \"arn:...\" }, from `terraform output aws_application_tag` after the first apply of console_extras.tf. Empty until then; added to every resource through default_tags."
+  description = "The myApplications tag, e.g. { awsApplication = \"arn:...\" }, from `terraform -chdir=account output aws_application_tag` (the user-applied account stack). Empty until then; added to every resource through default_tags."
   type        = map(string)
   default     = {}
 }
 
-variable "existing_anomaly_monitor_arn" {
-  description = "ARN of an existing DIMENSIONAL/SERVICE Cost Anomaly monitor to reuse (AWS allows one per account). Empty: console_extras.tf creates one."
-  type        = string
-  default     = ""
-}

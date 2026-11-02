@@ -43,6 +43,9 @@ jobs:
       - name: terraform validate
         run: terraform init -backend=false -input=false && terraform validate
         working-directory: infrastructure
+      - name: terraform validate (account stack, user-applied)
+        run: terraform init -backend=false -input=false && terraform validate
+        working-directory: infrastructure/account
 
   # The quality gate (gate/, Rust): formatting, clippy with warnings denied, tests, and the static
   # musl build the image will use. rustup on the runner installs the toolchain pinned in

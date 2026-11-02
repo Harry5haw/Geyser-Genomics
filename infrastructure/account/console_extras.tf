@@ -1,18 +1,19 @@
-# infrastructure/console_extras.tf
+# infrastructure/account/console_extras.tf
 #
-# Free AWS console features for observability and security (#64). All three are outside the
-# geyser-claude permissions boundary (ce:*, access-analyzer:* and servicecatalog:* are not in its
-# allow-list, and Cost Explorer is a us-east-1 API), so the user applies this file's resources.
+# Free AWS console features for observability and security (#64), applied by the user (see main.tf).
 
 # Cost Anomaly Detection: AWS learns the account's normal daily spend per service and emails when a day
 # looks unusual, usually well before the $10 monthly budget alert would fire. Free.
-# AWS allows one DIMENSIONAL/SERVICE monitor per account. If the account already has one (the console
-# may have created "Default-Services-Monitor"), set var.existing_anomaly_monitor_arn to its ARN: then no
-# monitor is created and the subscription attaches to that one. Check before the first apply:
-#   AWS_PROFILE=default aws ce get-anomaly-monitors --query "AnomalyMonitors[].[MonitorName,MonitorType,MonitorDimension,MonitorArn]"
+# AWS allows one DIMENSIONAL/SERVICE monitor per account, and the console already created one
+# ("Default-Services-Monitor", listed by the user on 2 Nov 2026). It is adopted as is, not recreated:
+# the arguments match it, so the import changes nothing.
+import {
+  to = aws_ce_anomaly_monitor.services
+  id = "arn:aws:ce::${data.aws_caller_identity.current.account_id}:anomalymonitor/50e63a29-285c-4a0c-8e89-0f66ca9840ee"
+}
+
 resource "aws_ce_anomaly_monitor" "services" {
-  count             = var.existing_anomaly_monitor_arn == "" ? 1 : 0
-  name              = "${var.project_name}-services"
+  name              = "Default-Services-Monitor"
   monitor_type      = "DIMENSIONAL"
   monitor_dimension = "SERVICE"
 }
@@ -20,7 +21,7 @@ resource "aws_ce_anomaly_monitor" "services" {
 resource "aws_ce_anomaly_subscription" "daily_email" {
   name             = "${var.project_name}-anomaly-email"
   frequency        = "DAILY"
-  monitor_arn_list = [var.existing_anomaly_monitor_arn != "" ? var.existing_anomaly_monitor_arn : aws_ce_anomaly_monitor.services[0].arn]
+  monitor_arn_list = [aws_ce_anomaly_monitor.services.arn]
 
   subscriber {
     type    = "EMAIL"
@@ -47,17 +48,16 @@ resource "aws_accessanalyzer_analyzer" "account" {
 }
 
 # myApplications: one console page with the project's cost, alarms and resources. AWS groups resources
-# by the application's awsApplication tag. A provider's default_tags can't read a resource it is still
-# creating, so this takes two applies:
-#   1. apply this file: the application exists; `terraform output aws_application_tag` shows its tag;
-#   2. set aws_application_tag in terraform.tfvars to that map and apply again: default_tags then puts
-#      it on every resource (an in-place tag update).
+# by the application's awsApplication tag, which the main stack adds through default_tags once it knows
+# it: after this stack is applied, set aws_application_tag in terraform.tfvars to
+# `terraform -chdir=infrastructure/account output aws_application_tag`, then plan the main stack
+# (in-place tag updates only).
 resource "aws_servicecatalogappregistry_application" "geyser" {
   name        = "${var.project_name}-${var.environment}"
   description = "Geyser Genomics: FASTQ to VCF on S3, Lambda, Step Functions and AWS Batch."
 }
 
 output "aws_application_tag" {
-  description = "Set var.aws_application_tag to this map for myApplications (step 2 above)."
+  description = "Set the main stack's aws_application_tag to this map for myApplications."
   value       = aws_servicecatalogappregistry_application.geyser.application_tag
 }
