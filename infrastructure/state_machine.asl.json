@@ -124,7 +124,10 @@
         "JobName.$": "States.Format('DeepVariant-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
           "Command.$": "States.Array('/opt/geyser-venv/bin/python', 'deepvariant_task.py', $.srr_id, $.reference_name)",
-          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }]
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "PIPELINE_CALLER", "Value": "deepvariant" }
+          ]
         }
       },
       "ResultPath": "$.batch_params",

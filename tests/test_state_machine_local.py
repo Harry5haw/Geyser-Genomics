@@ -475,7 +475,11 @@ def test_caller_deepvariant_runs_deepvariant_on_the_gpu_queue(sfn):
         "SAMPLE7",
         "ref.fa",
     ]
-    assert dv["ContainerOverrides"]["Environment"][0]["Name"] == "RUN_NAME"
+    # PIPELINE_CALLER: DeepVariant is this run's caller, so its PASS-call stats become the sample's (#147).
+    assert dv["ContainerOverrides"]["Environment"] == [
+        {"Name": "RUN_NAME", "Value": desc["name"]},
+        {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+    ]
     assert dv["Timeout"]["AttemptDurationSeconds"] == 3600
 
 
