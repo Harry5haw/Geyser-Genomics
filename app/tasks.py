@@ -44,7 +44,7 @@ import time
 from functools import wraps
 
 import provenance
-from metrics import metrics_from_env
+from metrics import USAGE_LOG_PREFIX, metrics_from_env, usage_since, usage_snapshot
 from storage import ObjectNotFound, storage_from_env
 
 REFERENCE_PREFIX = "reference/"
@@ -273,6 +273,7 @@ def timed_stage(task_name, run_record=True):
         def wrapper(sample_id, *args, **kwargs):
             print(f"--- Starting '{task_name}' for sample '{sample_id}' ---", flush=True)
             start = time.time()
+            snapshot = usage_snapshot()
             status, error = "Failure", None
             if run_record:
                 provenance.begin(task_name, sample_id)
@@ -287,12 +288,20 @@ def timed_stage(task_name, run_record=True):
                 duration = time.time() - start
                 print(f"--- '{task_name}' for '{sample_id}': {status} in {duration:.2f}s ---", flush=True)
                 try:
-                    metrics().record(task_name, sample_id, status, duration)
+                    usage = usage_since(snapshot)
+                except Exception as err:  # noqa: BLE001 - measuring is best effort
+                    usage = None
+                    print(f"WARNING: could not measure resource use: {err}", flush=True)
+                if usage:
+                    line = {"task": task_name, "sample_id": sample_id, "status": status, **usage}
+                    print(USAGE_LOG_PREFIX + json.dumps(line), flush=True)
+                try:
+                    metrics().record(task_name, sample_id, status, duration, usage=usage)
                 except Exception as err:  # noqa: BLE001 - metrics are best effort
                     print(f"WARNING: could not record metric: {err}", flush=True)
                 try:
                     if run_record:
-                        provenance.finish(storage(), status, duration, error)
+                        provenance.finish(storage(), status, duration, error, usage=usage)
                 except Exception as err:  # noqa: BLE001 - provenance is best effort (finish never raises)
                     print(f"WARNING: could not write the run record: {err}", flush=True)
 

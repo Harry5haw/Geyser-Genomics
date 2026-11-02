@@ -10,7 +10,8 @@ Query Step Functions executions and calculate total pipeline duration.
 - Optional CSV export (--csv filename)
 - Status filter (--status SUCCEEDED|FAILED|RUNNING|...)
 - Per-stage breakdown (--stages): Batch queue wait vs run time, vCPU/memory and estimated Fargate cost
-  per stage and per run (see stage_breakdown.py); --stages-csv to export it
+  per stage and per run, plus the CPU time and peak memory each job logged and the share of its vCPU and
+  memory that used (see stage_breakdown.py); --stages-csv to export it
 """
 
 import argparse
@@ -126,6 +127,14 @@ def fmt_cost(usd):
     return "---" if usd is None else f"${usd:.4f}"
 
 
+def fmt_share(share):
+    return "---" if share is None else f"{share * 100:.0f}%"
+
+
+def fmt_mib(mib):
+    return "---" if mib is None else f"{mib:.0f}"
+
+
 STAGE_CSV_HEADER = [
     "SampleId",
     "ExecutionName",
@@ -141,18 +150,28 @@ STAGE_CSV_HEADER = [
     "Attempts",
     "FailureReason",
     "LogStream",
+    "CpuSeconds",
+    "PeakMemoryMiB",
+    "CpuUse",
+    "MemoryUse",
 ]
 
 
-def print_stage_breakdown(sfn_client, batch_client, runs, prices):
-    """Print per-stage wait/run/cost for each (sample_id, execution) and return CSV rows."""
+def print_stage_breakdown(sfn_client, batch_client, runs, prices, logs_client=None):
+    """Print per-stage wait/run/cost/use for each (sample_id, execution) and return CSV rows."""
     csv_rows, run_costs, waits = [], [], []
-    print("\nStage breakdown (wait = queued before the container started; cost = Fargate estimate):")
+    print(
+        "\nStage breakdown (wait = queued before the container started; cost = Fargate estimate;"
+        "\n CPU% / Mem% = share of the job's vCPU-time / memory used, from its stage-usage log line):"
+    )
     for sample_id, exe in runs:
-        rows = stage_breakdown.execution_stages(sfn_client, batch_client, exe["executionArn"], prices)
+        rows = stage_breakdown.execution_stages(
+            sfn_client, batch_client, exe["executionArn"], prices, logs_client=logs_client
+        )
         print(f"\n  {sample_id}  ({exe['name']})")
         print(
             f"    {'Stage':<20} {'Status':<10} {'Wait':>9} {'Run':>9} {'vCPU':>5} {'MemGB':>6} {'Cost':>10} {'Att':>3}"
+            f" {'CPU s':>7} {'CPU%':>5} {'PeakMiB':>7} {'Mem%':>5}"
         )
         for r in rows:
             print(
@@ -160,7 +179,9 @@ def print_stage_breakdown(sfn_client, batch_client, runs, prices):
                 f"{fmt_secs(r['run_seconds']):>9} {r['vcpu'] if r['vcpu'] is not None else '---':>5} "
                 f"{'---' if r['memory_gb'] is None else round(r['memory_gb'], 2):>6} "
                 f"{('GPU/EC2' if r['gpus'] else fmt_cost(r['cost_usd'])):>10} "
-                f"{r['attempts'] if r['attempts'] is not None else '---':>3}"
+                f"{r['attempts'] if r['attempts'] is not None else '---':>3} "
+                f"{'---' if r['cpu_seconds'] is None else round(r['cpu_seconds'], 1):>7} {fmt_share(r['cpu_use']):>5} "
+                f"{fmt_mib(r['peak_memory_mib']):>7} {fmt_share(r['memory_use']):>5}"
             )
             if r["reason"]:
                 print(f"      reason: {r['reason']}")
@@ -180,6 +201,10 @@ def print_stage_breakdown(sfn_client, batch_client, runs, prices):
                     r["attempts"],
                     r["reason"],
                     r["log_stream"],
+                    r["cpu_seconds"],
+                    r["peak_memory_mib"],
+                    r["cpu_use"],
+                    r["memory_use"],
                 ]
             )
             if r["wait_seconds"] is not None:
@@ -201,7 +226,8 @@ def print_stage_breakdown(sfn_client, batch_client, runs, prices):
     return csv_rows
 
 
-def main(argv=None, sfn_client=None, batch_client=None):
+def main(argv=None, sfn_client=None, batch_client=None, logs_client=None):
+    """Clients may be injected (tests); a real CloudWatch Logs client is made only with a real Batch client."""
     parser = argparse.ArgumentParser(description="Query Step Functions pipeline durations.")
     parser.add_argument("--csv", help="Export results to a CSV file", default=None)
     parser.add_argument("--status", help="Filter by status (e.g. SUCCEEDED, FAILED, RUNNING)", default="SUCCEEDED")
@@ -245,6 +271,8 @@ def main(argv=None, sfn_client=None, batch_client=None):
         import boto3
 
         batch_client = boto3.client("batch", region_name=args.region)
+        if logs_client is None:
+            logs_client = boto3.client("logs", region_name=args.region)
 
     print(f"Fetching recent executions for {args.state_machine_arn} in {args.region} with status={args.status}...\n")
 
@@ -331,7 +359,7 @@ def main(argv=None, sfn_client=None, batch_client=None):
 
     if args.stages:
         prices = stage_breakdown.Prices(args.vcpu_hour_price, args.gb_hour_price)
-        stage_rows = print_stage_breakdown(sfn_client, batch_client, executions_seen, prices)
+        stage_rows = print_stage_breakdown(sfn_client, batch_client, executions_seen, prices, logs_client=logs_client)
         if args.stages_csv:
             with open(args.stages_csv, "w", newline="") as f:
                 writer = csv.writer(f)

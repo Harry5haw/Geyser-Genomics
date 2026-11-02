@@ -249,6 +249,7 @@ def test_readers_assemble_from_the_parts_not_the_stored_copy(store):
             "duration_seconds": 1.0,
             "error": None,
             "run_name": None,
+            "resources": None,
         }
     }
 
