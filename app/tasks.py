@@ -952,6 +952,58 @@ def regions_main(argv) -> int:
     return 0
 
 
+def finalize_main(argv) -> int:
+    """tasks.py finalize <srr_id> --status failed [--error E] [--cause C | --caught JSON]: close the run's record.
+
+    Closes a run whose failing job never wrote its run-record part (killed, out of memory, timed out, a step outside
+    the stages) as failed, with the failing stage and why (provenance.close_run): by hand, or for a local run. The
+    state machine's failure path writes the same closing part itself, straight to S3, without a Batch job (a
+    retried job's Cause can be too big for a command line). Once its arguments parse, it exits 0 whatever happens
+    (best effort).
+    """
+    parser = argparse.ArgumentParser(prog="tasks.py finalize", description=finalize_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("--status", choices=["failed"], required=True)
+    parser.add_argument("--error", help="the error name, e.g. States.TaskFailed")
+    parser.add_argument("--cause", help="the error's cause (a failed Batch job's description, as JSON)")
+    parser.add_argument(
+        "--caught",
+        help="a Step Functions Catch output as JSON ({Error, Cause}, e.g. copied from the execution's history); "
+        "--error / --cause override it",
+    )
+    parser.add_argument(
+        "--run-name",
+        help="the run to close: its execution name (default $RUN_NAME). Required one way or the other: the failed "
+        "job often wrote no part, so the latest part can be an earlier, successful run's",
+    )
+    args = parser.parse_args(argv)
+    run_name = args.run_name or os.environ.get("RUN_NAME")
+    if not run_name:
+        parser.error("which run? give --run-name (its execution name) or set RUN_NAME")
+    caught = {}
+    if args.caught:
+        try:
+            caught = json.loads(args.caught)
+        except ValueError:
+            caught = {"Cause": args.caught}  # not JSON: keep it as the cause
+        if not isinstance(caught, dict):
+            caught = {"Cause": args.caught}
+    error = args.error if args.error is not None else caught.get("Error")
+    cause = args.cause if args.cause is not None else caught.get("Cause")
+    try:
+        record = provenance.close_run(storage(), args.srr_id, args.status, error, cause, run_name=run_name)
+    except Exception as err:  # noqa: BLE001 - close_run never raises; storage() itself might
+        print(f"WARNING: could not close the run record for {args.srr_id}: {err}", flush=True)
+        return 0
+    failure = (record or {}).get("failure") or {}
+    print(
+        f"Run record for {args.srr_id} closed as {(record or {}).get('status', 'unknown')}"
+        f" (stage: {failure.get('stage') or 'unknown'}; {failure.get('reason') or failure.get('error') or ''})",
+        flush=True,
+    )
+    return 0
+
+
 # --------------------------------------------------------------------------------------- quality gate
 # The gate (gate/, a Rust binary in the image) checks a finished run's QC statistics against thresholds.
 # GATE_MODE=warn (default until the user decides, #144): the verdict is stored and recorded, and a
@@ -1121,6 +1173,8 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["regions"]:
         return regions_main(argv[1:])
+    if argv[:1] == ["finalize"]:
+        return finalize_main(argv[1:])
     parser = argparse.ArgumentParser(description="Run one Geyser Genomics pipeline stage.")
     parser.add_argument("task_name", choices=sorted(TASKS))
     parser.add_argument("srr_id", help="Sample ID, e.g. SRR062634")

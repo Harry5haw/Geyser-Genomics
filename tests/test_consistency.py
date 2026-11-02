@@ -143,3 +143,12 @@ def test_lifecycle_never_expires_raw_reads_references_or_outputs():
             continue  # e.g. aborting unfinished multipart uploads touches no stored object
         assert prefix, f"{rule_id} expires the whole bucket"
         assert not any(k.startswith(prefix) or prefix.startswith(k) for k in kept), (rule_id, prefix)
+
+
+def test_failure_parsing_knows_every_job_name_the_state_machine_sets():
+    # provenance.parse_failure names the failing stage from the Batch job name in a Catch's Cause, so every
+    # JobName prefix the state machine builds must map to a stage, and none may be stale.
+    import provenance
+
+    prefixes = set(re.findall(r"States\.Format\('(\w+)-\{\}", asl_text()))
+    assert prefixes and prefixes == {p.rstrip("-") for p, _ in provenance.JOB_NAME_STAGES}, prefixes
