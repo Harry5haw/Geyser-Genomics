@@ -23,9 +23,10 @@ pub enum Metric {
     FastpDuplicatePct,
     /// Reads (each mate counts), primary records, QC-passed. flagstat.
     Reads,
-    /// Reads in the alignment, % of the reads fastp saw in the upload. Below 100 the align stage lost
-    /// reads. flagstat + fastp.
-    ReadsInAlignmentPct,
+    /// Reads in the alignment minus reads fastp saw in the upload (an exact, signed count): 0 when no
+    /// read is lost; below 0 the align stage lost reads, above 0 the alignment isn't from this upload.
+    /// flagstat (every primary record, QC-failed included) + fastp.
+    ReadCountDifference,
     /// Mapped reads, % of reads. flagstat.
     MappedPct,
     /// Reads marked as duplicates, % of reads. flagstat.
@@ -57,7 +58,7 @@ impl Metric {
         Metric::GcPct,
         Metric::FastpDuplicatePct,
         Metric::Reads,
-        Metric::ReadsInAlignmentPct,
+        Metric::ReadCountDifference,
         Metric::MappedPct,
         Metric::DuplicatePct,
         Metric::ProperlyPairedPct,
@@ -77,7 +78,7 @@ impl Metric {
             Metric::GcPct => "gc_pct",
             Metric::FastpDuplicatePct => "fastp_duplicate_pct",
             Metric::Reads => "reads",
-            Metric::ReadsInAlignmentPct => "reads_in_alignment_pct",
+            Metric::ReadCountDifference => "read_count_difference",
             Metric::MappedPct => "mapped_pct",
             Metric::DuplicatePct => "duplicate_pct",
             Metric::ProperlyPairedPct => "properly_paired_pct",

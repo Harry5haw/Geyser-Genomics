@@ -20,7 +20,7 @@ The same keys the pipeline writes, under a folder laid out like the bucket (`--r
 | Input | Key | Written by | Gives |
 | :--- | :--- | :--- | :--- |
 | `fastp` | `qc_reports/<id>.fastp.json` | qc (`fastp`, report-only) | `q30_pct`, `gc_pct`, `fastp_duplicate_pct` |
-| `flagstat` | `stats/<id>/flagstat.txt` | align (`samtools flagstat`) | `reads`, `mapped_pct`, `duplicate_pct`, `properly_paired_pct`; with fastp: `reads_in_alignment_pct` |
+| `flagstat` | `stats/<id>/flagstat.txt` | align (`samtools flagstat`) | `reads`, `mapped_pct`, `duplicate_pct`, `properly_paired_pct`; with fastp: `read_count_difference` |
 | `mosdepth_summary` | `stats/<id>/mosdepth.summary.txt` | align (`mosdepth -n`) | `mean_depth` |
 | `mosdepth_dist` | `stats/<id>/mosdepth.global.dist.txt` | align (`mosdepth -n`) | `breadth_1x_pct`, `breadth_10x_pct`, `breadth_20x_pct` |
 | `bcftools_stats` | `stats/<id>/bcftools.stats.txt` | variants (`bcftools stats`) | `variants`, `snps`, `indels`, `tstv` |
@@ -69,7 +69,7 @@ The verdict JSON goes to stdout (or `--output`); a one-line-per-check summary go
   pass  run_status               succeeded
   pass  q30_pct                  100.0
   pass  gc_pct                   49.4708
-  pass  reads_in_alignment_pct   100.0
+  pass  read_count_difference    0
   pass  mapped_pct               100.0
   pass  duplicate_pct            0.04
   pass  properly_paired_pct      100.0
@@ -112,17 +112,19 @@ skipped or not applicable, e.g. a wrong `--root` with `skip`) is a fail.
 
 For human germline short-read WGS at ~30x, called by the pipeline's bcftools stage. They were checked
 against the two GIAB samples used in the benchmarks (`geyser-data`): HG003 and HG005, chr20, 2 x 151 bp,
-aligned with bwa-mem2 and called with bcftools as the pipeline does, and fastp run with the QC stage's
-own flags. HG003 passes every check with a margin. HG005 passes every check but one,
-`reads_in_alignment_pct`, for a reason that is not about its quality (below). Their stats are test
-fixtures (`tests/fixtures/HG00{3,5}_chr20/`).
+called with the pipeline's bcftools stage, with fastp run on their reads with the QC stage's own flags.
+HG003's alignment is the pipeline's align stage (bwa-mem2) on its reads, from the aligner benchmark.
+HG005's is the downloaded 30x BAM, not aligned by this pipeline, and its reads for fastp were extracted
+from that BAM. HG003 passes every check with a margin. HG005 passes every check but one,
+`read_count_difference`, because its alignment and its "upload" don't match (below). Their stats are
+test fixtures (`tests/fixtures/HG00{3,5}_chr20/`).
 
 | Check | Bound | HG003 chr20 | HG005 chr20 | Why this bound |
 | :--- | :--- | ---: | ---: | :--- |
 | `run_status` | `succeeded` | | | A failed or unfinished run has nothing to vouch for |
 | `q30_pct` | ≥ 80 | 91.39 | 91.76 | Below 80 (a typical Illumina spec for 2 x 150 bp) the sequencing run had a problem |
 | `gc_pct` | 35 – 50 | 43.86 | 44.07 | Human genome ~41, chr20 ~44. Outside 35-50 the library is GC-biased or contaminated (bacteria range from ~25 to ~70) |
-| `reads_in_alignment_pct` | = 100 | 100 | 102.29 | Every read in the upload must reach the alignment. See below |
+| `read_count_difference` | = 0 | 0 | +377,078 | Every read in the upload must reach the alignment, exactly. See below |
 | `mapped_pct` | ≥ 95 | 99.77 | 99.82 | Below 95: wrong reference, contamination or a broken alignment |
 | `duplicate_pct` | ≤ 20 | 10.99 | 10.24 | Above 20 the library is low-complexity or over-amplified, and much of the depth is copies |
 | `properly_paired_pct` | ≥ 90 | 99.05 | 96.97 | Paired-end only. Low values mean bad insert sizes, chimeras or the wrong reference |
@@ -135,13 +137,16 @@ Reported but not checked by default: `reads` (depends on the sample), `fastp_dup
 `duplicate_pct` from the alignment is the better measure), `breadth_1x_pct` (99 / 99), `breadth_20x_pct`
 (97 / 95), `variants` and `indels`.
 
-**Reads in the alignment.** bwa-mem2 writes unmapped reads too and `samtools markdup` only marks
-duplicates, so the alignment holds exactly the reads fastp counted in the upload: HG003, 18,960,080 =
-18,960,080. Fewer means the align stage lost reads (a truncated stream, a crashed step that still left
-a file); more means the alignment isn't from this upload. HG005 shows the second case on real data: its
-reads were extracted from a BAM the pipeline didn't make, which had dropped 377,078 reads whose mates
-map to another chromosome, so the "upload" is 2.3% smaller than the alignment. The check fails on it,
-as it should (a test asserts that this is its only failure).
+**Read count.** bwa-mem2 writes unmapped reads too and `samtools markdup` only marks duplicates, so
+the alignment holds exactly the reads fastp counted in the upload: HG003, 18,960,080 = 18,960,080.
+`read_count_difference` is that comparison as an exact, signed count (flagstat's primary records,
+QC-failed included, minus fastp's total reads), not a percentage: rounded to 4 decimals, 9 reads lost
+among 19 million would show as 100.0000%. Below 0 the align stage lost reads (a truncated stream, a
+crashed step that still left a file); above 0 the alignment isn't from this upload. The HG005 fixture is
+the second case: its "upload" was extracted from the alignment itself, and `samtools fastq` dropped the
+377,078 reads whose mates map to other chromosomes, so the alignment has exactly 377,078 reads more.
+The check fails on it, as it should for mismatched inputs (a test asserts that this is its only
+failure). With samtools < 1.13 (no `primary` line in flagstat) the difference is undefined.
 
 **Ti/Tv.** The textbook value for human WGS is ~2.0-2.1, and a first draft of the defaults used 1.9-2.3.
 Measuring first showed that this would have failed every good run: the pipeline's bcftools calls are
@@ -185,7 +190,7 @@ thresholds fail synthetic data, by design (Ti/Tv 1.5).
   },
   "metrics": {                       // every metric, checked or not (null if unavailable)
     "q30_pct": 100.0, "gc_pct": 49.4708, "fastp_duplicate_pct": 0.0, "reads": 10000,
-    "reads_in_alignment_pct": 100.0, "mapped_pct": 100.0, "duplicate_pct": 0.04, "properly_paired_pct": 100.0,
+    "read_count_difference": 0, "mapped_pct": 100.0, "duplicate_pct": 0.04, "properly_paired_pct": 100.0,
     "mean_depth": 29.9413, "breadth_1x_pct": 100.0, "breadth_10x_pct": 100.0, "breadth_20x_pct": 97.0,
     "variants": 10, "snps": 10, "indels": 0, "tstv": 1.5
   },
@@ -198,6 +203,8 @@ thresholds fail synthetic data, by design (Ti/Tv 1.5).
 ```
 
 Check `status`: `pass`, `fail`, `skipped` (missing input with `on_missing = "skip"`) or `not_applicable`.
+Samples whose QC ran FastQC (before fastp, #100) have no fastp report: with the default thresholds their
+fastp checks fail as missing. Gate them with a config without those checks, or `on_missing = "skip"`.
 Counts are integers; percentages and ratios are rounded to 4 decimals, and the bounds apply to the
 rounded value shown.
 
@@ -208,13 +215,13 @@ rounded value shown.
 | `q30_pct` | fastp | Bases with quality ≥ 30 before filtering × 100 (the QC stage filters nothing, so this is the upload) |
 | `gc_pct` | fastp | GC content of the reads × 100 |
 | `fastp_duplicate_pct` | fastp | fastp's duplication estimate from the read sequences, before alignment × 100 |
-| `reads_in_alignment_pct` | flagstat + fastp | flagstat's primary reads / fastp's total reads × 100 (both count each mate) |
+| `read_count_difference` | flagstat + fastp | flagstat's primary records (QC-passed + QC-failed) − fastp's total reads; both count each mate. An exact integer, never rounded |
 | `reads` | flagstat | Primary records, QC-passed (each mate counts). Supplementary and secondary alignments excluded |
 | `mapped_pct` | flagstat | primary mapped / primary × 100 (samtools < 1.13 has no primary lines: mapped / in total). This is the run record's `primary_mapped_pct`, not its `mapped_pct` (flagstat's own, over all records including supplementary) |
 | `duplicate_pct` | flagstat | primary duplicates / primary × 100 (marked by `samtools markdup`, not removed) |
 | `properly_paired_pct` | flagstat | properly paired / paired in sequencing × 100. Not applicable to single-end reads |
 | `mean_depth` | mosdepth | bases / length of the `total` row (mosdepth's `mean`, unrounded). Duplicates excluded |
-| `breadth_1x_pct`, `breadth_10x_pct`, `breadth_20x_pct` | mosdepth distribution | The `total` row's fraction of the reference at ≥ 1/10/20x × 100 (duplicates excluded). mosdepth prints 2 decimals, so these are whole percentages. Deeper than the deepest base: 0; a depth missing below the maximum makes the file invalid |
+| `breadth_1x_pct`, `breadth_10x_pct`, `breadth_20x_pct` | mosdepth distribution | The `total` row's fraction of the reference at ≥ 1/10/20x × 100 (duplicates excluded). mosdepth prints 2 decimals, so these are whole percentages. mosdepth leaves out depths no base is exactly at; such a depth takes the next listed depth's value. Deeper than the deepest base: 0 |
 | `variants`, `snps`, `indels` | bcftools stats | `SN` counts of the first file (id 0) |
 | `tstv` | bcftools stats | transitions / transversions from the `TSTV` row. Undefined (not 0.00) with no transversions. The run record rounds it to 2 decimals, the verdict to 4 |
 

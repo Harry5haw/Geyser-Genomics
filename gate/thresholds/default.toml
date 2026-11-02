@@ -1,6 +1,6 @@
 # Geyser quality gate: built-in thresholds, for human germline short-read WGS at ~30x, called with
 # the pipeline's bcftools stage. Checked against HG003 and HG005 chr20 (GIAB, 2 x 151 bp, ~33-37x):
-# both pass every check with a margin (HG005 apart from reads_in_alignment_pct, see below).
+# both pass every check with a margin (HG005 apart from read_count_difference, see below).
 # Rationale and the measured values: gate/README.md.
 #
 # A config file is the whole set: a check it doesn't list is not run. Bounds are inclusive.
@@ -21,10 +21,11 @@ q30_pct = { min = 80.0 }
 # GC content of the reads, %. HG003/HG005 chr20: 43.86 / 44.07 (the human genome: ~41). Outside 35-50
 # the library is GC-biased or contaminated (bacteria range from ~25 to ~70).
 gc_pct = { min = 35.0, max = 50.0 }
-# Reads in the alignment as % of the reads fastp saw in the upload: exactly 100 when no read is lost
-# (bwa-mem2 writes unmapped reads too, markdup only marks). HG003: 100. HG005 fails it: its reads were
-# extracted from a BAM the pipeline didn't make, which had dropped mates on other chromosomes.
-reads_in_alignment_pct = { min = 100.0, max = 100.0 }
+# Reads in the alignment minus reads fastp saw in the upload, exact: 0 when no read is lost (bwa-mem2
+# writes unmapped reads too, markdup only marks). Below 0 the align stage lost reads; above 0 the
+# alignment isn't from this upload. HG003 (aligned by the pipeline's align stage): 0. The HG005 fixture
+# fails it by design: its alignment is a downloaded BAM, not made from these reads (see gate/README.md).
+read_count_difference = { min = 0, max = 0 }
 # % of reads that mapped. HG003/HG005: 99.77 / 99.82. Below 95 means the wrong reference, a
 # contaminated sample or a broken alignment.
 mapped_pct = { min = 95.0 }

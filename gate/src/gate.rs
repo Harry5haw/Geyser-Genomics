@@ -10,11 +10,12 @@ use crate::inputs::{Input, Inputs, Problem};
 /// Version of the verdict's JSON layout. Bump it on a breaking change; adding fields is not one.
 pub const VERDICT_SCHEMA: u32 = 1;
 
-/// A metric's value: counts stay integers in the JSON, ratios are rounded to 4 decimals.
+/// A metric's value: counts stay (exact) integers in the JSON, ratios are rounded to 4 decimals.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Value {
     Count(u64),
+    Difference(i64),
     Ratio(f64),
 }
 
@@ -26,6 +27,7 @@ impl Value {
     pub fn as_f64(self) -> f64 {
         match self {
             Value::Count(n) => n as f64,
+            Value::Difference(n) => n as f64,
             Value::Ratio(r) => r,
         }
     }
@@ -35,6 +37,7 @@ impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Count(n) => write!(f, "{n}"),
+            Value::Difference(n) => write!(f, "{n}"),
             Value::Ratio(r) => write!(f, "{r}"),
         }
     }
@@ -55,11 +58,11 @@ enum Observed {
 }
 
 impl Metric {
-    /// The inputs the metric is computed from (one, except reads_in_alignment_pct).
+    /// The inputs the metric is computed from (one, except read_count_difference).
     pub fn inputs(self) -> &'static [Input] {
         match self {
             Metric::Q30Pct | Metric::GcPct | Metric::FastpDuplicatePct => &[Input::Fastp],
-            Metric::ReadsInAlignmentPct => &[Input::Flagstat, Input::Fastp],
+            Metric::ReadCountDifference => &[Input::Flagstat, Input::Fastp],
             Metric::Reads | Metric::MappedPct | Metric::DuplicatePct | Metric::ProperlyPairedPct => &[Input::Flagstat],
             Metric::MeanDepth => &[Input::Mosdepth],
             Metric::Breadth1xPct | Metric::Breadth10xPct | Metric::Breadth20xPct => &[Input::MosdepthDist],
@@ -84,16 +87,7 @@ impl Metric {
         }
         let undefined = |why: &str| Observed::Undefined(format!("{self} is undefined: {why}"));
         let ratio = |v: Option<f64>, why: &str| v.map_or_else(|| undefined(why), |v| Observed::Value(Value::ratio(v)));
-        let breadth = |depth: u64| {
-            let dist = inputs.mosdepth_dist.ok().unwrap();
-            dist.breadth_pct(depth).map_or_else(
-                || {
-                    let key = Input::MosdepthDist.key(&inputs.sample_id);
-                    Observed::Invalid(format!("could not use {key}: no 'total' row for depth {depth}"))
-                },
-                |v| Observed::Value(Value::ratio(v)),
-            )
-        };
+        let breadth = |depth: u64| Observed::Value(Value::ratio(inputs.mosdepth_dist.ok().unwrap().breadth_pct(depth)));
         // No problems, so every input the metric needs is there.
         let fastp = inputs.fastp.ok();
         let (f, m, b) = (inputs.flagstat.ok(), inputs.mosdepth.ok(), inputs.bcftools.ok());
@@ -104,10 +98,11 @@ impl Metric {
                 ratio(fastp.unwrap().duplication_rate.map(|r| r * 100.0), "the report has no duplication section")
             }
             Metric::Reads => Observed::Value(Value::Count(f.unwrap().reads())),
-            Metric::ReadsInAlignmentPct => {
-                let (aligned, uploaded) = (f.unwrap().reads(), fastp.unwrap().total_reads);
-                ratio((uploaded > 0).then(|| aligned as f64 * 100.0 / uploaded as f64), "fastp saw no reads")
-            }
+            Metric::ReadCountDifference => match f.unwrap().primary_reads_all() {
+                // Exact integers: a rounded percentage would hide a few lost reads among millions.
+                Some(aligned) => Observed::Value(Value::Difference(aligned as i64 - fastp.unwrap().total_reads as i64)),
+                None => undefined("flagstat has no 'primary' line (samtools < 1.13)"),
+            },
             Metric::MappedPct => ratio(f.unwrap().mapped_pct(), "no reads"),
             Metric::DuplicatePct => ratio(f.unwrap().duplicate_pct(), "no reads"),
             Metric::ProperlyPairedPct if !f.unwrap().is_paired() => {
@@ -325,6 +320,7 @@ mod tests {
         Flagstat {
             in_total: reads,
             primary: Some(reads),
+            primary_failed: Some(0),
             mapped,
             primary_mapped: Some(mapped),
             duplicates: dups,
@@ -388,7 +384,7 @@ mod tests {
         gc_pct = { min = 41, max = 41 }
         fastp_duplicate_pct = { max = 5 }
         reads = { min = 1000 }
-        reads_in_alignment_pct = { min = 100, max = 100 }
+        read_count_difference = { min = 0, max = 0 }
         mapped_pct = { min = 99.0 }
         duplicate_pct = { max = 5.0 }
         properly_paired_pct = { min = 98.0 }
@@ -563,9 +559,16 @@ reads = { min = 1 }",
     fn reads_lost_in_alignment_fail_and_name_both_inputs() {
         let mut i = inputs();
         i.flagstat = Loaded::Ok(flagstat(990, 990, 50, 990, 980)); // fastp saw 1000
-        let v = evaluate(&config("[checks]\nreads_in_alignment_pct = { min = 100, max = 100 }"), "test", &i);
-        assert_eq!(v.reasons, ["reads_in_alignment_pct 99 is below the minimum 100"]);
-        assert_eq!(check(&v, "reads_in_alignment_pct").source, "stats/S1/flagstat.txt, qc_reports/S1.fastp.json");
+        let v = evaluate(&config("[checks]\nread_count_difference = { min = 0, max = 0 }"), "test", &i);
+        assert_eq!(v.reasons, ["read_count_difference -10 is below the minimum 0"]);
+        assert_eq!(check(&v, "read_count_difference").source, "stats/S1/flagstat.txt, qc_reports/S1.fastp.json");
+        assert_eq!(check(&v, "read_count_difference").value, Some(serde_json::json!(-10)), "an exact integer");
+
+        // One read among 20 million is still a difference (a percentage would round it to 100.0000).
+        i.fastp = Loaded::Ok(Fastp { total_reads: 20_000_001, ..i.fastp.ok().unwrap().clone() });
+        i.flagstat = Loaded::Ok(flagstat(20_000_000, 19_990_000, 50, 20_000_000, 19_980_000));
+        let v = evaluate(&config("[checks]\nread_count_difference = { min = 0, max = 0 }"), "test", &i);
+        assert_eq!(v.reasons, ["read_count_difference -1 is below the minimum 0"]);
     }
 
     #[test]
@@ -573,19 +576,31 @@ reads = { min = 1 }",
         let mut i = inputs();
         i.flagstat = Loaded::Missing("stats/S1/flagstat.txt not found".into());
         i.fastp = Loaded::Invalid("not a fastp JSON report".into());
-        let text = "on_missing = \"skip\"\n[checks]\nreads_in_alignment_pct = { min = 100 }\nsnps = { min = 1 }";
+        let text = "on_missing = \"skip\"\n[checks]\nread_count_difference = { min = 0 }\nsnps = { min = 1 }";
         let v = evaluate(&config(text), "test", &i);
         assert_eq!(v.reasons, ["could not use qc_reports/S1.fastp.json: not a fastp JSON report"]);
     }
 
     #[test]
-    fn breadth_deeper_than_any_base_is_zero_and_a_gap_in_the_distribution_is_invalid() {
+    fn breadth_deeper_than_any_base_is_zero() {
         let v = evaluate(&config("[checks]\nbreadth_1x_pct = { min = 0 }"), "test", &inputs());
         assert_eq!(v.metrics[&Metric::Breadth20xPct], Some(Value::Ratio(80.0)));
         let mut i = inputs();
-        i.mosdepth_dist = Loaded::Ok(MosdepthDist::parse("total\t5\t0.10\ntotal\t0\t1.00\n").unwrap());
-        let v = evaluate(&config("[checks]\nbreadth_10x_pct = { min = 0 }\nbreadth_1x_pct = { min = 0 }"), "test", &i);
-        assert_eq!(check(&v, "breadth_10x_pct").value, Some(serde_json::json!(0.0)), "max depth 5: nothing at 10x");
-        assert_eq!(v.reasons, ["could not use stats/S1/mosdepth.global.dist.txt: no 'total' row for depth 1"]);
+        i.mosdepth_dist = Loaded::Ok(MosdepthDist::parse("total\t1\t0.50\ntotal\t0\t1.00\n").unwrap());
+        let v = evaluate(&config("[checks]\nbreadth_10x_pct = { max = 0 }"), "test", &i);
+        assert_eq!(check(&v, "breadth_10x_pct").value, Some(serde_json::json!(0.0)), "max depth 1: nothing at 10x");
+    }
+
+    #[test]
+    fn read_count_difference_is_undefined_without_flagstat_primary_counts() {
+        let mut i = inputs();
+        let mut old = flagstat(1000, 990, 50, 1000, 980);
+        (old.primary, old.primary_failed) = (None, None);
+        i.flagstat = Loaded::Ok(old);
+        let v = evaluate(&config("[checks]\nread_count_difference = { min = 0, max = 0 }"), "test", &i);
+        assert_eq!(
+            v.reasons,
+            ["missing: read_count_difference is undefined: flagstat has no 'primary' line (samtools < 1.13)"]
+        );
     }
 }

@@ -5,6 +5,8 @@
 //!   (single-end, paired-end): fastp JSON, flagstat, mosdepth summary and distribution, bcftools stats, run record
 //! - tests/fixtures/{HG003,HG005}_chr20/: the same tools on the GIAB chr20 benchmark data (geyser-data),
 //!   the data the default thresholds were checked on. No run record (not run through run_local).
+//!   HG003's alignment is the pipeline's align stage on its reads (aligner benchmark); HG005's is the
+//!   downloaded 30x BAM, and its fastp report is of reads extracted from that BAM.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -97,7 +99,7 @@ fn synthetic_single_end_passes_its_profile() {
     assert_eq!(v["metrics"]["q30_pct"], 100.0);
     assert_eq!(v["metrics"]["gc_pct"], 49.5339);
     assert_eq!(v["metrics"]["fastp_duplicate_pct"], 3.61);
-    assert_eq!(v["metrics"]["reads_in_alignment_pct"], 100.0);
+    assert_eq!(v["metrics"]["read_count_difference"], 0);
     assert_eq!(v["metrics"]["breadth_10x_pct"], 100.0);
     assert_eq!(v["metrics"]["properly_paired_pct"], Value::Null);
     assert_eq!(check(&v, "properly_paired_pct")["status"], "not_applicable");
@@ -123,7 +125,7 @@ fn hg003_chr20_passes_the_default_thresholds() {
     let m = &v["metrics"];
     let expected = json!({
         "q30_pct": 91.3949, "gc_pct": 43.8635, "fastp_duplicate_pct": 5.7937, "reads": 18960080,
-        "reads_in_alignment_pct": 100.0, "mapped_pct": 99.7744, "duplicate_pct": 10.9884,
+        "read_count_difference": 0, "mapped_pct": 99.7744, "duplicate_pct": 10.9884,
         "properly_paired_pct": 99.0502, "mean_depth": 36.7812, "breadth_1x_pct": 99.0, "breadth_10x_pct": 98.0,
         "breadth_20x_pct": 97.0, "variants": 137668, "snps": 118410, "indels": 19258, "tstv": 1.8103,
     });
@@ -132,13 +134,14 @@ fn hg003_chr20_passes_the_default_thresholds() {
 }
 
 #[test]
-fn hg005_chr20_fails_only_on_reads_missing_from_its_alignment() {
-    // Its reads were extracted from a BAM the pipeline didn't make, which had dropped 377,078 reads whose
-    // mates map to other chromosomes: the alignment has more reads than the "upload".
+fn hg005_chr20_fails_only_on_an_alignment_that_is_not_from_its_reads() {
+    // A mismatch of inputs, which the check exists to catch: the alignment is the downloaded BAM, and the
+    // fastp report is of reads extracted from it, minus the 377,078 whose mates map to other chromosomes
+    // (samtools fastq drops them). So the alignment holds exactly 377,078 reads more than the "upload".
     let dir = giab_bucket("HG005_chr20");
     let (code, v, _) = run(dir.path(), "HG005_chr20", &[]);
     assert_eq!(code, 1);
-    assert_eq!(reasons(&v), ["reads_in_alignment_pct 102.2903 is above the maximum 100"]);
+    assert_eq!(reasons(&v), ["read_count_difference 377078 is above the maximum 0"]);
     let m = &v["metrics"];
     assert_eq!(
         [&m["q30_pct"], &m["gc_pct"], &m["mapped_pct"], &m["mean_depth"], &m["breadth_10x_pct"], &m["tstv"]],

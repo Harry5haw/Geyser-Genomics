@@ -13,7 +13,7 @@ statuses = ["succeeded"]
 q30_pct = { min = 99.0 }
 gc_pct = { min = 45.0, max = 55.0 }
 reads = { min = 10000 }
-reads_in_alignment_pct = { min = 100.0, max = 100.0 }
+read_count_difference = { min = 0, max = 0 }
 mapped_pct = { min = 99.5 }
 # Single-end marking flags ~5% of reads by chance at 30x (485 of 10,000); paired-end ~0.04%.
 duplicate_pct = { max = 6.0 }
