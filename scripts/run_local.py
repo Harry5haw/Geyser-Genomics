@@ -157,7 +157,8 @@ def pipeline_jobs(
 
     regions + shard_window: scatter-gather variant calling, as the Map state will run it (#108): one
     'variants --region' job per region, then 'variants --window' merging them into the usual VCF.
-    gate: the quality gate after the bcftools call set (it reads bcftools stats); gate_config: its
+    gate: the quality gate, last, when the run made the sample's stats (bcftools, or a DeepVariant-only
+    run's PASS-call stats, #147; not a caller added with skip_to_variants); gate_config: its
     GATE_CONFIG for this sample (None: the host's GATE_CONFIG, else the built-in thresholds).
     """
     if caller not in CALLERS:
@@ -189,7 +190,8 @@ def pipeline_jobs(
         )
     # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
     # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
-    caller_env = {} if "bcftools" in sets or skip_to_variants else {"PIPELINE_CALLER": sets[0]}
+    caller_owns_stats = "bcftools" not in sets and not skip_to_variants
+    caller_env = {"PIPELINE_CALLER": sets[0]} if caller_owns_stats else {}
     if "deepvariant" in sets:
         jobs.append(
             {
@@ -213,7 +215,9 @@ def pipeline_jobs(
                 "env": caller_env if sets == ["pangenome"] else {},
             }
         )
-    if gate and "bcftools" in sets:
+    # The gate judges the sample's stats: bcftools', or a DeepVariant-only run's (#147), as in the cloud. Not
+    # an add-on caller (--skip-to-variants without bcftools): the stats it would judge are an earlier run's.
+    if gate and ("bcftools" in sets or caller_owns_stats):
         # Last, so a failed gate (GATE_MODE=fail) can't keep DeepVariant or --check from running.
         job = {
             "name": "gate",
