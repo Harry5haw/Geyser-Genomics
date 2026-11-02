@@ -949,6 +949,34 @@ def regions_main(argv) -> int:
     return 0
 
 
+def finalize_main(argv) -> int:
+    """tasks.py finalize <srr_id> --status failed [--error ERROR] [--cause CAUSE]: close the run's record.
+
+    The state machine's failure path runs this with its Catch's Error and Cause, so a run whose failing job never
+    wrote its run-record part (killed, out of memory, timed out, a step outside the stages) still ends as failed,
+    with the failing stage and why (provenance.close_run). Best effort: always exits 0, so the failure path goes on
+    to its notification whatever happens here.
+    """
+    parser = argparse.ArgumentParser(prog="tasks.py finalize", description=finalize_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("--status", choices=["failed"], required=True)
+    parser.add_argument("--error", help="the error name, e.g. States.TaskFailed")
+    parser.add_argument("--cause", help="the error's cause (a failed Batch job's description, as JSON)")
+    args = parser.parse_args(argv)
+    try:
+        record = provenance.close_run(storage(), args.srr_id, args.status, args.error, args.cause)
+    except Exception as err:  # noqa: BLE001 - close_run never raises; storage() itself might
+        print(f"WARNING: could not close the run record for {args.srr_id}: {err}", flush=True)
+        return 0
+    failure = (record or {}).get("failure") or {}
+    print(
+        f"Run record for {args.srr_id} closed as {(record or {}).get('status', 'unknown')}"
+        f" (stage: {failure.get('stage') or 'unknown'}; {failure.get('reason') or failure.get('error') or ''})",
+        flush=True,
+    )
+    return 0
+
+
 TASKS = {
     "qc": (qc_task, False),
     "align": (align_task, True),
@@ -960,6 +988,8 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["regions"]:
         return regions_main(argv[1:])
+    if argv[:1] == ["finalize"]:
+        return finalize_main(argv[1:])
     parser = argparse.ArgumentParser(description="Run one Geyser Genomics pipeline stage.")
     parser.add_argument("task_name", choices=sorted(TASKS))
     parser.add_argument("srr_id", help="Sample ID, e.g. SRR062634")

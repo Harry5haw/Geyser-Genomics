@@ -196,6 +196,7 @@ def test_summary_is_the_short_form():
         "app_version": "v",
         "stages": {"Align": "Failure"},
         "stage_runs": {"Align": None},
+        "failed_stage": None,  # set when the state machine closed the run (test_finalize.py)
     }
 
 
