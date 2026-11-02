@@ -12,11 +12,19 @@ DeepVariant runs three steps: make_examples (CPU), call_variants (the only GPU s
 postprocess_variants (CPU). Each is timed separately and recorded as its own metric, so the
 GPU's real contribution can be reported honestly.
 
+Pangenome-aware mode (--pangenome <name>): runs Google's pangenome-aware DeepVariant
+(run_pangenome_aware_deepvariant, in the pangenome_aware_deepvariant image) on the same
+linear-reference BAM, adding a pangenome graph as a second input:
+    reads  alignments/{id}.bam, reference/{reference_name} and pangenome/{name} (a .gbz)
+    writes variants_pangenome/{id}.vcf.gz
+The graph must be built on the same reference as the BAM (e.g. HPRC v1.1 on GRCh38).
+
 Environment:
     DEEPVARIANT_MODEL_TYPE   default WGS
     DEEPVARIANT_SHARDS       make_examples parallelism, default: CPUs in the container
     DEEPVARIANT_EXTRA_ARGS   extra run_deepvariant flags, e.g. --disable_small_model=true
     RUN_DEEPVARIANT          path to run_deepvariant (default: the image's copy)
+    RUN_PANGENOME_DEEPVARIANT  path to run_pangenome_aware_deepvariant (default: the image's copy)
 """
 
 import argparse
@@ -31,35 +39,51 @@ import time
 from tasks import ensure_reference_local, keys_for, metrics, run_shell, storage, timed_stage, work_dir
 
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
+RUN_PANGENOME_DEEPVARIANT = os.environ.get("RUN_PANGENOME_DEEPVARIANT",
+                                           "/opt/deepvariant/bin/run_pangenome_aware_deepvariant")
 
 # run_deepvariant prints this banner, then the command, before each step.
 BANNER = "***** Running the command:*****"
 # Match the binary path: later commands also mention 'make_examples' / 'call_variants' in file names.
-STEP_RE = re.compile(r"/(make_examples|call_variants|postprocess_variants)(?:\s|$)")
-STEP_METRICS = {
-    "make_examples": "DeepVariant.MakeExamples",
-    "call_variants": "DeepVariant.CallVariants",
-    "postprocess_variants": "DeepVariant.PostprocessVariants",
+# The pangenome-aware image may suffix the binary names (e.g. make_examples_pangenome_aware_dv).
+STEP_RE = re.compile(r"/(make_examples|call_variants|postprocess_variants)\w*(?:\s|$)")
+STEP_SUFFIXES = {
+    "make_examples": "MakeExamples",
+    "call_variants": "CallVariants",
+    "postprocess_variants": "PostprocessVariants",
 }
+STAGE_NAME = {False: "DeepVariant", True: "PangenomeDeepVariant"}
+STEP_METRICS = {step: f"{STAGE_NAME[False]}.{suffix}" for step, suffix in STEP_SUFFIXES.items()}
+PANGENOME_STEP_METRICS = {step: f"{STAGE_NAME[True]}.{suffix}" for step, suffix in STEP_SUFFIXES.items()}
 
 
-def deepvariant_keys(sample_id: str) -> dict:
-    return {
-        "bam": keys_for(sample_id)["bam"],
-        "vcf": f"variants_deepvariant/{sample_id}.vcf.gz",
-    }
+def deepvariant_keys(sample_id: str, pangenome: str = None) -> dict:
+    keys = {"bam": keys_for(sample_id)["bam"]}
+    if pangenome:
+        keys["vcf"] = f"variants_pangenome/{sample_id}.vcf.gz"
+        keys["pangenome"] = f"pangenome/{pangenome}"
+    else:
+        keys["vcf"] = f"variants_deepvariant/{sample_id}.vcf.gz"
+    return keys
 
 
 def build_run_deepvariant_cmd(ref, bam, vcf, intermediate_dir, sample_name, num_shards,
-                              model_type="WGS", extra_args=""):
-    return [
-        RUN_DEEPVARIANT,
+                              model_type="WGS", extra_args="", pangenome=None):
+    """run_deepvariant, or run_pangenome_aware_deepvariant when pangenome (a local .gbz path) is given."""
+    cmd = [
+        RUN_PANGENOME_DEEPVARIANT if pangenome else RUN_DEEPVARIANT,
         f"--model_type={model_type}",
         f"--ref={ref}",
         f"--reads={bam}",
+    ]
+    if pangenome:
+        cmd.append(f"--pangenome={pangenome}")
+    return cmd + [
         f"--output_vcf={vcf}",
         f"--intermediate_results_dir={intermediate_dir}",
-        f"--sample_name={sample_name}",
+        # run_pangenome_aware_deepvariant (1.9.0) has no --sample_name: it names the reads' sample separately
+        # from the pangenome panel's (--sample_name_pangenome, left to its default).
+        f"--sample_name_reads={sample_name}" if pangenome else f"--sample_name={sample_name}",
         f"--num_shards={num_shards}",
     ] + shlex.split(extra_args or "")
 
@@ -139,19 +163,26 @@ def gpu_name():
     return names[0].strip() if names else None
 
 
-@timed_stage("DeepVariant")
-def deepvariant_task(sample_id, reference_name):
-    keys = deepvariant_keys(sample_id)
+def _call_variants(sample_id, reference_name, pangenome=None):
+    """Shared body of the linear and pangenome-aware stages. pangenome: graph name under pangenome/."""
+    label = STAGE_NAME[bool(pangenome)]
+    step_metrics = PANGENOME_STEP_METRICS if pangenome else STEP_METRICS
+    keys = deepvariant_keys(sample_id, pangenome)
     wd = work_dir(sample_id)
     try:
         bam = os.path.join(wd, f"{sample_id}.bam")
-        vcf = os.path.join(wd, f"{sample_id}.deepvariant.vcf.gz")
+        vcf = os.path.join(wd, f"{sample_id}.{'pangenome' if pangenome else 'deepvariant'}.vcf.gz")
         intermediate = os.path.join(wd, "intermediate")
         os.makedirs(intermediate)
 
         storage().download(keys["bam"], bam)
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         index_bam(bam)  # DeepVariant needs random access; the bcftools path never indexed
+        graph = None
+        if pangenome:
+            graph = os.path.join(wd, os.path.basename(pangenome))
+            print(f"Fetching pangenome graph {storage().describe(keys['pangenome'])}", flush=True)
+            storage().download(keys["pangenome"], graph)
 
         shards = int(os.environ.get("DEEPVARIANT_SHARDS") or os.cpu_count() or 1)
         gpu = gpu_name()
@@ -159,41 +190,60 @@ def deepvariant_task(sample_id, reference_name):
             ref, bam, vcf, intermediate, sample_id, shards,
             model_type=os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS"),
             extra_args=os.environ.get("DEEPVARIANT_EXTRA_ARGS", ""),
+            pangenome=graph,
         )
         code, events, end_time = run_streaming(cmd)
         if code != 0:
-            raise RuntimeError(f"run_deepvariant exited with code {code}")
+            raise RuntimeError(f"{os.path.basename(cmd[0])} exited with code {code}")
 
         timings = parse_step_timings(events, end_time)
-        print(f"\nDeepVariant step timings for {sample_id} (shards={shards}, gpu={gpu or 'none'}):")
+        print(f"\n{label} step timings for {sample_id} (shards={shards}, gpu={gpu or 'none'}):")
         for step, seconds in timings.items():
             print(f"  {step:<22}{seconds:9.1f}s")
             try:
-                metrics().record(STEP_METRICS[step], sample_id, "Success", seconds)
+                metrics().record(step_metrics[step], sample_id, "Success", seconds)
             except Exception as err:  # noqa: BLE001 - metrics are best effort
                 print(f"WARNING: could not record metric: {err}", flush=True)
         counts = parse_example_counts(events)
         print(f"  examples sent to call_variants: {counts['examples']}; "
               f"called by the small model in make_examples (CPU): {counts['small_model_calls']}")
-        missing = [s for s in STEP_METRICS if s not in timings]
+        missing = [s for s in step_metrics if s not in timings]
         if missing:
-            print(f"WARNING: no timing found for {missing}; run_deepvariant output format may have changed")
+            print(f"WARNING: no timing found for {missing}; {os.path.basename(cmd[0])} output format may have changed")
 
         if not os.path.isfile(vcf) or os.path.getsize(vcf) == 0:
-            raise RuntimeError(f"DeepVariant produced no VCF at {vcf}")
+            raise RuntimeError(f"{label} produced no VCF at {vcf}")
         storage().upload(vcf, keys["vcf"])
         print(f"Uploaded {storage().describe(keys['vcf'])}")
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
 
+@timed_stage(STAGE_NAME[False])
+def deepvariant_task(sample_id, reference_name):
+    _call_variants(sample_id, reference_name)
+
+
+@timed_stage(STAGE_NAME[True])
+def pangenome_deepvariant_task(sample_id, reference_name, pangenome):
+    _call_variants(sample_id, reference_name, pangenome)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Call variants with DeepVariant (one pipeline stage).")
     parser.add_argument("srr_id", help="Sample ID, e.g. SRR062634")
     parser.add_argument("reference_name", help="Reference FASTA name under reference/, e.g. chr20.fa")
+    parser.add_argument("--pangenome", metavar="GBZ",
+                        help="pangenome graph name under pangenome/ (e.g. hprc-v1.1-mc-grch38.gbz): "
+                             "run pangenome-aware DeepVariant and write variants_pangenome/<id>.vcf.gz")
     args = parser.parse_args(argv)
-    deepvariant_task(args.srr_id, args.reference_name)
-    print(f"Task 'deepvariant' completed for sample '{args.srr_id}'.")
+    if args.pangenome:
+        pangenome_deepvariant_task(args.srr_id, args.reference_name, args.pangenome)
+        task = "pangenome"
+    else:
+        deepvariant_task(args.srr_id, args.reference_name)
+        task = "deepvariant"
+    print(f"Task '{task}' completed for sample '{args.srr_id}'.")
     return 0
 
 

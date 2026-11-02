@@ -35,13 +35,13 @@
   <tr>
     <td align="center" width="20%"><h3>4</h3>containerised<br/>pipeline stages</td>
     <td align="center" width="20%"><h3>10 / 10</h3>planted SNPs recovered<br/>on every push</td>
-    <td align="center" width="20%"><h3>0.996</h3>DeepVariant recall<br/>on HG003 chr20*</td>
+    <td align="center" width="20%"><h3>0.9977</h3>DeepVariant SNP F1<br/>on HG003 chr20*</td>
     <td align="center" width="20%"><h3>3.3×</h3>faster neural-network step<br/>on an RTX 3080 GPU</td>
     <td align="center" width="20%"><h3>0</h3>stored AWS keys<br/>in CI (OIDC)</td>
   </tr>
 </table>
 
-<sub>* Indicative: exact-match comparison against GIAB v4.2.1, not a hap.py benchmark. See <a href="#deepvariant-on-a-local-nvidia-gpu">DeepVariant</a>.</sub>
+<sub>* hap.py (vcfeval, PASS only) against GIAB v4.2.1 confident regions, the same method as Google's case studies. Linear and pangenome-aware DeepVariant score the same here. See <a href="#deepvariant-on-a-local-nvidia-gpu">DeepVariant</a>.</sub>
 
 </div>
 
@@ -75,7 +75,7 @@ In the cloud design, uploading a file to S3 starts the run. AWS Step Functions t
 flowchart LR
     IN(["🧬 FASTQ.gz<br/>millions of raw reads"]) --> D["📦 Decompress"]
     D --> Q["🔍 Quality control<br/>FastQC"]
-    Q --> A["🧭 Align to reference<br/>BWA-MEM + samtools"]
+    Q --> A["🧭 Align to reference<br/>BWA-MEM + samtools sort + markdup"]
     A --> V["🧪 Call variants<br/>bcftools"]
     V --> OUT(["📄 VCF.gz<br/>list of variants"])
     A -.->|"alternative caller"| DV["🧠 DeepVariant<br/>GPU"]
@@ -200,7 +200,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → BWA-MEM alignment (sorted BAM) → bcftools variant calling. |
+| **Bioinformatics Pipeline** | ✅ Verified locally | Decompress → FastQC → BWA-MEM alignment (sorted, duplicate-marked BAM) → bcftools variant calling. |
 | **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
 | **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
 | **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs the four stages in order on AWS Batch (Fargate), with failure notifications via SNS. |
@@ -287,10 +287,16 @@ python scripts/make_test_data.py
 
 # 3. Run all four stages in order, just as Step Functions would, then check the VCF against the truth
 python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --check
+
+# Paired-end instead: writes PAIRED001_R1.fastq.gz and PAIRED001_R2.fastq.gz
+python scripts/make_test_data.py --sample PAIRED001 --paired
+python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --check
 ```
 
 > [!TIP]
 > Expected result: `Truth check (bcftools): 10/10 planted SNPs called, 0 unexpected calls`
+>
+> `--duplicate-rate 0.1` plants exact read (or pair) copies, like PCR duplicates. The align stage's `samtools markdup` flags them, and the SNP calls stay the same.
 
 **Tests:**
 
@@ -329,7 +335,10 @@ Variant callers like DeepVariant find variants by comparing reads with a **refer
 A **pangenome** reference is a graph that combines many people's genomes. The Human Pangenome Reference Consortium's first draft (*Nature*, 2023) combines 47 genomes chosen to better reflect global diversity. Google and UC Santa Cruz built a graph-based variant-calling workflow around DeepVariant and reported improved accuracy across several thousand samples.
 
 > [!NOTE]
-> This project currently aligns reads to the linear reference (BWA-MEM against chromosome 20), and DeepVariant runs in its standard mode. Pangenome-aware calling is the project's top priority on the [Roadmap](#️-roadmap). It is not built yet.
+> **Where this project is:**
+> - **Done:** pangenome-aware variant calling (Google's pangenome-aware DeepVariant with the HPRC graph) runs **locally on the GPU** and is benchmarked on HG003 chr20 (results below).
+> - **Still linear:** reads are aligned to GRCh38 with BWA-MEM (not to the graph).
+> - **Not yet:** whole-genome graphs, other samples, and runs in the cloud. These are next on the [Roadmap](#️-roadmap) (#51).
 
 #### Running it
 
@@ -347,17 +356,50 @@ python scripts/run_local.py --sample NA12878_S1 --reference ucsc.hg19.chr20.unit
 python scripts/fetch_dv_testdata.py --dataset hg003-chr20
 python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa \
     --caller deepvariant --skip-to-variants --check --dv-memory 12g
+
+# Pangenome-aware DeepVariant (GPU image) with the HPRC v1.1 graph cut down to chr20 (built locally with vg)
+docker build -f app-deepvariant/Dockerfile --build-arg DV_TAG=pangenome_aware_deepvariant-1.10.0-gpu \
+    -t geyser-deepvariant-pangenome .
+python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome
+DEEPVARIANT_SHARDS=6 DEEPVARIANT_EXTRA_ARGS="--call_variants_extra_args=batch_size=256" \
+python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa \
+    --caller pangenome --skip-to-variants --dv-memory 14g
+
+# Score every caller's VCF with hap.py (vcfeval engine, PASS only, GIAB confident regions)
+python scripts/benchmark_happy.py --sample HG003_chr20 --reference GRCh38_chr20.fa --region chr20
 ```
 
-**Accuracy:**
+**Accuracy: HG003 chr20, hap.py.** HG003 is NovaSeq PCR-free 35x, scored against GIAB v4.2.1 confident regions. These are the same settings Google's case studies use (`--engine=vcfeval --pass-only`):
 
-| Data | bcftools | DeepVariant |
-| :--- | :--- | :--- |
-| Synthetic | 10/10 planted SNPs, 0 extra calls | 10/10 planted SNPs, 0 extra calls (with or without its small model) |
-| NA12878 slice, GIAB confident regions | 45 TP, 4 FN, 4 FP | 49 TP, 0 FN, 0 FP |
-| HG003 whole chr20, GIAB v4.2.1 confident regions | 70,773 TP, 10,737 FN, 11,077 FP (recall 0.868, precision 0.865) | 81,172 TP, 338 FN, 108 FP (recall 0.996, precision 0.999) |
+| Caller | Type | Missed (FN) | False (FP) | Recall | Precision | F1 |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| bcftools | SNP | 361 | 835 | 0.9949 | 0.9882 | 0.9915 |
+| bcftools | Indel | 582 | 487 | 0.9452 | 0.9562 | 0.9507 |
+| DeepVariant 1.10 (linear) | SNP | 263 | 52 | 0.9963 | 0.9993 | **0.99775** |
+| DeepVariant 1.10 (linear) | Indel | 48 | 15 | 0.9955 | 0.9986 | 0.99706 |
+| Pangenome-aware DeepVariant 1.10 | SNP | **242** | 78 | **0.9966** | 0.9989 | 0.99772 |
+| Pangenome-aware DeepVariant 1.10 | Indel | **42** | 18 | **0.9960** | 0.9984 | **0.99721** |
 
-The real-data comparisons use exact (position, ref, alt) matching without variant normalisation, so they are indicative only. They are not a hap.py benchmark. This method penalises bcftools' indel representation in particular, so its true gap is probably smaller. DeepVariant's accuracy counts were identical on the GPU and the CPU. With the small model off, they changed by one: 81,173 TP, 337 FN, 107 FP.
+- **The setup reproduces Google's published result.** Their pangenome-aware BWA case study on the same BAM reports SNP F1 0.997746 and indel F1 0.996788 (version 1.9, whole-genome graph). Here: 0.997718 and 0.997206, with a chr20-only graph and version 1.10.
+- **The pangenome finds variants the linear reference misses.** Missed SNPs fall by 8% (263 → 242) and missed indels by 13% (48 → 42).
+- **It also makes slightly more false calls** (SNPs 52 → 78). On this one sample the total error count is level: 378 for linear against 380 for pangenome-aware.
+- **HG003 is a hard case for showing a benefit.** It is Ashkenazi Jewish, an ancestry the standard reference already represents well. The preprint reports the largest gains with more diverse samples, whole genomes (most segmental duplications are on other chromosomes) and reads aligned to the graph. Those benchmarks are next.
+- **bcftools is much better than earlier exact-match counts suggested** (SNP F1 0.99, not 0.87). Exact (position, ref, alt) matching without normalisation heavily penalised its indel representation.
+
+Small datasets (exact-match counts): synthetic data, 10/10 planted SNPs and 0 extra calls for both callers; NA12878 slice, bcftools 45 TP / 4 FN / 4 FP and DeepVariant 49 TP / 0 FN / 0 FP. DeepVariant's accuracy is identical on GPU and CPU.
+
+**Pangenome-aware DeepVariant: time and memory** (HG003 chr20, RTX 3080 10 GB, 16 CPUs, 6 `make_examples` workers):
+
+| Step | Time | Notes |
+| :--- | ---: | :--- |
+| `make_examples` (CPU) | 936 s | Pileups from the reads and from the pangenome haplotypes at every candidate site |
+| `call_variants` (GPU) | 257 s | 231,085 examples, about 3× linear DeepVariant's 79,759. Pangenome mode has no small model, so every candidate reaches the network. |
+| `postprocess_variants` | 21 s | |
+| **Stage total** | **1,241 s (20.7 min)** | |
+
+- **Graph size drives memory.** HPRC's whole-genome graph (3.29 GB file) takes about 10.7 GB of shared memory once loaded, plus about 2 GB per `make_examples` worker. That ran out of memory in a 22 GB container. The chr20 graph built by `fetch_dv_testdata.py` (72 MB, same 46 samples / 90 haplotypes) loads in under a second, and the container peaked at about 8.4 GB.
+- **GPU memory.** At the default batch size (1,024), `call_variants` ran out of memory on the 10 GB card (it tried to allocate 2.7 GB blocks). At batch 256 it fits. A 24 GB cloud GPU (A10G, L4) should run the default.
+- **Known issue.** After the out-of-memory error, Google's wrapper hung instead of exiting. In the cloud, the stage needs a job timeout.
 
 **Timing: whole chromosome.** HG003 chr20, 35x, measured on an RTX 3080 (10 GB) under Docker Desktop/WSL2 with 16 CPUs, one run per configuration. These are times for the DeepVariant stage only:
 
@@ -420,7 +462,7 @@ pip install -r requirements-dev.txt                 # includes web/requirements.
 python web/dev.py                                   # UI + local worker on http://127.0.0.1:8000
 ```
 
-**How it fits the architecture.** The UI only reads and writes storage keys, through `app/storage.py`, and never runs the pipeline itself. An upload is stored at `raw_reads/<id>.fastq.gz`, and that key is the trigger:
+**How it fits the architecture.** The UI only reads and writes storage keys, through `app/storage.py`, and never runs the pipeline itself. An upload is stored at `raw_reads/<id>.fastq.gz`, or at `raw_reads/<id>_R1.fastq.gz` and `_R2.fastq.gz` when a second (R2) file is given. That key is the trigger, and a paired-end sample only starts once both mates exist:
 
 | | Cloud | Offline |
 | :--- | :--- | :--- |
@@ -474,14 +516,16 @@ Once deployed, a run is started by uploading a file.
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
-3.  **Monitor the Execution:** The upload automatically starts the Step Functions state machine. You can follow its progress in the AWS Step Functions console.
+    *   **Paired-end:** upload both mates as `raw_reads/<id>_R1.fastq.gz` and `raw_reads/<id>_R2.fastq.gz`, in either order. The run starts once both are there, and only once. Only `_R1`/`_R2` mark mates: rename SRA-style `_1`/`_2` files before uploading. The stages detect the layout from these keys.
+    *   The trigger Lambda needs `s3:GetObject` on `raw_reads/*` and `s3:ListBucket` to check for the other mate. That IAM change is not applied yet (see [#57](https://github.com/Harry5haw/Geyser-Genomics/issues/57)). Until it is, paired-end uploads fail in the cloud, while single-end works as before.
+3.  **Monitor the Execution:** The upload automatically starts the Step Functions state machine. You can follow its progress in the AWS Step Functions console, where each run is named after its sample and upload time, e.g. `SRR062634-20261101T123456Z-1a2b3c4d`. The same name appears in the Batch job names. If S3 delivers the same upload event twice, it still starts only one run. A paired-end run is named after the later of its two uploads.
 4.  **Retrieve Results:** When the run succeeds, the outputs are in the same bucket:
 
 | Stage | Output |
 | :--- | :--- |
-| Decompress | `decompressed/<id>.fastq` |
-| Quality control | `qc_reports/<id>_fastqc.html` and `.zip` |
-| Alignment | `alignments/<id>.bam` (coordinate-sorted) |
+| Decompress | `decompressed/<id>.fastq` (paired-end: `<id>_R1.fastq` and `<id>_R2.fastq`) |
+| Quality control | `qc_reports/<id>_fastqc.html` and `.zip` (paired-end: one report per mate, `<id>_R1_fastqc.html` ...) |
+| Alignment | `alignments/<id>.bam`, one per sample (coordinate-sorted, duplicates marked with samtools markdup; paired-end runs `samtools fixmate -m` first) |
 | Variant calling | `variants/<id>.vcf.gz` |
 
 ### 3. Monitoring
@@ -528,7 +572,8 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | ✅ | **CI hardening** | OIDC with separate dev and prod roles, read-only Terraform roles, prod restricted to `main` |
 | ✅ | **DeepVariant on a local GPU** | Measured on a whole chromosome |
 | ✅ | **Web UI** | Works offline |
-| 🎯 | **Pangenome-aware DeepVariant** | Use the HPRC pangenome graph in addition to the linear reference when calling variants, and benchmark it on HG003 chr20 against linear DeepVariant and bcftools. Local first. **Top priority** ([#51](../../issues/51)) |
+| ✅ | **Pangenome-aware DeepVariant (local)** | GPU, HPRC graph cut to chr20, hap.py benchmark on HG003 chr20 against linear DeepVariant and bcftools; reproduces Google's published result |
+| 🎯 | **Pangenome: where it should help most** | Benchmark a sample of under-represented ancestry, align reads to the graph (`vg giraffe`), newer HPRC graph, whole genome. **Top priority** ([#51](../../issues/51)) |
 | 🔜 | **First cloud run since the hardening** | One small sample through S3 → Step Functions → Batch, confirming the VCF |
 | 🔜 | **Monitoring** | Dashboard and alarm are scripted and tested offline; deploy them after the first cloud run |
 | 🔜 | **DeepVariant in the cloud** | GPU environment in the public subnet, larger instances, stage added to Step Functions |

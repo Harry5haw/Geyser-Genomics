@@ -94,6 +94,115 @@ def test_s3_list_keys_follows_pagination():
         assert list(s.list_keys("raw_reads/")) == ["raw_reads/A.fastq.gz", "raw_reads/B.fastq.gz"]
 
 
+class _NonSeekable(io.RawIOBase):
+    """Like botocore's StreamingBody (an S3 GetObject body): forward reads only."""
+
+    def __init__(self, data):
+        self._buf = io.BytesIO(data)
+
+    def readable(self):
+        return True
+
+    def readinto(self, b):
+        return self._buf.readinto(b)
+
+    def seekable(self):
+        return False
+
+
+def _gzip_over_s3_body(data):
+    """What decompress uploads: a GzipFile over an S3 body, wrapped so it is read front to back."""
+    import gzip
+
+    from storage import ForwardOnlyStream
+
+    return ForwardOnlyStream(gzip.GzipFile(fileobj=_NonSeekable(gzip.compress(data)), mode="rb"))
+
+
+def _capture_bodies(s3, operation):
+    bodies = []
+
+    def capture(params, **kwargs):
+        bodies.append(params["Body"].read())
+        params["Body"].seek(0)
+
+    s3._client.meta.events.register(f"before-parameter-build.s3.{operation}", capture)
+    return bodies
+
+
+def test_s3_upload_of_gzip_over_s3_body_never_seeks():
+    # #71: the first cloud run died in decompress. GzipFile says seekable() even over a StreamingBody;
+    # s3transfer seeked it to measure the size, and the backward seek raised io.UnsupportedOperation.
+    # Responses are stubbed without expected params, so the test doesn't depend on which extra
+    # arguments (checksums etc.) the installed boto3 adds.
+    from botocore.stub import Stubber
+
+    from storage import S3Storage
+
+    fastq = b"@r1\nACGTACGT\n+\nIIIIIIII\n" * 500
+    s = S3Storage("bucket", "eu-west-2")
+    bodies = _capture_bodies(s, "PutObject")
+    with Stubber(s._client) as stub:
+        stub.add_response("put_object", {})
+        s.upload_stream(_gzip_over_s3_body(fastq), "decompressed/X.fastq")
+        stub.assert_no_pending_responses()
+    assert bodies == [fastq]
+
+
+def test_s3_upload_of_large_gzip_over_s3_body_goes_multipart_without_seeking():
+    # Real FASTQs exceed the 8 MiB multipart threshold, which takes s3transfer's other (multipart) path.
+    import os
+
+    from botocore.stub import Stubber
+
+    from storage import S3Storage
+
+    data = os.urandom(1024) * (9 * 1024)  # 9 MiB, compresses well
+    s = S3Storage("bucket", "eu-west-2")
+    parts = _capture_bodies(s, "UploadPart")
+    with Stubber(s._client) as stub:
+        stub.add_response("create_multipart_upload", {"UploadId": "u"})
+        stub.add_response("upload_part", {"ETag": '"e1"'})
+        stub.add_response("complete_multipart_upload", {})
+        s.upload_stream(_gzip_over_s3_body(data), "decompressed/BIG.fastq")
+        stub.assert_no_pending_responses()
+    assert b"".join(parts) == data
+
+
+def test_s3_upload_stream_passes_the_large_part_config(monkeypatch):
+    # An unknown-size upload is cut into multipart_chunksize parts, max 10,000: this sets the size cap.
+    from storage import S3Storage
+
+    s = S3Storage("bucket", "eu-west-2")
+    seen = {}
+    monkeypatch.setattr(s._client, "upload_fileobj", lambda f, b, k, Config=None: seen.update(config=Config))
+    s.upload_stream(io.BytesIO(b"x"), "k")
+    config = seen["config"]
+    assert config.multipart_chunksize * 10_000 >= 600 * 2**30  # a decompressed 30x FASTQ fits
+    assert config.multipart_chunksize * config.max_in_memory_upload_chunks <= 512 * 2**20  # 4 GB job
+
+
+def test_forward_only_stream_fills_each_read():
+    # s3transfer makes one multipart part per read; a short read would make a part under S3's 5 MiB minimum.
+    from storage import ForwardOnlyStream
+
+    class Trickle(io.RawIOBase):
+        def __init__(self, data):
+            self._buf = io.BytesIO(data)
+
+        def readable(self):
+            return True
+
+        def readinto(self, b):
+            return self._buf.readinto(memoryview(b)[:3])
+
+    stream = ForwardOnlyStream(Trickle(b"abcdefghij" * 3))
+    assert not stream.seekable()
+    assert stream.read(10) == b"abcdefghij"
+    assert stream.read(25) == b"abcdefghij" * 2
+    assert stream.read(10) == b""
+
+
 class _BrokenStream(io.RawIOBase):
     def readinto(self, buf):
         raise IOError("connection dropped")
@@ -115,3 +224,56 @@ def test_overwrite_replaces_whole_object_and_hides_temp_files(tmp_path):
         assert fh.read() == b"v2"
     (tmp_path / "runs" / ".Y.json.123.part").write_bytes(b"partial")
     assert list(s.list_keys("runs/")) == ["runs/X.json"]
+
+
+def _client_error(code):
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code, "Message": code}}, "op")
+
+
+@pytest.mark.parametrize("code", ["404", "NoSuchKey", "NotFound"])
+def test_s3_missing_object_maps_to_object_not_found(code, monkeypatch, tmp_path):
+    from storage import S3Storage
+
+    s = S3Storage("bucket", "eu-west-2")
+
+    def raise_missing(*a, **k):
+        raise _client_error(code)
+
+    for method in ("head_object", "download_file", "get_object"):
+        monkeypatch.setattr(s._client, method, raise_missing)
+
+    assert s.exists("raw_reads/A.fastq.gz") is False
+    with pytest.raises(ObjectNotFound):
+        s.download("raw_reads/A.fastq.gz", str(tmp_path / "a"))
+    with pytest.raises(ObjectNotFound):
+        s.open_read("raw_reads/A.fastq.gz")
+
+
+def test_s3_permission_errors_are_not_mistaken_for_missing_objects(monkeypatch, tmp_path):
+    # A 403 means bad credentials or IAM, not "file absent": it must surface, not become False/ObjectNotFound.
+    from botocore.exceptions import ClientError
+
+    from storage import S3Storage
+
+    s = S3Storage("bucket", "eu-west-2")
+
+    def raise_denied(*a, **k):
+        raise _client_error("403")
+
+    for method in ("head_object", "download_file", "get_object"):
+        monkeypatch.setattr(s._client, method, raise_denied)
+
+    with pytest.raises(ClientError):
+        s.exists("k")
+    with pytest.raises(ClientError):
+        s.download("k", str(tmp_path / "k"))
+    with pytest.raises(ClientError):
+        s.open_read("k")
+
+
+def test_s3_describe_is_an_s3_url():
+    from storage import S3Storage
+
+    assert S3Storage("bucket", "eu-west-2").describe("variants/S1.vcf.gz") == "s3://bucket/variants/S1.vcf.gz"

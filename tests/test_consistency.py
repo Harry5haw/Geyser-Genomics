@@ -24,3 +24,14 @@ def test_state_machine_stages_exist_in_tasks():
     for stage, needs_ref in state_machine_stages():
         assert stage in tasks.TASKS
         assert tasks.TASKS[stage][1] == needs_ref, f"reference argument mismatch for '{stage}'"
+
+
+def test_trigger_and_tasks_agree_on_raw_key_names(trigger):
+    # The Lambda zip can't import tasks.py, so the _R1/_R2 convention lives in both. Keep them in step.
+    assert trigger.MATES == tasks.MATES
+    single = tasks.keys_for("S1")
+    paired = tasks.keys_for("S1", "paired")
+    assert trigger.parse_raw_key(single["raw"]) == ("S1", None)
+    for mate in tasks.MATES:
+        assert trigger.parse_raw_key(paired[f"raw_{mate}"]) == ("S1", mate)
+    assert trigger.mate_key(paired["raw_R1"]) == paired["raw_R2"]

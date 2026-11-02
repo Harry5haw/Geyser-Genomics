@@ -53,3 +53,8 @@ output "geyser_github_terraform_role_prod_arn" {
   description = "The ARN of the IAM role for the Terraform CI/CD workflow (prod)."
   value       = aws_iam_role.geyser_github_terraform_role_prod.arn
 }
+
+output "claude_role_arn" {
+  description = "Role Claude Code assumes for terraform/aws (profile geyser-claude in ~/.aws/config). See docs/design/claude-guardrails.md."
+  value       = aws_iam_role.claude.arn
+}

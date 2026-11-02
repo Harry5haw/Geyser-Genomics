@@ -94,7 +94,8 @@ jobs:
           EOF
 
       - name: Terraform Init
-        run: terraform init -input=false -lock-timeout=5m
+        # One state per environment (#45): backend-dev.hcl / backend-prod.hcl pick the key.
+        run: terraform init -input=false -lock-timeout=5m -backend-config=backend-${{ inputs.environment }}.hcl
 
       - name: Terraform Validate
         run: terraform validate -no-color

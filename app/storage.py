@@ -85,6 +85,58 @@ class LocalStorage:
         yield from sorted(keys)
 
 
+# Unknown-size (forward-only) uploads are split into parts of this size, and S3 allows at most
+# 10,000 parts: 64 MiB caps one upload at 625 GiB (the 8 MiB default would cap it at 78 GiB, less
+# than a decompressed 30x FASTQ). s3transfer holds at most _STREAM_MAX_CHUNKS parts in memory.
+_STREAM_CHUNK_BYTES = 64 * 1024 * 1024
+_STREAM_MAX_CHUNKS = 6  # <= 384 MiB of the 4 GB Batch job
+
+
+class ForwardOnlyStream:
+    """Read-only view of a stream that says it cannot seek, so uploaders read it front to back.
+
+    Wrap any stream whose ``seekable()`` is wrong, above all ``gzip.GzipFile`` over a network body:
+    it reports True, but seeking backwards rewinds the body underneath, which an S3 ``StreamingBody``
+    cannot do (#71). ``read(n)`` keeps reading until it has ``n`` bytes or reaches EOF, because
+    s3transfer turns each read into one multipart part and parts other than the last must be >= 5 MiB.
+    """
+
+    def __init__(self, stream: BinaryIO):
+        self._stream = stream
+
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            return self._stream.read()
+        chunks, remaining = [], size
+        while remaining:
+            chunk = self._stream.read(remaining)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+
+_stream_config = None
+
+
+def _stream_transfer_config():
+    """Built once, lazily, so local runs never import boto3."""
+    global _stream_config
+    if _stream_config is None:
+        from boto3.s3.transfer import TransferConfig
+
+        _stream_config = TransferConfig(multipart_chunksize=_STREAM_CHUNK_BYTES)
+        _stream_config.max_in_memory_upload_chunks = _STREAM_MAX_CHUNKS
+    return _stream_config
+
+
 class S3Storage:
     """Keys are objects in one S3 bucket. boto3 is imported lazily so local runs never need it."""
 
@@ -137,7 +189,9 @@ class S3Storage:
             raise
 
     def upload_stream(self, stream: BinaryIO, key: str) -> None:
-        self._client.upload_fileobj(stream, self.bucket, key)
+        """Upload a stream. A seekable one is sized and sent in parallel parts; wrap a stream whose
+        ``seekable()`` lies (a GzipFile over an S3 body) in ForwardOnlyStream so it is never seeked."""
+        self._client.upload_fileobj(stream, self.bucket, key, Config=_stream_transfer_config())
 
     def list_keys(self, prefix: str = "") -> Iterator[str]:
         """Yield every key starting with ``prefix`` (S3 returns them in sorted order)."""

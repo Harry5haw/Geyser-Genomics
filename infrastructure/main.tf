@@ -169,12 +169,12 @@ resource "aws_iam_role_policy_attachment" "s3_access" {
 ################################################################################
 
 resource "aws_batch_compute_environment" "geyser_fargate" {
-  compute_environment_name = "${var.project_name}-fargate-env"
-  type                     = "MANAGED"
-  service_role             = aws_iam_role.geyser_batch_service_role.arn
+  name         = "${var.project_name}-fargate-env" # provider 6: was compute_environment_name
+  type         = "MANAGED"
+  service_role = aws_iam_role.geyser_batch_service_role.arn
   compute_resources {
     type      = "FARGATE"
-    max_vcpus = 16
+    max_vcpus = var.fargate_max_vcpus # spend-rate cap, see docs/design/claude-guardrails.md
     # Public subnet + assignPublicIp (job definition) so tasks reach ECR, S3 and
     # CloudWatch through the internet gateway without a NAT gateway. The VPC
     # default security group allows no inbound traffic from the internet.

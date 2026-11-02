@@ -58,10 +58,10 @@ resource "aws_security_group" "batch_gpu_compute" {
 
 # The managed EC2 compute environment for running GPU jobs.
 resource "aws_batch_compute_environment" "gpu_env" {
-  compute_environment_name = "${var.project_name}-gpu-env-${var.environment}"
-  type                     = "MANAGED"
-  state                    = "ENABLED"
-  service_role             = aws_iam_role.geyser_batch_service_role.arn
+  name         = "${var.project_name}-gpu-env-${var.environment}" # provider 6: was compute_environment_name
+  type         = "MANAGED"
+  state        = "ENABLED"
+  service_role = aws_iam_role.geyser_batch_service_role.arn
 
   compute_resources {
     type                = "EC2"
@@ -73,7 +73,8 @@ resource "aws_batch_compute_environment" "gpu_env" {
     instance_type = ["g4dn.xlarge", "g5.xlarge", "g5.2xlarge"]
 
     min_vcpus = 0
-    max_vcpus = 64
+    # Spend-rate cap (#73): 8 vCPUs = at most two g5.xlarge or one g5.2xlarge. Changes in place.
+    max_vcpus = var.gpu_max_vcpus
 
     security_group_ids = [
       aws_security_group.batch_gpu_compute.id
