@@ -199,7 +199,7 @@ The core pipeline (FASTQ → QC → alignment → VCF) is built and verified end
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Bioinformatics Pipeline** | ✅ Verified locally | FastQC and BWA-MEM alignment (sorted, duplicate-marked BAM) side by side, both straight from the gzipped upload, then bcftools variant calling. |
+| **Bioinformatics Pipeline** | ✅ Verified locally | FastQC and BWA-MEM alignment (sorted, duplicate-marked BAM), both straight from the gzipped upload so they can run side by side, then bcftools variant calling. |
 | **Offline Development & Testing** | ✅ Complete | The full pipeline runs locally in Docker with no AWS account. A pytest suite plus a Docker end-to-end test checks that planted mutations in synthetic data are recovered exactly. Runs on every push. |
 | **Infrastructure as Code** | ✅ Complete | The project's AWS resources are defined in Terraform. Changes are planned and applied by hand after review. |
 | **Orchestration & Trigger** | 🟡 Built, cloud re-test pending | S3 upload → Lambda → Step Functions runs the four stages in order on AWS Batch (Fargate), with failure notifications via SNS. |

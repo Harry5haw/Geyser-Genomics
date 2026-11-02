@@ -31,12 +31,13 @@ class Stage(NamedTuple):
     metric: str    # TaskName recorded by @timed_stage in app/tasks.py
     label: str
     output: str    # keys_for() name (via keys_of) whose keys all existing means the stage finished
+    after: tuple = ()  # stages whose output this one reads; none means it starts from the raw reads
 
 
 STAGES = (
     Stage("qc", "QualityControl", "Quality control", "qc_html"),
     Stage("align", "Align", "Alignment", "bam"),
-    Stage("variants", "CallVariants", "Variant calling", "vcf"),
+    Stage("variants", "CallVariants", "Variant calling", "vcf", after=("align",)),
 )
 
 ACTIVE_STATES = ("queued", "running")
@@ -161,7 +162,12 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
         stages.append(StageView(st.name, st.label, state, duration))
 
     run_state = run.get("state") if run else None
-    first_pending = next((s for s in stages if s.state == "pending"), None)
+    done = {s.name for s in stages if s.state == "done"}
+    # Pending stages whose inputs exist: qc and align from the start (they run side by side in the
+    # cloud), variants once align is done.
+    ready = [view for view, st in zip(stages, STAGES)
+             if view.state == "pending" and all(dep in done for dep in st.after)]
+    first_pending = ready[0] if ready else None
     if all(s.state == "done" for s in stages):
         state = "succeeded"
     elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded"):
@@ -173,8 +179,9 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
         state = "queued"
     else:
         state = "running"
-        if first_pending:
-            first_pending.state = "running"
+        # A local run (run record) goes one stage at a time; in the cloud every ready stage may be running.
+        for view in (ready[:1] if run else ready):
+            view.state = "running"
 
     times = [rec.get("timestamp") or 0 for rec in latest.values()]
     if run:
@@ -186,6 +193,7 @@ def build_sample(sample_id: str, present: set, metrics: list, run: Optional[dict
         stages=stages,
         run=run,
         updated=max(times) if any(times) else None,
+        # Local runs are sequential, so the stage times add up; in the cloud there are no local metrics.
         duration=sum(durations) if durations else None,
         keys=keys,
         layout=layout,

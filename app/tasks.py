@@ -11,7 +11,8 @@ Stages communicate only through storage keys:
     reference/{reference_name} (+ optional .fai / bwa indexes)
 
 qc and align both read the gzipped upload directly (FastQC and bwa mem read gzip), so they don't
-depend on each other and the state machine runs them in parallel. There is no decompressed copy.
+depend on each other and can run in parallel (the three-stage state machine, #84). There is no
+decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
 
 Paired-end samples have two raw files, raw_reads/{id}_R1.fastq.gz and {id}_R2.fastq.gz, and
 the QC reports come in an _R1/_R2 pair too (see keys_for). qc and align detect the layout from
@@ -104,34 +105,29 @@ def all_raw_keys(sample_id: str) -> list:
     return keys_of(keys_for(sample_id, SINGLE), "raw") + keys_of(keys_for(sample_id, PAIRED), "raw")
 
 
-def layout_from_keys(sample_id: str, exists, name: str = "raw") -> str:
-    """'single' or 'paired', from which of a sample's per-mate `name` keys exist. exists(key) -> bool.
+def layout_from_raw(sample_id: str, exists) -> str:
+    """'single' or 'paired', from which raw reads exist. exists(key) -> bool.
 
-    qc and align ask about their input, the raw reads. Fails loudly rather than guessing: a lone mate
-    (its partner not uploaded yet) or a sample present both ways is an error, not a silent
+    What qc, align, the trigger and the web UI all go by. Fails loudly rather than guessing: a lone
+    mate (its partner not uploaded yet) or a sample present both ways is an error, not a silent
     single-end run.
     """
-    single = exists(keys_for(sample_id, SINGLE)[name])
-    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"{name}_{m}"])]
+    single = exists(keys_for(sample_id, SINGLE)["raw"])
+    mates = [m for m in MATES if exists(keys_for(sample_id, PAIRED)[f"raw_{m}"])]
     if single and mates:
-        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) {name} files")
+        raise LayoutError(f"{sample_id} has both single-end and paired-end ({'/'.join(mates)}) raw files")
     if single:
         return SINGLE
     if len(mates) == len(MATES):
         return PAIRED
     if mates:
         missing = [m for m in MATES if m not in mates][0]
-        raise LayoutError(f"{sample_id}: {name} {mates[0]} exists but {missing} is missing")
-    raise LayoutError(f"{sample_id}: no {name} files ({keys_for(sample_id)[name]} or _R1/_R2)")
+        raise LayoutError(f"{sample_id}: raw {mates[0]} exists but {missing} is missing")
+    raise LayoutError(f"{sample_id}: no raw files ({keys_for(sample_id)['raw']} or _R1/_R2)")
 
 
-def layout_from_raw(sample_id: str, exists) -> str:
-    """The layout a sample was uploaded with (what the trigger and the web UI go by)."""
-    return layout_from_keys(sample_id, exists, "raw")
-
-
-def sample_layout(sample_id: str, name: str = "raw") -> str:
-    return layout_from_keys(sample_id, storage().exists, name)
+def sample_layout(sample_id: str) -> str:
+    return layout_from_raw(sample_id, storage().exists)
 
 
 def run_shell(command: str) -> None:
@@ -226,11 +222,12 @@ def qc_task(sample_id):
         out_dir = os.path.join(wd, "qc")
         os.makedirs(out_dir)
         fastqs = download_raw_reads(keys, wd)
-        # FastQC can hang (not exit) if its report thread crashes, so bound it. Matches the
-        # Step Functions timeout for this stage. One thread per file (-t) processes R1 and R2 at
+        # FastQC can hang (not exit) if its report thread crashes, so bound it. It now also
+        # decompresses the reads itself, so it gets the hour the decompress stage used to have
+        # (keep in step with the stage's Step Functions timeout). One thread per file (-t) processes R1 and R2 at
         # the same time, so a paired sample fits the same timeout as a single-end one
         # (FastQC reserves ~250 MB per thread; 2 fit the 4 GB job easily).
-        timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "1800"))
+        timeout = int(os.environ.get("QC_TIMEOUT_SECONDS", "3600"))
         subprocess.run(["fastqc", "-t", str(len(fastqs)), *fastqs, "-o", out_dir], check=True, timeout=timeout)
         for name in ("qc_html", "qc_zip"):
             for key in keys_of(keys, name):

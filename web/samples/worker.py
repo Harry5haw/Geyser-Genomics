@@ -1,7 +1,7 @@
 """The local trigger: the offline stand-in for 'S3 upload -> Lambda -> Step Functions'.
 
 It polls raw_reads/ for samples that haven't been run, and runs each through
-scripts/run_local.py (the same four containers the cloud runs). Progress goes into
+scripts/run_local.py (the same stage containers the cloud runs). Progress goes into
 run records (runs.py) so the UI can show it. The web app never calls this; it only
 writes the upload, exactly as in the cloud.
 

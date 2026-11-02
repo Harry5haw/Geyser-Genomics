@@ -19,7 +19,7 @@ def test_fresh_upload_without_run_record_is_in_progress(storage):
     sample = status.load_one(storage, "S1")
     assert sample.state == "running"
     assert sample.state_label == "In progress"  # the cloud case: no run records
-    assert states(sample) == ["running", "pending", "pending"]
+    assert states(sample) == ["running", "running", "pending"]  # QC and align side by side
 
 
 def test_completed_stages_come_from_keys_and_durations_from_metrics(storage):
@@ -29,7 +29,7 @@ def test_completed_stages_come_from_keys_and_durations_from_metrics(storage):
     write_metrics(storage, [metric("QualityControl", "S1", duration=5.5), metric("Align", "S1", duration=2.0),
                             metric("QualityControl", "OTHER", duration=99)])
     sample = status.load_one(storage, "S1")
-    assert states(sample) == ["done", "done", "running"]
+    assert states(sample) == ["done", "done", "running"]  # variants once align is done
     assert [s.duration for s in sample.stages] == [5.5, 2.0, None]
     assert sample.duration == 7.5
 
@@ -40,7 +40,14 @@ def test_align_can_finish_before_qc(storage):
     put(storage, "alignments/S1.bam", b"x")
     sample = status.load_one(storage, "S1")
     assert sample.state == "running"
-    assert states(sample) == ["running", "done", "pending"]
+    assert states(sample) == ["running", "done", "running"]
+
+
+def test_local_run_shows_one_stage_at_a_time(storage):
+    # run_local.py (the local worker) runs qc, then align, then variants.
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    write_run(storage, "S1", {"state": "running", "started": 1})
+    assert states(status.load_one(storage, "S1")) == ["running", "pending", "pending"]
 
 
 def test_all_outputs_present_is_succeeded(storage):
@@ -78,7 +85,7 @@ def test_metrics_from_an_earlier_run_are_ignored(storage):
     write_run(storage, "S1", {"state": "running", "started": 5000.0})
     sample = status.load_one(storage, "S1")
     assert sample.state == "running"
-    assert states(sample) == ["running", "pending", "pending"]
+    assert states(sample) == ["running", "pending", "pending"]  # one at a time: there is a run record
 
 
 def test_corrupt_metric_lines_are_skipped(storage):

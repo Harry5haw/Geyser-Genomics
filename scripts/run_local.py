@@ -5,8 +5,8 @@ This plays the part of the cloud orchestration:
   * Lambda trigger  -> the sample ID is parsed from raw_reads/<id>.fastq.gz using the
                        same function the Lambda uses (lambda/trigger/index.py).
   * Step Functions  -> the three stages run with the same commands (infrastructure/step_functions.tf);
-                       qc and align are independent and run in parallel in the cloud, one after the
-                       other here. The first failure stops the run.
+                       qc and align are independent (both read raw_reads/), so they can run in
+                       parallel; here they run one after the other. The first failure stops the run.
   * AWS Batch       -> each stage runs in a fresh container from the same image.
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 

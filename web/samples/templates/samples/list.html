@@ -21,7 +21,7 @@
       <li>All three stages run in the same containers as the cloud pipeline</li>
       <li>FastQC report for the reads</li>
       <li>Variant table with each call checked against the planted SNPs</li>
-      <li>Every intermediate file (FASTQ, BAM, VCF) to download</li>
+      <li>Every file (reads, QC report, BAM, VCF) to download</li>
     </ul>
     <form method="post" action="{% url 'samples:demo' %}">
       {% csrf_token %}
