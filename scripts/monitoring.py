@@ -270,6 +270,8 @@ DEFAULT_SFN_LOG_GROUP = "/aws/vendedlogs/states/geyser-sfn-dev"  # infrastructur
 # Terraform-managed, with retention (infrastructure/resilience.tf, #104). Logs from before that
 # change are in the AWS-created groups /aws/batch/job and /aws/lambda/geyser-sfn-trigger.
 BATCH_LOG_GROUP = "/aws/batch/geyser-dev"
+# Batch "Job State Change" events at RUNNING (infrastructure/batch_wait.tf, #138).
+BATCH_EVENTS_LOG_GROUP = "/aws/events/geyser-batch-jobs-dev"
 TRIGGER_LOG_GROUP = "/aws/lambda/geyser-sfn-trigger-dev"
 
 
@@ -476,6 +478,59 @@ def quality_widgets(
     ]
 
 
+# The stage is the job name's first word: the state machine names jobs <Stage>-<sample>-<execution>
+# (QualityControl, AlignGenome, PlanRegions, CallVariantsShard, CallVariants; DeepVariant on the GPU queue).
+QUEUE_WAIT_PARSE = (
+    r"| parse job /^(?<stage>[A-Za-z]+)-/",
+    r"| parse q /job-queue\/(?<queue>[^\/]+)$/",
+)
+
+
+def queue_wait_query() -> str:
+    """Per stage and queue: how many jobs, and their mean and max wait from submission to RUNNING
+    (scheduling, capacity, image pull), from the Batch RUNNING events in BATCH_EVENTS_LOG_GROUP."""
+    return "\n".join(
+        [
+            "fields detail.jobName as job, detail.jobQueue as q, (detail.startedAt - detail.createdAt) / 1000 as wait_s",
+            *QUEUE_WAIT_PARSE,
+            "| stats count(*) as jobs, avg(wait_s) as mean_wait_s, max(wait_s) as max_wait_s by stage, queue",
+            "| sort max_wait_s desc",
+        ]
+    )
+
+
+def queue_wait_trend_query() -> str:
+    """Hourly mean and max wait across all jobs (the table splits it by stage and queue)."""
+    return "\n".join(
+        [
+            "fields (detail.startedAt - detail.createdAt) / 1000 as wait_s",
+            "| stats avg(wait_s) as mean_wait_s, max(wait_s) as max_wait_s by bin(1h)",
+        ]
+    )
+
+
+def queue_wait_widgets(region: str = DEFAULT_REGION, log_group: str = BATCH_EVENTS_LOG_GROUP) -> list:
+    """Batch wait before a job starts (#138), next to the stage durations: on the GPU queue a job can wait
+    minutes for an instance, which the stage durations (run time only) don't show."""
+    return [
+        _log_widget(
+            "Batch wait before a job runs, seconds (submit -> RUNNING), by stage and queue",
+            queue_wait_query(),
+            region,
+            log_group,
+            width=12,
+        ),
+        _log_widget(
+            "Batch wait before a job runs, seconds (hourly mean and max)",
+            queue_wait_trend_query(),
+            region,
+            log_group,
+            view="timeSeries",
+            width=12,
+        ),
+    ]
+
+
 def storage_widgets(region: str, bucket: str) -> list:
     """Data lake size and object count (#62), from the free daily S3 storage metrics (AWS/S3, one
     datapoint a day per bucket and storage class, about a day behind). The lifecycle rules in
@@ -523,6 +578,8 @@ def build_dashboard(
     batch_log_group: str = BATCH_LOG_GROUP,
     thresholds: QualityThresholds = DEFAULT_THRESHOLDS,
     bucket: str = None,
+    queue_wait: bool = True,
+    batch_events_log_group: str = BATCH_EVENTS_LOG_GROUP,
 ) -> dict:
     """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, result
     quality (from the Batch job logs), data lake storage (with a bucket name), stage durations."""
@@ -594,6 +651,8 @@ def build_dashboard(
                 y_label="seconds",
             )
         )
+    if queue_wait:
+        widgets += queue_wait_widgets(region, batch_events_log_group)
     return {"start": lookback, "periodOverride": "inherit", "widgets": _layout(widgets)}
 
 

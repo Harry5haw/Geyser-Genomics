@@ -151,6 +151,17 @@ def test_lifecycle_never_expires_raw_reads_references_or_outputs():
         assert not any(k.startswith(prefix) or prefix.startswith(k) for k in kept), (rule_id, prefix)
 
 
+def test_queue_wait_widgets_read_the_terraform_event_log_group():
+    # #138: batch_wait.tf sends Batch RUNNING events to this group; the dashboard queries it.
+    import monitoring
+
+    with open(os.path.join(REPO_ROOT, "infrastructure", "batch_wait.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    template = re.search(r'name\s*=\s*"(/aws/events/[^"]+)"', tf).group(1)
+    rendered = template.replace("${var.project_name}", "geyser").replace("${var.environment}", "dev")
+    assert rendered == monitoring.BATCH_EVENTS_LOG_GROUP
+
+
 def test_failure_parsing_knows_every_job_name_the_state_machine_sets():
     # provenance.parse_failure names the failing stage from the Batch job name in a Catch's Cause, so every
     # JobName prefix the state machine builds must map to a stage, and none may be stale.
