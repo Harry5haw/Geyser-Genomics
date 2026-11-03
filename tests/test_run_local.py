@@ -14,10 +14,11 @@ def names(jobs):
 
 
 def test_default_caller_runs_exactly_the_state_machine_stages():
-    jobs = run_local.pipeline_jobs("S1", "ref.fa")
+    # The quality gate is the state machine's last step (#144); run_local's command line runs it by default.
+    jobs = run_local.pipeline_jobs("S1", "ref.fa", gate=True)
     assert [j["cmd"] for j in jobs] == [
         run_local.stage_command(stage, "S1", "ref.fa", needs_ref) for stage, needs_ref in run_local.STAGES
-    ]
+    ] + [run_local.stage_command("gate", "S1", None, False)]
     assert all(j["image"] == "geyser-app" and not j["gpus"] for j in jobs)
 
 
@@ -185,7 +186,8 @@ def test_a_deepvariant_only_run_is_gated_but_an_added_caller_is_not():
     assert "gate" not in [j["name"] for j in jobs]
 
 
-def test_pipeline_jobs_default_is_still_the_state_machine():
+def test_pipeline_jobs_runs_the_gate_only_when_asked():
+    # The command line asks (unless --no-gate); callers of pipeline_jobs() choose explicitly.
     assert "gate" not in [j["name"] for j in run_local.pipeline_jobs("S1", "r.fa")]
 
 

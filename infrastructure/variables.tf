@@ -221,3 +221,14 @@ variable "default_caller" {
     error_message = "default_caller must be bcftools or deepvariant."
   }
 }
+
+variable "gate_mode" {
+  description = "What a failed quality-gate verdict does to a cloud run (#144). warn: recorded (qc_reports/{id}.gate.json, the run record, the execution history) and the run succeeds. fail: the run fails through Notify_Failure with the gate's reasons. Stays warn until at least 5 real-sample cloud runs have passed with no false fails against the calibrated thresholds; then switch (#157)."
+  type        = string
+  default     = "warn"
+
+  validation {
+    condition     = contains(["warn", "fail"], var.gate_mode)
+    error_message = "gate_mode must be warn or fail."
+  }
+}

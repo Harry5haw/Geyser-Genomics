@@ -30,6 +30,8 @@ pytestmark = pytest.mark.skipif(
 IMAGE = "amazon/aws-stepfunctions-local@sha256:ea8de9d3c489f889582e8d84aab67031e613e055ff4b94ccc41aa3af681efce2"
 ASL_PATH = os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json")
 MACHINE = "geyser-pipeline-local"
+# The same definition rendered with gate_mode = "fail" (the default, and MACHINE, is "warn").
+MACHINE_FAIL = "geyser-pipeline-local-gate-fail"
 REGION = "eu-west-2"
 ACCOUNT = "123456789012"  # Step Functions Local's fixed account
 # Inside the container. The image runs as uid 1000 (stepfunctionslocal) and reads this file on every
@@ -56,10 +58,24 @@ TEMPLATE_VARS = {
     "bucket": "geyser-data-lake-local",
     "variant_region_window": "50000000",
     "variants_max_concurrency": "4",
+    # The quality gate (#144): variables.tf's default.
+    "gate_mode": "warn",
 }
-BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants")
+BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate")
 # What Read_Regions gets from S3 in the tests: the planner's JSON list, as GetObject returns it (a string).
 REGIONS = ["chr20:1-50000000", "chr20:50000001-64444167", "chr21:1-46709983"]
+# What Read_Gate_Verdict gets from S3: the verdict tasks.py gate stored (abridged), as a string.
+GATE_REASONS = ["duplicate_pct 15.2 is above the maximum 6", "mean_depth 12.1 is below the minimum 20"]
+VERDICTS = {
+    "pass": {"schema": 1, "sample_id": "S1", "verdict": "pass", "reasons": [], "config": "built-in default"},
+    "fail": {"schema": 1, "sample_id": "S1", "verdict": "fail", "reasons": GATE_REASONS, "config": "built-in default"},
+    # The gate couldn't judge (e.g. the binary crashed): tasks.py stores this instead of a verdict.
+    "none": {"sample_id": "S1", "verdict": None, "mode": "warn", "error": "geyser-gate exited -6"},
+    # Not the gate's JSON: no verdict field, a fail without its reasons, not an object at all.
+    "malformed": {"schema": 1},
+    "reasonless": {"verdict": "fail"},
+    "list": [],
+}
 
 OK, FAIL = "BatchSucceeded", "BatchFailed"
 # Every case plans, reads and calls its regions unless it says otherwise.
@@ -99,15 +115,25 @@ TEST_CASES = {
     "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
     "RegionsUnreadable": {"Read_Regions": "NoSuchKey", "Notify_Failure": "Published"},
     "ShardFails": {"Call_Shard": "ShardsFail", "Notify_Failure": "Published"},
+    # The quality gate (#144). The warn machine and the fail machine get the same cases.
+    "GateFailsVerdict": {"Read_Gate_Verdict": "VerdictFail", "Notify_Failure": "Published"},
+    "GateNoVerdict": {"Read_Gate_Verdict": "VerdictNone", "Notify_Failure": "Published"},
+    "GateJobFails": {"Quality_Gate": FAIL, "Notify_Failure": "Published"},
+    "GateVerdictMissing": {"Read_Gate_Verdict": "NoSuchKey", "Notify_Failure": "Published"},
+    "GateVerdictMalformed": {"Read_Gate_Verdict": "VerdictMalformed", "Notify_Failure": "Published"},
+    "GateVerdictReasonless": {"Read_Gate_Verdict": "VerdictReasonless", "Notify_Failure": "Published"},
+    "GateVerdictList": {"Read_Gate_Verdict": "VerdictList", "Notify_Failure": "Published"},
     # Closing the run record fails (S3 denied): best effort, the run still notifies and ends failed.
     "CloseFails": {"Quality_Control": FAIL, "Close_Run_Record": "CloseDenied", "Notify_Failure": "Published"},
 }
+# Every case passes the gate unless it says otherwise.
+GATE = {"Quality_Gate": OK, "Read_Gate_Verdict": "VerdictPass"}
 TEST_CASES = {
-    name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **SCATTER, **case}
+    name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **SCATTER, **GATE, **case}
     for name, case in TEST_CASES.items()
 }
 MOCK_CONFIG = {
-    "StateMachines": {MACHINE: {"TestCases": TEST_CASES}},
+    "StateMachines": {MACHINE: {"TestCases": TEST_CASES}, MACHINE_FAIL: {"TestCases": TEST_CASES}},
     "MockedResponses": {
         OK: {"0": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
         FAIL: {
@@ -121,6 +147,10 @@ MOCK_CONFIG = {
         },
         "AlwaysThrottled": {"0-3": {"Throw": {"Error": "Batch.AWSBatchException", "Cause": "Too Many Requests"}}},
         "RegionsRead": {"0": {"Return": {"Body": json.dumps(REGIONS), "ContentType": "application/json"}}},
+        **{
+            f"Verdict{kind.capitalize()}": {"0": {"Return": {"Body": json.dumps(v), "ContentType": "application/json"}}}
+            for kind, v in VERDICTS.items()
+        },
         "NoSuchKey": {
             "0-3": {"Throw": {"Error": "S3.NoSuchKeyException", "Cause": "The specified key does not exist."}}
         },
@@ -139,14 +169,14 @@ MOCK_CONFIG = {
 }
 
 
-def render_definition() -> str:
+def render_definition(**overrides) -> str:
     """templatefile() for this file: only ${name} placeholders, and every one must be filled."""
     with open(ASL_PATH, encoding="utf-8") as fh:
         text = fh.read()
     assert "%{" not in text and "$${" not in text, "templatefile directives/escapes are not handled here"
     placeholders = set(re.findall(r"\$\{(\w+)\}", text))
     assert placeholders == set(TEMPLATE_VARS), placeholders
-    for name, value in TEMPLATE_VARS.items():
+    for name, value in {**TEMPLATE_VARS, **overrides}.items():
         text = text.replace("${" + name + "}", value)
     json.loads(text)
     return text
@@ -254,6 +284,18 @@ def sfn():
         yield client, arn, name
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)
+
+
+@pytest.fixture(scope="module")
+def sfn_fail(sfn):
+    """The definition rendered with gate_mode = "fail", in the same Step Functions Local container."""
+    client, _, name = sfn
+    arn = client.create_state_machine(
+        name=MACHINE_FAIL,
+        definition=render_definition(gate_mode="fail"),
+        roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
+    )["stateMachineArn"]
+    return client, arn, name
 
 
 def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None):
@@ -427,13 +469,14 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
             f"intermediate/variant-regions/SAMPLE7/{params['Plan_Regions']['JobName'].split('-', 2)[2]}.json",
         ],
         "Call_Variants": ["python", "tasks.py", "variants", "SAMPLE7", "ref.fa", "--window", window],
+        "Quality_Gate": ["python", "tasks.py", "gate", "SAMPLE7"],
     }
     for state, p in params.items():
         assert p["JobDefinition"] == TEMPLATE_VARS["job_definition"]
         assert p["JobQueue"] == TEMPLATE_VARS["job_queue"]
         if state != "Call_Shard":
             assert re.fullmatch(
-                r"(QualityControl|AlignGenome|PlanRegions|CallVariants)-SAMPLE7-HappyPath-\w+", p["JobName"]
+                r"(QualityControl|AlignGenome|PlanRegions|CallVariants|QualityGate)-SAMPLE7-HappyPath-\w+", p["JobName"]
             )
     timeouts = {state: p["Timeout"]["AttemptDurationSeconds"] for state, p in params.items()}
     assert timeouts == {
@@ -442,6 +485,7 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
         "Plan_Regions": 1800,
         "Call_Shard": 7200,
         "Call_Variants": 7200,
+        "Quality_Gate": 900,
     }
     # Each stage asks Batch for its own size (variables.tf stage_resources), as strings.
     sizes = {
@@ -454,6 +498,7 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
         "Plan_Regions": {"VCPU": "1", "MEMORY": "2048"},  # QC's size: it only reads the reference
         "Call_Shard": {"VCPU": "2", "MEMORY": "4096"},  # each shard is a variants job
         "Call_Variants": {"VCPU": "2", "MEMORY": "4096"},
+        "Quality_Gate": {"VCPU": "1", "MEMORY": "2048"},  # QC's size: it parses a few small files
     }
 
 
@@ -464,6 +509,7 @@ JOB_NAME_PREFIXES = {
     "Plan_Regions": "PlanRegions-",
     "Call_Shard": "CallVariantsShard-",
     "Call_Variants": "CallVariants-",
+    "Quality_Gate": "QualityGate-",
 }
 
 
@@ -541,7 +587,10 @@ def test_every_stage_gets_the_execution_name_as_run_name(sfn):
     params = batch_parameters(events)
     assert set(params) == set(BATCH_TASKS)
     for state, p in params.items():
-        assert p["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}], state
+        expected = [{"Name": "RUN_NAME", "Value": desc["name"]}]
+        if state == "Quality_Gate":  # pinned: the job never fails on a verdict; the state machine decides
+            expected.append({"Name": "GATE_MODE", "Value": "warn"})
+        assert p["ContainerOverrides"]["Environment"] == expected, state
 
 
 @pytest.mark.parametrize(
@@ -690,3 +739,128 @@ def test_a_failed_close_still_notifies_with_the_original_error(sfn):
     )
     message = json.loads(published["taskScheduledEventDetails"]["parameters"])["Message"]
     assert message["ErrorDetails"]["Error"] == "States.TaskFailed"  # the stage's error, not the close's
+
+
+# --- the quality gate (#144): pass, warn, fail ----------------------------------------------------
+
+
+def gate_read(events) -> dict:
+    """The S3 GetObject parameters Read_Gate_Verdict used."""
+    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    (read,) = [
+        e for e in events if e["type"] == "TaskScheduled" and names.get(e["previousEventId"]) == "Read_Gate_Verdict"
+    ]
+    return json.loads(read["taskScheduledEventDetails"]["parameters"])
+
+
+def published_message(events) -> dict:
+    (published,) = [
+        e for e in events if e["type"] == "TaskScheduled" and e["taskScheduledEventDetails"]["resourceType"] == "sns"
+    ]
+    return json.loads(published["taskScheduledEventDetails"]["parameters"])["Message"]
+
+
+def test_the_gate_judges_the_merged_call_set_and_a_pass_ends_the_run(sfn):
+    desc, events = run_case(sfn, "HappyPath", sample="SAMPLE7")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Call_Variants") < states.index("Quality_Gate") < states.index("Read_Gate_Verdict")
+    assert states[-2:] == ["Gate_Decision", "Pipeline_Succeeded"]
+    assert gate_read(events) == {"Bucket": TEMPLATE_VARS["bucket"], "Key": "qc_reports/SAMPLE7.gate.json"}
+    output = json.loads(desc["output"])
+    assert output["gate"]["verdict"]["verdict"] == "pass"
+    assert output["batch_params"]["Mode"] == "warn"
+
+
+def test_the_gate_also_judges_a_deepvariant_run(sfn):
+    desc, events = run_case(sfn, "DeepVariantOk", caller="deepvariant")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("DeepVariant") < states.index("Quality_Gate")
+    assert "Call_Variants" not in states and states[-1] == "Pipeline_Succeeded"
+
+
+NO_VERDICT_CASES = [
+    "GateNoVerdict",
+    "GateJobFails",
+    "GateVerdictMissing",
+    "GateVerdictMalformed",
+    "GateVerdictReasonless",
+    "GateVerdictList",
+]
+
+
+@pytest.mark.parametrize("case", ["GateFailsVerdict", *NO_VERDICT_CASES])
+def test_warn_mode_records_a_failed_or_missing_verdict_and_the_run_succeeds(sfn, case):
+    desc, events = run_case(sfn, case)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    # A judged run (Gate_Warned) is told apart from one the gate never judged (Gate_Skipped, #157).
+    last = "Gate_Warned" if case == "GateFailsVerdict" else "Gate_Skipped"
+    assert states[-2:] == [last, "Pipeline_Succeeded"]
+    assert "States.Runtime" not in history_text(events)
+    assert "Notify_Failure" not in states
+    output = json.loads(desc["output"])
+    if case == "GateFailsVerdict":
+        assert output["gate"]["verdict"]["reasons"] == GATE_REASONS  # kept in the execution's output
+    if case in ("GateJobFails", "GateVerdictMissing"):
+        assert "gate_error" in output  # why there was no verdict
+
+
+def test_fail_mode_fails_the_run_with_the_gates_reasons(sfn_fail):
+    desc, events = run_case(sfn_fail, "GateFailsVerdict", sample="SAMPLE7")
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    # The failure path like any failed stage's: the run record is closed as failed, then the notification.
+    assert states[-5:] == [
+        "Prepare_Gate_Failure",
+        "Prepare_Run_Close",
+        "Close_Run_Record",
+        "Notify_Failure",
+        "Pipeline_Failed",
+    ]
+    closed = run_close(events)["Body"]
+    assert closed["status"] == "failed" and closed["caught"]["Error"] == "QualityGateFailed"
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "QualityGateFailed"
+    assert error["Cause"].startswith("SAMPLE7 failed the quality gate: ")
+    for reason in GATE_REASONS:
+        assert reason in error["Cause"]
+    assert "qc_reports/SAMPLE7.gate.json" in error["Cause"]
+
+
+@pytest.mark.parametrize("case", NO_VERDICT_CASES)
+def test_fail_mode_treats_no_verdict_as_no_pass(sfn_fail, case):
+    desc, events = run_case(sfn_fail, case)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert entered(events)[-5:] == [
+        "Prepare_Gate_Error",
+        "Prepare_Run_Close",
+        "Close_Run_Record",
+        "Notify_Failure",
+        "Pipeline_Failed",
+    ]
+    assert run_close(events)["Body"]["caught"]["Error"] == "QualityGateError"
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "QualityGateError" and "gave no verdict for S1" in error["Cause"]
+
+
+def test_fail_mode_passes_a_good_run(sfn_fail):
+    desc, events = run_case(sfn_fail, "HappyPath")
+    assert desc["status"] == "SUCCEEDED" and entered(events)[-1] == "Pipeline_Succeeded"
+
+
+def test_a_failed_stage_before_the_gate_never_reaches_it(sfn):
+    _, events = run_case(sfn, "VariantsFail")
+    assert "Quality_Gate" not in entered(events)
+
+
+def test_gate_mode_is_the_only_mode_in_the_definition():
+    # warn by default (variables.tf), fail only when rendered so: nothing else in the file decides it.
+    for mode in ("warn", "fail"):
+        definition = json.loads(render_definition(gate_mode=mode))
+        assert definition["States"]["Prepare_Gate_Command"]["Parameters"]["Mode"] == mode
+    with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    block = tf[tf.index('variable "gate_mode"') :]
+    assert re.search(r'default\s*=\s*"warn"', block[: block.index("validation")])

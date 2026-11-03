@@ -157,7 +157,7 @@
       "Catch": [
         { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Plan_Command", "ResultPath": "$.deepvariant_error" }
       ],
-      "End": true
+      "Next": "Prepare_Gate_Command"
     },
     "Prepare_Plan_Command": {
       "Type": "Pass",
@@ -317,7 +317,138 @@
       "Catch": [
         { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Run_Close", "ResultPath": "$.error" }
       ],
-      "End": true
+      "Next": "Prepare_Gate_Command"
+    },
+    "Prepare_Gate_Command": {
+      "Type": "Pass",
+      "Comment": "The quality gate (#144) on whichever caller ran. The job runs with GATE_MODE=warn (pinned here, whatever the job definition or the app default says), so a failed verdict never fails the job itself: it stores qc_reports/{id}.gate.json, and the states below decide. Mode is Terraform's gate_mode. The image must have the gate (main from #148 on).",
+      "Parameters": {
+        "Mode": "${gate_mode}",
+        "JobName.$": "States.Format('QualityGate-{}-{}', $.srr_id, $$.Execution.Name)",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'gate', $.srr_id)",
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "GATE_MODE", "Value": "warn" }
+          ],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value": "${qc_vcpu}" },
+            { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
+          ]
+        }
+      },
+      "ResultPath": "$.batch_params",
+      "Next": "Quality_Gate"
+    },
+    "Quality_Gate": {
+      "Type": "Task",
+      "Comment": "Parses a few small files: seconds of work, so a short attempt limit (the app's own limit for the binary is 300 s).",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "$.batch_params.JobName",
+        "JobDefinition": "${job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+        "Timeout": { "AttemptDurationSeconds": 900 }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.gate_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Gate_Problem", "ResultPath": "$.gate_error" }
+      ],
+      "Next": "Read_Gate_Verdict"
+    },
+    "Read_Gate_Verdict": {
+      "Type": "Task",
+      "Comment": "The verdict the job stored, read straight from S3 like Read_Regions. A missing or unreadable verdict is a gate problem, not a quality failure.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('qc_reports/{}.gate.json', $.srr_id)"
+      },
+      "ResultSelector": { "verdict.$": "States.StringToJson($.Body)" },
+      "ResultPath": "$.gate",
+      "Retry": [
+        { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Gate_Problem", "ResultPath": "$.gate_error" }
+      ],
+      "Next": "Gate_Verdict_Readable"
+    },
+    "Gate_Verdict_Readable": {
+      "Type": "Choice",
+      "Comment": "A verdict without a 'verdict' field (not the gate's JSON, or not an object) would make the comparisons below fail the run with States.Runtime and no notification: it is a gate problem instead. Presence tests never throw.",
+      "Choices": [{ "Variable": "$.gate.verdict.verdict", "IsPresent": true, "Next": "Gate_Decision" }],
+      "Default": "Gate_Problem"
+    },
+    "Gate_Decision": {
+      "Type": "Choice",
+      "Comment": "pass: done. fail (with its reasons): the mode decides. Anything else (verdict null: the gate couldn't judge) is a gate problem.",
+      "Choices": [
+        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Pipeline_Succeeded" },
+        {
+          "And": [
+            { "Variable": "$.gate.verdict.verdict", "StringEquals": "fail" },
+            { "Variable": "$.gate.verdict.reasons", "IsPresent": true }
+          ],
+          "Next": "Gate_Failed"
+        }
+      ],
+      "Default": "Gate_Problem"
+    },
+    "Gate_Failed": {
+      "Type": "Choice",
+      "Comment": "gate_mode = fail: the run fails with the gate's reasons. warn (the default until a handful of real runs pass cleanly, #157): recorded, the run succeeds.",
+      "Choices": [{ "Variable": "$.batch_params.Mode", "StringEquals": "fail", "Next": "Prepare_Gate_Failure" }],
+      "Default": "Gate_Warned"
+    },
+    "Prepare_Gate_Failure": {
+      "Type": "Pass",
+      "Comment": "The failure path like any failed stage's (Prepare_Run_Close closes the run record as failed, Notify_Failure publishes $.error): here the gate's named reasons.",
+      "Parameters": {
+        "Error": "QualityGateFailed",
+        "Cause.$": "States.Format('{} failed the quality gate: {} (verdict: qc_reports/{}.gate.json)', $.srr_id, States.JsonToString($.gate.verdict.reasons), $.srr_id)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Gate_Problem": {
+      "Type": "Choice",
+      "Comment": "The gate gave no verdict (its job failed, e.g. a bad GATE_CONFIG or an image without the gate; the verdict is missing, unreadable or null). warn: the run succeeds, through Gate_Skipped so it is told apart from a warned verdict. fail: no verdict is no pass.",
+      "Choices": [{ "Variable": "$.batch_params.Mode", "StringEquals": "fail", "Next": "Prepare_Gate_Error" }],
+      "Default": "Gate_Skipped"
+    },
+    "Prepare_Gate_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "QualityGateError",
+        "Cause.$": "States.Format('The quality gate gave no verdict for {}: see the QualityGate job log and qc_reports/{}.gate.json', $.srr_id, $.srr_id)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Gate_Warned": {
+      "Type": "Pass",
+      "Comment": "gate_mode = warn and the gate failed the sample: recorded (qc_reports/{id}.gate.json, the run record, the job log, this execution's output) and the run still succeeds.",
+      "Next": "Pipeline_Succeeded"
+    },
+    "Gate_Skipped": {
+      "Type": "Pass",
+      "Comment": "gate_mode = warn and the gate gave no verdict ($.gate_error or a null verdict says why). The run succeeds, but it was never judged: it doesn't count toward the switch to fail (#157). The QualityGate stage's FailureCount metric shows a failed gate job on the dashboard.",
+      "Next": "Pipeline_Succeeded"
+    },
+    "Pipeline_Succeeded": {
+      "Type": "Succeed",
+      "Comment": "Every successful run ends here, after the quality gate."
     },
     "Prepare_Run_Close": {
       "Type": "Pass",

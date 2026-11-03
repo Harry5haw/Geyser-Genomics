@@ -34,6 +34,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/variant-regions/*" },
       # Close_Run_Record writes a failed run's closing run-record part (#155), and only that object.
       { Sid = "CloseRunRecord", Effect = "Allow", Action = "s3:PutObject", Resource = "${aws_s3_bucket.data_lake.arn}/runs/*.provenance/Finalize.json" },
+      # Read_Gate_Verdict reads the quality gate's verdict (tasks.py gate) to decide warn or fail.
+      { Sid = "ReadGateVerdicts", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/qc_reports/*.gate.json" },
       { Sid = "EventsPermissions", Effect = "Allow", Action = ["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets"], Resource = "*" }
     ]
   })
@@ -71,6 +73,7 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     bucket                     = aws_s3_bucket.data_lake.bucket
     variant_region_window      = var.variant_region_window
     variants_max_concurrency   = var.variants_max_concurrency
+    gate_mode                  = var.gate_mode
   })
 
   lifecycle {

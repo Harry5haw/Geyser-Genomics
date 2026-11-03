@@ -11,8 +11,8 @@ This plays the part of the cloud orchestration:
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 
 After variant calling, the quality gate (tasks.py gate, #144) checks the run's QC statistics and
-writes qc_reports/<id>.gate.json; it isn't a Step Functions state yet. GATE_MODE=warn (default) only
-warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
+writes qc_reports/<id>.gate.json, as the state machine's last step does in the cloud. GATE_MODE=warn
+(default) only warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
 it uses the synthetic thresholds unless GATE_CONFIG is set; --no-gate skips it.
 
 Typical use:
