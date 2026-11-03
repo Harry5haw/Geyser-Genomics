@@ -118,6 +118,19 @@ def test_giraffe_on_the_whole_graph_calls_the_planted_snps(bucket, monkeypatch):
     assert align_part(bucket, "SYNTH001")["graph"]["haplotype_sampling"] is False
 
 
+def test_a_fasta_contig_without_a_graph_path_is_in_the_cram_header_in_fasta_order(tmp_path):
+    """The FASTA has a contig before synth1 that the graph lacks: the CRAM must list it first (variants cuts
+    regions from the .fai, and mpileup fails on a contig the CRAM lacks), which takes the SAM-text route."""
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root), "--pangenome"])
+    fasta = root / "reference" / "synthetic_ref.fa"
+    fasta.write_text(">extra\n" + "ACGT" * 500 + "\n" + fasta.read_text(), newline="\n")
+    # Scatter-gather, so the empty 'extra' contig gets its own shard as well.
+    assert run_giraffe(root, "SYNTH001", "--check", "--shard-window", "20000") == 0
+    assert_planted_snps_only(root, "SYNTH001")
+    assert cram_contigs(root, "SYNTH001") == ["extra", "synth1"]
+
+
 def test_giraffe_refuses_a_graph_of_another_reference(bucket, tmp_path):
     """A graph whose GRCh38 path is not the FASTA's contig fails the align stage instead of writing a bad CRAM."""
     root = tmp_path / "bucket"
@@ -128,4 +141,4 @@ def test_giraffe_refuses_a_graph_of_another_reference(bucket, tmp_path):
     assert run_giraffe(root, "SYNTH001", "--no-gate") == 1
     assert not (root / "alignments" / "SYNTH001.cram").exists()
     part = align_part(root, "SYNTH001")  # failed for that reason, not another
-    assert part["status"] == "Failure" and "not a contig of the reference FASTA" in part["error"]
+    assert part["status"] == "Failure" and "none of the graph's GRCh38 paths is a contig" in part["error"]

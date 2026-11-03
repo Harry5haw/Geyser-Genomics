@@ -474,8 +474,8 @@ def _fetch_stored(base_key: str, local_base: str, exts) -> bool:
 
 
 def _reference_stem(reference_name: str) -> str:
-    """chr20.fa -> chr20: the default graph's stem, by make_test_data.py --pangenome's rule (the reference
-    name without its last extension; a folder is dropped, as graphs live directly under pangenome/)."""
+    """chr20.fa -> chr20: the default graph's stem, the reference name without its last extension, which is
+    what make_test_data.py --pangenome writes for a top-level reference (the pipeline only fetches those)."""
     return os.path.splitext(os.path.basename(reference_name))[0]
 
 
@@ -608,28 +608,36 @@ def _graph_contig(name: str, sample: str):
 
 
 def reference_path_order(paths: str, fai: str, sample: str = GRAPH_REFERENCE_SAMPLE) -> list:
-    """The graph's reference paths (vg paths -L -Q <sample> output) in the FASTA's contig order.
+    """The graph's reference paths (vg paths -L -Q <sample> output) to surject onto, in the FASTA's order.
 
-    giraffe writes @SQ lines in --ref-paths order, so this puts the CRAM's contigs in .fai order, as bwa's
-    are (scatter-gather and DeepVariant expect it). -Q matches by prefix, so paths of another sample
-    (GRCh38x#...) are dropped. A reference path that isn't a FASTA contig, or two paths of one contig
-    (GRCh38#0#chr20 and GRCh38#1#chr20), is a ValueError: the graph doesn't match this reference.
+    giraffe writes @SQ lines in --ref-paths order, so this keeps the CRAM's contigs in .fai order, as bwa's
+    are. -Q matches by prefix, so paths of another sample (GRCh38x#...) are dropped. So are reference paths
+    that aren't FASTA contigs (a whole-genome graph with chr20.fa): reads that map there have no path to
+    surject onto and come out unmapped, as they would if the reference were only chr20. No path on the FASTA
+    at all, or two paths of one contig (GRCh38#0#chr20 and GRCh38#1#chr20), is a ValueError: the graph
+    doesn't match this reference.
     """
     order = {name: i for i, (name, _) in enumerate(contig_lengths_from_fai(fai))}
-    by_contig = {}
+    by_contig, dropped = {}, []
     for name in (line.strip() for line in paths.splitlines()):
         contig = _graph_contig(name, sample) if name else None
         if contig is None:
             continue
         if contig not in order:
-            raise ValueError(
-                f"graph path {name!r} is not a contig of the reference FASTA (the graph's {sample} paths must match it)"
-            )
+            dropped.append(name)
+            continue
         if contig in by_contig:
             raise ValueError(f"graph paths {by_contig[contig]!r} and {name!r} are both the reference's {contig}")
         by_contig[contig] = name
     if not by_contig:
-        raise ValueError(f"the graph has no {sample} paths to surject onto")
+        found = f" (it has {', '.join(dropped[:3])}{', ...' if len(dropped) > 3 else ''})" if dropped else ""
+        raise ValueError(f"none of the graph's {sample} paths is a contig of the reference FASTA{found}")
+    if dropped:
+        print(
+            f"Surjecting onto {len(by_contig)} of the graph's {len(by_contig) + len(dropped)} {sample} paths: "
+            f"{len(dropped)} aren't contigs of the reference (e.g. {dropped[0]}); reads there stay unmapped",
+            flush=True,
+        )
     return [by_contig[c] for c in sorted(by_contig, key=order.get)]
 
 
@@ -641,9 +649,10 @@ def rename_graph_contigs(header: str, fai: str, sample: str = GRAPH_REFERENCE_SA
     the FASTA (fai: its .fai) with the same length, and appear once; otherwise the graph was not built on
     this reference, and a CRAM written against it would be wrong, so that's a ValueError.
 
-    FASTA contigs the graph has no path for (alt, decoy, HLA contigs) are added after the graph's, in .fai
-    order, so the header lists every contig, as bwa's does: region shards and DeepVariant cut the genome
-    from the .fai. No record points at them, so appending them is safe.
+    FASTA contigs the graph has no path for (alt, decoy, HLA contigs, or the rest of the genome) are added
+    after the graph's, in .fai order, so the header lists every contig, as bwa's does: region shards cut
+    the genome from the .fai, and bcftools mpileup fails on a region whose contig the CRAM lacks. No record
+    points at them, so appending them is safe; fasta_ordered_header says whether the result is in .fai order.
     """
     contigs = contig_lengths_from_fai(fai)
     lengths = dict(contigs)
@@ -677,6 +686,17 @@ def rename_graph_contigs(header: str, fai: str, sample: str = GRAPH_REFERENCE_SA
     return "\n".join(lines) + "\n"
 
 
+def fasta_ordered_header(header: str, fai: str) -> str:
+    """header with its @SQ lines (all FASTA contigs, see rename_graph_contigs) in .fai order, in place."""
+    rank = {name: i for i, (name, _) in enumerate(contig_lengths_from_fai(fai))}
+    lines = header.splitlines()
+    slots = [i for i, line in enumerate(lines) if line.startswith("@SQ\t")]
+    sq = sorted((lines[i] for i in slots), key=lambda line: rank[line.split("\tSN:", 1)[1].split("\t", 1)[0]])
+    for i, line in zip(slots, sq, strict=True):
+        lines[i] = line
+    return "\n".join(lines) + "\n"
+
+
 def giraffe_align(
     ref: str, fastqs, out: str, threads: int, wd: str, sample_id: str, files: dict, sampling: bool, kmc_memory: int
 ):
@@ -707,11 +727,25 @@ def giraffe_align(
     _timed("giraffe", giraffe_command(files, fastqs, unsorted, threads, sample_id, ref_paths, kff, sampled))
     header = subprocess.run(["samtools", "view", "-H", unsorted], check=True, capture_output=True, text=True).stdout
     with open(ref + ".fai") as fh:
-        renamed = rename_graph_contigs(header, fh.read())
+        fai_text = fh.read()
+    renamed = rename_graph_contigs(header, fai_text)
     header_file = os.path.join(wd, "giraffe.header.sam")
     with open(header_file, "w") as fh:
         fh.write(renamed)
-    stages = [f"samtools reheader {shlex.quote(header_file)} {shlex.quote(unsorted)}"]
+    source = f"samtools reheader {shlex.quote(header_file)} {shlex.quote(unsorted)}"
+    ordered = fasta_ordered_header(renamed, fai_text)
+    if ordered != renamed:
+        # FASTA contigs without a graph path sit between the graph's: the full .fai-ordered header can't be
+        # put on the BAM (records point at @SQ lines by index), so its records go through SAM text, which
+        # names contigs, under that header. Correct for any order; slower (one text conversion).
+        print(
+            "The reference's contigs without a graph path lie between the graph's: re-indexing via SAM text", flush=True
+        )
+        ordered_file = os.path.join(wd, "giraffe.header.fasta-order.sam")
+        with open(ordered_file, "w") as fh:
+            fh.write(ordered)
+        source = f"{{ cat {shlex.quote(ordered_file)}; {source} | samtools view -@ {threads} -; }}"
+    stages = [source]
     stages += postprocess_stages(ref, out, threads, wd, paired=len(fastqs) == 2)
     _timed("post-processing", " | ".join(stages))
     os.remove(unsorted)

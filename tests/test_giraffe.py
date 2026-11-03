@@ -194,6 +194,13 @@ def test_reference_paths_come_in_the_fasta_order():
     assert tasks.reference_path_order(paths, FAI3) == ["GRCh38#0#chr1", "GRCh38#0#chr2", "GRCh38#0#chr10"]
 
 
+def test_reference_paths_off_the_fasta_are_dropped_with_a_note(capsys):
+    # A whole-genome graph with a chr2-only FASTA: surject onto chr2 alone.
+    paths = "GRCh38#0#chr1\nGRCh38#0#chr2\nGRCh38#0#chr10\nGRCh38#0#chrM\n"
+    assert tasks.reference_path_order(paths, "chr2\t242193529\t1\t60\t61\n") == ["GRCh38#0#chr2"]
+    assert "1 of the graph's 4 GRCh38 paths" in capsys.readouterr().out
+
+
 def test_reference_paths_of_another_sample_are_dropped():
     # vg paths -Q GRCh38 matches by prefix: GRCh38x is another sample.
     assert tasks.reference_path_order("GRCh38x#0#chr2\nGRCh38#0#chr1\n\n", FAI3) == ["GRCh38#0#chr1"]
@@ -203,9 +210,9 @@ def test_reference_paths_of_another_sample_are_dropped():
     "paths, match",
     [
         ("GRCh38#0#chr1\nGRCh38#1#chr1\n", "both the reference's chr1"),
-        ("GRCh38#0#chrM\n", "not a contig of the reference"),
-        ("CHM13#0#chr1\n", "no GRCh38 paths"),
-        ("", "no GRCh38 paths"),
+        ("GRCh38#0#chrM\n", r"none of the graph's GRCh38 paths .*\(it has GRCh38#0#chrM\)"),
+        ("CHM13#0#chr1\n", "none of the graph's GRCh38 paths"),
+        ("", "none of the graph's GRCh38 paths"),
     ],
 )
 def test_reference_paths_that_do_not_fit_the_fasta_are_refused(paths, match):
@@ -223,6 +230,20 @@ def test_rename_lists_every_fasta_contig_graph_ones_first():
         "@SQ\tSN:chr10\tLN:133797422",
         "@RG\tID:S1",
     ]
+
+
+def test_fasta_order_puts_every_contig_where_the_fai_has_it():
+    # Graph contigs chr2 and chr10 with chr1 missing: appended chr1 must move to the front.
+    header = "@HD\tVN:1.5\n@SQ\tSN:GRCh38#0#chr2\tLN:242193529\n@SQ\tSN:GRCh38#0#chr10\tLN:133797422\n@PG\tID:0\n"
+    renamed = tasks.rename_graph_contigs(header, FAI3)
+    assert [line.split("\t")[1] for line in renamed.splitlines()[1:4]] == ["SN:chr2", "SN:chr10", "SN:chr1"]
+    ordered = tasks.fasta_ordered_header(renamed, FAI3)
+    assert [line.split("\t")[1] for line in ordered.splitlines()[1:4]] == ["SN:chr1", "SN:chr2", "SN:chr10"]
+    assert ordered.splitlines()[0] == "@HD\tVN:1.5" and ordered.splitlines()[-1] == "@PG\tID:0"
+    # Already in order (chr1, chr2 present, chr10 appended): unchanged, so the stage keeps the fast reheader.
+    first_two = "@SQ\tSN:GRCh38#0#chr1\tLN:248956422\n@SQ\tSN:GRCh38#0#chr2\tLN:242193529\n"
+    renamed = tasks.rename_graph_contigs(first_two, FAI3)
+    assert tasks.fasta_ordered_header(renamed, FAI3) == renamed
 
 
 def test_rename_refuses_a_contig_twice():
@@ -439,7 +460,7 @@ def test_a_graph_without_reference_paths_fails_clearly(local_env, giraffe_tools,
             open(shlex.split(command)[-1], "w").close()
 
     monkeypatch.setattr(tasks, "run_shell", no_paths)
-    with pytest.raises(ValueError, match="no GRCh38 paths"):
+    with pytest.raises(ValueError, match="none of the graph's GRCh38 paths"):
         tasks.align_task("S1", REF)
 
 

@@ -567,14 +567,11 @@ def main(argv=None):
 
     callers = CALLER_SETS[a.caller]
     # $ALIGNER=giraffe without --aligner must still pick the giraffe image: geyser-app has no vg.
-    # With the pangenome caller in the run, giraffe aligns to the caller's graph unless --pangenome says otherwise,
-    # so one run never mixes two graphs.
-    # A GIRAFFE_GRAPH set on the host still wins over that default.
-    giraffe_graph = (
-        a.pangenome
-        or os.environ.get("GIRAFFE_GRAPH", "").strip()
-        or (DEFAULT_PANGENOME if "pangenome" in callers else None)
-    )
+    # One graph per run: --pangenome, else a GIRAFFE_GRAPH set on the host, names it for both the aligner and
+    # the pangenome caller; without either, giraffe aligns to the caller's default graph when that caller runs
+    # (and to <reference stem>.gbz, tasks.py's default, when it doesn't).
+    graph = a.pangenome or os.environ.get("GIRAFFE_GRAPH", "").strip() or None
+    giraffe_graph = graph or (DEFAULT_PANGENOME if "pangenome" in callers else None)
     align_image, align_env = align_settings(
         a.aligner or os.environ.get("ALIGNER", "").strip() or None, giraffe_graph, a.giraffe_image
     )
@@ -593,7 +590,7 @@ def main(argv=None):
             gpus=not a.no_gpu,
             skip_to_variants=a.skip_to_variants,
             pg_image=a.pg_image,
-            pangenome=a.pangenome or DEFAULT_PANGENOME,
+            pangenome=graph or DEFAULT_PANGENOME,
             pg_shm=a.pg_shm_size,
             # Only when there is a bcftools stage to shard (not --caller deepvariant/pangenome).
             regions=local_regions(a.root, reference, a.shard_window)
