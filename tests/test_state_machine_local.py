@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
 IMAGE = "amazon/aws-stepfunctions-local@sha256:ea8de9d3c489f889582e8d84aab67031e613e055ff4b94ccc41aa3af681efce2"
 ASL_PATH = os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json")
 MACHINE = "geyser-pipeline-local"
-# The same definition rendered with gate_mode = "fail" (the default, and MACHINE, is "warn").
+# The same definition rendered with gate_mode = "fail" (variables.tf's default since #157; MACHINE is "warn").
 MACHINE_FAIL = "geyser-pipeline-local-gate-fail"
 REGION = "eu-west-2"
 ACCOUNT = "123456789012"  # Step Functions Local's fixed account
@@ -64,9 +64,37 @@ TEMPLATE_VARS = {
     "bucket": "geyser-data-lake-local",
     "variant_region_window": "50000000",
     "variants_max_concurrency": "4",
-    # The quality gate (#144): variables.tf's default.
+    # The quality gate (#144): warn here, so the warn paths stay tested; MACHINE_FAIL renders variables.tf's
+    # default, fail (#157).
     "gate_mode": "warn",
 }
+
+
+def fargate_memory_table() -> dict:
+    """{vcpu: [min MiB, max MiB]} from resilience.tf's local.fargate_memory_mb (the one copy of the table)."""
+    with open(os.path.join(REPO_ROOT, "infrastructure", "resilience.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    block = tf[tf.index("fargate_memory_mb = {") :]
+    block = block[: block.index("}")]
+    return {v: [int(lo), int(hi)] for v, lo, hi in re.findall(r'"([\d.]+)"\s*=\s*\[(\d+),\s*(\d+)\]', block)}
+
+
+def align_override_sizes(qc_vcpu=1, plan_vcpu=0.25, fargate_max_vcpus=8) -> list:
+    """step_functions.tf local.align_override_sizes, the same rule: Fargate's valid pairs (0.25 vCPU takes
+    512/1024/2048 MiB, the others 1 GiB steps), where max(qc, plan) + align fits in fargate_max_vcpus.
+    Keys in Terraform's map order (lexical), as the plan renders them."""
+    sizes = []
+    for vcpu, (lo, hi) in sorted(fargate_memory_table().items()):
+        options = [512, 1024, 2048] if vcpu == "0.25" else range(lo, hi + 1, 1024)
+        if float(vcpu) + max(qc_vcpu, plan_vcpu) <= fargate_max_vcpus:
+            sizes += [f"{vcpu}/{mb}" for mb in options]
+    return sizes
+
+
+# Per-run overrides (Run_Setting_Rules): the allowed align sizes and the window bounds (step_functions.tf locals).
+TEMPLATE_VARS["align_sizes"] = json.dumps(align_override_sizes())
+TEMPLATE_VARS["variant_region_window_min"] = "5000000"
+TEMPLATE_VARS["variant_region_window_max"] = "250000000"
 BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate")
 # What Read_Regions gets from S3 in the tests: the planner's JSON list, as GetObject returns it (a string).
 REGIONS = ["chr20:1-50000000", "chr20:50000001-64444167", "chr21:1-46709983"]
@@ -321,7 +349,15 @@ _UNSET = object()
 
 
 def run_case(
-    sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None, gate_profile=_UNSET, aligner=_UNSET
+    sfn,
+    case,
+    sample="S1",
+    reference="chr20.fa",
+    wait_seconds=60,
+    caller=None,
+    gate_profile=_UNSET,
+    overrides=_UNSET,
+    aligner=_UNSET,
 ):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
@@ -334,6 +370,8 @@ def run_case(
         run_input["aligner"] = aligner
     if gate_profile is not _UNSET:  # anything, even not a string: the state machine validates it
         run_input["gate_profile"] = gate_profile
+    if overrides is not _UNSET:  # likewise
+        run_input["overrides"] = overrides
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
@@ -888,14 +926,14 @@ def test_a_failed_stage_before_the_gate_never_reaches_it(sfn):
 
 
 def test_gate_mode_is_the_only_mode_in_the_definition():
-    # warn by default (variables.tf), fail only when rendered so: nothing else in the file decides it.
+    # fail by default (variables.tf, #157), warn only when rendered so: nothing else in the file decides it.
     for mode in ("warn", "fail"):
         definition = json.loads(render_definition(gate_mode=mode))
         assert definition["States"]["Prepare_Gate_Command"]["Parameters"]["Mode"] == mode
     with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
         tf = fh.read()
     block = tf[tf.index('variable "gate_mode"') :]
-    assert re.search(r'default\s*=\s*"warn"', block[: block.index("validation")])
+    assert re.search(r'default\s*=\s*"fail"', block[: block.index("validation")])
 
 
 # --- the gate threshold profile per run (#157) ------------------------------------------------------
@@ -906,7 +944,7 @@ def gate_environment(events) -> dict:
     return {e["Name"]: e["Value"] for e in params["ContainerOverrides"]["Environment"]}
 
 
-@pytest.mark.parametrize("profile", ["default", "synthetic"])
+@pytest.mark.parametrize("profile", ["default", "synthetic", "smoke"])
 def test_the_gate_profile_picks_the_thresholds_file(sfn, profile):
     desc, events = run_case(sfn, "HappyPath", gate_profile=profile)
     assert desc["status"] == "SUCCEEDED"
@@ -947,10 +985,10 @@ def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request,
     error = published_message(events)["ErrorDetails"]
     # States.JsonToString writes compact JSON.
     assert error["Error"] == "UnknownGateProfile" and json.dumps(profile, separators=(",", ":")) in error["Cause"]
-    assert "default, synthetic" in error["Cause"]
+    assert "default, synthetic, smoke" in error["Cause"]
 
 
-@pytest.mark.parametrize("profile", ["default", "synthetic"])
+@pytest.mark.parametrize("profile", ["default", "synthetic", "smoke"])
 @pytest.mark.parametrize(
     "machine,case,outcome",
     [
@@ -1002,6 +1040,18 @@ def test_aligner_giraffe_runs_the_same_align_stage_in_the_giraffe_job_definition
     for state, p in batch_parameters(events).items():
         if state != "Align_Genome":
             assert p["JobDefinition"] == TEMPLATE_VARS["job_definition"], state
+
+
+def test_giraffe_takes_the_runs_align_size_like_bwa_mem2(sfn):
+    # The run's settings (#192), overrides included, size align whichever aligner runs it.
+    overrides = {"align_vcpu": "2", "align_memory_mb": "8192", "variant_region_window": 17000000}
+    desc, events = run_case(sfn, "HappyPath", aligner="giraffe", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Set_Run_Settings") < states.index("Choose_Aligner") < states.index("Prepare_Giraffe_Command")
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["JobDefinition"] == TEMPLATE_VARS["giraffe_job_definition"]
+    assert run_sizes(events) == {"align": ("2", "8192"), "plan_window": "17000000", "merge_window": "17000000"}
 
 
 @pytest.mark.parametrize("aligner", ["Giraffe", "bwa", "", 7, None])
@@ -1122,3 +1172,156 @@ def test_a_bad_gate_profile_is_still_reported_first(sfn):
     _, events = run_case(sfn, "HappyPath", reference="", gate_profile="strict")
     assert "Check_Reference_Name" not in entered(events)
     assert published_message(events)["ErrorDetails"]["Error"] == "UnknownGateProfile"
+
+
+# --- per-run size overrides (the cost x turnaround grid; docs/figures/cost-surface-grid.md) ---------------
+
+DEFAULT_RUN_SETTINGS = {"align_vcpu": "4", "align_memory_mb": "8192", "variant_region_window": "50000000"}
+OVERRIDE_CHAIN = [
+    "Run_Setting_Rules",
+    "Check_Run_Overrides",
+    "Inspect_Run_Overrides",
+    "Check_Run_Overrides_Object",
+    "Apply_Run_Overrides",
+    "Check_Run_Setting_Types",
+    "Inspect_Run_Setting_Values",
+    "Check_Run_Setting_Values",
+    "Set_Run_Settings",
+]
+
+
+def run_sizes(events) -> dict:
+    """Align's size and the planner's and merge's --window, as the jobs were submitted."""
+    params = batch_parameters(events)
+    align = {r["Type"]: r["Value"] for r in params["Align_Genome"]["ContainerOverrides"]["ResourceRequirements"]}
+    plan, merge = (params[s]["ContainerOverrides"]["Command"] for s in ("Plan_Regions", "Call_Variants"))
+    return {
+        "align": (align["VCPU"], align["MEMORY"]),
+        "plan_window": plan[plan.index("--window") + 1],
+        "merge_window": merge[merge.index("--window") + 1],
+    }
+
+
+def test_the_allowed_align_sizes_keep_qc_plus_align_within_the_vcpu_cap():
+    sizes = json.loads(TEMPLATE_VARS["align_sizes"])
+    assert {"4/8192", "2/4096", "1/4096", "0.25/512"} <= set(sizes)
+    assert "0.25/1536" not in sizes and "2/2048" not in sizes  # not Fargate pairs
+    assert not [s for s in sizes if s.startswith("8/")]  # 8 + QC's 1 > the 8-vCPU cap
+    assert align_override_sizes(qc_vcpu=1, fargate_max_vcpus=4)[-1] == "2/16384"  # 4 + 1 > 4: no 4 vCPU
+
+
+@pytest.mark.parametrize("overrides", [_UNSET, {}])
+def test_without_overrides_the_run_uses_the_terraform_defaults(sfn, overrides):
+    desc, events = run_case(sfn, "HappyPath", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    chain = states[states.index("Run_Setting_Rules") : states.index("QC_and_Align")]
+    assert [s for s in chain if s != "No_Run_Overrides"] == OVERRIDE_CHAIN
+    assert ("No_Run_Overrides" in chain) == (overrides is _UNSET)
+    assert json.loads(desc["output"])["run_settings"] == DEFAULT_RUN_SETTINGS
+    assert run_sizes(events) == {"align": ("4", "8192"), "plan_window": "50000000", "merge_window": "50000000"}
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        (
+            {"align_vcpu": "2", "align_memory_mb": "4096", "variant_region_window": 17000000},
+            {"align": ("2", "4096"), "plan_window": "17000000", "merge_window": "17000000"},
+        ),
+        # One knob at a time: the rest stay at the defaults.
+        (
+            {"variant_region_window": 9000000},
+            {"align": ("4", "8192"), "plan_window": "9000000", "merge_window": "9000000"},
+        ),
+        (
+            {"align_vcpu": "1"},  # 1 vCPU with the default 8192 MiB: a valid pair
+            {"align": ("1", "8192"), "plan_window": "50000000", "merge_window": "50000000"},
+        ),
+    ],
+)
+def test_overrides_reach_align_the_planner_and_the_merge(sfn, overrides, expected):
+    desc, events = run_case(sfn, "HappyPath", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    assert run_sizes(events) == expected
+    # Only align changes size: QC, the planner, the shards and the merge keep theirs.
+    sizes = {
+        state: {r["Type"]: r["Value"] for r in p["ContainerOverrides"]["ResourceRequirements"]}
+        for state, p in batch_parameters(events).items()
+    }
+    assert sizes["Quality_Control"] == {"VCPU": "1", "MEMORY": "2048"}
+    assert sizes["Plan_Regions"] == sizes["Call_Variants"] == {"VCPU": "0.25", "MEMORY": "512"}
+    assert sizes["Call_Shard"] == {"VCPU": "1", "MEMORY": "2048"}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        # Not an object.
+        [],
+        5,
+        "align_vcpu=2",
+        None,
+        # An unknown (misspelt) key: never ignored.
+        {"align_cpu": "2"},
+        {"align_vcpu": "2", "align_memory_mb": "4096", "window": 17000000},
+        # Wrong types: sizes are strings (Batch wants strings), the window a number.
+        {"align_vcpu": 2},
+        {"align_memory_mb": 4096},
+        {"variant_region_window": "17000000"},
+        {"align_vcpu": {"vcpu": "2"}},
+        {"align_vcpu": None},
+        # Not an allowed pair: not Fargate's, over the vCPU cap, or not written as Terraform writes it.
+        {"align_vcpu": "2", "align_memory_mb": "2048"},
+        {"align_vcpu": "0.25", "align_memory_mb": "1536"},
+        {"align_vcpu": "8", "align_memory_mb": "16384"},
+        {"align_vcpu": "4.0"},
+        {"align_vcpu": "0.5"},  # with the default 8192 MiB
+        # The window: out of bounds, or not a whole number.
+        {"variant_region_window": 1000},
+        {"variant_region_window": 300000000},
+        {"variant_region_window": 17000000.5},
+        {"variant_region_window": 1.7e7},
+    ],
+)
+def test_invalid_overrides_fail_the_run_before_any_job(sfn, overrides):
+    desc, events = run_case(sfn, "HappyPath", overrides=overrides)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert "Prepare_Run_Overrides_Error" in states
+    assert "QC_and_Align" not in states and not batch_parameters(events)  # no job ran
+    assert "States.Runtime" not in history_text(events)
+    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert_closed_before_notifying(desc, events, "InvalidRunOverrides")
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidRunOverrides"
+    assert "are not valid" in error["Cause"] and error["Cause"].startswith("overrides ")
+    assert "4/8192" in error["Cause"] and "from 5000000 to 250000000" in error["Cause"]
+
+
+def test_a_bad_gate_profile_is_reported_before_the_overrides(sfn):
+    _, events = run_case(sfn, "HappyPath", gate_profile="strict", overrides={"align_cpu": "2"})
+    assert "Run_Setting_Rules" not in entered(events)
+    assert published_message(events)["ErrorDetails"]["Error"] == "UnknownGateProfile"
+
+
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_the_checks_run_in_order_gate_profile_reference_then_run_settings(request, machine):
+    # All three checks at once, in both gate modes: the smoke profile (#195), a reference (#183) and an
+    # override (#192) all reach the run.
+    sfn = request.getfixturevalue(machine)
+    desc, events = run_case(
+        sfn, "HappyPath", reference="GRCh38.fa", gate_profile="smoke", overrides={"variant_region_window": 9000000}
+    )
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    order = ["Check_Gate_Profile", "Check_Reference_Name", "Check_Reference", "Run_Setting_Rules", "QC_and_Align"]
+    assert [states.index(s) for s in order] == sorted(states.index(s) for s in order)
+    assert sdk_calls(events, "Check_Reference") == [{"Bucket": TEMPLATE_VARS["bucket"], "Key": "reference/GRCh38.fa"}]
+    assert run_sizes(events)["merge_window"] == "9000000"
+    output = json.loads(desc["output"])
+    assert output["gate_profile"] == "smoke" and output["reference_name"] == "GRCh38.fa"
+    # Both wrong: the reference is reported, and the overrides are never looked at.
+    _, events = run_case(sfn, "ReferenceMissing", reference="GRCh37.fa", overrides={"align_cpu": "2"})
+    assert "Run_Setting_Rules" not in entered(events)
+    assert published_message(events)["ErrorDetails"]["Error"] == "ReferenceNotFound"

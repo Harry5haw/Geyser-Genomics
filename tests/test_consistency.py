@@ -46,8 +46,10 @@ def test_variant_shards_and_merge_use_the_planners_window():
     # planner 'regions --window <W>' with the same W, or the merge would look for parts that don't exist.
     variants = [extra for stage, _, extra in state_machine_commands() if stage == "variants"]
     assert [re.findall(r"'(--[\w-]+)'", extra) for extra in variants] == [["--region"], ["--window"]]
-    windows = re.findall(r"'--window',\s*'([^']+)'", asl_text())
-    assert len(windows) == 2 and set(windows) == {"${variant_region_window}"}  # planner and merge
+    # Both read the run's window (Set_Run_Settings: the Terraform default, or the run's override), never a
+    # template value of their own.
+    windows = re.findall(r"'--window',\s*([^,)]+)", asl_text())
+    assert len(windows) == 2 and set(windows) == {"$.run_settings.variant_region_window"}  # planner and merge
     assert "'regions', $.reference_name, '--window'" in asl_text() and "'--output-key'" in asl_text()
     # The planner's regions file is disposable too: under the prefix #62's lifecycle rule expires.
     keys = re.findall(r"States\.Format\('([^']*regions[^']*)'", asl_text())
@@ -141,11 +143,20 @@ def test_lifecycle_expires_the_apps_intermediate_prefix():
     assert tasks.region_part_key("S1", "chr20:1-100").startswith(tasks.INTERMEDIATE_PREFIX)
 
 
+def _alignment_prefix():
+    """The one prefix every alignment form (and its index) is written under."""
+    keys = tasks.keys_for("S1")
+    (prefix,) = {keys[name].split("/")[0] + "/" for name in (*tasks.ALIGNMENT_FORMS, "crai")}
+    return prefix
+
+
 def test_lifecycle_never_expires_raw_reads_references_or_outputs():
     # Decided with the user (2 Nov 2026): only disposable prefixes expire. A rule with an expiration must
-    # not cover (or sit inside) raw_reads/, reference/ or any output prefix the pipeline writes.
+    # not cover (or sit inside) raw_reads/, reference/ or any output prefix the pipeline writes, except
+    # alignments/, which expires at its break-even (recomputable from the raw reads; the test below).
     kept = {"raw_reads/", "reference/"} | {key.split("/")[0] + "/" for key in tasks.keys_for("S1").values()}
     kept |= {key.split("/")[0] + "/" for key in tasks.keys_for("S1", tasks.PAIRED).values()}
+    kept.discard(_alignment_prefix())
     for rule_id, (prefix, expires) in _lifecycle_prefixes().items():
         if not expires:
             continue  # e.g. aborting unfinished multipart uploads touches no stored object
@@ -246,3 +257,39 @@ def test_reference_rules_agree_across_the_state_machine_and_run_local(tmp_path):
     check = states["Check_Reference"]
     assert check["Resource"] == "arn:aws:states:::aws-sdk:s3:headObject"
     assert check["Parameters"]["Key.$"] == f"States.Format('{tasks.REFERENCE_PREFIX}{{}}', $.reference_name)"
+
+
+def test_run_overrides_agree_with_their_checks_and_terraform():
+    # Run_Setting_Rules (per-run overrides): setting_count is what the unknown-key check counts, so it must be
+    # the number of defaults; Set_Run_Settings hands on exactly those keys; the window bounds in the template
+    # are step_functions.tf's locals, and variables.tf's default window is inside them.
+    states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
+    rules = states["Run_Setting_Rules"]["Result"]
+    assert rules["setting_count"] == len(rules["defaults"]) == 3
+    assert set(states["Set_Run_Settings"]["Parameters"]) == {f"{k}.$" for k in rules["defaults"]}
+    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+        sfn_tf = fh.read()
+    with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
+        variables_tf = fh.read()
+    low = int(re.search(r"variant_region_window_min\s*=\s*(\d+)", sfn_tf).group(1))
+    high = int(re.search(r"variant_region_window_max\s*=\s*(\d+)", sfn_tf).group(1))
+    block = variables_tf[variables_tf.index('variable "variant_region_window"') :]
+    default = int(re.search(r"default\s*=\s*(\d+)", block).group(1))
+    assert low <= default <= high
+    for name in ("align_sizes", "variant_region_window_min", "variant_region_window_max"):
+        assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=", sfn_tf), name
+
+
+def test_alignments_expire_by_break_even_and_nothing_else_shares_the_prefix():
+    # The alignments rule covers exactly the CRAM, its index and an old BAM, and only those: no other key
+    # the pipeline writes (a VCF, a report) lives under the same prefix.
+    prefix = _alignment_prefix()
+    assert _lifecycle_prefixes()["expire-alignments"] == (prefix, True)
+    alignment_keys = {"cram", "crai", "bam"}
+    for layout in (None, tasks.PAIRED):
+        keys = tasks.keys_for("S1", layout) if layout else tasks.keys_for("S1")
+        assert {name for name, key in keys.items() if key.startswith(prefix)} == alignment_keys
+    with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    block = tf[tf.index('variable "alignment_expiry_days"') :]
+    assert re.search(r"default\s*=\s*180\b", block[: block.index("validation")])

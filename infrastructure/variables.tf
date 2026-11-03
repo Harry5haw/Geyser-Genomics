@@ -191,6 +191,17 @@ variable "intermediate_expiry_days" {
   }
 }
 
+variable "alignment_expiry_days" {
+  description = "Days before alignments/ (CRAM + index) expire (storage_lifecycle.tf): the break-even of storing a CRAM vs re-aligning its raw reads, 178-248 days on the six real chr20 runs (scripts/lifecycle_break_even.py). 0 turns the rule off (alignments kept forever)."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.alignment_expiry_days == 0 || var.alignment_expiry_days >= 30
+    error_message = "alignment_expiry_days must be 0 (never expire) or at least 30: a CRAM must outlive any rerun of the variant calling that needs it."
+  }
+}
+
 # --- Cloud DeepVariant (G2: #43, #44; docs/design/cloud-deepvariant.md) ---
 
 variable "gpu_instance_types" {
@@ -259,9 +270,9 @@ variable "default_caller" {
 }
 
 variable "gate_mode" {
-  description = "What a failed quality-gate verdict does to a cloud run (#144). warn: recorded (qc_reports/{id}.gate.json, the run record, the execution history) and the run succeeds. fail: the run fails through Notify_Failure with the gate's reasons. Stays warn until at least 5 real-sample cloud runs have passed with no false fails against the calibrated thresholds; then switch (#157)."
+  description = "What a failed quality-gate verdict does to a cloud run (#144). warn: recorded (qc_reports/{id}.gate.json, the run record, the execution history) and the run succeeds. fail: the run fails through Notify_Failure with the gate's reasons. fail since #157 (the user's decision, 3 Nov 2026: real-sample runs passed with no false fails, and the cloud smoke tests pass with gate_profile smoke)."
   type        = string
-  default     = "warn"
+  default     = "fail"
 
   validation {
     condition     = contains(["warn", "fail"], var.gate_mode)
