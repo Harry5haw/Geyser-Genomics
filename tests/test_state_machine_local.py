@@ -30,7 +30,7 @@ pytestmark = pytest.mark.skipif(
 IMAGE = "amazon/aws-stepfunctions-local@sha256:ea8de9d3c489f889582e8d84aab67031e613e055ff4b94ccc41aa3af681efce2"
 ASL_PATH = os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json")
 MACHINE = "geyser-pipeline-local"
-# The same definition rendered with gate_mode = "fail" (the default, and MACHINE, is "warn").
+# The same definition rendered with gate_mode = "fail" (variables.tf's default since #157; MACHINE is "warn").
 MACHINE_FAIL = "geyser-pipeline-local-gate-fail"
 REGION = "eu-west-2"
 ACCOUNT = "123456789012"  # Step Functions Local's fixed account
@@ -62,7 +62,8 @@ TEMPLATE_VARS = {
     "bucket": "geyser-data-lake-local",
     "variant_region_window": "50000000",
     "variants_max_concurrency": "4",
-    # The quality gate (#144): variables.tf's default.
+    # The quality gate (#144): warn here, so the warn paths stay tested; MACHINE_FAIL renders variables.tf's
+    # default, fail (#157).
     "gate_mode": "warn",
 }
 BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate")
@@ -867,14 +868,14 @@ def test_a_failed_stage_before_the_gate_never_reaches_it(sfn):
 
 
 def test_gate_mode_is_the_only_mode_in_the_definition():
-    # warn by default (variables.tf), fail only when rendered so: nothing else in the file decides it.
+    # fail by default (variables.tf, #157), warn only when rendered so: nothing else in the file decides it.
     for mode in ("warn", "fail"):
         definition = json.loads(render_definition(gate_mode=mode))
         assert definition["States"]["Prepare_Gate_Command"]["Parameters"]["Mode"] == mode
     with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
         tf = fh.read()
     block = tf[tf.index('variable "gate_mode"') :]
-    assert re.search(r'default\s*=\s*"warn"', block[: block.index("validation")])
+    assert re.search(r'default\s*=\s*"fail"', block[: block.index("validation")])
 
 
 # --- the gate threshold profile per run (#157) ------------------------------------------------------

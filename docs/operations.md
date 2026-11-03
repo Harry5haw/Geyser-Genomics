@@ -156,18 +156,18 @@ mean depth (≥ 20x), breadth at 10x, SNP count and Ti/Tv.
 
 ### Warn mode and fail mode
 
-Terraform's `gate_mode` decides what a failed verdict does. **It's `warn` now, and stays `warn` until cloud
-smoke tests pass the gate** (with the `smoke` profile above, once it is applied) and the maintainer signs off on the real-sample
-evidence ([#157](../../../issues/157)). The profile picks the thresholds (`GATE_CONFIG` for the gate job); the
+Terraform's `gate_mode` decides what a failed verdict does. **It's `fail`** since [#157](../../../issues/157):
+real-sample runs passed with no false fails, and cloud smoke tests pass with the `smoke` profile above. So
+**upload smoke tests with `gate-profile=smoke`**: without it they're judged as real samples and the run fails. The profile picks the thresholds (`GATE_CONFIG` for the gate job); the
 mode picks what a failure does.
 
-| Verdict | `gate_mode = "warn"` (current) | `gate_mode = "fail"` |
+| Verdict | `gate_mode = "warn"` | `gate_mode = "fail"` (current) |
 | :--- | :--- | :--- |
 | pass | run SUCCEEDED | run SUCCEEDED |
 | fail | run SUCCEEDED through `Gate_Warned`; the verdict is in `gate.json`, the run record, the job log and the execution's output | run FAILED with `QualityGateFailed` and the reasons, through `Close_Run_Record` → `Notify_Failure` |
 | no verdict (gate job failed, verdict missing or unreadable) | run SUCCEEDED through `Gate_Skipped`; never judged, so it doesn't count as a pass | run FAILED with `QualityGateError` |
 
-So in warn mode, **a SUCCEEDED run isn't necessarily a good one.** Read `gate.json`, or look for
+In warn mode (the way back, one in-place apply), **a SUCCEEDED run isn't necessarily a good one.** Read `gate.json`, or look for
 `Gate_Warned` / `Gate_Skipped` in the execution's history.
 
 ## Images: tags and rollback

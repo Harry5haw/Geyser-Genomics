@@ -12,7 +12,7 @@ small TOML file. It is written in Rust because it is meant to ship as one static
 > **Status:** in the pipeline image and run by `tasks.py gate <id>` after variant calling (#144):
 > locally by `run_local.py`, in the cloud by a Step Functions state after either caller. **Warn** mode
 > for now: the verdict is stored and recorded, and a failed verdict doesn't fail the run. See
-> [In the pipeline](#in-the-pipeline) and [Warn now, fail later](#warn-now-fail-later).
+> [In the pipeline](#in-the-pipeline) and [Warn first, then fail](#warn-first-then-fail).
 
 ## Inputs
 
@@ -306,7 +306,7 @@ attempt limit) → **`Read_Gate_Verdict`** (reads `qc_reports/<id>.gate.json` st
 **`Gate_Decision`**. The job always runs the app's warn mode, so a failed verdict never fails the job;
 the state machine decides with Terraform's **`gate_mode`**:
 
-| Verdict | `gate_mode = "warn"` (default) | `gate_mode = "fail"` |
+| Verdict | `gate_mode = "warn"` | `gate_mode = "fail"` (default since #157) |
 | :--- | :--- | :--- |
 | pass | `Pipeline_Succeeded` | `Pipeline_Succeeded` |
 | fail | `Gate_Warned` → `Pipeline_Succeeded` (recorded) | `Notify_Failure` → `Pipeline_Failed`; the notification's error is `QualityGateFailed`, its cause lists the gate's reasons |
@@ -316,7 +316,7 @@ The execution itself always fails as `PipelineStageFailed`, like any failed stag
 reasons are in the SNS failure notification (`ErrorDetails`) and in the execution's data (`$.error`,
 `$.gate.verdict`); the job pins `GATE_MODE=warn`, so the state machine is the one place the mode is
 decided. Before applying, the image in ECR (`dev-local`) must have the gate (main from #148 on):
-with an older image every gate job fails, which warn mode shows as `Gate_Skipped` on every run.
+with an older image every gate job fails, which fail mode turns into a failed run every time.
 
 The gate costs one more Fargate job per run: about a minute of start-up overhead and a fraction of a
 cent. Verdicts are per sample (`qc_reports/<id>.gate.json`), like every other key of a sample, so two
@@ -360,26 +360,24 @@ Which thresholds a cloud run is judged by is per run, not global: the execution 
   would fail. `synthetic` doesn't fit them either: it is calibrated for the local 50 kb random
   reference at ~30x. With `gate-profile=smoke` the smoke tests are judged by what they are.
 
-## Warn now, fail later
+## Warn first, then fail
 
-The user's decision (2 Nov 2026): **warn first, then fail** (#157).
+The user's decision (2 Nov 2026): **warn first, then fail** (#157). **Fail since #157's apply** (decided 3 Nov 2026).
 
 - **Criterion for the switch:** at least **5 real-sample cloud runs** (not the simulated CLOUD00x
   checkpoints) that the gate **judged** (`Gate_Decision` reached; a `Gate_Skipped` run doesn't count),
   and **no false fails** against the calibrated thresholds: every failed verdict was a really bad run,
-  or the threshold was corrected first. DeepVariant runs need #158 first:
-  until their run record counts a DeepVariant-only run as complete, the gate's `run_status` check fails
-  them.
-- **The switch, one line:** `gate_mode = "fail"` (tfvars, or the default in
-  `infrastructure/variables.tf`), then `terraform plan` (expect only an in-place update of the state
-  machine) and, after review, apply. Together with the threshold profile (above) it is **one apply**:
-  the profile's state-machine change and `gate_mode` are the same resource (plus the trigger Lambda's
-  code). From then on, upload smoke tests with `--metadata gate-profile=smoke`.
+  or the threshold was corrected first. DeepVariant runs needed #158 (done in #166): the run record
+  counts a DeepVariant-only run as complete, so the gate's `run_status` check can pass them.
+- **The switch, one line:** `gate_mode = "fail"` (the default in `infrastructure/variables.tf` since
+  #157; a `gate_mode` in tfvars overrides it), then `terraform plan` (expect only an in-place update of the
+  state machine) and, after review, apply. It ships with the `smoke` profile (above) in one apply: both
+  change the same resource, the state machine. From then on, upload smoke tests with
+  `--metadata gate-profile=smoke`.
 - **Back:** `gate_mode = "warn"`, the same in-place update.
 
 ## Not yet
 
-- **The switch to fail** (#157), and **#158** for DeepVariant runs (see above).
 - **Adapter content:** the QC stage runs fastp with adapter trimming disabled (report-only), and then
   fastp doesn't detect adapters, so the report has no adapter numbers. Checking them needs a QC-stage
   change (e.g. let fastp detect adapters without writing trimmed reads).
