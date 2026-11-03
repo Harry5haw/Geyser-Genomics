@@ -298,12 +298,17 @@ def sfn_fail(sfn):
     return client, arn, name
 
 
-def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None):
+_UNSET = object()
+
+
+def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None, gate_profile=_UNSET):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
     run_input = {"srr_id": sample, "reference_name": reference}
     if caller:
         run_input["caller"] = caller
+    if gate_profile is not _UNSET:  # anything, even not a string: the state machine validates it
+        run_input["gate_profile"] = gate_profile
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
@@ -590,6 +595,8 @@ def test_every_stage_gets_the_execution_name_as_run_name(sfn):
         expected = [{"Name": "RUN_NAME", "Value": desc["name"]}]
         if state == "Quality_Gate":  # pinned: the job never fails on a verdict; the state machine decides
             expected.append({"Name": "GATE_MODE", "Value": "warn"})
+            # No gate_profile in the input: the default thresholds (the app expands the variable).
+            expected.append({"Name": "GATE_CONFIG", "Value": "$GATE_THRESHOLDS_DIR/default.toml"})
         assert p["ContainerOverrides"]["Environment"] == expected, state
 
 
@@ -864,3 +871,59 @@ def test_gate_mode_is_the_only_mode_in_the_definition():
         tf = fh.read()
     block = tf[tf.index('variable "gate_mode"') :]
     assert re.search(r'default\s*=\s*"warn"', block[: block.index("validation")])
+
+
+# --- the gate threshold profile per run (#157) ------------------------------------------------------
+
+
+def gate_environment(events) -> dict:
+    (params,) = batch_calls(events, "Quality_Gate")
+    return {e["Name"]: e["Value"] for e in params["ContainerOverrides"]["Environment"]}
+
+
+@pytest.mark.parametrize("profile", ["default", "synthetic"])
+def test_the_gate_profile_picks_the_thresholds_file(sfn, profile):
+    desc, events = run_case(sfn, "HappyPath", gate_profile=profile)
+    assert desc["status"] == "SUCCEEDED"
+    assert gate_environment(events)["GATE_CONFIG"] == f"$GATE_THRESHOLDS_DIR/{profile}.toml"
+    assert json.loads(desc["output"])["batch_params"]["Profile"] == profile
+
+
+def test_without_a_profile_the_run_uses_the_default_thresholds(sfn):
+    desc, events = run_case(sfn, "HappyPath")
+    assert entered(events)[:2] == ["Check_Gate_Profile", "Default_Gate_Profile"]
+    assert json.loads(desc["output"])["gate_profile"] == "default"
+    assert gate_environment(events)["GATE_CONFIG"] == "$GATE_THRESHOLDS_DIR/default.toml"
+
+
+@pytest.mark.parametrize("profile", ["strict", "Synthetic", 42, None])
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request, machine, profile):
+    desc, events = run_case(request.getfixturevalue(machine), "HappyPath", gate_profile=profile)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert states[:2] == ["Check_Gate_Profile", "Prepare_Profile_Error"]
+    assert "QC_and_Align" not in states and "Quality_Gate" not in states  # no job ran
+    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "UnknownGateProfile" and json.dumps(profile) in error["Cause"]
+    assert "default, synthetic" in error["Cause"]
+
+
+@pytest.mark.parametrize("profile", ["default", "synthetic"])
+@pytest.mark.parametrize(
+    "machine,case,outcome",
+    [
+        ("sfn", "HappyPath", "Pipeline_Succeeded"),
+        ("sfn", "GateFailsVerdict", "Gate_Warned"),
+        ("sfn_fail", "HappyPath", "Pipeline_Succeeded"),
+        ("sfn_fail", "GateFailsVerdict", "Pipeline_Failed"),
+    ],
+)
+def test_both_profiles_follow_the_gate_mode(request, profile, machine, case, outcome):
+    # The profile chooses the thresholds; gate_mode alone decides what a failed verdict does.
+    desc, events = run_case(request.getfixturevalue(machine), case, gate_profile=profile)
+    states = entered(events)
+    assert outcome in states
+    assert desc["status"] == ("FAILED" if outcome == "Pipeline_Failed" else "SUCCEEDED")
+    assert gate_environment(events)["GATE_CONFIG"] == f"$GATE_THRESHOLDS_DIR/{profile}.toml"
