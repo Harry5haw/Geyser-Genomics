@@ -87,7 +87,7 @@ def clip_level(series, factor):
     return factor * statistics.median(covered) if covered else 1.0
 
 
-def plot(rows, out, title=None, clip=2.5, overlap=1.6):
+def plot(rows, out, title=None, clip=2.5, overlap=2.4):
     plt = style.pyplot()
     series = ridges(rows)
     cap = clip_level(series, clip)
