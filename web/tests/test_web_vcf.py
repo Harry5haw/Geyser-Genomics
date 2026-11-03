@@ -53,3 +53,18 @@ def test_each_allele_shows_its_own_consequence():
     ]
     rows = parse_vcf(lines).rows
     assert [(v.alt, v.consequence) for v in rows] == [("G", "missense G1"), ("T", "synonymous G1")]
+
+
+def test_filtered_records_and_placeholder_alts_are_not_calls():
+    # DeepVariant writes its rejected candidates as FILTER=RefCall, and NoCall rows; bcftools leaves FILTER '.'.
+    lines = [
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1",
+        "c\t100\t.\tA\tG\t50\tPASS\t.\tGT\t0/1",
+        "c\t200\t.\tC\tT\t3\tRefCall\t.\tGT\t0/0",
+        "c\t300\t.\tG\tA\t40\t.\t.\tGT\t1/1",
+        "c\t400\t.\tT\t.\t0\tNoCall\t.\tGT\t./.",
+        "c\t500\t.\tA\t<*>\t0\t.\t.\tGT\t0/0",
+    ]
+    table = parse_vcf(lines)
+    assert table.calls == {(100, "A", "G"), (300, "G", "A")} and table.total == 2
+    assert [r.pos for r in table.rows] == [100, 300]
