@@ -94,28 +94,34 @@ variable "claude_kill_switch_usd" {
 variable "stage_resources" {
   description = <<-EOT
     vCPU and memory (MiB) per pipeline stage, sent as ContainerOverrides.ResourceRequirements by the
-    state machine. Must be a valid Fargate combination (1 vCPU: 2-8 GiB, 2: 4-16 GiB, 4: 8-30 GiB, in
-    1 GiB steps; checked below). QC and align run at the same time, so qc + align vCPU must fit in
-    fargate_max_vcpus.
+    state machine (a change is an in-place state machine update; the job definitions don't change).
+    Must be a valid Fargate combination (0.25 vCPU: 512, 1024 or 2048 MiB; 0.5: 1-4 GiB; 1: 2-8 GiB;
+    2: 4-16 GiB; 4: 8-30 GiB; checked below). QC and align run at the same time, and the region
+    planner runs after QC alongside align, so qc + align and plan + align must fit in fargate_max_vcpus.
+    Sized from the real-sample runs (REAL-HG003-35x/-30x chr20, 2-3 Nov 2026; #173): peak memory
+    align 2.9 GiB, qc 1.1 GiB, a variants shard 126 MiB, the merge 81 MiB; CPU in use align ~3.9 vCPU,
+    qc 0.6-1.0, a shard ~0.95 (bcftools is single-threaded), the merge ~0.1.
   EOT
   type        = map(object({ vcpu = number, memory_mb = number }))
   default = {
-    qc       = { vcpu = 1, memory_mb = 2048 } # fastp: light
-    align    = { vcpu = 4, memory_mb = 8192 } # bwa-mem2 (+ its index build), sort, markdup
-    variants = { vcpu = 2, memory_mb = 4096 } # bcftools mpileup | call: single-threaded, small
+    qc       = { vcpu = 1, memory_mb = 2048 }   # fastp: peak 1.1 GiB; already the 1-vCPU minimum
+    align    = { vcpu = 4, memory_mb = 8192 }   # bwa-mem2, sort, markdup: CPU-bound (3.9 of 4 vCPU), peak 2.9 GiB
+    variants = { vcpu = 1, memory_mb = 2048 }   # one shard: bcftools mpileup | call, single-threaded, peak 126 MiB
+    plan     = { vcpu = 0.25, memory_mb = 512 } # region planner: reads the reference index, ~24 s
+    merge    = { vcpu = 0.25, memory_mb = 512 } # concat the parts, index, stats: peak 81 MiB, ~2 s of CPU
   }
 
   validation {
-    condition     = toset(keys(var.stage_resources)) == toset(["qc", "align", "variants"])
-    error_message = "stage_resources needs exactly the stages qc, align and variants."
+    condition     = toset(keys(var.stage_resources)) == toset(["qc", "align", "variants", "plan", "merge"])
+    error_message = "stage_resources needs exactly the stages qc, align, variants (a shard), plan and merge."
   }
   validation {
     condition = alltrue([for r in values(var.stage_resources) : contains(keys(local.fargate_memory_mb), tostring(r.vcpu)) && (
       r.memory_mb >= local.fargate_memory_mb[tostring(r.vcpu)][0] &&
       r.memory_mb <= local.fargate_memory_mb[tostring(r.vcpu)][1] &&
-      r.memory_mb % 1024 == 0
+      (r.memory_mb % 1024 == 0 || (r.vcpu == 0.25 && r.memory_mb == 512))
     )])
-    error_message = "Each stage needs a valid Fargate vCPU/memory pair: 1 vCPU 2048-8192 MiB, 2 vCPU 4096-16384, 4 vCPU 8192-30720, in 1024 MiB steps."
+    error_message = "Each stage needs a valid Fargate vCPU/memory pair: 0.25 vCPU 512, 1024 or 2048 MiB; 0.5 vCPU 1024-4096; 1 vCPU 2048-8192; 2 vCPU 4096-16384; 4 vCPU 8192-30720 (1024 MiB steps)."
   }
 }
 

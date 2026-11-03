@@ -47,8 +47,12 @@ TEMPLATE_VARS = {
     "qc_memory_mb": "2048",
     "align_vcpu": "4",
     "align_memory_mb": "8192",
-    "variants_vcpu": "2",
-    "variants_memory_mb": "4096",
+    "variants_vcpu": "1",
+    "variants_memory_mb": "2048",
+    "plan_vcpu": "0.25",
+    "plan_memory_mb": "512",
+    "merge_vcpu": "0.25",
+    "merge_memory_mb": "512",
     # Cloud DeepVariant (deepvariant.tf, batch_gpu.tf).
     "deepvariant_job_definition": "geyser-deepvariant-job",
     "gpu_job_queue": "geyser-gpu-queue-dev",
@@ -419,9 +423,9 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
     assert sizes == {
         "Quality_Control": {"VCPU": "1", "MEMORY": "2048"},
         "Align_Genome": {"VCPU": "4", "MEMORY": "8192"},
-        "Plan_Regions": {"VCPU": "1", "MEMORY": "2048"},  # QC's size: it only reads the reference
-        "Call_Shard": {"VCPU": "2", "MEMORY": "4096"},  # each shard is a variants job
-        "Call_Variants": {"VCPU": "2", "MEMORY": "4096"},
+        "Plan_Regions": {"VCPU": "0.25", "MEMORY": "512"},  # its own size (#173): it only reads the reference index
+        "Call_Shard": {"VCPU": "1", "MEMORY": "2048"},  # each shard is a variants job: single-threaded bcftools
+        "Call_Variants": {"VCPU": "0.25", "MEMORY": "512"},  # the merge: concat, index, stats
     }
 
 

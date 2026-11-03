@@ -692,7 +692,7 @@ Deployment is deliberate, not automatic. Terraform runs locally from `infrastruc
 
 | Variable | Default | What it does |
 | :--- | :--- | :--- |
-| `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variants 2 / 4 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements`. Checked against Fargate's valid vCPU/memory pairs, and QC + align (which run at the same time) must fit in `fargate_max_vcpus`. |
+| `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variant shard 1 / 2 GiB, region planner 0.25 / 0.5 GiB, merge 0.25 / 0.5 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements` (a change updates the state machine in place). Sized from the real-sample runs' peaks (#173). Checked against Fargate's valid vCPU/memory pairs, and QC (or the planner) + align, which run at the same time, must fit in `fargate_max_vcpus`. |
 | `job_disk_gb` | 20 | Fargate ephemeral storage per job. 20 GiB is free; 21-200 is billed. A real 30x sample needs ~100+. |
 | `pipeline_timeout_hours` | 12 | Time limit for a whole run, queue waits included. A run past it ends as TimedOut. |
 | `log_retention_days` | 30 | How long Batch job logs (`/aws/batch/geyser-<env>`) and trigger Lambda logs (`/aws/lambda/geyser-sfn-trigger-<env>`) are kept. |
