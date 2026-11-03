@@ -10,7 +10,7 @@ maintainer's decision. Each page ends with what was (or is still) open at its ta
 | [v0.35](v0.35.md) | Refactor Legacy Code | **Tagged** 2 Nov 2026: legacy names gone from the code; the legacy AWS stack teardown (#46) is still open |
 | [v0.4](v0.4.md) | Google DeepVariant Integration | **Tagged** 2 Nov 2026: DeepVariant from the local GPU to a cloud GPU (#125), pangenome-aware calling benchmarked |
 | [v1.0](v1.0.md) | Public Release | Draft. The repository is public and the pipeline verified on real data; waits for the maintainer's protection settings (#47) |
-| [v2.0 "XLR8"](v2.0.md) | Architecture | Draft. The speed release: three stages, bwa-mem2, CRAM, slim image, Spot, sharded calling, the quality gate in the pipeline; real chr20 in ~22 min for ~$0.07. Placeholders for the gate's fail mode (#178) and right-sizing (#174). Overlaps v1.0's milestone: see its page |
+| [v2.0 "XLR8"](v2.0.md) | Architecture | Draft. The speed release: three stages, bwa-mem2, CRAM, slim image, Spot, sharded calling, the quality gate in the pipeline; real chr20 in ~22 min for ~$0.07. Per-run gate profiles (#178) and right-sizing (#174) are in; slots for fail mode (#195), per-upload reference (#183), per-run overrides (#192), lifecycle (#190), the cost grid and a real-size GPU DeepVariant run. Overlaps v1.0's milestone: see its page |
 
 Each tagged release has a banner in [`docs/assets/`](../assets/) (`<name>-<version>-release`), also shown on
 its GitHub Release. The drafts have theirs ready: 1.0 "The Upgrade Release" (`upgrade-1.0-release.jpg`),
