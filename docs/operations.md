@@ -85,10 +85,43 @@ aws stepfunctions start-execution --state-machine-arn "$SFN_ARN" \
 
 Without `caller`, or with anything other than `deepvariant`, the run uses bcftools.
 
+**Per-run sizes (`overrides`, manual starts only):** an optional `overrides` object changes align's Fargate
+size and the variant-calling window for this run alone, with no Terraform apply. It's for experiments such
+as the cost x turnaround grid (`docs/figures/cost-surface-grid.md`). Uploads never set it, so triggered runs
+always use Terraform's defaults.
+
+| Key | Type | Default (Terraform) | Allowed |
+| :--- | :--- | :--- | :--- |
+| `align_vcpu` | string | `"4"` (`stage_resources["align"]`) | with `align_memory_mb`, a valid Fargate pair (`"0.25"`: 512/1024/2048 MiB; `"0.5"`: 1-4 GiB; `"1"`: 2-8 GiB; `"2"`: 4-16 GiB; `"4"`: 8-30 GiB, in 1 GiB steps), where QC or the planner plus align still fit in `fargate_max_vcpus` (so no 8 vCPU at the default cap). Written as Terraform writes it: `"4"`, not `"4.0"` |
+| `align_memory_mb` | string | `"8192"` | as above |
+| `variant_region_window` | number | `50000000` (`variant_region_window`) | a whole number from 5,000,000 to 250,000,000 (bases per region; the planner and the merge both use it). 65 Mb = 1 shard on chr20, 33 Mb = 2, 17 Mb = 4, 9 Mb = 8 |
+
+Any key left out keeps its default. Only align and the window change: QC, the planner, the shards and the
+merge keep their sizes.
+
+```bash
+aws stepfunctions start-execution --state-machine-arn "$SFN_ARN" \
+  --name "REAL-HG003-30x-chr20-$(date -u +%Y%m%dT%H%M%SZ)-a2w17" \
+  --input '{"srr_id": "REAL-HG003-30x-chr20", "reference_name": "chr20.fa",
+            "overrides": {"align_vcpu": "2", "align_memory_mb": "4096", "variant_region_window": 17000000}}'
+```
+
+**Checked before any job** (`Run_Setting_Rules` → `Set_Run_Settings`, after `Check_Gate_Profile`). Each of
+these fails the run with `InvalidRunOverrides`, closed and notified like any failed run, and the Cause lists
+the allowed pairs and bounds:
+- `overrides` that isn't an object;
+- an unknown key (a misspelling such as `align_cpu` is never silently ignored);
+- a wrong type (a number for a size, a string for the window);
+- a pair that isn't allowed;
+- a window out of bounds or not whole.
+
+The settings the run used are in the execution's output, under `run_settings`. A valid size that is too
+small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its job, with `OutOfMemoryError`.
+
 ## Watch a run
 
 - **The Step Functions console:** the execution `<run>` and its graph:
-  `Check_Gate_Profile` → `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
+  `Check_Gate_Profile` → the run-settings checks → `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
 - **The dashboard** (`geyser-dashboard-dev`): runs, failures and durations by stage, result quality, data lake
   storage, the trigger alarm. It's deployed by script; `--dry-run` prints the body and makes no AWS calls:
   ```bash

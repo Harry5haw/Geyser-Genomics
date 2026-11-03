@@ -1,6 +1,7 @@
 """Nothing at build time checks that tasks.py, the state machine and the local runner agree. This does."""
 
 import glob
+import json
 import os
 import re
 
@@ -44,8 +45,10 @@ def test_variant_shards_and_merge_use_the_planners_window():
     # planner 'regions --window <W>' with the same W, or the merge would look for parts that don't exist.
     variants = [extra for stage, _, extra in state_machine_commands() if stage == "variants"]
     assert [re.findall(r"'(--[\w-]+)'", extra) for extra in variants] == [["--region"], ["--window"]]
-    windows = re.findall(r"'--window',\s*'([^']+)'", asl_text())
-    assert len(windows) == 2 and set(windows) == {"${variant_region_window}"}  # planner and merge
+    # Both read the run's window (Set_Run_Settings: the Terraform default, or the run's override), never a
+    # template value of their own.
+    windows = re.findall(r"'--window',\s*([^,)]+)", asl_text())
+    assert len(windows) == 2 and set(windows) == {"$.run_settings.variant_region_window"}  # planner and merge
     assert "'regions', $.reference_name, '--window'" in asl_text() and "'--output-key'" in asl_text()
     # The planner's regions file is disposable too: under the prefix #62's lifecycle rule expires.
     keys = re.findall(r"States\.Format\('([^']*regions[^']*)'", asl_text())
@@ -182,3 +185,24 @@ def test_gate_profiles_agree_across_the_state_machine_run_local_and_the_threshol
         f[: -len(".toml")] for f in os.listdir(os.path.join(REPO_ROOT, "gate", "thresholds")) if f.endswith(".toml")
     }
     assert in_state_machine == set(run_local.GATE_PROFILES) == shipped
+
+
+def test_run_overrides_agree_with_their_checks_and_terraform():
+    # Run_Setting_Rules (per-run overrides): setting_count is what the unknown-key check counts, so it must be
+    # the number of defaults; Set_Run_Settings hands on exactly those keys; the window bounds in the template
+    # are step_functions.tf's locals, and variables.tf's default window is inside them.
+    states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
+    rules = states["Run_Setting_Rules"]["Result"]
+    assert rules["setting_count"] == len(rules["defaults"]) == 3
+    assert set(states["Set_Run_Settings"]["Parameters"]) == {f"{k}.$" for k in rules["defaults"]}
+    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+        sfn_tf = fh.read()
+    with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
+        variables_tf = fh.read()
+    low = int(re.search(r"variant_region_window_min\s*=\s*(\d+)", sfn_tf).group(1))
+    high = int(re.search(r"variant_region_window_max\s*=\s*(\d+)", sfn_tf).group(1))
+    block = variables_tf[variables_tf.index('variable "variant_region_window"') :]
+    default = int(re.search(r"default\s*=\s*(\d+)", block).group(1))
+    assert low <= default <= high
+    for name in ("align_sizes", "variant_region_window_min", "variant_region_window_max"):
+        assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=", sfn_tf), name
