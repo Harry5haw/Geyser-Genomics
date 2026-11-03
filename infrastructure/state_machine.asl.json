@@ -1,8 +1,39 @@
 {
   "Comment": "Geyser Genomics pipeline: QC and alignment in parallel from the raw reads, then variant calling scattered by region (a Map over the planned regions) and merged. Every job gets RUN_NAME = the execution name, which the stages write into the run record (app/provenance.py). Per-stage sizes, the run time limit and Batch API retries come from step_functions.tf (#104); the job definition retries infrastructure failures. Rendered by step_functions.tf with templatefile(); tests/test_state_machine_local.py runs this same file in Step Functions Local.",
-  "StartAt": "QC_and_Align",
+  "StartAt": "Check_Gate_Profile",
   "TimeoutSeconds": ${pipeline_timeout_seconds},
   "States": {
+    "Check_Gate_Profile": {
+      "Type": "Choice",
+      "Comment": "The quality gate's thresholds for this run (#157): gate_profile in the input (the trigger sets it from the upload's S3 metadata gate-profile). None: default. Checked first, so an unknown profile fails the run before any job starts, never falling back to the default silently.",
+      "Choices": [
+        { "Not": { "Variable": "$.gate_profile", "IsPresent": true }, "Next": "Default_Gate_Profile" },
+        {
+          "Or": [
+            { "Variable": "$.gate_profile", "StringEquals": "default" },
+            { "Variable": "$.gate_profile", "StringEquals": "synthetic" }
+          ],
+          "Next": "QC_and_Align"
+        }
+      ],
+      "Default": "Prepare_Profile_Error"
+    },
+    "Default_Gate_Profile": {
+      "Type": "Pass",
+      "Result": "default",
+      "ResultPath": "$.gate_profile",
+      "Next": "QC_and_Align"
+    },
+    "Prepare_Profile_Error": {
+      "Type": "Pass",
+      "Comment": "An unknown gate_profile, in either gate_mode: an operator mistake, like a mistyped GATE_MODE. JsonToString, so any value (even not a string) gives the message.",
+      "Parameters": {
+        "Error": "UnknownGateProfile",
+        "Cause.$": "States.Format('gate_profile {} is not one of: default, synthetic (thresholds in the image, gate/thresholds/)', States.JsonToString($.gate_profile))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
     "QC_and_Align": {
       "Type": "Parallel",
       "Comment": "QC and align read raw_reads/ directly and don't depend on each other; If either fails, Step Functions stops the other and the Catch below handles it. If either fails, Step Functions stops the other and the Catch below handles it.",
@@ -168,8 +199,8 @@
           "Command.$": "States.Array('python', 'tasks.py', 'regions', $.reference_name, '--window', '${variant_region_window}', '--output-key', States.Format('intermediate/variant-regions/{}/{}.json', $.srr_id, $$.Execution.Name))",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
-            { "Type": "VCPU", "Value": "${qc_vcpu}" },
-            { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
+            { "Type": "VCPU", "Value": "${plan_vcpu}" },
+            { "Type": "MEMORY", "Value": "${plan_memory_mb}" }
           ]
         }
       },
@@ -286,8 +317,8 @@
           "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--window', '${variant_region_window}')",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
-            { "Type": "VCPU", "Value": "${variants_vcpu}" },
-            { "Type": "MEMORY", "Value": "${variants_memory_mb}" }
+            { "Type": "VCPU", "Value": "${merge_vcpu}" },
+            { "Type": "MEMORY", "Value": "${merge_memory_mb}" }
           ]
         }
       },
@@ -329,7 +360,8 @@
           "Command.$": "States.Array('python', 'tasks.py', 'gate', $.srr_id)",
           "Environment": [
             { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
-            { "Name": "GATE_MODE", "Value": "warn" }
+            { "Name": "GATE_MODE", "Value": "warn" },
+            { "Name": "GATE_CONFIG", "Value.$": "States.Format('$GATE_THRESHOLDS_DIR/{}.toml', $.gate_profile)" }
           ],
           "ResourceRequirements": [
             { "Type": "VCPU", "Value": "${qc_vcpu}" },

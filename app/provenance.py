@@ -33,6 +33,10 @@ Record (schema 1):
     gate {verdict (pass | fail | null when the gate couldn't run), reasons, mode, config, gate_version, key}:
         the quality gate's verdict (tasks.gate_task), once the QualityGate stage has run. It doesn't
         change the status: in GATE_MODE=fail a failed verdict fails the QualityGate stage itself.
+Parts only: resources {cpu_seconds, peak_memory_mib} (tasks.timed_stage); DeepVariant parts on a GPU also
+    gpu {model, sample_seconds, samples, gpus, memory_total_mib, utilization_mean_pct, utilization_peak_pct,
+    memory_peak_mib, steps {make_examples | call_variants | postprocess_variants: the same four figures}}
+    (deepvariant_task.note_gpu, #139).
 
 Closing a failed run: a stage that fails in Python writes its own Failure part, but a job that is killed (out of
 memory, timeout), never starts, or a step outside the stages (the region planner, reading the regions, a shard)
