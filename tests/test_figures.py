@@ -186,3 +186,77 @@ def test_figures_render_deterministically(kind, tmp_path):
     for ext in ("png", "svg"):
         with open(f"{a}.{ext}", "rb") as fa, open(f"{b}.{ext}", "rb") as fb:
             assert fa.read() == fb.read(), f"{kind}.{ext} differs between two renders"
+
+
+# ---- edge cases (second review) ----
+
+
+def _grid_rows():
+    return cost_surface.read_stage_rows([fx("grid.stages.csv")])
+
+
+def test_failed_job_off_the_critical_path_keeps_the_run_and_its_cost():
+    rows = _grid_rows()
+    extra = dict(rows[0], Stage="DeepVariant", Status="FAILED", EstCostUSD="0.005")  # caught, run went on
+    runs = {r["execution"]: r for r in cost_surface.summarise_runs([*rows, extra])}
+    assert runs[extra["ExecutionName"]]["cost_usd"] == pytest.approx(0.015 + 0.005)
+
+
+def test_run_without_align_vcpu_is_left_out(capsys):
+    rows = [
+        dict(r, vCPU="") if r["ExecutionName"] == "FIXTURE-a4-s2" and r["Stage"] == "Align_Genome" else r
+        for r in _grid_rows()
+    ]
+    names = {r["execution"] for r in cost_surface.summarise_runs(rows)}
+    assert "FIXTURE-a4-s2" not in names and len(names) == 3
+    assert "no vCPU" in capsys.readouterr().err
+
+
+def test_run_missing_from_durations_is_left_out_with_a_warning(capsys):
+    durations = cost_surface.read_durations(fx("grid.durations.csv"))
+    del durations["FIXTURE-a4-s1"]
+    names = {r["execution"] for r in cost_surface.summarise_runs(_grid_rows(), durations)}
+    assert names == {"FIXTURE-a2-s1", "FIXTURE-a4-s2"}
+    assert "FIXTURE-a4-s1" in capsys.readouterr().err
+
+
+def _vcf(tmp_path, name, contig_length, records):
+    path = tmp_path / name
+    lines = ["##fileformat=VCFv4.2"]
+    if contig_length:
+        lines.append(f"##contig=<ID=chr20,length={contig_length}>")
+    lines.append("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
+    lines += records
+    path.write_text("\n".join(lines) + "\n")
+    return str(path)
+
+
+def test_disagreeing_contig_lengths_need_length(tmp_path):
+    rec = ["chr20\t10\t.\tA\tG\t30\tPASS\t."]
+    a, b = _vcf(tmp_path, "a.vcf", 2_600_000, rec), _vcf(tmp_path, "b.vcf", 3_000_000, rec)
+    with pytest.raises(SystemExit, match="disagree"):
+        variant_density.from_vcf([f"A={a}", f"B={b}"], "chr20", 1_000_000)
+    rows = variant_density.from_vcf([f"A={a}", f"B={b}"], "chr20", 1_000_000, length=2_600_000)
+    assert rows[-1]["bin_end"] == 2_600_000
+
+
+def test_records_past_the_length_are_reported(tmp_path, capsys):
+    path = _vcf(tmp_path, "c.vcf", None, ["chr20\t10\t.\tA\tG\t30\tPASS\t.", "chr20\t2500000\t.\tA\tG\t30\tPASS\t."])
+    rows = variant_density.from_vcf([f"S={path}"], "chr20", 1_000_000, length=1_000_000)
+    assert [r["variants"] for r in rows] == [1]
+    assert "1 record(s) past" in capsys.readouterr().err
+
+
+def test_malformed_vcf_record_names_file_and_line(tmp_path):
+    path = _vcf(tmp_path, "bad.vcf", 2_600_000, ["chr20\t10\t.\tA"])
+    with pytest.raises(SystemExit, match=r"bad\.vcf:4: malformed"):
+        variant_density.from_vcf([f"S={path}"], "chr20", 1_000_000)
+
+
+def test_fastp_duplicate_label_or_wrong_file_stops(tmp_path):
+    with pytest.raises(SystemExit, match="given twice"):
+        quality_surface.from_fastp([f"P={fx('paired.fastp.json')}", f"P={fx('single.fastp.json')}"])
+    other = tmp_path / "other.json"
+    other.write_text('{"summary": {}}')
+    with pytest.raises(SystemExit, match="not a fastp JSON"):
+        quality_surface.from_fastp([f"X={other}"])

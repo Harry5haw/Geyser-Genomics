@@ -34,14 +34,18 @@ def count_bins(path, chrom, bin_size):
     counts, length = {}, None
     contig = re.compile(r"##contig=<ID=" + re.escape(chrom) + r",.*?length=(\d+)")
     with opener(path, "rt", encoding="utf-8") as fh:
-        for line in fh:
+        for number, line in enumerate(fh, start=1):
             if line.startswith("#"):
                 found = contig.match(line)
                 if found:
                     length = int(found.group(1))
                 continue
             fields = line.split("\t", 7)
-            if fields[0] != chrom or fields[6] not in COUNTED:
+            if fields[0] != chrom:
+                continue
+            if len(fields) < 8:
+                sys.exit(f"{path}:{number}: malformed VCF record ({len(fields)} columns, 8+ expected)")
+            if fields[6] not in COUNTED:
                 continue
             b = (int(fields[1]) - 1) // bin_size
             counts[b] = counts.get(b, 0) + 1
@@ -60,14 +64,21 @@ def from_vcf(specs, chrom, bin_size, length=None):
         counted.append((label, counts))
         if header_length:
             header_lengths.add(header_length)
-    if not length and len(header_lengths) == 1:
+    if not length and len(header_lengths) > 1:
+        sys.exit(f"the VCF headers disagree on the length of {chrom} ({sorted(header_lengths)}): pass --length")
+    if not length and header_lengths:
         length = header_lengths.pop()
     if not length:
         length = (max(max(c) for _, c in counted) + 1) * bin_size
-        print(f"warning: no single contig length for {chrom} in the headers; bins end at {length:,}", file=sys.stderr)
+        print(f"warning: no contig length for {chrom} in the headers; bins end at {length:,}", file=sys.stderr)
+    last = (length - 1) // bin_size
+    for label, counts in counted:
+        beyond = sum(n for b, n in counts.items() if b > last)
+        if beyond:
+            print(f"warning: {label}: {beyond} record(s) past {chrom}'s length {length:,} left out", file=sys.stderr)
     rows = []
     for label, counts in counted:
-        for b in range((length - 1) // bin_size + 1):
+        for b in range(last + 1):
             rows.append(
                 {
                     "label": label,
@@ -78,10 +89,6 @@ def from_vcf(specs, chrom, bin_size, length=None):
                 }
             )
     return rows
-
-
-def read_csv(path):
-    return figkit.read_csv(path)
 
 
 def group_of(label):
@@ -96,10 +103,11 @@ def matrix(rows):
     starts = sorted({int(r["bin_start"]) for r in rows})
     ends = {int(r["bin_start"]): int(r["bin_end"]) for r in rows}
     index = {s: i for i, s in enumerate(starts)}
+    row_of = {label: i for i, label in enumerate(labels)}
     grid = [[0.0] * len(starts) for _ in labels]
     for r in rows:
         width_mb = (int(r["bin_end"]) - int(r["bin_start"])) / 1e6
-        grid[labels.index(r["label"])][index[int(r["bin_start"])]] = int(r["variants"]) / width_mb
+        grid[row_of[r["label"]]][index[int(r["bin_start"])]] = int(r["variants"]) / width_mb
     return labels, starts + [ends[starts[-1]]], grid
 
 
@@ -177,7 +185,7 @@ def main(argv=None):
         figkit.write_csv(from_vcf(args.from_vcf, args.chrom, args.bin_size, args.length), args.csv, FIELDS)
         print("wrote", args.csv)
     if args.out:
-        for path in plot(read_csv(args.csv), args.out, args.title, args.cap):
+        for path in plot(figkit.read_csv(args.csv), args.out, args.title, args.cap):
             print("wrote", path)
 
 

@@ -16,6 +16,7 @@ sequencer delivered).
 
 import argparse
 import json
+import sys
 
 import figkit
 
@@ -24,11 +25,16 @@ READS = {"R1": "read1_before_filtering", "R2": "read2_before_filtering"}
 
 
 def from_fastp(specs):
-    rows = []
+    rows, labels = [], set()
     for spec in specs:
         label, path = figkit.parse_spec(spec, "--from-fastp")
+        if label in labels:
+            sys.exit(f"--from-fastp: label {label!r} given twice")
+        labels.add(label)
         with open(path, encoding="utf-8") as fh:
             report = json.load(fh)
+        if not report.get(READS["R1"], {}).get("quality_curves"):
+            sys.exit(f"{path}: no {READS['R1']}.quality_curves (not a fastp JSON report?)")
         for read, key in READS.items():
             curves = report.get(key, {}).get("quality_curves")
             if not curves:
@@ -40,20 +46,17 @@ def from_fastp(specs):
     return rows
 
 
-def read_csv(path):
-    return figkit.read_csv(path)
-
-
 def matrices(rows):
     """labels, cycles, {read: [[mean or None per cycle] per label]}."""
     labels = list(dict.fromkeys(r["label"] for r in rows))
     cycles = max(int(r["cycle"]) for r in rows)
+    row_of = {label: i for i, label in enumerate(labels)}
     out = {}
     for read in READS:
         grid = [[None] * cycles for _ in labels]
         for r in rows:
             if r["read"] == read:
-                grid[labels.index(r["label"])][int(r["cycle"]) - 1] = float(r["mean"])
+                grid[row_of[r["label"]]][int(r["cycle"]) - 1] = float(r["mean"])
         out[read] = grid
     return labels, cycles, out
 
@@ -113,7 +116,7 @@ def main(argv=None):
         figkit.write_csv(from_fastp(args.from_fastp), args.csv, FIELDS)
         print("wrote", args.csv)
     if args.out:
-        for path in plot(read_csv(args.csv), args.out, args.title):
+        for path in plot(figkit.read_csv(args.csv), args.out, args.title):
             print("wrote", path)
 
 

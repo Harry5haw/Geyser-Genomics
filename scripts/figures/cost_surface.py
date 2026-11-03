@@ -60,8 +60,7 @@ def _float(value):
 def read_stage_rows(paths):
     rows = []
     for path in paths:
-        with open(path, newline="", encoding="utf-8") as fh:
-            rows.extend(csv.DictReader(fh))
+        rows.extend(figkit.read_csv(path))
     return rows
 
 
@@ -98,24 +97,34 @@ def estimated_turnaround(stages, max_concurrency):
 def summarise_runs(rows, durations=None, cost_factor=1.0, max_concurrency=4):
     """One dict per succeeded run: execution, align_vcpus, shards, cost_usd, turnaround_s, measured.
 
-    Succeeded = every Batch job succeeded and the align, shard and merge jobs are all there; with
-    `durations` (which carry each execution's own status) the execution must have SUCCEEDED too, which
-    also drops runs that failed after their jobs (e.g. at the quality gate in fail mode). Without them
-    the execution status is unknown, so a warning says so."""
+    Succeeded = the align, shard and merge jobs are all there and every job on the critical path
+    succeeded (a failed job elsewhere, e.g. a caught DeepVariant job, doesn't exclude the run; its cost
+    still counts). With `durations` (which carry each execution's own status) the execution must have
+    SUCCEEDED too, which also drops runs that failed after their jobs (e.g. at the quality gate in fail
+    mode); a run missing from them is left out with a warning. Without them the execution status is
+    unknown (main() says so). A run whose align job has no vCPU (its job description expired) is left
+    out with a warning: it has no grid cell."""
     durations = durations or {}
+    critical = {s for _, group in CRITICAL_PATH for s in group}
     by_run = defaultdict(list)
     for r in rows:
         by_run[r["ExecutionName"]].append(r)
-    runs = []
+    runs, not_in_durations = [], []
     for name, stage_rows in by_run.items():
-        if any(r["Status"] != "SUCCEEDED" for r in stage_rows):
+        if any(r["Status"] != "SUCCEEDED" for r in stage_rows if r["Stage"] in critical):
             continue
         if any(not any(r["Stage"] == s for r in stage_rows) for s in REQUIRED_STAGES):
+            continue
+        if durations and name not in durations:
+            not_in_durations.append(name)
             continue
         measured, status = durations.get(name, (None, None))
         if durations and status != "SUCCEEDED":
             continue
         align = [r for r in stage_rows if r["Stage"] == "Align_Genome"]
+        if _float(align[0]["vCPU"]) is None:
+            print(f"warning: {name}: its align job has no vCPU (job description expired?); left out", file=sys.stderr)
+            continue
         shards = sum(1 for r in stage_rows if r["Stage"] == "Call_Shard")
         costs = [_float(r["EstCostUSD"]) for r in stage_rows]
         if any(c is None for c in costs):
@@ -132,6 +141,12 @@ def summarise_runs(rows, durations=None, cost_factor=1.0, max_concurrency=4):
                 "turnaround_s": measured if measured is not None else estimated_turnaround(spans, max_concurrency),
                 "measured": measured is not None,
             }
+        )
+    if not_in_durations:
+        print(
+            f"warning: {len(not_in_durations)} run(s) not in the durations CSV, left out (status unknown): "
+            + ", ".join(sorted(not_in_durations)),
+            file=sys.stderr,
         )
     return runs
 
