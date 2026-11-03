@@ -54,14 +54,15 @@
 3.  [The Challenge: From a DNA Sample to an Answer](#-the-challenge-from-a-dna-sample-to-an-answer)
 4.  [Design Goals and Where They Stand](#-design-goals-and-where-they-stand)
 5.  [Project Status & Features](#️-project-status--features)
-6.  [How It Works: The Architecture](#️-how-it-works-the-architecture)
-7.  [Technical Deep Dive](#-technical-deep-dive)
-8.  [Run It Locally in 2 Minutes (No AWS)](#-run-it-locally-in-2-minutes-no-aws)
-9.  [Web UI](#️-web-ui)
-10. [Deployment & Usage](#-deployment--usage)
-11. [Roadmap](#️-roadmap)
-12. [Repository Layout](#️-repository-layout)
-13. [Contributing, Security and Citing](#-contributing-security-and-citing)
+6.  [Results](#-results)
+7.  [How It Works: The Architecture](#️-how-it-works-the-architecture)
+8.  [Technical Deep Dive](#-technical-deep-dive)
+9.  [Run It Locally in 2 Minutes (No AWS)](#-run-it-locally-in-2-minutes-no-aws)
+10. [Web UI](#️-web-ui)
+11. [Deployment & Usage](#-deployment--usage)
+12. [Roadmap](#️-roadmap)
+13. [Repository Layout](#️-repository-layout)
+14. [Contributing, Security and Citing](#-contributing-security-and-citing)
 
 ---
 
@@ -206,6 +207,22 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 
 ---
 
+## 📊 Results
+
+Real chromosome 20 data (GIAB HG003 and HG005), drawn by scripts from small derived CSVs, never by hand. Sources, commands and the numbers behind each figure are in [docs/figures](docs/figures/README.md). Click a figure for the SVG.
+
+<a href="docs/figures/coverage-terrain.svg"><img src="docs/figures/coverage-terrain.png" alt="Ridgeline of read depth along chr20 for seven alignments of HG003 and HG005: flat along the arms, rising around the centromere at 26-31 Mb with a spike at 31 Mb in every alignment" width="100%"/></a>
+
+**Read depth along chr20, seven alignments.** Coverage is flat along the chromosome arms, but around the centromere (26-31 Mb) reads pile up in every alignment, to about 1.7× the usual depth, and 2-3× in one window at 31 Mb, most likely reads from repeated sequence piling up on the reference's single copy.
+
+<a href="docs/figures/variant-density.svg"><img src="docs/figures/variant-density.png" alt="Heatmap of calls per megabase along chr20 for bcftools, DeepVariant and pangenome-aware DeepVariant on HG003 and HG005: bcftools is much denser around 28-31 Mb" width="100%"/></a>
+
+**Calls per megabase along chr20, by caller.** In that same pile-up, bcftools makes about 4× as many calls per Mb as DeepVariant's PASS calls (HG003, 29-30 Mb: 16,421 against 3,763), and about 25% more over the whole chromosome. bcftools applies no filter here, so its row is every call, as hap.py scored it. Linear and pangenome-aware DeepVariant look the same at this scale.
+
+Also: [per-base quality by sequencing cycle](docs/figures/quality-surface.png) for the six real-sample cloud runs (R2 a little lower than R1 towards the end of the read, as expected for Illumina).
+
+---
+
 ## 🛠️ How It Works: The Architecture
 
 The design is event-driven and uses managed AWS services, so there are no servers to look after: the trigger is a Lambda, the orchestrator is Step Functions, and Batch on Fargate starts a container per stage and scales to zero. Everything below is Terraform in `infrastructure/`.
@@ -335,6 +352,14 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --sha
 >
 > bwa-mem2 has one known bug ([bwa-mem2#262](https://github.com/bwa-mem2/bwa-mem2/issues/262)): it shifts reads that start in the first few bases of the reference's first contig, which shows up as false SNPs. Human chromosomes start with long N gaps, so they are unaffected. For any reference whose first contig doesn't start with at least 1,000 Ns, the align stage uses bwa instead and logs why. The default synthetic genome is such a reference. `make_test_data.py --leading-gap 1000` gives it a human-like gap, and then bwa-mem2 produces the same 10,000 alignments as bwa. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
 >
+> **Graph alignment (`ALIGNER=giraffe`, offline so far):** the align stage can also map the reads to a pangenome graph with [vg giraffe](https://github.com/vgteam/vg) 1.55.0. By default it uses haplotype sampling: kmc counts the sample's k-mers, and giraffe maps to a personal graph built from the haplotypes closest to them. It then surjects the alignments onto the graph's GRCh38 paths. The contig names (`GRCh38#0#chr20`) are renamed to the FASTA's (`chr20`) with `samtools reheader`. The CRAM header lists every FASTA contig in the FASTA's order, as with bwa-mem2. Graph paths that aren't FASTA contigs are left out (a whole-genome graph with `chr20.fa` keeps chr20), and reads that map there stay unmapped. A graph with no path on the FASTA, or one of a different length, fails the stage rather than write a wrong CRAM. After that the reads get the same fixmate, sort, markdup and CRAM as with bwa-mem2. vg and kmc live in their own image (`app-giraffe/`, built on geyser-app), so the other stages don't pull them. The graph is `pangenome/<GIRAFFE_GRAPH>`, by default `<reference stem>.gbz`, with its `.hapl` beside it. A missing `.hapl` is built in the job: seconds for the synthetic graph, ~6 min for chr20, hours for a whole genome. `GIRAFFE_SAMPLING=off` maps to the whole graph with its `.dist`/`.min` instead.
+>
+> ```bash
+> docker build -f app-giraffe/Dockerfile -t geyser-giraffe .
+> python scripts/make_test_data.py --pangenome
+> python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --aligner giraffe --check
+> ```
+>
 > In the cloud, `reference/chr20.fa` holds both aligners' indexes and the FASTA index: bwa's, bwa-mem2's `.0123` and `.bwt.2bit.64` (338 MB), and `chr20.fa.fai` (all uploaded 2 Nov 2026), so no stage rebuilds an index. The two share `.amb`/`.ann`/`.pac`, and bwa-mem2 writes them byte-identical to bwa's. To add an index for another reference, build it with the pipeline image and upload only the files that are missing:
 >
 > ```bash
@@ -423,7 +448,7 @@ A **pangenome** reference is a graph that combines many people's genomes. The Hu
 > [!NOTE]
 > **Where this project is:**
 > - **Done:** pangenome-aware variant calling (Google's pangenome-aware DeepVariant with the HPRC graph) runs **locally on the GPU** and is benchmarked on chr20 of HG003 (Ashkenazi) and HG005 (Han Chinese), overall and by GIAB region type (results below).
-> - **Graph alignment, benchmarked offline:** reads aligned to the pangenome graph with vg giraffe (haplotype sampling, surjected to GRCh38) give the most accurate calls on HG003 chr20 (results below). The pipeline's align stage still uses bwa-mem2.
+> - **Graph alignment, benchmarked offline:** reads aligned to the pangenome graph with vg giraffe (haplotype sampling, surjected to GRCh38) give the most accurate calls on HG003 chr20 (results below). The align stage runs it locally with `ALIGNER=giraffe` (#146). It isn't in the cloud yet, and bwa-mem2 stays the default.
 > - **Not yet:** whole-genome graphs and runs in the cloud. These are next on the [Roadmap](#️-roadmap) (#51).
 
 #### Running it
@@ -713,8 +738,8 @@ Once deployed, a run is started by uploading a file.
 | `CLOUD005` / `CLOUD006` / `CLOUD007` | bwa-mem2, fastp, CRAM + indexes, QC statistics and the run record, single- and paired-end; with the bwa-mem2 index stored in S3 the align job dropped from 45.7 s to 29.3 s. |
 | `CLOUD012-20261102T185742Z-2f9926cc` | Region-split variant calling: regions planned, 2 shards in parallel, merged. On a sample this small it is slower (3 min 45 s): each extra job adds about a minute of fixed overhead. |
 | `CLOUD014-20261102T203644Z-dv` | **DeepVariant on a GPU** (`caller=deepvariant`): g6.xlarge (NVIDIA L4), 9 min 42 s (2.6 min instance start, 4 min image pull, 1.7 min DeepVariant), 10/10 planted SNPs, no false calls, about $0.16. The instance scaled back to zero after the job. |
-| `REAL-HG003-35x-chr20-…-5bd4cf33` | **A real sample:** GIAB HG003 chr20 at 35x (19.0 M reads), 22 min 31 s, about $0.067. Quality gate (run on its outputs): **11/11 checks passed**, mean depth 36.8x, Ti/Tv 1.81, the same numbers as the offline calibration. |
-| `REAL-HG003-30x-chr20-…-3da626bc` | The same at 30x (16.2 M reads): 21 min 25 s, about $0.068, gate 11/11. Peak memory: alignment 2.3-2.9 GiB of 8, a variant-calling shard 0.13 GiB of 4. |
+| `REAL-HG003-35x-chr20-…-5bd4cf33` | **A real sample:** GIAB HG003 chr20 at 35x (19.0 M reads), 22 min 31 s, about $0.071. Quality gate (run on its outputs): **11/11 checks passed**, mean depth 36.8x, Ti/Tv 1.81, the same numbers as the offline calibration. |
+| `REAL-HG003-30x-chr20-…-3da626bc` | The same at 30x (16.2 M reads): 21 min 25 s, about $0.072, gate 11/11. Peak memory: alignment 2.3-2.9 GiB of 8, a variant-calling shard 0.13 GiB of 4. |
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.

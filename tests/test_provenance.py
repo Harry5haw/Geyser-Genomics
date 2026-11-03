@@ -159,6 +159,9 @@ class FakePopen:
         ),
         ("fastp", b"fastp 0.24.0\n", "0.24.0"),  # what the geyser-app image's fastp prints (to stderr)
         ("mosdepth", b"mosdepth 0.3.15\n", "0.3.15"),
+        # The geyser-giraffe image's vg and kmc (kmc with no arguments prints its usage).
+        ("vg", b'vg version v1.55.0 "Bernolda"\nCompiled with g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\n', "1.55.0"),
+        ("kmc", b"K-Mer Counter (KMC) ver. 3.2.4 (2024-02-09)\nUsage:\n", "3.2.4"),
         ("samtools", b"something else\n", None),
     ],
 )
