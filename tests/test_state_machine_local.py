@@ -446,7 +446,7 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
         for e in events
         if e.get("previousEventId") == started["id"] and "stateEnteredEventDetails" in e
     }
-    assert heads == {"Prepare_QC_Command", "Prepare_Align_Command"}
+    assert heads == {"Prepare_QC_Command", "Choose_Aligner"}  # the align branch picks its aligner first (#146)
     for task in ("Quality_Control", "Align_Genome", "Call_Variants"):
         assert ancestor(by_id, state_entered(events, task), "ParallelStateStarted") is not None
     variants = state_entered(events, "Call_Variants")
