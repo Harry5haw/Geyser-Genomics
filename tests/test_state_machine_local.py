@@ -63,7 +63,7 @@ REGIONS = ["chr20:1-50000000", "chr20:50000001-64444167", "chr21:1-46709983"]
 
 OK, FAIL = "BatchSucceeded", "BatchFailed"
 # Every case plans, reads and calls its regions unless it says otherwise.
-SCATTER = {"Plan_Regions": OK, "Read_Regions": "RegionsRead", "Call_Shard": "ShardsOk"}
+SCATTER = {"Plan_Regions": OK, "Read_Regions": "RegionsRead", "Call_Shard": "ShardsOk", "Close_Run_Record": "Closed"}
 TEST_CASES = {
     "HappyPath": {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK},
     "QCFails": {"Quality_Control": FAIL, "Align_Genome": OK, "Call_Variants": OK, "Notify_Failure": "Published"},
@@ -99,6 +99,8 @@ TEST_CASES = {
     "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
     "RegionsUnreadable": {"Read_Regions": "NoSuchKey", "Notify_Failure": "Published"},
     "ShardFails": {"Call_Shard": "ShardsFail", "Notify_Failure": "Published"},
+    # Closing the run record fails (S3 denied): best effort, the run still notifies and ends failed.
+    "CloseFails": {"Quality_Control": FAIL, "Close_Run_Record": "CloseDenied", "Notify_Failure": "Published"},
 }
 TEST_CASES = {
     name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **SCATTER, **case}
@@ -123,6 +125,8 @@ MOCK_CONFIG = {
             "0-3": {"Throw": {"Error": "S3.NoSuchKeyException", "Cause": "The specified key does not exist."}}
         },
         "ShardsOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
+        "Closed": {"0": {"Return": {"ETag": '"etag-1"'}}},
+        "CloseDenied": {"0-3": {"Throw": {"Error": "S3.S3Exception", "Cause": "Access Denied"}}},
         # Every shard fails: Step Functions Local doesn't count mocked calls reliably across concurrent Map
         # iterations, so "the second call fails" usually never happened. The point (a failed shard stops the
         # run before the merge) is the same.
@@ -336,6 +340,33 @@ def batch_calls(events, state) -> list:
     ]
 
 
+def run_close(events) -> dict:
+    """What Close_Run_Record sent to S3 (#155): its PutObject parameters, with the Body parsed."""
+    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    (put,) = [
+        e for e in events if e["type"] == "TaskScheduled" and names.get(e["previousEventId"]) == "Close_Run_Record"
+    ]
+    params = json.loads(put["taskScheduledEventDetails"]["parameters"])
+    return {**params, "Body": json.loads(params["Body"])}
+
+
+def assert_closed_before_notifying(desc, events, error="States.TaskFailed"):
+    """The failure path wrote this run's closing part (with the Catch output as it is) before notifying."""
+    states = entered(events)
+    assert states.index("Prepare_Run_Close") < states.index("Close_Run_Record") < states.index("Notify_Failure")
+    close = run_close(events)
+    assert close["Bucket"] == TEMPLATE_VARS["bucket"] and close["Key"] == "runs/S1.provenance/Finalize.json"
+    body = close["Body"]
+    assert {k: body[k] for k in ("schema", "task", "sample_id", "run_name", "status")} == {
+        "schema": 1,
+        "task": "Finalize",
+        "sample_id": "S1",
+        "run_name": desc["name"],
+        "status": "failed",
+    }
+    assert body["caught"]["Error"] == error and "Cause" in body["caught"] and body["finished"].endswith("Z")
+
+
 def test_template_has_only_the_terraform_variables():
     render_definition()
 
@@ -345,6 +376,7 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
     assert "Notify_Failure" not in states and "Pipeline_Failed" not in states
+    assert "Close_Run_Record" not in states  # only failed runs are closed by the state machine
     # Structure, not timing: with instant mocks either branch may finish before the other has
     # logged anything, so event order says nothing. The previousEventId links do: both branches
     # hang off the one ParallelStateStarted, and variants comes after the Parallel state exits.
@@ -532,6 +564,7 @@ def test_a_failed_stage_notifies_and_ends_failed(sfn, case, failed_state):
     assert message["Status"] == "FAILED"
     assert message["ErrorDetails"]["Error"] == "States.TaskFailed"
     assert message["Input"]["Execution"]["Input"]["srr_id"] == "S1"
+    assert_closed_before_notifying(desc, events)
 
 
 def test_run_still_ends_failed_when_the_notification_fails(sfn):
@@ -640,5 +673,20 @@ def test_a_failed_planner_read_or_shard_notifies_and_never_merges(sfn, case):
     # Not states[-2:]: a cancelled Parallel branch can log its last StateEntered after Notify_Failure.
     assert states[-1] == "Pipeline_Failed" and states.index("Notify_Failure") < states.index("Pipeline_Failed")
     assert "Call_Variants" not in states
+    assert_closed_before_notifying(
+        desc, events, "S3.NoSuchKeyException" if case == "RegionsUnreadable" else "States.TaskFailed"
+    )
     if case == "PlanFails":
         assert "Read_Regions" not in states and "Call_Variant_Shards" not in states
+
+
+def test_a_failed_close_still_notifies_with_the_original_error(sfn):
+    desc, events = run_case(sfn, "CloseFails", wait_seconds=90)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert states.index("Close_Run_Record") < states.index("Notify_Failure") and states[-1] == "Pipeline_Failed"
+    published = next(
+        e for e in events if e["type"] == "TaskScheduled" and e["taskScheduledEventDetails"]["resourceType"] == "sns"
+    )
+    message = json.loads(published["taskScheduledEventDetails"]["parameters"])["Message"]
+    assert message["ErrorDetails"]["Error"] == "States.TaskFailed"  # the stage's error, not the close's
