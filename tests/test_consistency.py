@@ -1,5 +1,6 @@
 """Nothing at build time checks that tasks.py, the state machine and the local runner agree. This does."""
 
+import glob
 import os
 import re
 
@@ -100,8 +101,12 @@ def test_quality_gate_reads_the_keys_the_stages_write():
     # gate/ (Rust) hardcodes the stats and run record keys; a rename in tasks.py or provenance.py must reach it.
     import provenance
 
-    with open(os.path.join(REPO_ROOT, "gate", "src", "inputs.rs"), encoding="utf-8") as fh:
-        rs = fh.read()
+    # gate/src/inputs/: mod.rs has the keys, run_record.rs the schema; read them all, wherever they live.
+    inputs_dir = os.path.join(REPO_ROOT, "gate", "src", "inputs")
+    rs = ""
+    for path in sorted(glob.glob(os.path.join(inputs_dir, "**", "*.rs"), recursive=True)):
+        with open(path, encoding="utf-8") as fh:
+            rs += fh.read()
     gate_keys = {
         k.replace("{sample_id}", "S1") for k in re.findall(r'format!\("((?:qc_reports|stats|runs)/[^"]+)"', rs)
     }
@@ -110,8 +115,9 @@ def test_quality_gate_reads_the_keys_the_stages_write():
     expected |= {provenance.record_key("S1"), provenance.part_prefix("S1")}
     assert gate_keys == expected
     # The gate reads one run record schema; a schema bump in provenance.py must reach the gate.
-    gate_schema = re.search(r"pub const RUN_RECORD_SCHEMA: u64 = (\d+);", rs).group(1)
-    assert int(gate_schema) == provenance.SCHEMA_VERSION
+    gate_schema = re.search(r"pub const RUN_RECORD_SCHEMA: u64 = (\d+);", rs)
+    assert gate_schema, "no RUN_RECORD_SCHEMA in gate/src/inputs/ (run_record.rs)"
+    assert int(gate_schema.group(1)) == provenance.SCHEMA_VERSION
 
 
 def _lifecycle_prefixes():
