@@ -128,29 +128,7 @@ This project was born from a profound, life-changing journey through the world o
 
 For eighteen years, my life was an odyssey through a fog of medical uncertainty with no linking diagnosis. As part of the project, my mother, my father, and I all donated our blood. Our entire genomes would be sequenced and explored, becoming three more data points in a vast ocean of information. We were told it was unlikely we would hear anything back.
 
-<table align="center" border="0" cellspacing="0" cellpadding="10">
-  <tr>
-    <td align="center">
-      <img src="docs/assets/Family_Samples.jpg" alt="DNA samples from my family for the project" width="300"/>
-    </td>
-    <td align="center">
-      <img src="docs/assets/family_samples_2.jpg" alt="A closer view of the genomic samples" width="300"/>
-    </td>
-  </tr>
-</table>
-
 A year later, against all odds, I received a result. The project had delivered a link. In the three billion letters of my genetic code, they had found a single, ultra-rare mutation in the **COA3 gene**, causing a mitochondrial defect.
-
-<table align="center" border="0" cellspacing="0" cellpadding="10">
-  <tr>
-    <td align="center">
-      <img src="docs/assets/Mutation_highlight.jpg" alt="A DNA sequence with one letter highlighted in red to show a mutation" width="300"/>
-    </td>
-    <td align="center">
-      <img src="docs/assets/Genome_Family_Tree.jpg" alt="A family tree showing the inheritance of the genetic mutation" width="300"/>
-    </td>
-  </tr>
-</table>
 
 The statistical probability of this discovery is staggering. The odds of both parents carrying the same rare recessive fault and passing it on is approximately **1 in 64 million**.
 
@@ -171,22 +149,10 @@ This describes how genetic variations are distributed in a population, where `2p
 
 My donated genome will now serve as a data point to help others, ensuring that a single-letter fault doesn't define another patient's life. My odyssey of discovery took two decades, but it doesn't need to be that way for others. With technologies like Geyser Genomics, we can accelerate these discoveries and build solutions that may one day repair the very code of life itself.
 
-<table align="center" border="0" cellspacing="0" cellpadding="10">
-  <tr>
-    <td align="center" width="32%">
-      <img src="docs/assets/helping_hands.jpg" alt="Hands reaching out to form a double helix, representing helping others."/>
-      <br><em>We can help eachother</em>
-    </td>
-    <td align="center" width="32%">
-      <img src="docs/assets/odyssey.jpg" alt="A person climbing a DNA strand, representing the long diagnostic journey."/>
-      <br><em>By looking within ourselves</em>
-    </td>
-    <td align="center" width="32%">
-      <img src="docs/assets/future_solutions.jpg" alt="DNA being knitted or repaired, representing future solutions."/>
-      <br><em>To build a better future</em>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/assets/odyssey.jpg" alt="A person climbing a DNA strand, representing the long diagnostic journey." width="300"/>
+  <br><em>We can help each other, by looking within ourselves, to build a better future</em>
+</p>
 
 ---
 
