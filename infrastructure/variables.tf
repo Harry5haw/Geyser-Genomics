@@ -211,6 +211,36 @@ variable "deepvariant_image_version" {
   default     = "dev-local"
 }
 
+# --- vg giraffe as the aligner (#146, giraffe.tf) ---
+
+variable "giraffe_image_version" {
+  description = "Tag of the geyser-giraffe image (app-giraffe/Dockerfile, built FROM a geyser-app image) in ECR. Build it from the same commit as geyser-app's image_version, so the two run the same tasks.py."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "giraffe_graph" {
+  description = "The pangenome graph giraffe maps to: a .gbz under pangenome/ in the data lake, with its .hapl beside it (GIRAFFE_GRAPH). Empty: the app's default, <reference stem>.gbz. The default is HPRC v1.1's GRCh38 graph cut to chr20, the file the local benchmarks (#129, #191) and the pangenome-aware DeepVariant caller use; the stage refuses a graph whose GRCh38 paths don't match the run's reference."
+  type        = string
+  default     = "hprc-v1.1-mc-grch38.chr20.gbz"
+
+  validation {
+    condition     = var.giraffe_graph == "" || (endswith(var.giraffe_graph, ".gbz") && !strcontains(var.giraffe_graph, "/"))
+    error_message = "giraffe_graph must be empty or a .gbz file name (no directory: it is read from pangenome/)."
+  }
+}
+
+variable "giraffe_kmc_memory_gb" {
+  description = "kmc's memory cap in GB for haplotype sampling (KMC_MEMORY_GB). 4 is the app default; plus ~1 GiB it must fit in the align stage's memory. Larger only saves kmc temp disk: HG003 chr20 at -m8 took 37 s and 7.4 GiB."
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.giraffe_kmc_memory_gb >= 1 && floor(var.giraffe_kmc_memory_gb) == var.giraffe_kmc_memory_gb
+    error_message = "giraffe_kmc_memory_gb must be a whole number of GB, at least 1."
+  }
+}
+
 variable "gpu_disk_gb" {
   description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment and DeepVariant's intermediates: 100 GB for chromosome-scale runs, 250+ for a whole genome."
   type        = number

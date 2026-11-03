@@ -23,7 +23,9 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_job_def.name}:*",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*"
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}:*"
         ]
       },
       {
@@ -61,6 +63,7 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     job_definition             = aws_batch_job_definition.geyser_app_job_def.name
     job_queue                  = aws_batch_job_queue.geyser_queue.name
     deepvariant_job_definition = aws_batch_job_definition.geyser_deepvariant_job_def.name
+    giraffe_job_definition     = aws_batch_job_definition.geyser_giraffe_job_def.name
     gpu_job_queue              = aws_batch_job_queue.gpu_queue.name
     sns_topic_arn              = aws_sns_topic.geyser_pipeline_status_topic.arn
     pipeline_timeout_seconds   = var.pipeline_timeout_hours * 3600
