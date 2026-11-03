@@ -54,4 +54,5 @@ COPY --from=download /opt/bin/kmc /usr/local/bin/kmc
 ENV ALIGNER=giraffe \
     GEYSER_VG_RELEASE=${VG_VERSION} \
     GEYSER_KMC_RELEASE=${KMC_VERSION}
-RUN vg version | head -1 && (kmc 2>&1 | head -1)
+# grep, not head: the check fails if either binary can't run here (a pipe's status is its last command's).
+RUN vg version | grep -F "vg version v${VG_VERSION}" && kmc 2>&1 | grep -F "ver. ${KMC_VERSION}"

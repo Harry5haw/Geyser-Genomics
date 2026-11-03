@@ -10,6 +10,7 @@ import subprocess
 
 import pytest
 
+import benchmark_giraffe
 import run_local
 import tasks
 
@@ -87,6 +88,23 @@ def test_giraffe_is_an_aligner_but_has_no_fasta_index():
     assert set(run_local.ALIGNERS) == set(tasks.ALIGNERS)
 
 
+def test_the_stage_and_the_benchmark_use_the_same_giraffe_settings():
+    # #129's accuracy only carries over while the stage maps like scripts/benchmark_giraffe.py does.
+    assert tasks.KMER_LENGTH == benchmark_giraffe.KMER_LENGTH
+    bench = benchmark_giraffe.giraffe_command("S", ["r1", "r2"], benchmark_giraffe.graph_keys("g.gbz"), "k", "u", 8)[2]
+    stage = tasks.giraffe_command(FILES, ["r1", "r2"], "u", 8, "S", "p", "k", "s")
+    assert (
+        f"-P -L {tasks.GIRAFFE_MAX_FRAGMENT_LENGTH} " in bench
+        and f"-P -L {tasks.GIRAFFE_MAX_FRAGMENT_LENGTH} " in stage
+    )
+    for flag in ("--haplotype-name", "--kff-name", "--index-basename", "-o BAM", "--ref-paths"):
+        assert flag in bench and flag in stage
+    bench_index = benchmark_giraffe.vg_index_commands(benchmark_giraffe.graph_keys("g.gbz"), 8)
+    stage_index = tasks.haplotype_index_command(FILES, 8).split(" && ")
+    for step, words in zip(("dist", "ri", "hapl"), stage_index, strict=True):
+        assert words.split()[:2] == bench_index[step].split()[:2]  # vg index / vg gbwt / vg haplotypes
+
+
 def test_graph_files_sit_next_to_the_gbz(tmp_path):
     files = tasks.giraffe_files(str(tmp_path), "hprc-v1.1-mc-grch38.chr20.gbz")
     base = str(tmp_path / "hprc-v1.1-mc-grch38.chr20")
@@ -133,6 +151,16 @@ def test_kmc_command_counts_k29_into_kff():
     assert tasks.KMER_LENGTH == 29  # vg haplotypes' default k; KFF counts at another k can't be used
 
 
+def test_only_the_missing_haplotype_inputs_are_built():
+    assert [s.split()[:2] for s in tasks.haplotype_index_command(FILES, 4, [".hapl"]).split(" && ")] == [
+        ["vg", "haplotypes"]
+    ]
+    assert [s.split()[1] for s in tasks.haplotype_index_command(FILES, 4, [".ri", ".hapl"]).split(" && ")] == [
+        "gbwt",
+        "haplotypes",
+    ]
+
+
 def test_haplotype_index_is_built_from_distance_index_and_r_index():
     steps = [shlex.split(s) for s in tasks.haplotype_index_command(FILES, 4).split(" && ")]
     assert [s[:2] for s in steps] == [["vg", "index"], ["vg", "gbwt"], ["vg", "haplotypes"]]
@@ -155,7 +183,40 @@ def test_bwa_and_giraffe_share_the_post_processing(paired):
     assert bwa_tail[0].startswith("samtools fixmate") == paired
 
 
-# --- contig rename -------------------------------------------------------------------------------------
+# --- reference paths and contig rename ---------------------------------------------------------------
+
+FAI3 = "chr1\t248956422\t6\t60\t61\nchr2\t242193529\t1\t60\t61\nchr10\t133797422\t1\t60\t61\n"
+
+
+def test_reference_paths_come_in_the_fasta_order():
+    # vg paths lists chr1, chr10, chr2; the CRAM's contigs must follow the .fai, as bwa's do.
+    paths = "GRCh38#0#chr1\nGRCh38#0#chr10\nGRCh38#0#chr2\n"
+    assert tasks.reference_path_order(paths, FAI3) == ["GRCh38#0#chr1", "GRCh38#0#chr2", "GRCh38#0#chr10"]
+
+
+def test_reference_paths_of_another_sample_are_dropped():
+    # vg paths -Q GRCh38 matches by prefix: GRCh38x is another sample.
+    assert tasks.reference_path_order("GRCh38x#0#chr2\nGRCh38#0#chr1\n\n", FAI3) == ["GRCh38#0#chr1"]
+
+
+@pytest.mark.parametrize(
+    "paths, match",
+    [
+        ("GRCh38#0#chr1\nGRCh38#1#chr1\n", "both the reference's chr1"),
+        ("GRCh38#0#chrM\n", "not a contig of the reference"),
+        ("CHM13#0#chr1\n", "no GRCh38 paths"),
+        ("", "no GRCh38 paths"),
+    ],
+)
+def test_reference_paths_that_do_not_fit_the_fasta_are_refused(paths, match):
+    with pytest.raises(ValueError, match=match):
+        tasks.reference_path_order(paths, FAI3)
+
+
+def test_rename_refuses_a_contig_twice():
+    header = "@SQ\tSN:GRCh38#0#chr20\tLN:64444167\n@SQ\tSN:GRCh38#chr20\tLN:64444167\n"
+    with pytest.raises(ValueError, match="chr20 twice"):
+        tasks.rename_graph_contigs(header, FAI)
 
 
 def test_rename_strips_the_reference_sample_from_sq_lines_only():
@@ -228,6 +289,7 @@ def giraffe_tools(local_env, shell_commands, monkeypatch):
 
     monkeypatch.setattr(tasks, "run_shell", fake_run_shell)
     monkeypatch.setattr(tasks.subprocess, "run", fake_run)
+    monkeypatch.setattr(tasks.shutil, "which", lambda name: f"/usr/local/bin/{name}")  # as in geyser-giraffe
     monkeypatch.setenv("ALIGNER", "giraffe")
     put(local_env, "raw_reads/S1.fastq.gz", b"reads")
     put(local_env, f"reference/{REF}", b">chr20\nACGT\n")
@@ -275,12 +337,43 @@ def test_align_with_giraffe_sampling(local_env, giraffe_tools, uploads, monkeypa
     assert not work.exists() or not any(work.iterdir())
 
 
+def test_a_stored_distance_index_and_r_index_are_used_to_build_the_hapl(local_env, giraffe_tools):
+    put(local_env, "pangenome/ref.dist")
+    put(local_env, "pangenome/ref.ri")
+
+    tasks.align_task("S1", REF)
+
+    assert tools(giraffe_tools)[0] == "vg haplotypes"  # no vg index / vg gbwt: their outputs were stored
+
+
+def test_a_partly_stored_whole_graph_index_is_fetched_and_the_rest_left_to_giraffe(
+    local_env, giraffe_tools, monkeypatch, capsys
+):
+    monkeypatch.setenv("GIRAFFE_SAMPLING", "off")
+    put(local_env, "pangenome/ref.dist", b"dist")
+
+    tasks.align_task("S1", REF)
+
+    part = read_json(local_env, "runs/S1.provenance/Align.json")
+    assert "pangenome/ref.dist" in [i["key"] for i in part["inputs"]]
+    assert ".min not stored; giraffe builds it" in capsys.readouterr().out
+
+
+def test_giraffe_fails_before_any_download_without_vg(local_env, giraffe_tools, monkeypatch):
+    monkeypatch.setattr(tasks.shutil, "which", lambda name: None if name == "vg" else f"/bin/{name}")
+    downloads = []
+    monkeypatch.setattr(tasks.storage(), "download", lambda key, path: downloads.append(key))
+    with pytest.raises(FileNotFoundError, match="needs vg.*geyser-giraffe"):
+        tasks.align_task("S1", REF)
+    assert downloads == []
+
+
 def test_a_missing_hapl_is_built_in_the_job(local_env, giraffe_tools, capsys):
     tasks.align_task("S1", REF)
 
     assert tools(giraffe_tools)[:3] == ["vg index", "vg paths", "kmc -k29"]
     assert "vg haplotypes" in giraffe_tools[0]
-    assert "ref.hapl missing" in capsys.readouterr().out
+    assert "ref.hapl missing; building .dist, .ri, .hapl" in capsys.readouterr().out
 
 
 def test_align_with_giraffe_on_the_whole_graph(local_env, giraffe_tools, monkeypatch):
@@ -296,6 +389,7 @@ def test_align_with_giraffe_on_the_whole_graph(local_env, giraffe_tools, monkeyp
 
     assert tools(giraffe_tools)[:3] == ["vg paths", "vg giraffe", "samtools reheader"]  # no kmc, no .hapl
     assert {"pangenome/ref.dist", "pangenome/ref.min"} <= set(downloaded)
+    assert not any(k.endswith((".hapl", ".ri")) for k in downloaded)
     assert "--haplotype-name" not in giraffe_tools[1]
     part = read_json(local_env, "runs/S1.provenance/Align.json")
     assert part["graph"]["haplotype_sampling"] is False and "kmc" not in part["tools"]
@@ -376,6 +470,12 @@ def test_run_local_main_passes_the_giraffe_image_and_graph(tmp_path, monkeypatch
     assert run_local.main(args + ["--aligner", "giraffe", "--pangenome", "g.gbz"]) == 0
     align = next(j for j in ran if j["name"] == "align")
     assert align["image"] == "geyser-giraffe" and align["env"]["GIRAFFE_GRAPH"] == "g.gbz"
+
+    ran.clear()
+    # Aligner and pangenome caller without --pangenome: both get the caller's default graph, not two graphs.
+    assert run_local.main(args + ["--aligner", "giraffe", "--caller", "pangenome"]) == 0
+    align = next(j for j in ran if j["name"] == "align")
+    assert align["env"]["GIRAFFE_GRAPH"] == run_local.DEFAULT_PANGENOME
 
     ran.clear()
     monkeypatch.setenv("ALIGNER", "giraffe")  # set on the host instead: still the giraffe image

@@ -567,8 +567,11 @@ def main(argv=None):
 
     callers = CALLER_SETS[a.caller]
     # $ALIGNER=giraffe without --aligner must still pick the giraffe image: geyser-app has no vg.
+    # With the pangenome caller in the run, giraffe aligns to the caller's graph unless --pangenome says otherwise,
+    # so one run never mixes two graphs.
+    giraffe_graph = a.pangenome or (DEFAULT_PANGENOME if "pangenome" in callers else None)
     align_image, align_env = align_settings(
-        a.aligner or os.environ.get("ALIGNER", "").strip() or None, a.pangenome, a.giraffe_image
+        a.aligner or os.environ.get("ALIGNER", "").strip() or None, giraffe_graph, a.giraffe_image
     )
     ok = True
     for key in keys:
