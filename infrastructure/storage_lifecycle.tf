@@ -49,6 +49,16 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
   }
 
   rule {
+    id     = "abort-incomplete-multipart-uploads"
+    status = "Enabled"
+    filter {}
+    abort_incomplete_multipart_upload {
+      days_after_initiation = var.intermediate_expiry_days
+    }
+  }
+
+  # Last, so the plan shows one added rule: the provider compares rules by position.
+  rule {
     id     = "expire-alignments"
     status = var.alignment_expiry_days > 0 ? "Enabled" : "Disabled"
     filter {
@@ -56,15 +66,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
     }
     expiration {
       days = max(var.alignment_expiry_days, 1) # S3 needs a day count even on a disabled rule
-    }
-  }
-
-  rule {
-    id     = "abort-incomplete-multipart-uploads"
-    status = "Enabled"
-    filter {}
-    abort_incomplete_multipart_upload {
-      days_after_initiation = var.intermediate_expiry_days
     }
   }
 }
