@@ -867,7 +867,16 @@ def test_parse_gpu_line_skips_what_is_not_a_sample(line, expected):
 
 @pytest.mark.parametrize(
     "value, expected",
-    [(None, dv.GPU_SAMPLE_DEFAULT), ("", dv.GPU_SAMPLE_DEFAULT), ("0", 0.0), ("0.5", 0.5), ("x", 0.0), ("-1", 0.0)],
+    [
+        (None, dv.GPU_SAMPLE_DEFAULT),
+        ("", dv.GPU_SAMPLE_DEFAULT),
+        ("0", 0.0),
+        ("0.5", 0.5),
+        ("x", 0.0),
+        ("-1", 0.0),
+        ("nan", 0.0),
+        ("inf", 0.0),
+    ],
 )
 def test_gpu_sample_interval(value, expected):
     env = {} if value is None else {dv.GPU_SAMPLE_VAR: value}
@@ -958,6 +967,34 @@ def test_sampler_reads_a_looping_nvidia_smi(monkeypatch):
     assert all(ts > 0 and index == 0 for ts, index, *_ in sampler.samples)
 
 
+def test_sample_on_a_step_boundary_counts_once():
+    windows = [("make_examples", 0.0, 10.0), ("call_variants", 10.0, 20.0)]
+    samples = [(10.0, 0, 50.0, 100.0, 1000.0), (20.0, 0, 70.0, 100.0, 1000.0)]
+    steps = dv.summarise_gpu(samples, windows)["steps"]
+    assert "make_examples" not in steps and steps["call_variants"]["samples"] == 2  # the last step keeps its end
+
+
+def test_sampler_never_raises_on_a_strange_interval(monkeypatch):
+    for interval in (float("nan"), float("inf")):
+        sampler = dv.GpuSampler(interval).start()
+        sampler.stop()
+        assert sampler.samples == []
+
+
+def test_sampler_stopped_at_once_does_not_trip_its_reader(monkeypatch, capsys):
+    script = "import time\nprint('0, 5, 100, 1000', flush=True)\ntime.sleep(60)\n"
+    monkeypatch.setattr(dv.GpuSampler, "command", lambda self: [sys.executable, "-c", script])
+    sampler = dv.GpuSampler(1.0).start()
+    sampler.stop()
+    assert "GPU sampling stopped" not in capsys.readouterr().out
+
+
+def test_recorded_interval_is_the_one_nvidia_smi_uses():
+    assert dv.GpuSampler(0.01).effective_interval == 0.1
+    assert dv.GpuSampler(2.0).effective_interval == 2.0
+    assert dv.GpuSampler(0).effective_interval is None
+
+
 def test_sampler_command_loops_in_milliseconds():
     cmd = dv.GpuSampler(2.0).command()
     assert cmd[0] == "nvidia-smi" and "--format=csv,noheader,nounits" in cmd
@@ -968,6 +1005,7 @@ class FakeSampler:
     def __init__(self, interval):
         self.interval = interval
         self.samples = list(FAKE_SAMPLES) if interval else []
+        self.effective_interval = interval or None
         self.stopped = 0
 
     def start(self):

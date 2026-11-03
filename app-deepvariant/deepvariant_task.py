@@ -38,6 +38,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 import queue
 import re
@@ -447,7 +448,7 @@ def gpu_sample_interval(env=None):
         seconds = float(raw)
     except ValueError:
         seconds = -1
-    if seconds < 0:
+    if not math.isfinite(seconds) or seconds < 0:
         print(f"WARNING: {GPU_SAMPLE_VAR}={raw!r} is not a number of seconds; GPU sampling is off", flush=True)
         return 0.0
     return seconds
@@ -490,15 +491,22 @@ class GpuSampler:
         self._proc = None
         self._reader = None
 
+    @property
+    def effective_interval(self):
+        """Seconds between samples as nvidia-smi is asked for them (at least 0.1 s), or None when off."""
+        return max(int(self.interval * 1000), 100) / 1000 if self.interval else None
+
     def command(self):
-        ms = max(int(self.interval * 1000), 100)
+        ms = int(self.effective_interval * 1000)
         return ["nvidia-smi", f"--query-gpu={GPU_QUERY}", "--format=csv,noheader,nounits", "-lms", str(ms)]
 
     def start(self):
-        cmd = self.command()
-        if not self.interval or not shutil.which(cmd[0]):
-            return self
         try:
+            if not self.interval or not math.isfinite(self.interval):
+                return self
+            cmd = self.command()
+            if not shutil.which(cmd[0]):
+                return self
             self._proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -508,16 +516,17 @@ class GpuSampler:
                 errors="replace",
                 start_new_session=True,
             )
-        except (OSError, subprocess.SubprocessError) as err:
+        except Exception as err:  # noqa: BLE001 - measuring is best effort
             print(f"WARNING: could not start GPU sampling: {err}", flush=True)
+            self._proc = None
             return self
-        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader = threading.Thread(target=self._read, args=(self._proc.stdout,), daemon=True)
         self._reader.start()
         return self
 
-    def _read(self):
+    def _read(self, stdout):
         try:
-            for line in self._proc.stdout:
+            for line in stdout:
                 sample = parse_gpu_line(line)
                 if sample:
                     self.samples.append((self.clock(), *sample))
@@ -535,6 +544,10 @@ class GpuSampler:
             print(f"WARNING: could not stop GPU sampling cleanly: {err}", flush=True)
         if self._reader is not None:
             self._reader.join(timeout=5)
+        try:
+            proc.stdout.close()
+        except Exception:  # noqa: BLE001, S110 - only freeing the pipe
+            pass
 
 
 def _gpu_stats(rows):
@@ -555,8 +568,10 @@ def summarise_gpu(samples, windows=()):
         return None
     totals = [s[4] for s in samples if s[4] is not None]
     per_step = {}
-    for step, start, end in windows:
-        per_step.setdefault(step, []).extend(s for s in samples if start <= s[0] <= end)
+    windows = list(windows)
+    for i, (step, start, end) in enumerate(windows):
+        last = i == len(windows) - 1  # half-open, so a sample on a boundary counts once; the last step keeps its end
+        per_step.setdefault(step, []).extend(s for s in samples if start <= s[0] < end or (last and s[0] == end))
     return {
         "gpus": len({s[1] for s in samples}),
         "memory_total_mib": max(totals) if totals else None,
@@ -583,8 +598,9 @@ def note_gpu(model, sampler, events, end_time):
     if not model:
         return {}
     try:
-        summary = summarise_gpu(sampler.samples, parse_step_windows(events, end_time)) or {"samples": 0}
-        provenance.note(gpu={"model": model, "sample_seconds": sampler.interval or None, **summary})
+        samples = list(sampler.samples)  # a snapshot: the reader thread may still be appending
+        summary = summarise_gpu(samples, parse_step_windows(events, end_time)) or {"samples": 0}
+        provenance.note(gpu={"model": model, "sample_seconds": sampler.effective_interval, **summary})
         if summary["samples"]:
             print(
                 f"GPU {model}: utilisation mean {summary['utilization_mean_pct']}% / peak "
