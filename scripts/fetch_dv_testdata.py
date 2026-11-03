@@ -94,6 +94,17 @@ PANGENOMES = {
         "from": "gbz",
         "path": "GRCh38#0#chr20",
     },
+    # A FIRST LOOK, NOT THE SAME KIND OF GRAPH: chr20 built from the r2 benchmark build's VCF (vg construct + vg gbwt)
+    # instead of cut from its Minigraph-Cactus GBZ, because cutting needs ~18-20 GB of memory (see "r2-chr20").
+    # Top-level sites only (INFO/LV=0); overlapping variants are dropped per haplotype (--discard-overlaps); same
+    # 229 samples (HG002, HG005, NA19240 held out). An r1.1-vs-this difference can partly be the construction method.
+    "r2-chr20-vcf": {
+        "url": HPRC_GRCH38_R2_EVAL + "hprc-v2.0-mc-grch38-eval.vcf.gz",
+        "build": "pangenome/hprc-v2.0-mc-grch38-eval.chr20.vcf-construct.gbz",
+        "from": "vcf",
+        "contig": "chr20",
+        "path": "GRCh38#0#chr20",
+    },
 }
 GRCH38_DATASETS = {"hg003-chr20", "hg003-chr20-vg", "hg003-30x-chr20", "hg005-chr20"}
 # vg release used by Google's pangenome-aware VG case study.
@@ -400,7 +411,8 @@ def dataset_files(name, pangenome=None, stratifications=False, annotation=False)
         )
     if pangenome:
         graph = PANGENOMES[pangenome]
-        files.append((graph["url"], graph["size"], graph["key"], "copy"))
+        if "key" in graph:  # a VCF-built graph reads its VCF remotely while building: nothing to download first
+            files.append((graph["url"], graph["size"], graph["key"], "copy"))
     if stratifications:
         files += stratification_files(dataset_contig(name))
     if annotation:
@@ -490,12 +502,54 @@ def gbz_chunk_command(root, gbz_key, out_key, path, memory="20g"):
     ]
 
 
-def build_chr20_gbz(root, force=False, pangenome="chr20"):
+def vcf_graph_commands(root, graph, reference_key, app_image=APP_IMAGE, memory="12g"):
+    """Two docker runs that build a chromosome graph from a pangenome VCF ("from": "vcf" entries).
+
+    1. geyser-app (bcftools, samtools): the contig's top-level sites (INFO/LV=0) read remotely by index, with the
+       contig renamed to the reference path name (GRCh38#0#chr20, what pangenome-aware DeepVariant looks for), and
+       the reference FASTA renamed the same way.
+    2. vg: vg construct (with alt paths), the VCF haplotypes (vg gbwt -v, --discard-overlaps) merged with the
+       reference path (vg gbwt -E), then the GBZ with GRCh38 as the reference sample.
+    Work files stay in pangenome/<build stem>.work/ next to the GBZ.
+    """
+    contig, path = graph["contig"], graph["path"]
+    gbz = f"/data/{graph['build']}"
+    work = gbz[: -len(".gbz")] + ".work"
+    prep = (
+        f"set -e -o pipefail; mkdir -p {work}; cd {work}; "
+        f"samtools faidx /data/{reference_key} {contig} | sed '1s/.*/>{path}/' > ref.fa; samtools faidx ref.fa; "
+        f"bcftools view -i 'INFO/LV=0' -r {contig} {graph['url']} "
+        f'| awk \'BEGIN{{OFS="\\t"}} /^##contig/{{next}} '
+        f'/^#CHROM/{{print "##contig=<ID={path}>"; print; next}} /^#/{{print; next}} {{$1="{path}"; print}}\' '
+        f"| bcftools view -Oz -o vars.vcf.gz -; bcftools index -t vars.vcf.gz"
+    )
+    build = (
+        f"set -e; cd {work}; trap 'rm -f {gbz}.part' ERR; "
+        f"vg construct -r ref.fa -v vars.vcf.gz -a -m 1024 -t 8 > graph.vg; "
+        f"vg gbwt -x graph.vg -o haplotypes.gbwt -v vars.vcf.gz --discard-overlaps; "
+        f"vg gbwt -x graph.vg -o reference.gbwt -E; "
+        f"vg gbwt -m -o all.gbwt haplotypes.gbwt reference.gbwt; "
+        f"vg gbwt -x graph.vg all.gbwt --gbz-format -g {gbz}.part --set-reference GRCh38; mv {gbz}.part {gbz}"
+    )
+    mount = ["--mount", f"type=bind,source={os.path.abspath(root)},target=/data"]
+    return [
+        ["docker", "run", "--rm", "--memory", "4g", "-w", "/tmp", *mount, app_image, "bash", "-c", prep],
+        ["docker", "run", "--rm", "--memory", memory, *mount, VG_IMAGE, "bash", "-c", build],
+    ]
+
+
+def build_chr20_gbz(root, force=False, pangenome="chr20", reference_key="reference/GRCh38_chr20.fa"):
     """Build the chromosome GBZ a graph entry names in "build": from a .vg (r1.1) or cut from a whole GBZ (r2)."""
     graph = PANGENOMES[pangenome]
     dest = os.path.join(root, *graph["build"].split("/"))
     if os.path.exists(dest) and not force:
         print(f"  exists   {dest}")
+        return
+    if graph.get("from") == "vcf":
+        print(f"  building {graph['build']} from the {graph['contig']} sites of {graph['url']} (VCF construction)")
+        for cmd in vcf_graph_commands(root, graph, reference_key):
+            subprocess.run(cmd, check=True)
+        print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
         return
     if graph.get("from") == "gbz":
         print(f"  building {graph['build']} from {graph['key']} with {VG_IMAGE} (vg chunk + vg gbwt)", flush=True)

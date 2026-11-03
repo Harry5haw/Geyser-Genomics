@@ -151,3 +151,14 @@ def test_r2_configurations_pass_their_graph_to_the_caller_and_the_history(tmp_pa
     assert by_sample["HG003_chr20_r2"] == (bc.R2_GRAPH, bc.R2_GRAPH)
     assert by_sample["HG003_chr20_vg_r2"] == (bc.R2_GRAPH, bc.R2_GRAPH)
     assert all(g is None and h is None for sid, (g, h) in by_sample.items() if not sid.endswith("_r2"))
+
+
+def test_r2_vcf_preset_reruns_only_the_vcf_built_graph():
+    configs = [bc.unpack(c) for c in bc.PRESETS["hprc-r2-vcf"]["configs"]]
+    built = [c for c in configs if c[7] == bc.R2_VCF_GRAPH]
+    assert [c[2] for c in built] == ["HG003_chr20_r2vcf", "HG003_chr20_vg_r2vcf"]
+    assert all("VCF-built" in c[0] and c[4] == "pangenome" for c in built)
+    # the other rows are the linear and v1.1 baselines, not the cut r2 graph
+    assert all(c[7] is None for c in configs if c not in built) and len(configs) == len(built) + 4
+    assert bc.R2_VCF_GRAPH == fetch.PANGENOMES["r2-chr20-vcf"]["build"].split("/")[-1]
+    assert bc.R2_VCF_GRAPH != bc.R2_GRAPH

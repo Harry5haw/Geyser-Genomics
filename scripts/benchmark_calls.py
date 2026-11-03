@@ -127,6 +127,38 @@ PRESETS["hprc-r2"] = {
         ),
     ],
 }
+# A first look at r2 from its VCF (a different construction method; see fetch_dv_testdata "r2-chr20-vcf").
+R2_VCF_GRAPH = "hprc-v2.0-mc-grch38-eval.chr20.vcf-construct.gbz"
+PRESETS["hprc-r2-vcf"] = {
+    "base": "HG003_chr20",
+    "configs": [
+        c
+        for c in PRESETS["hprc-r2"]["configs"]
+        if (c[7] if len(c) > 7 else None) is None  # the linear and r1.1 rows, unchanged
+    ]
+    + [
+        (
+            "BWA + pangenome DV, HPRC r2 (VCF-built)",
+            "bwa",
+            "HG003_chr20_r2vcf",
+            "HG003_chr20",
+            "pangenome",
+            bg.PANGENOME_ENV,
+            "14g",
+            R2_VCF_GRAPH,
+        ),
+        (
+            "giraffe + pangenome DV, HPRC r2 (VCF-built)",
+            "giraffe",
+            "HG003_chr20_vg_r2vcf",
+            "HG003_chr20_vg",
+            "pangenome",
+            bg.PANGENOME_ENV,
+            "14g",
+            R2_VCF_GRAPH,
+        ),
+    ],
+}
 ERROR_KEYS = ("snp_fn", "snp_fp", "indel_fn", "indel_fp")
 
 
