@@ -185,6 +185,17 @@ variable "intermediate_expiry_days" {
   }
 }
 
+variable "alignment_expiry_days" {
+  description = "Days before alignments/ (CRAM + index) expire (storage_lifecycle.tf): the break-even of storing a CRAM vs re-aligning its raw reads, 178-248 days on the six real chr20 runs (scripts/lifecycle_break_even.py). 0 turns the rule off (alignments kept forever)."
+  type        = number
+  default     = 180
+
+  validation {
+    condition     = var.alignment_expiry_days == 0 || var.alignment_expiry_days >= 30
+    error_message = "alignment_expiry_days must be 0 (never expire) or at least 30: a CRAM must outlive any rerun of the variant calling that needs it."
+  }
+}
+
 # --- Cloud DeepVariant (G2: #43, #44; docs/design/cloud-deepvariant.md) ---
 
 variable "gpu_instance_types" {
