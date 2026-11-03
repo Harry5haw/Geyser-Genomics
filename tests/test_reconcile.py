@@ -413,3 +413,67 @@ def test_a_close_naming_a_stage_that_wrote_success_says_which(tmp_path, capsys, 
     reconcile.main(["--local-dir", str(tmp_path), "--json"])
     row = {r["sample_id"]: r for r in json.loads(capsys.readouterr().out)["samples"]}["S1"]
     assert "run record: run failed (Align)" in row["note"]
+
+
+def put_caller_parts(store, sample_id, stages, caller=None):
+    """Parts of one run; the stage named by CALLER_STAGES[caller] carries the caller (PIPELINE_CALLER)."""
+    import provenance
+
+    for i, (task, status) in enumerate(stages):
+        at = f"2026-11-02T10:0{i}:00Z"
+        part = {
+            "task": task,
+            "status": status,
+            "run_name": "run",
+            "started": at,
+            "finished": at,
+            "inputs": [],
+            "outputs": [],
+            "tools": {},
+            "stats": {},
+        }
+        if caller and task == provenance.CALLER_STAGES[caller]:
+            part["caller"] = caller
+        provenance._put_json(store, f"runs/{sample_id}.provenance/{task}.json", part)
+
+
+def report(store):
+    keys = list(store.list_keys(""))  # a generator: run_records would use it up
+    return by_sample(reconcile.reconcile(keys, records=reconcile.run_records(store, keys)))
+
+
+DV_SAMPLE = [
+    "raw_reads/S1.fastq.gz",
+    "qc_reports/S1.fastp.html",
+    "qc_reports/S1.fastp.json",
+    "alignments/S1.cram",
+    "variants_deepvariant/S1.vcf.gz",
+]
+
+
+def test_a_deepvariant_runs_sample_is_complete_with_only_its_vcf(tmp_path):
+    store = make_bucket(tmp_path, DV_SAMPLE)
+    put_caller_parts(
+        store, "S1", [("QualityControl", "Success"), ("Align", "Success"), ("DeepVariant", "Success")], "deepvariant"
+    )
+    row = report(store)["S1"]
+    assert (row["status"], row["problem"]) == ("complete", None)
+    assert row["outputs"]["vcf"] and row["extra_outputs"]["dv"]
+
+
+def test_a_deepvariant_vcf_without_a_recorded_caller_counts_when_bcftools_never_ran(tmp_path):
+    # e.g. a --caller deepvariant run from before PIPELINE_CALLER was recorded: its VCF holds the only calls.
+    store = make_bucket(tmp_path, DV_SAMPLE)
+    put_caller_parts(store, "S1", [("QualityControl", "Success"), ("Align", "Success"), ("DeepVariant", "Success")])
+    assert report(store)["S1"]["status"] == "complete"
+
+
+def test_a_deepvariant_vcf_does_not_complete_a_sample_whose_bcftools_call_failed(tmp_path):
+    store = make_bucket(tmp_path, DV_SAMPLE)
+    put_caller_parts(
+        store,
+        "S1",
+        [("QualityControl", "Success"), ("Align", "Success"), ("CallVariants", "Failure"), ("DeepVariant", "Success")],
+    )
+    row = report(store)["S1"]
+    assert row["status"] == "incomplete" and not row["outputs"]["vcf"] and row["extra_outputs"]["dv"]

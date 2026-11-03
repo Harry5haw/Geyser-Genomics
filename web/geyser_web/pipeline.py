@@ -26,7 +26,7 @@ for _sub in ("app", "scripts"):
 
 import make_test_data  # noqa: E402
 import run_local  # noqa: E402
-from provenance import read_part, read_record, record_key  # noqa: E402
+from provenance import STAGE_VCF, read_part, read_record, record_key, sample_vcf_key  # noqa: E402
 from storage import LocalStorage, ObjectNotFound, storage_from_env  # noqa: E402
 from tasks import (  # noqa: E402
     ALIGNMENT_FORMS,
@@ -103,6 +103,8 @@ __all__ = [
     "read_part",
     "read_record",
     "record_key",
+    "sample_vcf_key",
+    "STAGE_VCF",
     "parse_sample_id",
     "run_local",
 ]

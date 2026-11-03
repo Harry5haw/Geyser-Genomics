@@ -23,6 +23,8 @@ Everything here is best effort: a provenance problem prints a warning and never 
 Record (schema 1):
     schema, sample_id, run_name, status (succeeded | failed | incomplete), complete, updated,
     caller (PIPELINE_CALLER: deepvariant | pangenome when one of them was the run's caller, else absent),
+    variant_stage (CallVariants | DeepVariant | PangenomeDeepVariant: the stage whose calls are the sample's),
+    vcf (that stage's VCF key: variants/, variants_deepvariant/ or variants_pangenome/<id>.vcf.gz),
     app_version (APP_VERSION: the image tag in the cloud), layout, aligner,
     reference {name, md5, bytes}, inputs [{key, bytes}], outputs [{key, bytes}],
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
@@ -62,6 +64,14 @@ CORE_STAGES = ("QualityControl", "Align", "CallVariants")
 # earlier run: not its stage, VCF or stats. Without a caller (bcftools runs, --caller both, a caller
 # added with --skip-to-variants) the core pipeline is CORE_STAGES, as before.
 CALLER_STAGES = {"deepvariant": "DeepVariant", "pangenome": "PangenomeDeepVariant"}
+# The VCF each variant-calling stage writes (tasks.keys_for "vcf", deepvariant_task.deepvariant_keys "vcf";
+# tests/test_provenance.py checks they agree). The record's "vcf" is the sample's current calls: what
+# reconcile and the web UI show, whichever caller made them.
+STAGE_VCF = {
+    "CallVariants": "variants/{id}.vcf.gz",
+    "DeepVariant": "variants_deepvariant/{id}.vcf.gz",
+    "PangenomeDeepVariant": "variants_pangenome/{id}.vcf.gz",
+}
 # Stages whose outputs a stage builds on. When the latest run starts part-way (run_local
 # --skip-to-variants, a stage re-run by hand), its upstream stages come from the run that last ran
 # them; downstream ones never do, so a run still in progress never borrows an old run's later stages.
@@ -432,13 +442,53 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
                 record[field] = p[field]
     if caller:
         record["caller"] = caller
+    record["variant_stage"] = variant_stage(stages, caller) if caller else _calls_stage(stages, parts)
+    record["vcf"] = STAGE_VCF[record["variant_stage"]].format(id=sample_id)
     return record
+
+
+def _calls_stage(stages: dict, parts: list) -> str:
+    """The variant stage of a run without a caller of its own: CallVariants when the record has one (its own
+    or inherited). An add-on run (run_local --caller pangenome --skip-to-variants) after a run whose caller was
+    DeepVariant has none: the sample's calls are still that run's, i.e. the latest successful part of a
+    caller's own stage (PIPELINE_CALLER set), whichever run it belongs to.
+
+    Reaching past CallVariants means the sample has no bcftools calls at all (an earlier CallVariants part
+    would have been inherited into stages). One part is kept per stage, so a re-run of the same caller as an
+    add-on replaces the caller's part and its mark: then the latest successful caller-stage part, marked or
+    not, holds the only calls there are."""
+    if "CallVariants" in stages:
+        return "CallVariants"
+    done = [p for p in parts if p["task"] in CALLER_STAGES.values() and p.get("status") == "Success"]
+    owned = [p for p in done if p.get("caller") in CALLER_STAGES and p["task"] == CALLER_STAGES[p["caller"]]]
+    if not (owned or done):
+        return "CallVariants"
+    return max(owned or done, key=lambda p: p.get("finished") or "")["task"]
+
+
+def sample_vcf_key(record, sample_id: str) -> str:
+    """The sample's current VCF: the record's "vcf", or the bcftools VCF without a record (or an old record)."""
+    vcf = (record or {}).get("vcf")
+    return (
+        vcf
+        if vcf in {v.format(id=sample_id) for v in STAGE_VCF.values()}
+        else STAGE_VCF["CallVariants"].format(id=sample_id)
+    )
 
 
 def run_caller(parts: list):
     """The caller these parts name (PIPELINE_CALLER, CALLER_STAGES), or None (none, or more than one)."""
     callers = {p.get("caller") for p in parts if p.get("caller") in CALLER_STAGES}
     return callers.pop() if len(callers) == 1 else None
+
+
+def variant_stage(stages: dict, caller) -> str:
+    """The stage whose calls are the run's: CallVariants without a caller; with one, the later-started of
+    the caller's stage and CallVariants (a CallVariants after a failed DeepVariant is the cloud's fallback)."""
+    if not caller:
+        return "CallVariants"
+    attempts = [t for t in (CALLER_STAGES[caller], "CallVariants") if t in stages]
+    return max(attempts, key=lambda t: stages[t].get("started") or "") if attempts else CALLER_STAGES[caller]
 
 
 def _core_status(stages: dict, caller) -> tuple:
@@ -450,11 +500,7 @@ def _core_status(stages: dict, caller) -> tuple:
     cloud's fallback, and one before it belongs to an earlier run (which matters only when parts have no
     run name to tell runs apart). Until the fallback finishes, a failed DeepVariant reads as failed.
     """
-    variant = "CallVariants"
-    if caller:
-        attempts = [t for t in (CALLER_STAGES[caller], "CallVariants") if t in stages]
-        variant = max(attempts, key=lambda t: stages[t].get("started") or "") if attempts else CALLER_STAGES[caller]
-    core = ("QualityControl", "Align", variant)
+    core = ("QualityControl", "Align", variant_stage(stages, caller))
     complete = all(stages.get(t, {}).get("status") == "Success" for t in core)
     failed = any(stages[t].get("status") != "Success" for t in core if t in stages)
     return complete, failed
@@ -498,4 +544,6 @@ def summary(record: dict) -> dict:
         "stages": {task: s.get("status") for task, s in stages.items()},
         "stage_runs": {task: s.get("run_name") for task, s in stages.items()},
         "failed_stage": (record.get("failure") or {}).get("stage"),
+        "caller": record.get("caller"),
+        "vcf": record.get("vcf"),
     }
