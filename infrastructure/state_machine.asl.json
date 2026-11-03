@@ -11,7 +11,8 @@
         {
           "Or": [
             { "Variable": "$.gate_profile", "StringEquals": "default" },
-            { "Variable": "$.gate_profile", "StringEquals": "synthetic" }
+            { "Variable": "$.gate_profile", "StringEquals": "synthetic" },
+            { "Variable": "$.gate_profile", "StringEquals": "smoke" }
           ],
           "Next": "Check_Reference_Name"
         }
@@ -29,7 +30,7 @@
       "Comment": "An unknown gate_profile, in either gate_mode: an operator mistake, like a mistyped GATE_MODE. JsonToString, so any value (even not a string) gives the message.",
       "Parameters": {
         "Error": "UnknownGateProfile",
-        "Cause.$": "States.Format('gate_profile {} is not one of: default, synthetic (thresholds in the image, gate/thresholds/)', States.JsonToString($.gate_profile))"
+        "Cause.$": "States.Format('gate_profile {} is not one of: default, synthetic, smoke (thresholds in the image, gate/thresholds/)', States.JsonToString($.gate_profile))"
       },
       "ResultPath": "$.error",
       "Next": "Prepare_Run_Close"
