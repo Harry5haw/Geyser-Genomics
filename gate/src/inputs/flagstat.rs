@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 
-use super::pct;
+fn pct(n: u64, d: u64) -> Option<f64> {
+    (d > 0).then(|| n as f64 * 100.0 / d as f64)
+}
 
 /// The QC-passed counts from `samtools flagstat` that the gate uses.
 ///
