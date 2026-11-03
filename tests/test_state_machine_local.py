@@ -1235,12 +1235,22 @@ def test_a_bad_gate_profile_is_reported_before_the_overrides(sfn):
     assert published_message(events)["ErrorDetails"]["Error"] == "UnknownGateProfile"
 
 
-def test_the_checks_run_in_order_gate_profile_reference_then_run_settings(sfn):
-    desc, events = run_case(sfn, "HappyPath", overrides={"variant_region_window": 9000000})
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_the_checks_run_in_order_gate_profile_reference_then_run_settings(request, machine):
+    # All three checks at once, in both gate modes: the smoke profile (#195), a reference (#183) and an
+    # override (#192) all reach the run.
+    sfn = request.getfixturevalue(machine)
+    desc, events = run_case(
+        sfn, "HappyPath", reference="GRCh38.fa", gate_profile="smoke", overrides={"variant_region_window": 9000000}
+    )
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
     order = ["Check_Gate_Profile", "Check_Reference_Name", "Check_Reference", "Run_Setting_Rules", "QC_and_Align"]
     assert [states.index(s) for s in order] == sorted(states.index(s) for s in order)
+    assert sdk_calls(events, "Check_Reference") == [{"Bucket": TEMPLATE_VARS["bucket"], "Key": "reference/GRCh38.fa"}]
+    assert run_sizes(events)["merge_window"] == "9000000"
+    output = json.loads(desc["output"])
+    assert output["gate_profile"] == "smoke" and output["reference_name"] == "GRCh38.fa"
     # Both wrong: the reference is reported, and the overrides are never looked at.
     _, events = run_case(sfn, "ReferenceMissing", reference="GRCh37.fa", overrides={"align_cpu": "2"})
     assert "Run_Setting_Rules" not in entered(events)
