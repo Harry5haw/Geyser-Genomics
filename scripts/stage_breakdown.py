@@ -88,28 +88,28 @@ def history_events(sfn_client, execution_arn):
 
 
 def batch_tasks(sfn_client, execution_arn) -> list:
-    """[{"stage", "job_id", "job"}] for each Batch task state entered, in execution order.
+    """[{"stage", "job_id", "job"}] for each Batch task state, in execution order.
     "job" is the latest job description found in the history (may be empty).
 
     Each event is credited to the state entry its previousEventId chain leads back to, not just the last
-    state entered: inside a Parallel state, QC's and align's events interleave. Rows are per *entry*, not
-    per state name, so the iterations of a Map state (Call_Shard: one Batch job per region) each get
-    their own row; before, every shard after the first was folded into one row and missing from the
-    run's cost."""
-    tasks, by_entry, last_entry, entries = [], {}, None, 0
-    entry_of = {}  # event id -> (state name, entry number)
+    state entered: inside a Parallel state, QC's and align's events interleave. One row per entry, not
+    per state name: a Map state enters its task once per item (Call_Shard: one job per region), and each
+    is its own job. A retried attempt stays in its entry's row (its events chain back to the same entry);
+    if the retry submitted a new job, the row describes the latest one."""
+    tasks, by_entry, last_entry = [], {}, None
+    entry_of, stage_of = {}, {}  # event id -> entry number; entry number -> state name
     for event in history_events(sfn_client, execution_arn):
         kind = event.get("type")
         if kind == "TaskStateEntered":
-            entries += 1
-            entry = last_entry = (event.get("stateEnteredEventDetails", {}).get("name"), entries)
+            last_entry = entry = len(stage_of)
+            stage_of[entry] = event.get("stateEnteredEventDetails", {}).get("name")
         else:
             entry = entry_of.get(event.get("previousEventId"), last_entry)
         if event.get("id") is not None:
             entry_of[event["id"]] = entry
         if kind == "TaskStateEntered":
             continue
-        if kind not in BATCH_TASK_EVENTS or entry is None or entry[0] is None:
+        if kind not in BATCH_TASK_EVENTS or entry is None or stage_of[entry] is None:
             continue
         details_key, field = BATCH_TASK_EVENTS[kind]
         details = event.get(details_key, {})
@@ -117,13 +117,13 @@ def batch_tasks(sfn_client, execution_arn) -> list:
             continue
         payload = _json(details.get(field))
         if entry not in by_entry:
-            by_entry[entry] = {"stage": entry[0], "job_id": None, "job": {}}
+            by_entry[entry] = {"stage": stage_of[entry], "job_id": None, "job": {}}
             tasks.append(by_entry[entry])
         task = by_entry[entry]
         job_id = _get(payload, "JobId")
         if job_id and job_id != task["job_id"]:
             # A Retry inside the same entry submitted a new job: the row follows the latest one, so
-            # describe_jobs and the history copy describe the same job.
+            # describe_jobs and the history copy describe the same job (from T3's #189).
             task["job_id"], task["job"] = job_id, {}
         if _get(payload, "StartedAt") or _get(payload, "Status"):
             task["job"] = payload

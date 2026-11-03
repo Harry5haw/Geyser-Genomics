@@ -53,6 +53,7 @@ Settings you can change. Set these on the host; `run_local.py` passes them into 
 | `DEEPVARIANT_FATAL_GRACE_SECONDS` | 120 | after a fatal error line (`ResourceExhaustedError` / `RESOURCE_EXHAUSTED`, usually out of GPU memory), stop it once it has been silent this long without exiting |
 | `DEEPVARIANT_MODEL_TYPE` | `WGS` | |
 | `DEEPVARIANT_CHECKPOINT` | on | `0` turns off keeping `make_examples` output for a retry (below) |
+| `DEEPVARIANT_GPU_SAMPLE_SECONDS` | 2 | seconds between GPU utilisation/memory samples (below); `0` turns sampling off |
 
 **A hung wrapper no longer blocks the stage.** On 1 Nov 2026, `call_variants` ran out of GPU memory and `run_pangenome_aware_deepvariant` never exited. The stage now runs the wrapper in its own process group and watches its output. When a limit is reached, it stops the wrapper's whole group (including steps that outlive the wrapper) and fails with the reason (`WrapperStopped`).
 - **Fatal errors:** a wrapper still printing after a fatal line counts as alive. TensorFlow's `Allocator (GPU_0_bfc) ran out of memory trying to allocate ...` lines are warnings that also appear in successful runs, so they don't count.
@@ -69,6 +70,11 @@ Settings you can change. Set these on the host; `run_local.py` passes them into 
 There is no GPU? Build the CPU variant (`--build-arg DV_TAG=1.10.0 -t geyser-deepvariant-cpu`) and pass `--dv-image geyser-deepvariant-cpu --no-gpu`.
 
 **Where the GPU actually helps.** Of DeepVariant's three steps, only `call_variants` uses the GPU. `make_examples` and `postprocess_variants` run on the CPU. Since 1.8, a "small model" inside `make_examples` also calls the easy sites on the CPU, so `call_variants` only sees the harder ones. The stage records each step separately.
+
+**GPU utilisation and memory (#139).** While the wrapper runs, the stage samples the GPU with `nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total -lms <ms>` every `DEEPVARIANT_GPU_SAMPLE_SECONDS`. The DeepVariant part of the run record (`runs/<id>.provenance/DeepVariant.json`) gets a `gpu` entry: the model, the mean and peak utilisation and the peak memory over the whole run and per step (`steps.call_variants` ...). Each step's metric (`DeepVariant.CallVariants` ...) carries the same figures as `GpuUtilization`, `GpuUtilizationPeak` (Percent) and `GpuPeakMemory` (Megabytes). The stage also prints them after its step timings. How to read the figures:
+- **Utilisation** is nvidia-smi's: the share of each sample period in which any kernel ran. It says the GPU was busy, not how much of it was used.
+- **Memory** is the whole device's. TensorFlow reserves nearly all free memory when `call_variants` starts, so the peak shows what was *reserved*, not what the model needed. On a desktop it also includes the display's own use (about 1.7 GB here).
+- **Without a GPU** (the CPU image, CI, `--no-gpu`) there is no `nvidia-smi`: nothing is sampled or recorded. Measuring never fails the stage, and a run stopped by the limits above still records what was sampled (useful after an out-of-memory hang).
 
 Measured results (full tables in the main README):
 
@@ -187,11 +193,14 @@ None of the AWS figures has been run on AWS yet.
 | `postprocess_variants` | 17–22 s, CPU | [measured] |
 | Whole stage | **7.8 min on GPU, 12.9 min CPU-only** (defaults) | [measured] |
 | Memory | 16 shards thrashed and failed under an 8 GB cap but ran fine at 12 GB. Uncapped, the CPU-only run peaked at about 11.6 GB (batch 1024). Plan on about **0.6 GB per shard plus 2 GB**. That fits both results: 11.6 GB for 16 shards, and over 8 GB needed. | [measured] |
-| GPU memory | TensorFlow reserves all free VRAM. The run fitted in the roughly 6 GB the desktop left free on the 10 GB card. | [measured] |
+| GPU memory | TensorFlow reserves all free VRAM: 9.5 of 10 GB in use during `call_variants` (1.8 GB before it, the desktop's own). Reserved, not needed: the earlier run fitted in the roughly 6 GB the desktop left free. | [measured] |
+| GPU utilisation | Sampled every second (#139; HG003 chr20, 16 shards, 3 Nov 2026, 570 s stage, `call_variants` 132.5 s): **8% mean over the whole stage**. `make_examples` and `postprocess_variants` 1-1.4% (idle). `call_variants` 29% mean: about 21 s of CUDA/model start-up with the memory reserved but idle, then about 98 s at 47% mean, swinging between 10% and 100% as the GPU waits for the CPU to feed it examples. | [measured] |
 | Input | 1.1 GB BAM, 65 MB reference | [measured] |
 | Intermediate files | **not measured.** Run `du` on the intermediate directory before sizing whole-genome volumes. | — |
 
 ### What that means for the compute environment
+
+- **The GPU is not the bottleneck.** Even inside `call_variants` it is busy only about half the time, and over the whole stage it idles 92% of the time. A faster GPU would barely change the stage time. What matters is the vCPUs for `make_examples` and the CPU-side input pipeline of `call_variants`. With 4 vCPUs (g6.xlarge / g5.xlarge) the share of idle GPU time only grows. The cloud figures come from the run record's `gpu` entry of the next GPU checkpoint run.
 
 - **The current instance types are too small for `make_examples`.**
   - `gpu_env` offers `g4dn.xlarge`, `g5.xlarge` and `g5.2xlarge`, which have 4–8 vCPUs.
