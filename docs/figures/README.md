@@ -11,7 +11,7 @@ Needs `pip install -r requirements-figures.txt` (matplotlib; included in `requir
 
 | Figure | Script | Source (not committed) | Committed CSV |
 |---|---|---|---|
-| Coverage terrain | `coverage_terrain.py` | mosdepth 0.3.15 `-n --fast-mode --by 500000` on six chr20 BAMs in `geyser-data/alignments` (Google's HG003 35x / 30x and HG005 30x; Geyser's bwa, bwa-mem2 and vg giraffe alignments of the HG003 35x reads) | `csv/coverage-terrain.csv` |
+| Coverage terrain | `coverage_terrain.py` | mosdepth 0.3.15 `-n --fast-mode --by 500000` on seven chr20 BAMs in `geyser-data/alignments` (Google's HG003 35x / 30x and HG005 30x BWA and HG003 35x vg giraffe; Geyser's bwa, bwa-mem2 and vg giraffe alignments of the HG003 35x reads) | `csv/coverage-terrain.csv` |
 | Per-base quality surface | `quality_surface.py` | fastp JSON of the six overnight real-sample cloud runs (`qc_reports/REAL-*.fastp.json`) | `csv/quality-surface.csv` |
 | Variant density | `variant_density.py` | PASS records of the #51 benchmark VCFs (bcftools, DeepVariant, pangenome DeepVariant) | `csv/variant-density.csv` |
 | Cost x turnaround (hero) | `cost_surface.py` | `query_pipeline_duration.py --stages-csv` over a grid of cloud runs: **not run yet**, see [cost-surface-grid.md](cost-surface-grid.md) | (once run) `csv/cost-surface.csv` |
@@ -47,16 +47,15 @@ The exact label lists used are in the commit that added each CSV (and in the PR)
 - **Coverage terrain.** One ridge per BAM, same depth scale for all; depth is clipped at 2.5 x the
   overall median (marked `|`). Flat at the median along the arms; around the centromere (26-31 Mb, which
   GRCh38 fills with modelled satellite sequence) depth rises to ~1.7x the median (HG003 35x: 60-65x
-  against 38x), and one 500 kb window at 31.0-31.5 Mb is a spike in every BAM (Google's BAMs 119-126x,
+  against 38x), and one 500 kb window at 31.0-31.5 Mb is a spike in every BAM (Google's four BAMs 119-126x,
   Geyser's bwa 87x, giraffe 79x): most likely reads from repeat copies piling up on the reference's one
   copy, the same region where bcftools makes its excess calls in the variant-density figure. Along the
   arms Google's and Geyser's alignments of the same HG003 35x reads match (mean difference 0.7x); they
   differ mainly in those pericentromeric windows. vg giraffe's ridge is lower there (26.5-30 Mb: 49x vs
   57x for Geyser's bwa). Geyser's bwa and bwa-mem2 ridges are identical (same depth in all 129 windows,
   same base count): bwa-mem2 reproduces bwa mem's alignments by design, as the aligner benchmark already
-  showed (same duplicates, no calls unique to either).
-  Not drawn: Google's vg giraffe BAM (`HG003_chr20_vg`), whose windowed depth run was stopped when the
-  machine ran low on memory.
+  showed (same duplicates, no calls unique to either). Google's vg giraffe BAM of the same reads sits
+  higher everywhere (median 43x vs 38x); why was not checked (duplicate flagging is one candidate).
 - **Per-base quality.** Mean Phred per cycle; quality falls towards the 3' end and R2 is lower than
   R1, as expected for Illumina (HG003 35x: R1 35.9 at cycle 1 to 34.3 at cycle 151, R2 35.6 to 33.5).
   The HG003 rows are near-identical because the 15x/30x inputs were downsampled from the same reads, and
