@@ -169,3 +169,16 @@ def test_failure_parsing_knows_every_job_name_the_state_machine_sets():
 
     prefixes = set(re.findall(r"States\.Format\('(\w+)-\{\}", asl_text()))
     assert prefixes and prefixes == {p.rstrip("-") for p, _ in provenance.JOB_NAME_STAGES}, prefixes
+
+
+def test_gate_profiles_agree_across_the_state_machine_run_local_and_the_thresholds():
+    # Check_Gate_Profile's allowed values, run_local's --gate-profile choices and gate/thresholds/*.toml
+    # (the files the image ships to $GATE_THRESHOLDS_DIR) name the same profiles (#157).
+    asl = asl_text()
+    start = asl.index('"Check_Gate_Profile": {')  # the state, not StartAt
+    choice = asl[start : asl.index('"Default_Gate_Profile": {', start)]
+    in_state_machine = set(re.findall(r'"StringEquals": "(\w+)"', choice))
+    shipped = {
+        f[: -len(".toml")] for f in os.listdir(os.path.join(REPO_ROOT, "gate", "thresholds")) if f.endswith(".toml")
+    }
+    assert in_state_machine == set(run_local.GATE_PROFILES) == shipped
