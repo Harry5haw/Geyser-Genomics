@@ -13,8 +13,8 @@ maintainer's decision. Each page ends with what was (or is still) open at its ta
 | [v2.0 "XLR8"](v2.0.md) | Architecture | The speed release: three stages, bwa-mem2, slim image, Spot, sharded calling, quality gate. In progress: the gate's state machine step (#162). Overlaps v1.0's milestone: see its page |
 
 Each tagged release has a banner in [`docs/assets/`](../assets/) (`<name>-<version>-release`), also shown on
-its GitHub Release. The banner for a future 3.0, "Project Alpha Genome", is already there:
-`alpha-genome-3.0-release.jpg`.
+its GitHub Release. The drafts have theirs ready: 1.0 "The Upgrade Release" (`upgrade-1.0-release.jpg`),
+2.0 "XLR8", and a future 3.0 "Project Alpha Genome" (`alpha-genome-3.0-release.jpg`).
 
 The [changelog](../../changelog.md) lists the same changes by date. These pages group them by version.
 Some early pull requests have no milestone; they are listed under the version their content belongs
