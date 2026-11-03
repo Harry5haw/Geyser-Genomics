@@ -19,12 +19,11 @@ honestly); its baseline is the ridge's label row. Depth above --clip x the overa
 """
 
 import argparse
-import csv
 import gzip
 import statistics
 import sys
 
-import style
+import figkit
 
 FIELDS = ["label", "chrom", "start", "end", "mean_depth"]
 
@@ -46,27 +45,20 @@ def from_mosdepth(specs, chrom=None):
     """specs: ["label=path", ...] -> tidy rows (dicts with FIELDS)."""
     out = []
     for spec in specs:
-        label, sep, path = spec.partition("=")
-        if not sep:
-            sys.exit(f"--from-mosdepth wants label=path, got {spec!r}")
-        for c, start, end, depth in read_mosdepth_regions(path, chrom):
+        label, path = figkit.parse_spec(spec, "--from-mosdepth")
+        windows = read_mosdepth_regions(path, chrom)
+        if not windows:
+            sys.exit(f"{path}: no windows on {chrom!r} (contig names differ? see --chrom)")
+        for c, start, end, depth in windows:
             out.append({"label": label, "chrom": c, "start": start, "end": end, "mean_depth": round(depth, 2)})
     return out
 
 
-def write_csv(rows, path):
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=FIELDS, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def read_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return [
-            {**r, "start": int(r["start"]), "end": int(r["end"]), "mean_depth": float(r["mean_depth"])}
-            for r in csv.DictReader(fh)
-        ]
+    return [
+        {**r, "start": int(r["start"]), "end": int(r["end"]), "mean_depth": float(r["mean_depth"])}
+        for r in figkit.read_csv(path)
+    ]
 
 
 def ridges(rows):
@@ -88,7 +80,7 @@ def clip_level(series, factor):
 
 
 def plot(rows, out, title=None, clip=2.5, overlap=2.4):
-    plt = style.pyplot()
+    plt = figkit.pyplot()
     series = ridges(rows)
     cap = clip_level(series, clip)
     n = len(series)
@@ -101,10 +93,10 @@ def plot(rows, out, title=None, clip=2.5, overlap=2.4):
         ys = [base + min(d, cap) * height for d in depths]
         # Later (lower) ridges are drawn over earlier ones; the surface-coloured fill hides what's behind.
         z = 10 + 2 * i
-        ax.fill_between(xs, base, ys, color=style.SURFACE, linewidth=0, zorder=z)
-        ax.fill_between(xs, base, ys, color=style.BLUES[2], alpha=0.85, linewidth=0, zorder=z)
-        ax.plot(xs, ys, color=style.BLUES[9], linewidth=1.0, zorder=z + 1)
-        ax.axhline(base, color=style.AXIS, linewidth=0.5, zorder=z + 1)
+        ax.fill_between(xs, base, ys, color=figkit.SURFACE, linewidth=0, zorder=z)
+        ax.fill_between(xs, base, ys, color=figkit.BLUES[2], alpha=0.85, linewidth=0, zorder=z)
+        ax.plot(xs, ys, color=figkit.BLUES[9], linewidth=1.0, zorder=z + 1)
+        ax.axhline(base, color=figkit.AXIS, linewidth=0.5, zorder=z + 1)
         clipped = [x for x, d in zip(xs, depths, strict=True) if d > cap]
         if clipped:
             ax.plot(
@@ -113,13 +105,13 @@ def plot(rows, out, title=None, clip=2.5, overlap=2.4):
                 linestyle="none",
                 marker="|",
                 markersize=4,
-                color=style.INK_2,
+                color=figkit.INK_2,
                 zorder=z + 1,
             )
         covered = [d for d in depths if d > 0]
         median = statistics.median(covered) if covered else 0
-        ax.text(-0.6, base + 0.08, label, ha="right", va="bottom", fontsize=8.5, color=style.INK)
-        ax.text(-0.6, base + 0.04, f"median {median:.0f}x", ha="right", va="top", fontsize=7, color=style.MUTED)
+        ax.text(-0.6, base + 0.08, label, ha="right", va="bottom", fontsize=8.5, color=figkit.INK)
+        ax.text(-0.6, base + 0.04, f"median {median:.0f}x", ha="right", va="top", fontsize=7, color=figkit.MUTED)
     xmax = max(max(xs) for xs, _ in series.values())
     ax.set_xlim(0, xmax)
     ax.set_ylim(-0.2, n - 1 + overlap + 0.2)
@@ -133,9 +125,9 @@ def plot(rows, out, title=None, clip=2.5, overlap=2.4):
     ax.set_xlabel(f"position on {chrom} (Mb); mean depth per {width_kb:.0f} kb window")
     note = f"one ridge spacing = {cap / overlap:.0f}x; | = clipped above {cap:.0f}x ({clip:g} x the median)"
     ax.set_title(title or f"Coverage terrain along {chrom}", loc="left")
-    ax.text(1.0, 1.01, note, transform=ax.transAxes, ha="right", va="bottom", fontsize=7, color=style.MUTED)
+    ax.text(1.0, 1.01, note, transform=ax.transAxes, ha="right", va="bottom", fontsize=7, color=figkit.MUTED)
     fig.tight_layout()
-    written = style.save(fig, out)
+    written = figkit.save(fig, out)
     plt.close(fig)
     return written
 
@@ -150,7 +142,7 @@ def main(argv=None):
     parser.add_argument("--clip", type=float, default=2.5, help="clip depth above this x the median")
     args = parser.parse_args(argv)
     if args.from_mosdepth:
-        write_csv(from_mosdepth(args.from_mosdepth, args.chrom), args.csv)
+        figkit.write_csv(from_mosdepth(args.from_mosdepth, args.chrom), args.csv, FIELDS)
         print("wrote", args.csv)
     if args.out:
         for path in plot(read_csv(args.csv), args.out, args.title, args.clip):

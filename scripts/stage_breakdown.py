@@ -120,7 +120,11 @@ def batch_tasks(sfn_client, execution_arn) -> list:
             by_entry[entry] = {"stage": entry[0], "job_id": None, "job": {}}
             tasks.append(by_entry[entry])
         task = by_entry[entry]
-        task["job_id"] = task["job_id"] or _get(payload, "JobId")
+        job_id = _get(payload, "JobId")
+        if job_id and job_id != task["job_id"]:
+            # A Retry inside the same entry submitted a new job: the row follows the latest one, so
+            # describe_jobs and the history copy describe the same job.
+            task["job_id"], task["job"] = job_id, {}
         if _get(payload, "StartedAt") or _get(payload, "Status"):
             task["job"] = payload
     return tasks

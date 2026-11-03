@@ -35,16 +35,19 @@ import statistics
 import sys
 from collections import defaultdict
 
-import style
+import figkit
 
-# The Batch stages one after another (QC and align in parallel), as in infrastructure/state_machine.asl.json.
+# The Batch stages one after another, as in infrastructure/state_machine.asl.json: (kind, stages).
+# "parallel": the stages run side by side (QC and align), the slowest counts. "map": one row per Map
+# iteration, scheduled onto the Map's MaxConcurrency slots.
 CRITICAL_PATH = (
-    ("Quality_Control", "Align_Genome"),
-    ("Plan_Regions",),
-    ("Call_Shard",),
-    ("Call_Variants",),
-    ("Quality_Gate",),
+    ("parallel", ("Quality_Control", "Align_Genome")),
+    ("parallel", ("Plan_Regions",)),
+    ("map", ("Call_Shard",)),
+    ("parallel", ("Call_Variants",)),
+    ("parallel", ("Quality_Gate",)),
 )
+REQUIRED_STAGES = ("Align_Genome", "Call_Shard", "Call_Variants")
 
 
 def _float(value):
@@ -63,10 +66,11 @@ def read_stage_rows(paths):
 
 
 def read_durations(path):
+    """{execution name: (duration seconds, execution status)} from query_pipeline_duration.py --csv."""
     if not path:
         return {}
     with open(path, newline="", encoding="utf-8") as fh:
-        return {r["ExecutionName"]: _float(r["DurationSeconds"]) for r in csv.DictReader(fh)}
+        return {r["ExecutionName"]: (_float(r["DurationSeconds"]), r.get("Status")) for r in csv.DictReader(fh)}
 
 
 def makespan(durations, slots):
@@ -83,16 +87,21 @@ def makespan(durations, slots):
 def estimated_turnaround(stages, max_concurrency):
     """Critical-path estimate from one run's rows: {stage: [wait + run, ...]}."""
     total = 0.0
-    for group in CRITICAL_PATH:
-        if group == ("Call_Shard",):
-            total += makespan(stages.get("Call_Shard", []), max_concurrency)
+    for kind, group in CRITICAL_PATH:
+        if kind == "map":
+            total += makespan([d for s in group for d in stages.get(s, [])], max_concurrency)
         else:
-            total += max((max(stages.get(s, [0.0])) for s in group), default=0.0)
+            total += max(max(stages.get(s, [0.0])) for s in group)
     return total
 
 
 def summarise_runs(rows, durations=None, cost_factor=1.0, max_concurrency=4):
-    """One dict per succeeded run: execution, align_vcpus, shards, cost_usd, turnaround_s, measured."""
+    """One dict per succeeded run: execution, align_vcpus, shards, cost_usd, turnaround_s, measured.
+
+    Succeeded = every Batch job succeeded and the align, shard and merge jobs are all there; with
+    `durations` (which carry each execution's own status) the execution must have SUCCEEDED too, which
+    also drops runs that failed after their jobs (e.g. at the quality gate in fail mode). Without them
+    the execution status is unknown, so a warning says so."""
     durations = durations or {}
     by_run = defaultdict(list)
     for r in rows:
@@ -101,17 +110,19 @@ def summarise_runs(rows, durations=None, cost_factor=1.0, max_concurrency=4):
     for name, stage_rows in by_run.items():
         if any(r["Status"] != "SUCCEEDED" for r in stage_rows):
             continue
+        if any(not any(r["Stage"] == s for r in stage_rows) for s in REQUIRED_STAGES):
+            continue
+        measured, status = durations.get(name, (None, None))
+        if durations and status != "SUCCEEDED":
+            continue
         align = [r for r in stage_rows if r["Stage"] == "Align_Genome"]
         shards = sum(1 for r in stage_rows if r["Stage"] == "Call_Shard")
-        if not align or not shards:
-            continue
         costs = [_float(r["EstCostUSD"]) for r in stage_rows]
         if any(c is None for c in costs):
             print(f"warning: {name} has a job without a cost estimate (GPU?); its cost leaves it out", file=sys.stderr)
         spans = defaultdict(list)
         for r in stage_rows:
             spans[r["Stage"]].append((_float(r["WaitSeconds"]) or 0.0) + (_float(r["RunSeconds"]) or 0.0))
-        measured = durations.get(name)
         runs.append(
             {
                 "execution": name,
@@ -169,9 +180,9 @@ def _heatmap(ax, cells, xs, ys, value, fmt, title, cmap, ring):
         lines = [fmt(value(c))]
         lines += [f"n={c['n']}"] if c["n"] > 1 else []
         lines += [marks[(x, y)]] if (x, y) in marks else []
-        ax.text(j, i, "\n".join(lines), ha="center", va="center", fontsize=7.5, color="#ffffff" if dark else style.INK)
+        ax.text(j, i, "\n".join(lines), ha="center", va="center", fontsize=7.5, color="#ffffff" if dark else figkit.INK)
         if (x, y) in marks:
-            ax.add_patch(_ring(j, i, "#ffffff" if dark else style.INK))
+            ax.add_patch(_ring(j, i, "#ffffff" if dark else figkit.INK))
     ax.set_xticks(range(len(xs)), [_vcpu_label(x) for x in xs])
     ax.set_yticks(range(len(ys)), [str(y) for y in ys])
     ax.set_xlabel("align vCPUs")
@@ -190,7 +201,7 @@ def _ring(j, i, color):
 
 
 def plot(cells, out, title=None, surface=False):
-    plt = style.pyplot()
+    plt = figkit.pyplot()
     xs = sorted({k[0] for k in cells})
     ys = sorted({k[1] for k in cells})
     cheapest = min(cells, key=lambda k: cells[k]["cost_usd"])
@@ -198,7 +209,7 @@ def plot(cells, out, title=None, surface=False):
     ring = [(cheapest, "cheapest")] + ([(fastest, "fastest")] if fastest != cheapest else [])
 
     fig, axes = plt.subplots(1, 3, figsize=(11, 3.6), gridspec_kw={"width_ratios": [1, 1, 1.15]})
-    cmap = style.sequential_cmap()
+    cmap = figkit.sequential_cmap()
     im = _heatmap(
         axes[0],
         cells,
@@ -225,24 +236,24 @@ def plot(cells, out, title=None, surface=False):
     fig.colorbar(im, ax=axes[1], fraction=0.05, pad=0.03).outline.set_visible(False)
 
     ax = axes[2]
-    style.tidy(ax, grid_axis="both")
+    figkit.tidy(ax, grid_axis="both")
     front = pareto(cells)
     others = [k for k in cells if k not in front]
     ax.scatter(
         [cells[k]["turnaround_s"] / 60 for k in others],
         [cells[k]["cost_usd"] * 100 for k in others],
         s=36,
-        color=style.BLUES[3],
-        edgecolor=style.SURFACE,
+        color=figkit.BLUES[3],
+        edgecolor=figkit.SURFACE,
         linewidth=1.5,
         zorder=3,
         label="other configurations",
     )
     fx = [cells[k]["turnaround_s"] / 60 for k in front]
     fy = [cells[k]["cost_usd"] * 100 for k in front]
-    ax.plot(fx, fy, color=style.SERIES[0], linewidth=2, zorder=2)
+    ax.plot(fx, fy, color=figkit.SERIES[0], linewidth=2, zorder=2)
     ax.scatter(
-        fx, fy, s=48, color=style.SERIES[0], edgecolor=style.SURFACE, linewidth=1.5, zorder=4, label="Pareto front"
+        fx, fy, s=48, color=figkit.SERIES[0], edgecolor=figkit.SURFACE, linewidth=1.5, zorder=4, label="Pareto front"
     )
     for k in front:
         ax.annotate(
@@ -251,7 +262,7 @@ def plot(cells, out, title=None, surface=False):
             xytext=(6, 4),
             textcoords="offset points",
             fontsize=7,
-            color=style.INK_2,
+            color=figkit.INK_2,
         )
     ax.set_xlabel("turnaround (min)")
     ax.set_ylabel("cost per run (US cents)")
@@ -261,7 +272,7 @@ def plot(cells, out, title=None, surface=False):
     if title:
         fig.suptitle(title, x=0.01, ha="left", fontsize=11, fontweight="semibold")
     fig.tight_layout()
-    written = style.save(fig, out)
+    written = figkit.save(fig, out)
     plt.close(fig)
     if surface:
         written += plot_surface(cells, xs, ys, out + "-surface", title)
@@ -272,7 +283,7 @@ def plot_surface(cells, xs, ys, out, title=None):
     """3D terrain: height = cost, colour = turnaround. Needs a full grid (every cell measured)."""
     import numpy as np
 
-    plt = style.pyplot()
+    plt = figkit.pyplot()
     if len(cells) != len(xs) * len(ys) or len(xs) < 2 or len(ys) < 2:
         print("note: the 3D surface needs a full grid of at least 2 x 2 cells; skipped", file=sys.stderr)
         return []
@@ -286,8 +297,8 @@ def plot_surface(cells, xs, ys, out, title=None):
         gx,
         gy,
         cost,
-        facecolors=style.sequential_cmap()(norm),
-        edgecolor=style.SURFACE,
+        facecolors=figkit.sequential_cmap()(norm),
+        edgecolor=figkit.SURFACE,
         linewidth=0.6,
         antialiased=True,
         shade=False,
@@ -300,9 +311,9 @@ def plot_surface(cells, xs, ys, out, title=None):
     ax.view_init(elev=28, azim=-128)
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.set_pane_color((1, 1, 1, 0))
-        axis._axinfo["grid"]["color"] = style.GRID
+        axis._axinfo["grid"]["color"] = figkit.GRID
     ax.set_title((title + ": " if title else "") + "cost (height), turnaround (colour, darker = slower)", fontsize=9)
-    written = style.save(fig, out)
+    written = figkit.save(fig, out)
     plt.close(fig)
     return written
 
@@ -331,9 +342,12 @@ def main(argv=None):
             writer.writerow(["align_vcpus", "shards", "runs", "median_cost_usd", "median_turnaround_s"])
             for (x, y), c in cells.items():
                 writer.writerow([f"{x:g}", y, c["n"], f"{c['cost_usd']:.6f}", f"{c['turnaround_s']:.1f}"])
-    estimated = sum(1 for r in runs if not r["measured"])
-    if estimated:
-        print(f"{estimated} of {len(runs)} runs: turnaround estimated from the stage rows (no --durations)")
+    if not args.durations:
+        print(
+            "note: no --durations: turnaround is estimated from the stage rows and the executions' own status"
+            " is unknown (a run that failed after its jobs, e.g. at the gate in fail mode, is not excluded)",
+            file=sys.stderr,
+        )
     for path in plot(cells, args.out, args.title, args.surface):
         print("wrote", path)
 

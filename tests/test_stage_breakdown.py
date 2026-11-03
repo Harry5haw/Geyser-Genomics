@@ -305,3 +305,22 @@ def test_map_iterations_get_one_row_each():
         ("Call_Shard", "shard-1", 90.0),
     ]
     assert sb.totals(rows)["run_seconds"] == 150.0
+
+
+def test_retry_inside_one_entry_follows_the_latest_job():
+    # A Retry in the same state entry submits a second job: the row must describe that job, and the
+    # live describe_jobs lookup must ask for it, not for the first (failed) one.
+    events = [
+        entered("Call_Shard"),
+        task_event("TaskSubmitted", {"JobId": "first"}),
+        task_event("TaskFailed", sfn_job("first", "FAILED", T0, T0 + 1000, T0 + 2000)),
+        task_event("TaskSubmitted", {"JobId": "second"}),
+        task_event("TaskSucceeded", sfn_job("second", "SUCCEEDED", T0 + 5000, T0 + 6000, T0 + 66_000)),
+    ]
+    tasks = sb.batch_tasks(paged_sfn(events), "exec-1")
+    assert [(t["job_id"], t["job"]["Status"]) for t in tasks] == [("second", "SUCCEEDED")]
+    batch = mock.Mock()
+    batch.describe_jobs.return_value = {"jobs": []}
+    rows = sb.execution_stages(paged_sfn(events), batch, "exec-1")
+    batch.describe_jobs.assert_called_once_with(jobs=["second"])
+    assert rows[0]["status"] == "SUCCEEDED" and rows[0]["run_seconds"] == 60.0

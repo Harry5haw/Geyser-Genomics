@@ -13,7 +13,7 @@ Needs `pip install -r requirements-figures.txt` (matplotlib; included in `requir
 |---|---|---|---|
 | Coverage terrain | `coverage_terrain.py` | mosdepth 0.3.15 `-n --fast-mode --by 500000` on seven chr20 BAMs in `geyser-data/alignments` (Google's HG003 35x / 30x and HG005 30x BWA and HG003 35x vg giraffe; Geyser's bwa, bwa-mem2 and vg giraffe alignments of the HG003 35x reads) | `csv/coverage-terrain.csv` |
 | Per-base quality surface | `quality_surface.py` | fastp JSON of the six overnight real-sample cloud runs (`qc_reports/REAL-*.fastp.json`) | `csv/quality-surface.csv` |
-| Variant density | `variant_density.py` | PASS records of the #51 benchmark VCFs (bcftools, DeepVariant, pangenome DeepVariant) | `csv/variant-density.csv` |
+| Variant density | `variant_density.py` | PASS (DeepVariant) or all (bcftools, unfiltered) records of the #51 benchmark VCFs (bcftools, DeepVariant, pangenome DeepVariant) | `csv/variant-density.csv` |
 | Cost x turnaround (hero) | `cost_surface.py` | `query_pipeline_duration.py --stages-csv` over a grid of cloud runs: **not run yet**, see [cost-surface-grid.md](cost-surface-grid.md) | (once run) `csv/cost-surface.csv` |
 | DeepVariant batch x shards | none | **not drawn**: the #51 runs all used one setting (`batch_size=256`; the only other data point is that batch 1024 runs out of memory on the 10 GB card), so there is no grid to draw | |
 
@@ -61,9 +61,12 @@ The exact label lists used are in the commit that added each CSV (and in the PR)
   The HG003 rows are near-identical because the 15x/30x inputs were downsampled from the same reads, and
   the HG003 single-end run's quality equals the paired run's R1. The HG005 single-end row is not the
   paired run's R1 (slightly lower throughout), so that input was built differently.
-- **Variant density.** Next to the centromere (28-31 Mb) bcftools makes about 4x as many PASS calls per
-  Mb as either DeepVariant (HG003, 29-30 Mb: 16,421 vs 3,763 and 3,623), most likely from reads
-  mismapped in the pericentromeric repeats; over all of chr20 it makes ~25% more (132k vs 105k for
-  HG003). Linear and pangenome DeepVariant are almost indistinguishable at this scale. The colour scale stops at
+- **Variant density.** A record counts if its FILTER is PASS or "." (none set). The pipeline's
+  `bcftools call -mv` sets no FILTER, so the bcftools rows are *every* call (the VCF as written; hap.py's
+  `--pass-only` also keeps "." records, so this is what the benchmark scored), while the DeepVariant rows are its PASS calls. Read the gap as "raw bcftools vs
+  filtered DeepVariant", not as a like-for-like filtered comparison. Next to the centromere (28-31 Mb)
+  bcftools makes about 4x as many calls per Mb as either DeepVariant (HG003, 29-30 Mb: 16,421 vs 3,763
+  and 3,623), most likely from reads mismapped in the pericentromeric repeats; over all of chr20 it makes
+  ~25% more (132k vs 105k for HG003). Linear and pangenome DeepVariant are almost indistinguishable at this scale. The colour scale stops at
   the 98th percentile so the rest of the chromosome stays readable; the note on the figure says how
   many bins are above it.

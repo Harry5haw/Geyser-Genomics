@@ -1,4 +1,5 @@
 ##fileformat=VCFv4.2
+##contig=<ID=chr20,length=2600000>
 #CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S
 chr20	10	.	A	G	30	PASS	.	GT	0/1
 chr20	999999	.	A	G	30	.	.	GT	0/1

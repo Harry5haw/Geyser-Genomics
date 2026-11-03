@@ -7,6 +7,7 @@ colours, never in a series colour; hairline grids; no dual axes.
 """
 
 import os
+import sys
 
 # Categorical slots, in this order (the order is what keeps adjacent pairs colour-blind safe).
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"]
@@ -93,3 +94,36 @@ def save(fig, out_prefix, formats=("png", "svg")):
         fig.savefig(path, dpi=200, bbox_inches="tight", metadata=meta)
         written.append(path)
     return written
+
+
+# ---- shared input/output for the figure scripts ----
+
+
+def parse_spec(spec, option):
+    """ "label=path" -> (label, path). The label may not contain "=", the path may."""
+    label, sep, path = spec.partition("=")
+    if not sep or not label or not path:
+        sys.exit(f"{option} wants label=path, got {spec!r}")
+    return label, path
+
+
+def write_csv(rows, path, fields):
+    """Write tidy rows; refuse to write an empty table (a wrong --chrom or label usually causes it)."""
+    import csv
+
+    if not rows:
+        sys.exit(f"nothing to write to {path}: no rows matched (check --chrom and the inputs)")
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def read_csv(path):
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    if not rows:
+        sys.exit(f"{path} has no data rows")
+    return rows

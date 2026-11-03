@@ -15,11 +15,9 @@ sequencer delivered).
 """
 
 import argparse
-import csv
 import json
-import sys
 
-import style
+import figkit
 
 FIELDS = ["label", "read", "cycle", "mean", "A", "C", "G", "T"]
 READS = {"R1": "read1_before_filtering", "R2": "read2_before_filtering"}
@@ -28,9 +26,7 @@ READS = {"R1": "read1_before_filtering", "R2": "read2_before_filtering"}
 def from_fastp(specs):
     rows = []
     for spec in specs:
-        label, sep, path = spec.partition("=")
-        if not sep:
-            sys.exit(f"--from-fastp wants label=path, got {spec!r}")
+        label, path = figkit.parse_spec(spec, "--from-fastp")
         with open(path, encoding="utf-8") as fh:
             report = json.load(fh)
         for read, key in READS.items():
@@ -44,16 +40,8 @@ def from_fastp(specs):
     return rows
 
 
-def write_csv(rows, path):
-    with open(path, "w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=FIELDS, lineterminator="\n")
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def read_csv(path):
-    with open(path, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
+    return figkit.read_csv(path)
 
 
 def matrices(rows):
@@ -73,11 +61,11 @@ def matrices(rows):
 def plot(rows, out, title=None):
     import numpy as np
 
-    plt = style.pyplot()
+    plt = figkit.pyplot()
     labels, cycles, grids = matrices(rows)
     values = [v for g in grids.values() for row in g for v in row if v is not None]
     lo, hi = min(values), max(values)
-    cmap = style.sequential_cmap().with_extremes(bad=style.SURFACE)
+    cmap = figkit.sequential_cmap().with_extremes(bad=figkit.SURFACE)
     fig, axes = plt.subplots(1, 2, figsize=(11, 0.42 * len(labels) + 1.6), sharey=True)
     for ax, (read, grid) in zip(axes, grids.items(), strict=True):
         z = np.array([[np.nan if v is None else v for v in row] for row in grid])
@@ -92,7 +80,7 @@ def plot(rows, out, title=None):
         )
         for i, row in enumerate(grid):
             if all(v is None for v in row):
-                ax.text(cycles / 2, i, "single-end: no R2", ha="center", va="center", fontsize=7.5, color=style.MUTED)
+                ax.text(cycles / 2, i, "single-end: no R2", ha="center", va="center", fontsize=7.5, color=figkit.MUTED)
         ax.set_title(read)
         ax.set_xlabel("sequencing cycle (base position in the read)")
         ax.set_yticks(range(len(labels)), labels)
@@ -109,7 +97,7 @@ def plot(rows, out, title=None):
         fontsize=11,
         fontweight="semibold",
     )
-    written = style.save(fig, out)
+    written = figkit.save(fig, out)
     plt.close(fig)
     return written
 
@@ -122,7 +110,7 @@ def main(argv=None):
     parser.add_argument("--title")
     args = parser.parse_args(argv)
     if args.from_fastp:
-        write_csv(from_fastp(args.from_fastp), args.csv)
+        figkit.write_csv(from_fastp(args.from_fastp), args.csv, FIELDS)
         print("wrote", args.csv)
     if args.out:
         for path in plot(read_csv(args.csv), args.out, args.title):
