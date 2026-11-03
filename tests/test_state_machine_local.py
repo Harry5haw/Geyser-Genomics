@@ -133,11 +133,17 @@ TEST_CASES = {
     "GateVerdictList": {"Read_Gate_Verdict": "VerdictList", "Notify_Failure": "Published"},
     # Closing the run record fails (S3 denied): best effort, the run still notifies and ends failed.
     "CloseFails": {"Quality_Control": FAIL, "Close_Run_Record": "CloseDenied", "Notify_Failure": "Published"},
+    # The run's reference/<name> isn't in the data lake: the run fails before any job.
+    "ReferenceMissing": {"Check_Reference": "NoSuchKey", "Notify_Failure": "Published"},
+    # S3 errors on the HeadObject once (e.g. a 503), then answers: retried, the run goes on.
+    "ReferenceFlakyOnce": {"Check_Reference": "ReferenceFlakyThenFound"},
 }
 # Every case passes the gate unless it says otherwise.
 GATE = {"Quality_Gate": OK, "Read_Gate_Verdict": "VerdictPass"}
+# Every case finds its reference unless it says otherwise (Check_Reference: an S3 HeadObject).
+REFERENCE = {"Check_Reference": "ReferenceFound"}
 TEST_CASES = {
-    name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **SCATTER, **GATE, **case}
+    name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **REFERENCE, **SCATTER, **GATE, **case}
     for name, case in TEST_CASES.items()
 }
 MOCK_CONFIG = {
@@ -164,6 +170,11 @@ MOCK_CONFIG = {
         },
         "ShardsOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
         "Closed": {"0": {"Return": {"ETag": '"etag-1"'}}},
+        "ReferenceFound": {"0": {"Return": {"ContentLength": 65186437, "ETag": '"etag-ref"'}}},
+        "ReferenceFlakyThenFound": {
+            "0": {"Throw": {"Error": "S3.S3Exception", "Cause": "Service Unavailable"}},
+            "1": {"Return": {"ContentLength": 65186437, "ETag": '"etag-ref"'}},
+        },
         "CloseDenied": {"0-3": {"Throw": {"Error": "S3.S3Exception", "Cause": "Access Denied"}}},
         # Every shard fails: Step Functions Local doesn't count mocked calls reliably across concurrent Map
         # iterations, so "the second call fails" usually never happened. The point (a failed shard stops the
@@ -314,7 +325,9 @@ def run_case(
 ):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
-    run_input = {"srr_id": sample, "reference_name": reference}
+    run_input = {"srr_id": sample}
+    if reference is not _UNSET:  # anything, even not a string: the state machine validates it
+        run_input["reference_name"] = reference
     if caller:
         run_input["caller"] = caller
     if aligner is not _UNSET:  # anything, even not a string: the state machine validates it
@@ -998,3 +1011,114 @@ def test_an_unknown_aligner_fails_the_run_without_aligning(sfn, aligner):
     states = entered(events)
     assert "Unknown_Aligner" in states and "Align_Genome" not in states and "Call_Variants" not in states
     assert_closed_before_notifying(desc, events, error="UnknownAligner")
+
+
+# --- the reference genome per upload: checked before any job ----------------------------------------
+
+
+def sdk_calls(events, state) -> list:
+    """Every SDK-integration call (its parameters) one task state made, retries included."""
+    names = {e["id"]: e["stateEnteredEventDetails"]["name"] for e in events if e["type"] == "TaskStateEntered"}
+    by_id = {e["id"]: e for e in events}
+    calls = []
+    for e in events:
+        if e["type"] != "TaskScheduled":
+            continue
+        cursor = e  # a retry's TaskScheduled follows the failed attempt, not the TaskStateEntered
+        while cursor is not None and cursor["id"] not in names:
+            cursor = by_id.get(cursor.get("previousEventId"))
+        if cursor is not None and names[cursor["id"]] == state:
+            calls.append(json.loads(e["taskScheduledEventDetails"]["parameters"]))
+    return calls
+
+
+def test_the_reference_is_checked_in_s3_before_any_job(sfn):
+    desc, events = run_case(sfn, "HappyPath", reference="GRCh38.fa")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states[:4] == ["Check_Gate_Profile", "Default_Gate_Profile", "Check_Reference_Name", "Check_Reference"]
+    assert states.index("Check_Reference") < states.index("QC_and_Align")
+    assert sdk_calls(events, "Check_Reference") == [{"Bucket": TEMPLATE_VARS["bucket"], "Key": "reference/GRCh38.fa"}]
+    # The stages get the reference the run was checked with.
+    assert batch_parameters(events)["Align_Genome"]["ContainerOverrides"]["Command"][-1] == "GRCh38.fa"
+    output = json.loads(desc["output"])
+    assert output["reference_name"] == "GRCh38.fa" and "reference" not in output  # HeadObject result dropped
+
+
+def test_a_profile_set_and_a_reference_both_reach_the_check(sfn):
+    desc, events = run_case(sfn, "HappyPath", reference="GRCh38.fa", gate_profile="synthetic")
+    assert desc["status"] == "SUCCEEDED"
+    assert entered(events)[:3] == ["Check_Gate_Profile", "Check_Reference_Name", "Check_Reference"]
+
+
+def test_a_transient_s3_error_on_the_check_is_retried(sfn):
+    desc, events = run_case(sfn, "ReferenceFlakyOnce")
+    assert desc["status"] == "SUCCEEDED"
+    assert len(sdk_calls(events, "Check_Reference")) == 2
+
+
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_a_reference_not_in_the_data_lake_fails_the_run_before_any_job(request, machine):
+    desc, events = run_case(request.getfixturevalue(machine), "ReferenceMissing", reference="GRCh37.fa")
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert "QC_and_Align" not in states and not batch_parameters(events)  # no job ran
+    assert states[-5:] == [
+        "Prepare_Reference_Not_Found",
+        "Prepare_Run_Close",
+        "Close_Run_Record",
+        "Notify_Failure",
+        "Pipeline_Failed",
+    ]
+    assert len(sdk_calls(events, "Check_Reference")) == 1  # a missing key is not retried
+    assert_closed_before_notifying(desc, events, "ReferenceNotFound")
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "ReferenceNotFound"
+    assert f"reference/GRCh37.fa could not be read from {TEMPLATE_VARS['bucket']}" in error["Cause"]
+    assert "S3.NoSuchKeyException" in error["Cause"] and "reference=<name>" in error["Cause"]
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "",
+        "sub/GRCh38.fa",
+        "/GRCh38.fa",
+        42,
+        None,
+        # What the trigger passes on when it can't pass a plain value: mates that disagree, a likely
+        # misspelt metadata key, metadata it couldn't read.
+        ["chr20.fa", "GRCh38.fa"],
+        {"unrecognised metadata key": "refernce"},
+        {"metadata unreadable": "AccessDenied"},
+    ],
+)
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_a_reference_that_is_not_a_file_name_fails_the_run_before_any_job(request, machine, reference):
+    desc, events = run_case(request.getfixturevalue(machine), "HappyPath", reference=reference)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert states[2:4] == ["Check_Reference_Name", "Prepare_Reference_Error"]
+    assert "Check_Reference" not in states and "QC_and_Align" not in states  # not even S3 was asked
+    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert_closed_before_notifying(desc, events, "UnknownReference")
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "UnknownReference"
+    assert json.dumps(reference, separators=(",", ":")) in error["Cause"]  # JsonToString: compact JSON
+
+
+def test_an_input_without_a_reference_fails_the_run_before_any_job(sfn):
+    desc, events = run_case(sfn, "HappyPath", reference=_UNSET)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert states[2:4] == ["Check_Reference_Name", "Prepare_Reference_Missing"]
+    assert "QC_and_Align" not in states and states[-1] == "Pipeline_Failed"
+    assert_closed_before_notifying(desc, events, "UnknownReference")
+    assert "no reference_name" in published_message(events)["ErrorDetails"]["Cause"]
+
+
+def test_a_bad_gate_profile_is_still_reported_first(sfn):
+    # Both wrong: the profile check comes first, so its error is the one notified.
+    _, events = run_case(sfn, "HappyPath", reference="", gate_profile="strict")
+    assert "Check_Reference_Name" not in entered(events)
+    assert published_message(events)["ErrorDetails"]["Error"] == "UnknownGateProfile"

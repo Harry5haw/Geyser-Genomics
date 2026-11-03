@@ -272,3 +272,68 @@ def test_unreadable_metadata_goes_on_flagged_so_the_run_fails_visibly(trigger, m
 
     s3.head_object = denied
     assert _start(trigger, monkeypatch)["gate_profile"] == {"metadata unreadable": "AccessDenied"}
+
+
+# --- the reference genome per upload: S3 user metadata reference -> the input's reference_name ------
+
+
+@pytest.mark.parametrize("key", ["reference", "reference-name", "reference_name"])
+def test_an_uploads_reference_metadata_replaces_the_default(trigger, monkeypatch, s3, key):
+    s3.metadata = {key: "GRCh38.fa"}
+    assert _start(trigger, monkeypatch)["reference_name"] == "GRCh38.fa"
+    assert s3.heads == ["raw_reads/S1.fastq.gz"]  # the same one HeadObject as the gate profile
+
+
+def test_without_reference_metadata_the_default_stays(trigger, monkeypatch, s3):
+    s3.metadata = {"gate-profile": "synthetic"}
+    run_input = _start(trigger, monkeypatch)
+    assert run_input["reference_name"] == "chr20.fa" and run_input["gate_profile"] == "synthetic"
+
+
+def test_reference_metadata_wins_over_reference_name(trigger, monkeypatch, s3):
+    # REFERENCE_NAME is the deployment's default; the upload's own metadata is more specific.
+    calls = []
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            calls.append(json.loads(kwargs["input"]))
+            return {"executionArn": "arn:fake"}
+
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.setenv("REFERENCE_NAME", "other.fa")
+    monkeypatch.setattr(trigger, "_sfn_client", FakeSfn())
+    event = {"Records": [{"s3": {"bucket": {"name": "b"}, "object": {"key": "raw_reads/S1.fastq.gz"}}}]}
+    trigger.handler(event, None)
+    s3.metadata = {"reference": "GRCh38.fa"}
+    trigger.handler(event, None)
+    assert [c["reference_name"] for c in calls] == ["other.fa", "GRCh38.fa"]
+
+
+@pytest.mark.parametrize("value", ["missing.fa", " GRCh38.fa", "sub/dir.fa", ""])
+def test_a_reference_goes_on_exactly_as_uploaded_for_the_state_machine_to_check(trigger, monkeypatch, s3, value):
+    # Check_Reference_Name / Check_Reference are the one validator: even an empty value is not defaulted.
+    s3.metadata = {"reference": value}
+    assert _start(trigger, monkeypatch)["reference_name"] == value
+
+
+@pytest.mark.parametrize("key", ["ref", "refernce", "genome-ref"])
+def test_a_misspelled_reference_key_goes_on_flagged_not_ignored(trigger, monkeypatch, s3, key):
+    s3.metadata = {key: "GRCh38.fa"}
+    assert _start(trigger, monkeypatch)["reference_name"] == {"unrecognised metadata key": key}
+
+
+def test_unreadable_metadata_flags_the_reference_too(trigger, monkeypatch, s3):
+    # Neither setting falls back to its default when the metadata couldn't be read.
+    from botocore.exceptions import ClientError
+
+    def denied(Bucket, Key):
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "HeadObject")
+
+    s3.head_object = denied
+    run_input = _start(trigger, monkeypatch)
+    assert run_input["reference_name"] == run_input["gate_profile"] == {"metadata unreadable": "AccessDenied"}
+
+
+def test_a_vanished_upload_keeps_the_default_reference(trigger, monkeypatch, s3):
+    s3.missing = True
+    assert _start(trigger, monkeypatch)["reference_name"] == "chr20.fa"

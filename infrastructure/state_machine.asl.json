@@ -13,7 +13,7 @@
             { "Variable": "$.gate_profile", "StringEquals": "default" },
             { "Variable": "$.gate_profile", "StringEquals": "synthetic" }
           ],
-          "Next": "QC_and_Align"
+          "Next": "Check_Reference_Name"
         }
       ],
       "Default": "Prepare_Profile_Error"
@@ -22,7 +22,7 @@
       "Type": "Pass",
       "Result": "default",
       "ResultPath": "$.gate_profile",
-      "Next": "QC_and_Align"
+      "Next": "Check_Reference_Name"
     },
     "Prepare_Profile_Error": {
       "Type": "Pass",
@@ -30,6 +30,68 @@
       "Parameters": {
         "Error": "UnknownGateProfile",
         "Cause.$": "States.Format('gate_profile {} is not one of: default, synthetic (thresholds in the image, gate/thresholds/)', States.JsonToString($.gate_profile))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Check_Reference_Name": {
+      "Type": "Choice",
+      "Comment": "The reference genome for this run: reference_name in the input (the trigger sets it from the upload's S3 metadata reference, else REFERENCE_NAME or chr20.fa). It must be a plain file name under reference/ (a non-empty string without a slash). Anything else, including what the trigger flags (mates that disagree, a misspelt metadata key, unreadable metadata), fails the run before any job starts.",
+      "Choices": [
+        { "Not": { "Variable": "$.reference_name", "IsPresent": true }, "Next": "Prepare_Reference_Missing" },
+        {
+          "And": [
+            { "Variable": "$.reference_name", "IsString": true },
+            { "Not": { "Variable": "$.reference_name", "StringEquals": "" } },
+            { "Not": { "Variable": "$.reference_name", "StringMatches": "*/*" } }
+          ],
+          "Next": "Check_Reference"
+        }
+      ],
+      "Default": "Prepare_Reference_Error"
+    },
+    "Prepare_Reference_Missing": {
+      "Type": "Pass",
+      "Comment": "A manual start without reference_name (the trigger always sets one). Its own state, because the Cause in Prepare_Reference_Error can't read a path that isn't there.",
+      "Parameters": {
+        "Error": "UnknownReference",
+        "Cause": "The input has no reference_name (a file name under reference/ in the data lake)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Prepare_Reference_Error": {
+      "Type": "Pass",
+      "Comment": "JsonToString, so any value (a list from mates that disagree, an object the trigger flagged, a number) gives the message.",
+      "Parameters": {
+        "Error": "UnknownReference",
+        "Cause.$": "States.Format('reference_name {} is not a file name under reference/ (a non-empty string without a slash)', States.JsonToString($.reference_name))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Check_Reference": {
+      "Type": "Task",
+      "Comment": "The reference must exist before any job starts: a HeadObject on reference/<name> (metadata only, nothing is downloaded). Its indexes may be missing, since align builds them. A missing key is S3.NoSuchKeyException (the role has s3:ListBucket, so S3 answers 404, not 403) and is not retried.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:headObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('reference/{}', $.reference_name)"
+      },
+      "ResultPath": null,
+      "Retry": [
+        { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Reference_Not_Found", "ResultPath": "$.reference_error" }
+      ],
+      "Next": "QC_and_Align"
+    },
+    "Prepare_Reference_Not_Found": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "ReferenceNotFound",
+        "Cause.$": "States.Format('reference/{} could not be read from ${bucket} ({}). Upload the FASTA there, or name another reference in the upload metadata (reference=<name>)', $.reference_name, $.reference_error.Error)"
       },
       "ResultPath": "$.error",
       "Next": "Prepare_Run_Close"
