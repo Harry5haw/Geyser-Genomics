@@ -294,6 +294,8 @@ The platform's design is guided by modern cloud-native principles:
 
 **Why not Nextflow?** Most genomics pipelines are written for a workflow engine. [docs/design/why-not-nextflow.md](docs/design/why-not-nextflow.md) maps Geyser's pieces to Nextflow concepts, lists what an engine would and wouldn't have replaced, and says when the choice should change.
 
+**Operating it:** the [operations runbook](docs/operations.md) covers starting, watching and stopping a run, the run record and gate verdict, image rollback and common failures.
+
 **Design notes:** [why not Nextflow](docs/design/why-not-nextflow.md) · [guardrails for the automation role](docs/design/claude-guardrails.md) · [cloud DeepVariant](docs/design/cloud-deepvariant.md) · [DeepVariant sizing on AWS](app-deepvariant/README.md) · [a whole-genome vg giraffe align stage](docs/design/giraffe-align.md)
 
 ---
@@ -676,7 +678,7 @@ Deployment is deliberate, not automatic. Terraform runs locally from `infrastruc
 
 | Variable | Default | What it does |
 | :--- | :--- | :--- |
-| `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variants 2 / 4 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements`. Checked against Fargate's valid vCPU/memory pairs, and QC + align (which run at the same time) must fit in `fargate_max_vcpus`. |
+| `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variant shard 1 / 2 GiB, region planner 0.25 / 0.5 GiB, merge 0.25 / 0.5 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements` (a change updates the state machine in place). Sized from the real-sample runs' peaks (#173). Checked against Fargate's valid vCPU/memory pairs, and QC (or the planner) + align, which run at the same time, must fit in `fargate_max_vcpus`. |
 | `job_disk_gb` | 20 | Fargate ephemeral storage per job. 20 GiB is free; 21-200 is billed. A whole human genome at 30x needs ~100+. |
 | `pipeline_timeout_hours` | 12 | Time limit for a whole run, queue waits included. A run past it ends as TimedOut. |
 | `log_retention_days` | 30 | How long Batch job logs (`/aws/batch/geyser-<env>`) and trigger Lambda logs (`/aws/lambda/geyser-sfn-trigger-<env>`) are kept. |
@@ -728,10 +730,11 @@ Once deployed, a run is started by uploading a file.
 | Variant calling | `variants/<id>.vcf.gz` + `.vcf.gz.tbi` (tabix index, for region queries), from bcftools; with `caller=deepvariant`, `variants_deepvariant/<id>.vcf.gz` instead, or bcftools' VCF if DeepVariant fails |
 | Consequence annotation (optional) | `variants/<id>.csq.vcf.gz` + `.tbi`: the same VCF with [bcftools csq](https://samtools.github.io/bcftools/howtos/csq-calling.html) consequences in `INFO/BCSQ` (e.g. `missense\|DEFB125\|ENST00000382410\|protein_coding\|+\|10I>10T`). Written only when the reference has gene models at `reference/<name>.gff3.gz` (Ensembl-style GFF3); `ANNOTATE=off` skips it. The cloud reference has none yet, so cloud runs don't annotate. |
 | QC statistics | `stats/<id>/`: `flagstat.txt` (samtools flagstat: mapped, duplicates, properly paired) and `mosdepth.summary.txt` / `mosdepth.global.dist.txt` (mean depth, and the fraction of bases covered at each depth; duplicates excluded) from the align stage; `bcftools.stats.txt` (SNP and indel counts, Ti/Tv) from variant calling. DeepVariant and pangenome-aware DeepVariant write `bcftools.stats.<caller>.txt` over their **PASS calls only** (their VCFs also keep rejected RefCall candidates, which would halve Ti/Tv), and the sample's `bcftools.stats.txt` when they are the run's caller. The job log prints the headline numbers. |
-| Quality gate | `qc_reports/<id>.gate.json`: the verdict of [`gate/`](gate/README.md) on the QC statistics, the fastp report and the run record (pass or fail, each failed check named). Written by every run, locally and in the cloud; warn mode (`gate_mode`), so it never fails a run yet |
+| Quality gate | `qc_reports/<id>.gate.json`: the verdict of [`gate/`](gate/README.md) on the QC statistics, the fastp report and the run record (pass or fail, each failed check named). Written by every run, locally and in the cloud; warn mode (`gate_mode`), so it never fails a run yet. The thresholds are per run: `gate_profile` (S3 metadata `gate-profile` on the upload: `default` or `synthetic`, [gate/README.md](gate/README.md#threshold-profile-per-run-gate_profile)) |
 | Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error (a DeepVariant-only run is complete when DeepVariant, its caller, succeeds: it has no bcftools stage), the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. Every job gets the Step Functions execution name as `RUN_NAME`, so each part says which run wrote it. The record also names the stage whose calls are the sample's (`variant_stage`, `vcf`): DeepVariant's when it was the run's caller. |
 
 ### 3. Monitoring
+For the day-to-day commands (watching, stopping a run, rollback, common failures), see the [operations runbook](docs/operations.md).
 
 > [!NOTE]
 > The dashboard (`geyser-dashboard-dev`) and the trigger alarm (`geyser-dev-trigger-lambda-errors`) are deployed, with the scripts below, after a `--dry-run` check. Both are within the CloudWatch free tier. The alarm has no actions: it is a signal on the dashboard, not an email.
@@ -797,13 +800,13 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | | | |
 | :---: | :--- | :--- |
 | ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; small-sample cloud run 1 min 52 s, down from 3 min 45 s |
-| ☁️ | **Faster tools** | bwa-mem2 (align stage 1.56× faster on HG003 chr20) with its index stored (align job 45.7 s → 29.3 s); fastp; CRAM + indexes |
+| ☁️ | **Faster tools, less storage** | bwa-mem2 (align stage 1.56× faster on HG003 chr20) with its index stored (align job 45.7 s → 29.3 s); fastp; CRAM + indexes (real HG003 chr20 35x: 393 MB, about a third of the BAM) |
 | ☁️ | **Faster starts, cheaper capacity** | Slim image (186 → 87 MB compressed, pulled by every job); Fargate Spot first with on-demand fallback; about $0.07 per real chr20 sample (30-35x) at on-demand prices |
 | ☁️ | **Sharded variant calling** | Regions called in parallel by a `Map` state and merged exactly; for large samples, not small ones (it adds ~1.5 min of fixed overhead there) |
 | ✅ | **Quality gate (Rust)** | Fails a run with named reasons; thresholds calibrated on HG003/HG005; DeepVariant stats over PASS calls |
 | ✅ | **Variant consequences** | `bcftools csq` when the reference has gene models; shown in the web UI |
-| ✅ | **Quality gate in the pipeline: app** | Gate stage, binary in the image, verdict in the run record ([#148](../../pull/148)); real chr20 runs pass 11/11 |
-| 🚧 | **Quality gate in the pipeline: state machine** | A gate step after either caller, warn mode by default ([#162](../../pull/162)) |
+| ☁️ | **Quality gate in the pipeline** | Gate stage and verdict in the run record ([#148](../../pull/148)), a state-machine step after either caller in warn mode ([#162](../../pull/162)). Six real chr20 runs, about 22 min and $0.07 each: 4 good samples pass, 2 under-covered ones fail on mean depth, as they should ([#157](../../issues/157)) |
+| 🔜 | **Quality gate in fail mode** | A threshold profile per run so smoke tests aren't judged by human thresholds, then `warn` → `fail` ([#178](../../pull/178)) |
 | ☁️ | **DeepVariant in the cloud** | GPU environment in the public subnet, DeepVariant stage with bcftools fallback; 10/10 on a g6.xlarge for about $0.16 ([#125](../../pull/125)) |
 | 🔜 | **DeepVariant as the default caller** | The app treats DeepVariant's VCF as the sample's calls when it was the caller ([#170](../../pull/170)); next, a real-size chr20 DeepVariant run before switching `default_caller` |
 
@@ -815,6 +818,17 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | 🔜 | **Pangenome-aware DeepVariant in the cloud** | Same GPU environment as cloud DeepVariant, plus shared memory for the graph |
 | 🔜 | **Whole genomes in the cloud** | make_examples on large CPU Spot, call_variants on the GPU, bigger job disks |
 | 🔜 | **Spot for the GPU queue** | A Spot environment ahead of on-demand, as for Fargate |
+
+### 3.0 "Project Alpha Genome": planned
+
+<p align="center">
+  <img src="docs/assets/alpha-genome-3.0-release.jpg" alt="Project Alpha Genome: Geyser Genomics 3.0" width="600"/>
+</p>
+
+Planned, not started. The idea: score the called variants with [AlphaGenome](https://deepmind.google/science/alphagenome/)
+(Google DeepMind's model of how DNA sequence controls gene regulation), so a run reports which variants are
+predicted to change gene regulation, not just which change a protein (`bcftools csq`). For research use, not
+clinical. The scope and the release it lands in are still open.
 
 ---
 

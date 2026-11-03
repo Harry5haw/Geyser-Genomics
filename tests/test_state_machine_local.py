@@ -49,8 +49,12 @@ TEMPLATE_VARS = {
     "qc_memory_mb": "2048",
     "align_vcpu": "4",
     "align_memory_mb": "8192",
-    "variants_vcpu": "2",
-    "variants_memory_mb": "4096",
+    "variants_vcpu": "1",
+    "variants_memory_mb": "2048",
+    "plan_vcpu": "0.25",
+    "plan_memory_mb": "512",
+    "merge_vcpu": "0.25",
+    "merge_memory_mb": "512",
     # Cloud DeepVariant (deepvariant.tf, batch_gpu.tf).
     "deepvariant_job_definition": "geyser-deepvariant-job",
     "gpu_job_queue": "geyser-gpu-queue-dev",
@@ -298,12 +302,17 @@ def sfn_fail(sfn):
     return client, arn, name
 
 
-def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None):
+_UNSET = object()
+
+
+def run_case(sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None, gate_profile=_UNSET):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
     run_input = {"srr_id": sample, "reference_name": reference}
     if caller:
         run_input["caller"] = caller
+    if gate_profile is not _UNSET:  # anything, even not a string: the state machine validates it
+        run_input["gate_profile"] = gate_profile
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
@@ -495,9 +504,9 @@ def test_each_stage_gets_the_command_tasks_py_expects(sfn):
     assert sizes == {
         "Quality_Control": {"VCPU": "1", "MEMORY": "2048"},
         "Align_Genome": {"VCPU": "4", "MEMORY": "8192"},
-        "Plan_Regions": {"VCPU": "1", "MEMORY": "2048"},  # QC's size: it only reads the reference
-        "Call_Shard": {"VCPU": "2", "MEMORY": "4096"},  # each shard is a variants job
-        "Call_Variants": {"VCPU": "2", "MEMORY": "4096"},
+        "Plan_Regions": {"VCPU": "0.25", "MEMORY": "512"},  # its own size (#173): it only reads the reference index
+        "Call_Shard": {"VCPU": "1", "MEMORY": "2048"},  # mpileup | call: 1.0-1.3 vCPU, <= 130 MiB on the real runs
+        "Call_Variants": {"VCPU": "0.25", "MEMORY": "512"},  # the merge: concat, index, stats
         "Quality_Gate": {"VCPU": "1", "MEMORY": "2048"},  # QC's size: it parses a few small files
     }
 
@@ -590,6 +599,8 @@ def test_every_stage_gets_the_execution_name_as_run_name(sfn):
         expected = [{"Name": "RUN_NAME", "Value": desc["name"]}]
         if state == "Quality_Gate":  # pinned: the job never fails on a verdict; the state machine decides
             expected.append({"Name": "GATE_MODE", "Value": "warn"})
+            # No gate_profile in the input: the default thresholds (the app expands the variable).
+            expected.append({"Name": "GATE_CONFIG", "Value": "$GATE_THRESHOLDS_DIR/default.toml"})
         assert p["ContainerOverrides"]["Environment"] == expected, state
 
 
@@ -864,3 +875,74 @@ def test_gate_mode_is_the_only_mode_in_the_definition():
         tf = fh.read()
     block = tf[tf.index('variable "gate_mode"') :]
     assert re.search(r'default\s*=\s*"warn"', block[: block.index("validation")])
+
+
+# --- the gate threshold profile per run (#157) ------------------------------------------------------
+
+
+def gate_environment(events) -> dict:
+    (params,) = batch_calls(events, "Quality_Gate")
+    return {e["Name"]: e["Value"] for e in params["ContainerOverrides"]["Environment"]}
+
+
+@pytest.mark.parametrize("profile", ["default", "synthetic"])
+def test_the_gate_profile_picks_the_thresholds_file(sfn, profile):
+    desc, events = run_case(sfn, "HappyPath", gate_profile=profile)
+    assert desc["status"] == "SUCCEEDED"
+    assert gate_environment(events)["GATE_CONFIG"] == f"$GATE_THRESHOLDS_DIR/{profile}.toml"
+    assert json.loads(desc["output"])["gate_profile"] == profile
+
+
+def test_without_a_profile_the_run_uses_the_default_thresholds(sfn):
+    desc, events = run_case(sfn, "HappyPath")
+    assert entered(events)[:2] == ["Check_Gate_Profile", "Default_Gate_Profile"]
+    assert json.loads(desc["output"])["gate_profile"] == "default"
+    assert gate_environment(events)["GATE_CONFIG"] == "$GATE_THRESHOLDS_DIR/default.toml"
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "strict",
+        "Synthetic",
+        " synthetic",
+        42,
+        None,
+        # What the trigger passes on when it can't pass a plain value: mates that disagree, a likely
+        # misspelt metadata key, metadata it couldn't read.
+        ["default", "synthetic"],
+        {"unrecognised metadata key": "gateprofile"},
+        {"metadata unreadable": "AccessDenied"},
+    ],
+)
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request, machine, profile):
+    desc, events = run_case(request.getfixturevalue(machine), "HappyPath", gate_profile=profile)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert states[:2] == ["Check_Gate_Profile", "Prepare_Profile_Error"]
+    assert "QC_and_Align" not in states and "Quality_Gate" not in states  # no job ran
+    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    error = published_message(events)["ErrorDetails"]
+    # States.JsonToString writes compact JSON.
+    assert error["Error"] == "UnknownGateProfile" and json.dumps(profile, separators=(",", ":")) in error["Cause"]
+    assert "default, synthetic" in error["Cause"]
+
+
+@pytest.mark.parametrize("profile", ["default", "synthetic"])
+@pytest.mark.parametrize(
+    "machine,case,outcome",
+    [
+        ("sfn", "HappyPath", "Pipeline_Succeeded"),
+        ("sfn", "GateFailsVerdict", "Gate_Warned"),
+        ("sfn_fail", "HappyPath", "Pipeline_Succeeded"),
+        ("sfn_fail", "GateFailsVerdict", "Pipeline_Failed"),
+    ],
+)
+def test_both_profiles_follow_the_gate_mode(request, profile, machine, case, outcome):
+    # The profile chooses the thresholds; gate_mode alone decides what a failed verdict does.
+    desc, events = run_case(request.getfixturevalue(machine), case, gate_profile=profile)
+    states = entered(events)
+    assert outcome in states
+    assert desc["status"] == ("FAILED" if outcome == "Pipeline_Failed" else "SUCCEEDED")
+    assert gate_environment(events)["GATE_CONFIG"] == f"$GATE_THRESHOLDS_DIR/{profile}.toml"
