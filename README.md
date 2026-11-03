@@ -352,6 +352,14 @@ python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --sha
 >
 > bwa-mem2 has one known bug ([bwa-mem2#262](https://github.com/bwa-mem2/bwa-mem2/issues/262)): it shifts reads that start in the first few bases of the reference's first contig, which shows up as false SNPs. Human chromosomes start with long N gaps, so they are unaffected. For any reference whose first contig doesn't start with at least 1,000 Ns, the align stage uses bwa instead and logs why. The default synthetic genome is such a reference. `make_test_data.py --leading-gap 1000` gives it a human-like gap, and then bwa-mem2 produces the same 10,000 alignments as bwa. Each aligner has its own index next to the reference (`reference/<name>.0123`, `.bwt.2bit.64` ... for bwa-mem2). The align stage builds a missing index itself. That is quick for one chromosome, but a whole-genome bwa-mem2 index needs about 90 GB of RAM, so build it once elsewhere and upload it under `reference/`.
 >
+> **Graph alignment (`ALIGNER=giraffe`, offline so far):** the align stage can also map the reads to a pangenome graph with [vg giraffe](https://github.com/vgteam/vg) 1.55.0. By default it uses haplotype sampling: kmc counts the sample's k-mers, and giraffe maps to a personal graph built from the haplotypes closest to them. It then surjects the alignments onto the graph's GRCh38 paths. The contig names (`GRCh38#0#chr20`) are renamed to the FASTA's (`chr20`) with `samtools reheader`. The CRAM header lists every FASTA contig in the FASTA's order, as with bwa-mem2. Graph paths that aren't FASTA contigs are left out (a whole-genome graph with `chr20.fa` keeps chr20), and reads that map there stay unmapped. A graph with no path on the FASTA, or one of a different length, fails the stage rather than write a wrong CRAM. After that the reads get the same fixmate, sort, markdup and CRAM as with bwa-mem2. vg and kmc live in their own image (`app-giraffe/`, built on geyser-app), so the other stages don't pull them. The graph is `pangenome/<GIRAFFE_GRAPH>`, by default `<reference stem>.gbz`, with its `.hapl` beside it. A missing `.hapl` is built in the job: seconds for the synthetic graph, ~6 min for chr20, hours for a whole genome. `GIRAFFE_SAMPLING=off` maps to the whole graph with its `.dist`/`.min` instead.
+>
+> ```bash
+> docker build -f app-giraffe/Dockerfile -t geyser-giraffe .
+> python scripts/make_test_data.py --pangenome
+> python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --aligner giraffe --check
+> ```
+>
 > In the cloud, `reference/chr20.fa` holds both aligners' indexes and the FASTA index: bwa's, bwa-mem2's `.0123` and `.bwt.2bit.64` (338 MB), and `chr20.fa.fai` (all uploaded 2 Nov 2026), so no stage rebuilds an index. The two share `.amb`/`.ann`/`.pac`, and bwa-mem2 writes them byte-identical to bwa's. To add an index for another reference, build it with the pipeline image and upload only the files that are missing:
 >
 > ```bash
@@ -440,7 +448,7 @@ A **pangenome** reference is a graph that combines many people's genomes. The Hu
 > [!NOTE]
 > **Where this project is:**
 > - **Done:** pangenome-aware variant calling (Google's pangenome-aware DeepVariant with the HPRC graph) runs **locally on the GPU** and is benchmarked on chr20 of HG003 (Ashkenazi) and HG005 (Han Chinese), overall and by GIAB region type (results below).
-> - **Graph alignment, benchmarked offline:** reads aligned to the pangenome graph with vg giraffe (haplotype sampling, surjected to GRCh38) give the most accurate calls on HG003 chr20 (results below). The pipeline's align stage still uses bwa-mem2.
+> - **Graph alignment, benchmarked offline:** reads aligned to the pangenome graph with vg giraffe (haplotype sampling, surjected to GRCh38) give the most accurate calls on HG003 chr20 (results below). The align stage runs it locally with `ALIGNER=giraffe` (#146). It isn't in the cloud yet, and bwa-mem2 stays the default.
 > - **Not yet:** whole-genome graphs and runs in the cloud. These are next on the [Roadmap](#️-roadmap) (#51).
 
 #### Running it

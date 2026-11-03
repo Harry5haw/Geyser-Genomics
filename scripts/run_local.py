@@ -36,6 +36,14 @@ Variant caller (--caller):
     python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa --caller pangenome \
         --skip-to-variants --check --dv-memory 14g
 
+Aligner (--aligner): bwa-mem2 (default), bwa, or giraffe: vg giraffe on a pangenome graph (#146), in its own
+image (app-giraffe/, built on geyser-app). The graph is pangenome/<--pangenome> (default: <reference stem>.gbz,
+what make_test_data.py --pangenome writes); GIRAFFE_SAMPLING=off maps to the whole graph instead of a sampled one.
+
+    docker build -f app-giraffe/Dockerfile -t geyser-giraffe .
+    python scripts/make_test_data.py --pangenome
+    python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --aligner giraffe --check
+
 --check compares each VCF against truth/<sample>.json (from make_test_data.py), or against
 truth/<sample>.vcf.gz + truth/<sample>.bed (from fetch_dv_testdata.py) as a counts-only report.
 """
@@ -91,10 +99,20 @@ DEEPVARIANT_ENV_VARS = (
     "DEEPVARIANT_CHECKPOINT",
     "DEEPVARIANT_GPU_SAMPLE_SECONDS",
 )
-# Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2;
+# Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2
+# (--aligner sets it too); GIRAFFE_GRAPH, GIRAFFE_SAMPLING and KMC_MEMORY_GB tune ALIGNER=giraffe (tasks.py);
 # ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz);
 # GATE_MODE (warn | fail) and GATE_CONFIG (a thresholds file) set up the quality gate.
-PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE", "GATE_MODE", "GATE_CONFIG")
+PIPELINE_ENV_VARS = (
+    "ALIGNER",
+    "GIRAFFE_GRAPH",
+    "GIRAFFE_SAMPLING",
+    "KMC_MEMORY_GB",
+    "ANNOTATE",
+    "GATE_MODE",
+    "GATE_CONFIG",
+)
+ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
 # The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
 # The gate's threshold profiles (gate/thresholds/<profile>.toml), as the state machine's gate_profile
 # input names them (Check_Gate_Profile; tests/test_consistency.py keeps the three in step).
@@ -166,8 +184,13 @@ def pipeline_jobs(
     shard_window=None,
     gate=False,
     gate_config=None,
+    align_image=None,
+    align_env=None,
 ):
     """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome, env).
+
+    align_image / align_env: the align job's image and extra environment (--aligner giraffe: geyser-giraffe,
+    ALIGNER=giraffe and the graph); default app_image and nothing.
 
     regions + shard_window: scatter-gather variant calling, as the Map state will run it (#108): one
     'variants --region' job per region, then 'variants --window' merging them into the usual VCF.
@@ -194,14 +217,17 @@ def pipeline_jobs(
                 {"name": stage, "cmd": cmd + ["--window", str(shard_window)], "image": app_image, "gpus": False}
             )
             continue
-        jobs.append(
-            {
-                "name": stage,
-                "cmd": stage_command(stage, sample_id, reference_name, needs_ref),
-                "image": app_image,
-                "gpus": False,
-            }
-        )
+        job = {
+            "name": stage,
+            "cmd": stage_command(stage, sample_id, reference_name, needs_ref),
+            "image": app_image,
+            "gpus": False,
+        }
+        if stage == "align":
+            job["image"] = align_image or app_image
+            if align_env:
+                job["env"] = dict(align_env)
+        jobs.append(job)
     # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
     # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
     caller_owns_stats = "bcftools" not in sets and not skip_to_variants
@@ -243,6 +269,17 @@ def pipeline_jobs(
             job["env"] = {"GATE_CONFIG": gate_config}
         jobs.append(job)
     return jobs
+
+
+def align_settings(aligner, pangenome, giraffe_image):
+    """(align image, align env) for --aligner: giraffe runs in its own image with ALIGNER=giraffe and, when
+    --pangenome was given, GIRAFFE_GRAPH; any other aligner in the pipeline image (None) with ALIGNER set."""
+    if not aligner:
+        return None, {}
+    env = {"ALIGNER": aligner}
+    if aligner != "giraffe":
+        return None, env
+    return giraffe_image, {**env, **({"GIRAFFE_GRAPH": pangenome} if pangenome else {})}
 
 
 def local_regions(root, reference_name, window):
@@ -475,10 +512,17 @@ def main(argv=None):
     )
     p.add_argument(
         "--pangenome",
-        default=DEFAULT_PANGENOME,
         metavar="GBZ",
-        help="pangenome graph under pangenome/ (default: %(default)s)",
+        help=f"pangenome graph under pangenome/, for --caller pangenome (default: {DEFAULT_PANGENOME}) and "
+        "--aligner giraffe (default: <reference stem>.gbz)",
     )
+    p.add_argument(
+        "--aligner",
+        choices=ALIGNERS,
+        help="align stage's aligner (sets ALIGNER for it; default: $ALIGNER, else bwa-mem2). giraffe runs in "
+        "--giraffe-image",
+    )
+    p.add_argument("--giraffe-image", default="geyser-giraffe", help="image for --aligner giraffe (app-giraffe/)")
     p.add_argument(
         "--pg-shm-size",
         default=DEFAULT_PANGENOME_SHM,
@@ -522,6 +566,15 @@ def main(argv=None):
         return 1
 
     callers = CALLER_SETS[a.caller]
+    # $ALIGNER=giraffe without --aligner must still pick the giraffe image: geyser-app has no vg.
+    # One graph per run: --pangenome, else a GIRAFFE_GRAPH set on the host, names it for both the aligner and
+    # the pangenome caller; without either, giraffe aligns to the caller's default graph when that caller runs
+    # (and to <reference stem>.gbz, tasks.py's default, when it doesn't).
+    graph = a.pangenome or os.environ.get("GIRAFFE_GRAPH", "").strip() or None
+    giraffe_graph = graph or (DEFAULT_PANGENOME if "pangenome" in callers else None)
+    align_image, align_env = align_settings(
+        a.aligner or os.environ.get("ALIGNER", "").strip() or None, giraffe_graph, a.giraffe_image
+    )
     ok = True
     for key in keys:
         payload = trigger.build_pipeline_input(key, a.reference)
@@ -537,7 +590,7 @@ def main(argv=None):
             gpus=not a.no_gpu,
             skip_to_variants=a.skip_to_variants,
             pg_image=a.pg_image,
-            pangenome=a.pangenome,
+            pangenome=graph or DEFAULT_PANGENOME,
             pg_shm=a.pg_shm_size,
             # Only when there is a bcftools stage to shard (not --caller deepvariant/pangenome).
             regions=local_regions(a.root, reference, a.shard_window)
@@ -546,6 +599,8 @@ def main(argv=None):
             shard_window=a.shard_window,
             gate=not a.no_gate,
             gate_config=gate_config_for(a.root, sample_id, a.runner, a.gate_profile),
+            align_image=align_image,
+            align_env=align_env,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:

@@ -47,6 +47,9 @@ def local_env(tmp_path, monkeypatch):
         "METRICS_BACKEND",
         "METRICS_FILE",
         "ALIGNER",
+        "GIRAFFE_GRAPH",
+        "GIRAFFE_SAMPLING",
+        "KMC_MEMORY_GB",
         "RUN_NAME",
         "APP_VERSION",
     ):

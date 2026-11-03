@@ -100,10 +100,19 @@ TOOL_VERSION_COMMANDS = {
     "fastp": (["fastp", "--version"], r"fastp (\S+)"),
     "mosdepth": (["mosdepth", "--version"], r"mosdepth (\S+)"),
     "geyser-gate": (["geyser-gate", "--version"], r"geyser-gate (\S+)"),
+    # ALIGNER=giraffe (the geyser-giraffe image): vg prints "vg version v1.55.0 ..."; kmc with no
+    # arguments prints its usage, headed "K-Mer Counter (KMC) ver. 3.2.4 (...)".
+    "vg": (["vg", "version"], r"vg version v?(\S+)"),
+    "kmc": (["kmc"], r"KMC\) ver\. (\S+)"),
 }
 # The image exports the release it pinned where the binary reports something else (bwa-mem2 2.3
 # says 2.2.1); recorded as "<tool> release" next to the reported version.
-TOOL_RELEASE_ENV = {"bwa-mem2": "GEYSER_BWA_MEM2_RELEASE", "mosdepth": "GEYSER_MOSDEPTH_RELEASE"}
+TOOL_RELEASE_ENV = {
+    "bwa-mem2": "GEYSER_BWA_MEM2_RELEASE",
+    "mosdepth": "GEYSER_MOSDEPTH_RELEASE",
+    "vg": "GEYSER_VG_RELEASE",
+    "kmc": "GEYSER_KMC_RELEASE",
+}
 
 _current = None  # the part being built for the stage running in this process (one stage per process)
 
