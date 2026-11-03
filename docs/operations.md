@@ -39,7 +39,21 @@ aws s3 cp SRR062634.fastq.gz s3://<data-lake>/raw_reads/SRR062634.fastq.gz
 Step Functions execution name and the suffix of every Batch job name, and every job gets it as `RUN_NAME`.
 A duplicate S3 event starts nothing.
 
-**Reference:** every triggered run uses `chr20.fa` from `reference/`.
+**Reference** ([#183](../../../pull/183)): `chr20.fa` from `reference/`, unless the upload names another with S3 metadata
+`reference` (also `reference-name` / `reference_name`), on either mate:
+
+```bash
+aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata reference=GRCh38.fa
+```
+
+- The FASTA must already be at `reference/<name>`. Indexes are optional: align builds any that are missing,
+  which costs time and memory on a whole genome, so upload them alongside.
+- The state machine checks it before any job (`Check_Reference_Name`, then `Check_Reference`, a HeadObject).
+  A name that isn't a plain file name (empty, containing `/`, mates that disagree, a misspelt key such as
+  `refernce`, metadata the trigger couldn't read) fails with `UnknownReference`; a FASTA that isn't there
+  fails with `ReferenceNotFound`. It never falls back to `chr20.fa` silently.
+- A manual start sets it in the input: `"reference_name": "GRCh38.fa"`. It's required there: a manual start
+  without it fails with `UnknownReference` (the trigger always sets one).
 
 **Quality-gate profile** ([#178](../../../pull/178)): an upload can name the gate's thresholds with S3 metadata
 `gate-profile`. The trigger passes it on as `gate_profile`, and the state machine checks it first
@@ -63,9 +77,6 @@ aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-
   0.02x). A `smoke` profile calibrated on the cloud checkpoints is planned ([#157](../../../issues/157)). Until
   then, smoke tests fail the gate whatever their profile, which warn mode records without failing the run.
 
-**Coming, not live yet:** a per-upload reference from S3 metadata ([#183](../../../pull/183)). Until it merges
-and is applied, every triggered run uses `chr20.fa`.
-
 ### Choose the caller
 
 | Caller | Where it runs | How to choose it |
@@ -88,7 +99,7 @@ Without `caller`, or with anything other than `deepvariant`, the run uses bcftoo
 ## Watch a run
 
 - **The Step Functions console:** the execution `<run>` and its graph:
-  `Check_Gate_Profile` → `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
+  `Check_Gate_Profile` → `Check_Reference_Name` → `Check_Reference` → `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
 - **The dashboard** (`geyser-dashboard-dev`): runs, failures and durations by stage, result quality, data lake
   storage, the trigger alarm. It's deployed by script; `--dry-run` prints the body and makes no AWS calls:
   ```bash
@@ -232,3 +243,5 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
 | **The gate gives no verdict** | warn: SUCCEEDED through `Gate_Skipped`, `gate.json` has `"verdict": null` and why; fail: `QualityGateError` | read the `QualityGate-<id>-<run>` job log |
 | **A job stuck waiting in the queue** | no queue limit of its own; the whole run ends `TimedOut` at 12 h (`pipeline_timeout_hours`) | `scripts/stop_run.py <run>`; check the compute environments' capacity |
 | **Unknown gate profile** (`gate-profile=smoke`, a typo, mates that disagree) | the run fails before any job with `UnknownGateProfile: gate_profile "…" is not one of: default, synthetic`, through `Close_Run_Record` → `Notify_Failure` | upload again with `default`, `synthetic` or no `gate-profile` |
+| **Bad reference name** (`reference=sub/x.fa`, an empty value, mates that disagree, a misspelt key) | the run fails before any job with `UnknownReference: reference_name "…" is not a file name under reference/ (a non-empty string without a slash)`, through `Close_Run_Record` → `Notify_Failure` | upload again with a plain file name, or no `reference` for `chr20.fa` |
+| **Reference not in the data lake** (`reference=nope.fa`) | the run fails before any job with `ReferenceNotFound: reference/nope.fa could not be read from <data-lake> (S3.NoSuchKeyException)…`, through `Close_Run_Record` → `Notify_Failure` (`CLOUD018`) | upload the FASTA to `reference/`, or name one that's there |
