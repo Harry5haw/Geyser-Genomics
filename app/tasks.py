@@ -420,14 +420,11 @@ def upload_output(local_path: str, key: str) -> None:
 def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
     """Choose the aligner for this reference (effective_aligner) and fetch or build its index.
 
-    Returns the aligner to run. The only way to an aligner index, so the guard can't be skipped.
-    giraffe's index is its graph (GIRAFFE_GRAPH), fetched into local_ref's folder (giraffe_files).
+    Returns the aligner to run. The only way to a FASTA aligner index, so the guard can't be skipped.
+    giraffe has no FASTA index: it aligns to its graph, which align_task fetches with prepare_graph.
     """
     aligner = effective_aligner(requested, local_ref)
-    if aligner == GIRAFFE:
-        settings = giraffe_settings(reference_name)
-        prepare_graph(os.path.dirname(local_ref), settings["graph"], settings["sampling"])
-    else:
+    if aligner != GIRAFFE:
         _ensure_aligner_index(reference_name, local_ref, aligner)
     return aligner
 
@@ -477,10 +474,9 @@ def _fetch_stored(base_key: str, local_base: str, exts) -> bool:
 
 
 def _reference_stem(reference_name: str) -> str:
-    """chr20.fa -> chr20, GRCh38_chr20.fa.gz -> GRCh38_chr20, grch38/chr20.fa -> chr20: the default graph's stem."""
-    stem = os.path.basename(reference_name)
-    stem = stem[:-3] if stem.endswith(".gz") else stem
-    return os.path.splitext(stem)[0]
+    """chr20.fa -> chr20: the default graph's stem, by make_test_data.py --pangenome's rule (the reference
+    name without its last extension; a folder is dropped, as graphs live directly under pangenome/)."""
+    return os.path.splitext(os.path.basename(reference_name))[0]
 
 
 def giraffe_settings(reference_name: str) -> dict:
@@ -531,12 +527,8 @@ def prepare_graph(dest_dir: str, graph: str, sampling: bool) -> dict:
     base_key = key[: -len(".gbz")]
 
     def fetch(ext):
-        if not storage().exists(base_key + ext):
+        if not _fetch_stored(base_key, files["gbz"][: -len(".gbz")], (ext,)):
             return False
-        try:
-            storage().download(base_key + ext, files[ext[1:]])
-        except ObjectNotFound:
-            return False  # deleted in between
         provenance.note_input(base_key + ext, files[ext[1:]])
         return True
 
@@ -648,9 +640,14 @@ def rename_graph_contigs(header: str, fai: str, sample: str = GRAPH_REFERENCE_SA
     is enough (the order is set before mapping, by reference_path_order). Each renamed contig must be in
     the FASTA (fai: its .fai) with the same length, and appear once; otherwise the graph was not built on
     this reference, and a CRAM written against it would be wrong, so that's a ValueError.
+
+    FASTA contigs the graph has no path for (alt, decoy, HLA contigs) are added after the graph's, in .fai
+    order, so the header lists every contig, as bwa's does: region shards and DeepVariant cut the genome
+    from the .fai. No record points at them, so appending them is safe.
     """
-    lengths = dict(contig_lengths_from_fai(fai))
-    lines, seen = [], set()
+    contigs = contig_lengths_from_fai(fai)
+    lengths = dict(contigs)
+    lines, seen, last_sq = [], set(), None
     for line in header.splitlines():
         if line.startswith("@SQ\t"):
             fields = line.split("\t")
@@ -671,9 +668,12 @@ def rename_graph_contigs(header: str, fai: str, sample: str = GRAPH_REFERENCE_SA
             seen.add(contig)
             fields[sn] = f"SN:{contig}"
             line = "\t".join(fields)
+            last_sq = len(lines)
         lines.append(line)
     if not seen:
         raise ValueError("the giraffe BAM has no @SQ lines: nothing was surjected onto the reference paths")
+    extra = [f"@SQ\tSN:{name}\tLN:{length}" for name, length in contigs if name not in seen]
+    lines[last_sq + 1 : last_sq + 1] = extra
     return "\n".join(lines) + "\n"
 
 
@@ -684,7 +684,9 @@ def giraffe_align(
 
     [kmc ->] giraffe -> unsorted BAM (work dir) -> header renamed to the FASTA's contigs (samtools reheader,
     header only) -> postprocess_stages (fixmate | sort | markdup). The unsorted BAM is on disk, not piped,
-    because reheader needs a file; it costs about the CRAM's size again in work space.
+    because reheader needs a file: ~2.7x the CRAM's size in work space (HG003 chr20: 1.0 GB against 383 MB),
+    so ~40-50 GB for a 30x whole genome. Streaming it (a header rewrite in the pipe) is the whole-genome
+    follow-up if the job's disk is short (docs/design/giraffe-align.md, disk per job).
     """
     fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
     graph_paths, ref_paths = os.path.join(wd, "graph.paths.txt"), os.path.join(wd, "graph.ref-paths.txt")

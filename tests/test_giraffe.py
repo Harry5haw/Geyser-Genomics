@@ -38,7 +38,7 @@ def read_json(root, key):
     [
         ("chr20.fa", "chr20.gbz"),
         ("grch38/chr20.fa", "chr20.gbz"),
-        ("GRCh38_chr20.fa.gz", "GRCh38_chr20.gbz"),
+        ("ref.fa.gz", "ref.fa.gbz"),  # make_test_data.py's rule: os.path.splitext(reference)[0] + ".gbz"
         ("synthetic_ref.fa", "synthetic_ref.gbz"),
     ],
 )
@@ -211,6 +211,18 @@ def test_reference_paths_of_another_sample_are_dropped():
 def test_reference_paths_that_do_not_fit_the_fasta_are_refused(paths, match):
     with pytest.raises(ValueError, match=match):
         tasks.reference_path_order(paths, FAI3)
+
+
+def test_rename_lists_every_fasta_contig_graph_ones_first():
+    # A graph of chr1 and chr2 on a FASTA that also has chr10: chr10 is added after them, the rest unchanged.
+    header = "@HD\tVN:1.5\n@SQ\tSN:GRCh38#0#chr1\tLN:248956422\n@SQ\tSN:GRCh38#0#chr2\tLN:242193529\n@RG\tID:S1\n"
+    assert tasks.rename_graph_contigs(header, FAI3).splitlines() == [
+        "@HD\tVN:1.5",
+        "@SQ\tSN:chr1\tLN:248956422",
+        "@SQ\tSN:chr2\tLN:242193529",
+        "@SQ\tSN:chr10\tLN:133797422",
+        "@RG\tID:S1",
+    ]
 
 
 def test_rename_refuses_a_contig_twice():
@@ -476,6 +488,12 @@ def test_run_local_main_passes_the_giraffe_image_and_graph(tmp_path, monkeypatch
     assert run_local.main(args + ["--aligner", "giraffe", "--caller", "pangenome"]) == 0
     align = next(j for j in ran if j["name"] == "align")
     assert align["env"]["GIRAFFE_GRAPH"] == run_local.DEFAULT_PANGENOME
+
+    ran.clear()
+    monkeypatch.setenv("GIRAFFE_GRAPH", "mine.gbz")  # a host setting beats the caller's default
+    assert run_local.main(args + ["--aligner", "giraffe", "--caller", "pangenome"]) == 0
+    assert next(j for j in ran if j["name"] == "align")["env"]["GIRAFFE_GRAPH"] == "mine.gbz"
+    monkeypatch.delenv("GIRAFFE_GRAPH")
 
     ran.clear()
     monkeypatch.setenv("ALIGNER", "giraffe")  # set on the host instead: still the giraffe image

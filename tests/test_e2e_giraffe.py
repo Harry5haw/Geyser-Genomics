@@ -127,3 +127,5 @@ def test_giraffe_refuses_a_graph_of_another_reference(bucket, tmp_path):
         (root / "reference" / "synthetic_ref.fa").write_bytes(src.read())
     assert run_giraffe(root, "SYNTH001", "--no-gate") == 1
     assert not (root / "alignments" / "SYNTH001.cram").exists()
+    part = align_part(root, "SYNTH001")  # failed for that reason, not another
+    assert part["status"] == "Failure" and "not a contig of the reference FASTA" in part["error"]
