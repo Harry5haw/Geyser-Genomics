@@ -315,6 +315,29 @@ stats; `scripts/reconcile.py` flags concurrent runs.
 A stage that fails before the gate (QC, align, variants) ends the run through `Notify_Failure` as before;
 the gate never runs then.
 
+### Threshold profile per run (`gate_profile`)
+
+Which thresholds a cloud run is judged by is per run, not global: the execution input's
+**`gate_profile`** names a file in the image's `$GATE_THRESHOLDS_DIR` (`gate/thresholds/`):
+
+| `gate_profile` | Thresholds | For |
+| :--- | :--- | :--- |
+| `default` (also when unset) | `default.toml` (human germline WGS, ~30x) | real samples |
+| `synthetic` | `synthetic.toml` | the CLOUD00x smoke tests and `make_test_data.py` data |
+
+- **Uploads:** set it with S3 user metadata `gate-profile` on the upload, for example
+  `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=synthetic`
+  (either mate of a pair; mates that disagree are an error). The trigger passes it on (one HeadObject
+  for a single-end upload). **Manual starts:** `"gate_profile": "synthetic"` in the input.
+- **Locally:** `run_local.py --gate-profile synthetic|default`. Without it, a `make_test_data.py` sample
+  still gets `synthetic`.
+- **Checked first:** `Check_Gate_Profile`, before any job. An unknown profile (`strict`, `Synthetic` sent
+  past the trigger, a number) fails the run there, in either `gate_mode`, with `UnknownGateProfile`.
+  It never falls back to the default silently.
+- **Why:** with the human thresholds, a synthetic smoke test fails the gate (CLOUD015: mean depth 0.02x,
+  0% at 10x, Ti/Tv 0.25). In warn mode that's only a recorded verdict, but in fail mode every smoke test
+  would fail. With `gate-profile=synthetic` the smoke tests are judged by what they are.
+
 ## Warn now, fail later
 
 The user's decision (2 Nov 2026): **warn first, then fail** (#157).
@@ -327,7 +350,9 @@ The user's decision (2 Nov 2026): **warn first, then fail** (#157).
   them.
 - **The switch, one line:** `gate_mode = "fail"` (tfvars, or the default in
   `infrastructure/variables.tf`), then `terraform plan` (expect only an in-place update of the state
-  machine) and, after review, apply.
+  machine) and, after review, apply. Together with the threshold profile (above) it is **one apply**:
+  the profile's state-machine change and `gate_mode` are the same resource (plus the trigger Lambda's
+  code). From then on, upload smoke tests with `--metadata gate-profile=synthetic`.
 - **Back:** `gate_mode = "warn"`, the same in-place update.
 
 ## Not yet
