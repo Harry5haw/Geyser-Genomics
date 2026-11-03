@@ -274,13 +274,14 @@ def dv_parts(storage, dv_status="Success", fallback=False):
         provenance._put_json(storage, f"runs/S1.provenance/{task}.json", part)
 
 
-def dv_sample(storage):
+def dv_sample(storage, dv_vcf=True):
     """A cloud run with caller=deepvariant: QC and align, then DeepVariant's VCF; no bcftools VCF."""
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     for key in ("qc_reports/S1.fastp.html", "alignments/S1.cram", "alignments/S1.cram.crai"):
         put(storage, key, b"data")
     put(storage, "qc_reports/S1.fastp.json", json.dumps(FASTP_SINGLE))
-    put(storage, "variants_deepvariant/S1.vcf.gz", dv_vcf_gz())
+    if dv_vcf:
+        put(storage, "variants_deepvariant/S1.vcf.gz", dv_vcf_gz())
     put(
         storage,
         "truth/S1.json",
@@ -317,3 +318,12 @@ def test_after_the_bcftools_fallback_the_page_shows_bcftools_calls(client, stora
     body = client.get("/samples/S1/").content.decode()
     assert "1/3 planted SNPs recovered" in body
     assert b"".join(client.get("/samples/S1/files/vcf/").streaming_content) == vcf_gz([(100, "A", "G")])
+
+
+def test_the_list_reads_the_record_even_with_an_old_bcftools_vcf(client, storage):
+    # bcftools ran earlier; this run's caller is DeepVariant and it failed (no local fallback): not Complete.
+    dv_sample(storage, dv_vcf=False)
+    put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G")]))
+    dv_parts(storage, dv_status="Failure")
+    listing = client.get("/").content.decode()
+    assert "Complete" not in listing

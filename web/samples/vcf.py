@@ -8,7 +8,9 @@ import io
 import json
 from dataclasses import dataclass, field
 
-from geyser_web.pipeline import ObjectNotFound
+from geyser_web.pipeline import ObjectNotFound, run_local
+
+NON_VARIANT_ALTS = run_local.NON_VARIANT_ALTS  # one rule for what is a call, here and in run_local --check
 
 
 @dataclass(frozen=True)
@@ -96,8 +98,8 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
         depth = _info_field(info, "DP")
         bcsq = _info_field(info, "BCSQ")
         for alt in alts.split(","):
-            if alt in (".", "<*>", "*"):
-                continue  # no alternative allele: a placeholder, not a call
+            if alt in NON_VARIANT_ALTS:
+                continue  # no alternative allele: a placeholder, not a call (as run_local.read_vcf_calls)
             table.total += 1
             table.calls.add((pos, ref, alt))
             if len(table.rows) < limit:

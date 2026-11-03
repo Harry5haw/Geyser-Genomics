@@ -248,11 +248,18 @@ def _load_record(storage, sample_id):
         return None
 
 
-def _needs_record(sample_id: str, present: set) -> bool:
-    """Only a sample with a caller's VCF and no bcftools VCF can have DeepVariant as its caller: read the
-    record for those alone, so the list page doesn't read one per sample."""
-    vcfs = {stage: v.format(id=sample_id) in present for stage, v in STAGE_VCF.items()}
-    return not vcfs["CallVariants"] and any(vcfs.values())
+# A run record part of a stage that can be a run's caller: runs/<id>.provenance/<Stage>.json.
+CALLER_PART_NAMES = tuple(f"/{stage}.json" for stage in STAGE_VCF if stage != "CallVariants")
+
+
+def _samples_with_caller_parts(storage) -> set:
+    """Samples whose run record can make DeepVariant's VCF their calls: those with a DeepVariant or pangenome
+    part. One LIST of runs/, so the list page reads records for these samples only, not one per sample."""
+    found = set()
+    for key in storage.list_keys("runs/"):
+        if key.endswith(CALLER_PART_NAMES) and ".provenance/" in key:
+            found.add(key[len("runs/") :].split(".provenance/", 1)[0])
+    return found
 
 
 def load_all(storage) -> list:
@@ -261,10 +268,9 @@ def load_all(storage) -> list:
     if not layouts:
         return []
     present, metrics, runs = _present_keys(storage), read_metrics(storage), read_all_runs(storage)
+    with_callers = _samples_with_caller_parts(storage)
     samples = [
-        build_sample(
-            i, present, metrics, runs.get(i), layout, _load_record(storage, i) if _needs_record(i, present) else None
-        )
+        build_sample(i, present, metrics, runs.get(i), layout, _load_record(storage, i) if i in with_callers else None)
         for i, layout in layouts.items()
     ]
     samples.sort(key=lambda s: (s.updated or 0, s.sample_id), reverse=True)

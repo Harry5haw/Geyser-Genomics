@@ -442,9 +442,28 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
                 record[field] = p[field]
     if caller:
         record["caller"] = caller
-    record["variant_stage"] = variant_stage(stages, caller)
+    record["variant_stage"] = variant_stage(stages, caller) if caller else _calls_stage(stages, parts)
     record["vcf"] = STAGE_VCF[record["variant_stage"]].format(id=sample_id)
     return record
+
+
+def _calls_stage(stages: dict, parts: list) -> str:
+    """The variant stage of a run without a caller of its own: CallVariants when the record has one (its own
+    or inherited). An add-on run (run_local --caller pangenome --skip-to-variants) after a run whose caller was
+    DeepVariant has none: the sample's calls are still that run's, i.e. the latest successful part of a
+    caller's own stage (PIPELINE_CALLER set), whichever run it belongs to.
+
+    Reaching past CallVariants means the sample has no bcftools calls at all (an earlier CallVariants part
+    would have been inherited into stages). One part is kept per stage, so a re-run of the same caller as an
+    add-on replaces the caller's part and its mark: then the latest successful caller-stage part, marked or
+    not, holds the only calls there are."""
+    if "CallVariants" in stages:
+        return "CallVariants"
+    done = [p for p in parts if p["task"] in CALLER_STAGES.values() and p.get("status") == "Success"]
+    owned = [p for p in done if p.get("caller") in CALLER_STAGES and p["task"] == CALLER_STAGES[p["caller"]]]
+    if not (owned or done):
+        return "CallVariants"
+    return max(owned or done, key=lambda p: p.get("finished") or "")["task"]
 
 
 def sample_vcf_key(record, sample_id: str) -> str:

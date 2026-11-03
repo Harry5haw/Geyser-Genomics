@@ -461,9 +461,19 @@ def test_a_deepvariant_runs_sample_is_complete_with_only_its_vcf(tmp_path):
     assert row["outputs"]["vcf"] and row["extra_outputs"]["dv"]
 
 
-def test_without_the_caller_a_deepvariant_vcf_alone_is_not_complete(tmp_path):
-    # DeepVariant added to a run that hasn't called with bcftools yet: the sample's calls are still missing.
+def test_a_deepvariant_vcf_without_a_recorded_caller_counts_when_bcftools_never_ran(tmp_path):
+    # e.g. a --caller deepvariant run from before PIPELINE_CALLER was recorded: its VCF holds the only calls.
     store = make_bucket(tmp_path, DV_SAMPLE)
     put_caller_parts(store, "S1", [("QualityControl", "Success"), ("Align", "Success"), ("DeepVariant", "Success")])
+    assert report(store)["S1"]["status"] == "complete"
+
+
+def test_a_deepvariant_vcf_does_not_complete_a_sample_whose_bcftools_call_failed(tmp_path):
+    store = make_bucket(tmp_path, DV_SAMPLE)
+    put_caller_parts(
+        store,
+        "S1",
+        [("QualityControl", "Success"), ("Align", "Success"), ("CallVariants", "Failure"), ("DeepVariant", "Success")],
+    )
     row = report(store)["S1"]
-    assert row["status"] == "incomplete" and not row["outputs"]["vcf"]
+    assert row["status"] == "incomplete" and not row["outputs"]["vcf"] and row["extra_outputs"]["dv"]

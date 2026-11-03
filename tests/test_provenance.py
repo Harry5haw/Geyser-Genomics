@@ -459,3 +459,29 @@ def test_sample_vcf_key_defaults_to_bcftools_and_accepts_only_known_keys():
     )
     assert provenance.sample_vcf_key({"vcf": "variants_deepvariant/S2.vcf.gz"}, "S1") == "variants/S1.vcf.gz"
     assert provenance.sample_vcf_key({"vcf": "../secrets"}, "S1") == "variants/S1.vcf.gz"
+
+
+@pytest.mark.parametrize(("task", "caller"), [("PangenomeDeepVariant", None), ("DeepVariant", None)])
+def test_an_add_on_run_after_a_deepvariant_run_keeps_its_calls(store, task, caller):
+    # run_local --caller pangenome (or deepvariant) --skip-to-variants after a run whose caller was DeepVariant:
+    # the add-on has no PIPELINE_CALLER, and the sample's calls are still the DeepVariant run's.
+    dv_only_run(store, run="R1")
+    write_part(store, task, run_name="R2", finished="2026-11-02T11:00:00Z")
+    record = provenance.build(store, "S1")
+    assert (record["variant_stage"], record["vcf"]) == ("DeepVariant", "variants_deepvariant/S1.vcf.gz")
+
+
+def test_when_the_callers_run_failed_an_add_ons_calls_are_the_only_ones(store):
+    dv_only_run(store, run="R1", dv_status="Failure")
+    write_part(store, "PangenomeDeepVariant", run_name="R2", finished="2026-11-02T11:00:00Z")
+    assert provenance.build(store, "S1")["vcf"] == "variants_pangenome/S1.vcf.gz"
+
+
+def test_a_failed_bcftools_call_keeps_the_record_on_bcftools(store):
+    # bcftools ran (and failed): its VCF is the sample's calls, missing, whatever an add-on caller wrote.
+    for i, (task, status) in enumerate(
+        (("QualityControl", "Success"), ("Align", "Success"), ("CallVariants", "Failure"))
+    ):
+        write_part(store, task, status=status, run_name="R1", finished=f"2026-11-02T10:0{i}:00Z")
+    write_part(store, "DeepVariant", run_name="R2", finished="2026-11-02T11:00:00Z")
+    assert provenance.build(store, "S1")["vcf"] == "variants/S1.vcf.gz"
