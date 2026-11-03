@@ -236,3 +236,27 @@ def test_mates_with_the_same_profile_give_one_value(trigger, aws):
     s3, sfn = aws(PAIR, metadata=meta)
     trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
     assert json.loads(sfn.started[0]["input"])["gate_profile"] == "synthetic"
+
+
+# --- the reference genome per upload (metadata reference), like the gate profile -------------------
+
+
+def test_a_pairs_reference_can_be_on_either_mate(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={"raw_reads/S1_R2.fastq.gz": {"reference": "GRCh38.fa"}})
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["reference_name"] == "GRCh38.fa"
+
+
+def test_mates_with_different_references_go_on_as_both_for_the_state_machine_to_refuse(trigger, aws):
+    meta = {"raw_reads/S1_R1.fastq.gz": {"reference": "chr20.fa"}, "raw_reads/S1_R2.fastq.gz": {"reference": "b.fa"}}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["reference_name"] == ["chr20.fa", "b.fa"]
+
+
+def test_a_pair_without_reference_metadata_keeps_the_default(trigger, aws):
+    meta = {k: {"gate-profile": "synthetic"} for k in PAIR}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    run_input = json.loads(sfn.started[0]["input"])
+    assert run_input["reference_name"] == "chr20.fa" and run_input["gate_profile"] == "synthetic"

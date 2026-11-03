@@ -244,6 +244,21 @@ def pipeline_jobs(
     return jobs
 
 
+def reference_problem(root, reference_name):
+    """Why this reference can't be used, or None: the state machine's two checks before any job.
+
+    Check_Reference_Name: a non-empty string without a slash (a file name under reference/).
+    Check_Reference: reference/<name> exists (locally, under --root). tests/test_consistency.py keeps
+    the rules in step with the state machine.
+    """
+    if not isinstance(reference_name, str) or not reference_name or "/" in reference_name:
+        return f"reference {reference_name!r} is not a file name under reference/ (a non-empty string without a slash)"
+    path = os.path.join(root, "reference", reference_name)
+    if not os.path.isfile(path):
+        return f"reference/{reference_name} is not under {root} (in the cloud: ReferenceNotFound before any job)"
+    return None
+
+
 def local_regions(root, reference_name, window):
     """The regions tasks.py will merge for this reference (tasks.regions_from_lengths), from the local FASTA."""
     app_dir = os.path.join(REPO_ROOT, "app")
@@ -456,7 +471,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", default=os.path.join(REPO_ROOT, "local_bucket"), help="local storage root")
     p.add_argument("--sample", help="sample ID; default: every raw_reads/*.fastq.gz under --root")
-    p.add_argument("--reference", help="reference name under reference/ (default: same as the Lambda)")
+    p.add_argument(
+        "--reference",
+        help="reference name under reference/, as the cloud's S3 upload metadata reference names it "
+        "(default: same as the Lambda); checked to exist before any job, like the state machine",
+    )
     p.add_argument("--runner", choices=["docker", "host"], default="docker")
     p.add_argument("--image", default="geyser-app")
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
@@ -526,6 +545,11 @@ def main(argv=None):
         payload = trigger.build_pipeline_input(key, a.reference)
         sample_id, reference = payload["srr_id"], payload["reference_name"]
         print(f"\n=== Pipeline input: {json.dumps(payload)} ===")
+        problem = reference_problem(a.root, reference)
+        if problem:  # as the state machine does: before any job
+            print(f"\nFAILED before any job for {sample_id}: {problem}")
+            ok = False
+            continue
         started = time.time()
         jobs = pipeline_jobs(
             sample_id,
