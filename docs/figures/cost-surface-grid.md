@@ -19,16 +19,28 @@ cell per configuration, at least 2 runs per cell (the script takes the median an
 Both are rendered into the state machine by `templatefile()` (`${align_vcpu}`, `${variant_region_window}`),
 so every grid cell would be a separate plan + in-place apply of the state machine: 12 applies.
 
-**Recommended: one small infra PR first** (`infra/run-overrides`): a first `Pass` state merges optional
-execution-input fields over Terraform's defaults,
-`States.JsonMerge(States.StringToJson('{"align_vcpu":"4","align_memory_mb":"8192","variant_region_window":"50000000"}'), $, false)`,
-and the align and region states read `$.align_vcpu` / `$.variant_region_window` instead of the
-template values. Uploads via the trigger Lambda send no overrides, so behaviour is unchanged; the grid
-starts executions directly (`aws stepfunctions start-execution --input '{"srr_id": ..., "reference_name":
-"chr20.fa", "align_vcpu": "2", ...}'`) on reads already in `raw_reads/`, with no re-upload.
-Expected plan: **0 add / 1 change / 0 destroy** (the state machine, in place). An invalid vCPU/memory pair
-then fails at SubmitJob (Notify_Failure) instead of at plan time; the tests in
-`tests/test_state_machine_local.py` would cover the merge.
+**Recommended: one small infra PR first.** This is draft #192 (`infra/run-overrides`, planned 0 add /
+1 change / 0 destroy, the state machine in place; not applied, decided together with this grid). A
+manual start passes the settings in a nested `overrides` object; uploads via the trigger Lambda send none,
+so triggered runs are unchanged:
+
+```bash
+aws stepfunctions start-execution --state-machine-arn "$SFN_ARN" --input '{"srr_id": "REAL-HG003-30x-chr20",
+  "reference_name": "chr20.fa",
+  "overrides": {"align_vcpu": "2", "align_memory_mb": "4096", "variant_region_window": 17000000}}'
+```
+
+- Nested rather than top-level fields because Step Functions can't list an object's keys: a misspelt
+  top-level `align_cpu` would silently run the defaults, while inside `overrides` an unknown key fails
+  with `InvalidRunOverrides` before any job.
+- Sizes are strings as Terraform writes them (`"4"`, not `"4.0"`); the pair must be a valid Fargate pair
+  with `max(qc, plan) + align <= fargate_max_vcpus` (8).
+- The window is a JSON whole number from 5 Mb to 250 Mb.
+- Each run's effective settings are in its execution output under `run_settings`.
+  `cost_surface.py` reads the align size from the align job itself and the shard count from the
+  `Call_Shard` rows, so it needs neither.
+- The grid starts executions on reads already in `raw_reads/`, with no re-upload. The grid's windows
+  (65, 33, 17, 9 Mb) are inside the bounds.
 
 ## The grid
 
