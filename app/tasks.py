@@ -15,7 +15,10 @@ Stages communicate only through storage keys:
     fastp JSON + stats/{id}/ + run record -> qc_reports/{id}.gate.json   (gate: the quality gate's verdict)
     reference/{reference_name} (+ optional .fai / aligner indexes, see ALIGNER_INDEX_EXTS)
 
-qc and align both read the gzipped upload directly (fastp, bwa-mem2 and bwa read gzip), so they don't
+align runs bwa-mem2 by default; ALIGNER=bwa or ALIGNER=giraffe (vg giraffe on a pangenome graph,
+pangenome/<graph>.gbz, in the geyser-giraffe image; see GIRAFFE) write the same keys.
+
+qc and align both read the gzipped upload directly (fastp, the aligners and kmc read gzip), so they don't
 depend on each other: the state machine runs them as two branches of a Parallel state. There is no
 decompressed copy; both stages fail on a truncated upload (tests/test_e2e_docker.py).
 
@@ -59,6 +62,30 @@ ALIGNER_INDEX_EXTS = {
     "bwa": [".amb", ".ann", ".bwt", ".pac", ".sa"],
 }
 DEFAULT_ALIGNER = "bwa-mem2"
+# vg giraffe (#146): aligns to a pangenome graph instead of the FASTA, then surjects onto the graph's
+# GRCh38 paths, so its output is an ordinary linear alignment and everything after it (fixmate | sort |
+# markdup, CRAM, stats, variants) is unchanged. It needs vg and kmc, which live in the geyser-giraffe image
+# (app-giraffe/), not in geyser-app. Its files belong to the graph, not to the FASTA, so they are not in
+# ALIGNER_INDEX_EXTS: the graph is pangenome/<graph>.gbz (GIRAFFE_GRAPH, default <reference stem>.gbz:
+# the key the pangenome-aware caller and make_test_data.py --pangenome use) with its indexes beside it.
+GIRAFFE = "giraffe"
+ALIGNERS = (*ALIGNER_INDEX_EXTS, GIRAFFE)
+PANGENOME_PREFIX = "pangenome/"
+# Graph index files next to pangenome/<stem>.gbz, per mode (GIRAFFE_SAMPLING):
+#   on (default; Google's VG case study and the #129 benchmark): haplotype sampling. kmc counts the sample's
+#      k-mers and giraffe maps to a personal graph of the haplotypes closest to them, building that graph's
+#      indexes itself. Needs the haplotype information (.hapl); a .hapl that isn't stored is built in the job
+#      (with .dist and .ri on the way): seconds on the synthetic graph, ~6 min on chr20, hours for a whole
+#      genome, so upload that one (HPRC publishes .hapl files).
+#   off: map to the whole graph with its distance and minimizer indexes; giraffe builds any that isn't stored.
+GIRAFFE_GRAPH_EXTS = {True: [".hapl"], False: [".dist", ".min"]}
+# The graph sample whose paths are the linear reference (HPRC graphs: GRCh38#0#chr20; the synthetic graph too).
+GRAPH_REFERENCE_SAMPLE = "GRCh38"
+KMER_LENGTH = 29  # vg haplotypes' minimizer k: the KFF counts must use the same k
+DEFAULT_KMC_MEMORY_GB = 4  # kmc -m: a cap, not a reservation (7.4 GiB peak at -m8 on HG003 chr20, 37 s)
+# Google's VG case-study flags: -P prunes short low-complexity anchors when realigning onto the linear
+# paths; -L caps the fragment length giraffe assumes while learning the insert sizes (paired-end only).
+GIRAFFE_MAX_FRAGMENT_LENGTH = 3000
 # bwa-mem2 (2.2.1 and 2.3) places reads that start in the first few bases of the FIRST contig of
 # the index at position 1, shifted, so they show up as false SNPs (upstream bwa-mem2#262, open;
 # on the synthetic data 3 of 10,000 reads, 5 false calls at positions 2-9; every other read is
@@ -319,9 +346,9 @@ def aligner_from_env() -> str:
 
 
 def check_aligner(name: str) -> str:
-    """name if it is an aligner the align stage knows (ALIGNER_INDEX_EXTS), else ValueError."""
-    if name not in ALIGNER_INDEX_EXTS:
-        raise ValueError(f"Unknown aligner {name!r} (ALIGNER); expected one of {sorted(ALIGNER_INDEX_EXTS)}")
+    """name if it is an aligner the align stage knows (ALIGNERS), else ValueError."""
+    if name not in ALIGNERS:
+        raise ValueError(f"Unknown aligner {name!r} (ALIGNER); expected one of {sorted(ALIGNERS)}")
     return name
 
 
@@ -394,9 +421,14 @@ def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
     """Choose the aligner for this reference (effective_aligner) and fetch or build its index.
 
     Returns the aligner to run. The only way to an aligner index, so the guard can't be skipped.
+    giraffe's index is its graph (GIRAFFE_GRAPH), fetched into local_ref's folder (giraffe_files).
     """
     aligner = effective_aligner(requested, local_ref)
-    _ensure_aligner_index(reference_name, local_ref, aligner)
+    if aligner == GIRAFFE:
+        settings = giraffe_settings(reference_name)
+        prepare_graph(os.path.dirname(local_ref), settings["graph"], settings["sampling"])
+    else:
+        _ensure_aligner_index(reference_name, local_ref, aligner)
     return aligner
 
 
@@ -423,15 +455,213 @@ def _fetch_or_build(fasta_key: str, local_ref: str, exts, build_cmd, what: str) 
     only bwa's index: bwa-mem2 index rewrites the shared .amb/.ann/.pac). The cloud reference/
     holds both indexes for chr20.fa since 2 Nov 2026.
     """
-    if all(storage().exists(fasta_key + ext) for ext in exts):
-        try:
-            for ext in exts:
-                storage().download(fasta_key + ext, local_ref + ext)
-            return
-        except ObjectNotFound:
-            pass  # deleted in between: build it
+    if _fetch_stored(fasta_key, local_ref, exts):
+        return
     print(f"{what} missing; running {' '.join(build_cmd[:2])}")
     subprocess.run(build_cmd, check=True)
+
+
+def _fetch_stored(base_key: str, local_base: str, exts) -> bool:
+    """Download base_key+ext to local_base+ext for every ext, if all of them are stored. True if done."""
+    if not all(storage().exists(base_key + ext) for ext in exts):
+        return False
+    try:
+        for ext in exts:
+            storage().download(base_key + ext, local_base + ext)
+        return True
+    except ObjectNotFound:
+        return False  # deleted in between: the caller builds it
+
+
+# --- vg giraffe (#146) -------------------------------------------------------------------------------
+
+
+def _reference_stem(reference_name: str) -> str:
+    """chr20.fa -> chr20, GRCh38_chr20.fa.gz -> GRCh38_chr20, grch38/chr20.fa -> chr20: the default graph's stem."""
+    stem = os.path.basename(reference_name)
+    stem = stem[:-3] if stem.endswith(".gz") else stem
+    return os.path.splitext(stem)[0]
+
+
+def giraffe_settings(reference_name: str) -> dict:
+    """{graph, sampling} from GIRAFFE_GRAPH and GIRAFFE_SAMPLING (on | off, default on), checked before any
+    download. graph is a .gbz name under pangenome/, default <reference stem>.gbz."""
+    graph = os.environ.get("GIRAFFE_GRAPH", "").strip() or f"{_reference_stem(reference_name)}.gbz"
+    if not graph.endswith(".gbz") or "/" in graph or graph == ".gbz":
+        raise ValueError(f"GIRAFFE_GRAPH must name a .gbz file under {PANGENOME_PREFIX}, got {graph!r}")
+    mode = os.environ.get("GIRAFFE_SAMPLING", "").strip().lower() or "on"
+    if mode not in ("on", "off"):
+        raise ValueError(f"GIRAFFE_SAMPLING must be on or off, got {mode!r}")
+    return {"graph": graph, "sampling": mode == "on"}
+
+
+def kmc_memory_gb() -> int:
+    value = os.environ.get("KMC_MEMORY_GB", "").strip() or str(DEFAULT_KMC_MEMORY_GB)
+    if not value.isdigit() or int(value) < 1:
+        raise ValueError(f"KMC_MEMORY_GB must be a whole number of GB >= 1, got {value!r}")
+    return int(value)
+
+
+def giraffe_files(dest_dir: str, graph: str) -> dict:
+    """Local paths of a graph's files in dest_dir: gbz, and the hapl/dist/min/ri indexes named after it."""
+    base = os.path.join(dest_dir, graph[: -len(".gbz")])
+    return {"gbz": base + ".gbz", **{ext[1:]: base + ext for ext in (".hapl", ".dist", ".min", ".ri")}}
+
+
+def prepare_graph(dest_dir: str, graph: str, sampling: bool) -> dict:
+    """Fetch pangenome/<graph> and the stored indexes its mode needs (GIRAFFE_GRAPH_EXTS) into dest_dir.
+
+    A missing .hapl is built here; missing .dist/.min (sampling off) are left to giraffe, which builds
+    them from the GBZ. Returns giraffe_files(dest_dir, graph).
+    """
+    files = giraffe_files(dest_dir, graph)
+    key = PANGENOME_PREFIX + graph
+    try:
+        print(f"Fetching pangenome graph {storage().describe(key)}", flush=True)
+        storage().download(key, files["gbz"])
+    except ObjectNotFound as err:
+        raise FileNotFoundError(f"Pangenome graph missing: {storage().describe(key)} (GIRAFFE_GRAPH)") from err
+    provenance.note_input(key, files["gbz"])
+    exts = GIRAFFE_GRAPH_EXTS[sampling]
+    if _fetch_stored(key[: -len(".gbz")], files["gbz"][: -len(".gbz")], exts):
+        for ext in exts:
+            provenance.note_input(key[: -len(".gbz")] + ext, files[ext[1:]])
+        return files
+    if sampling:
+        print(f"Haplotype information {graph[:-4]}.hapl missing; building it in the job", flush=True)
+        run_shell(haplotype_index_command(files, os.cpu_count() or 1))
+    else:
+        print("Distance/minimizer index missing; giraffe builds it from the graph", flush=True)
+    return files
+
+
+def haplotype_index_command(files: dict, threads: int) -> str:
+    """distance index -> r-index -> haplotype information (.hapl), as scripts/benchmark_giraffe.py builds them."""
+    q = {k: shlex.quote(v) for k, v in files.items()}
+    return " && ".join(
+        [
+            f"vg index -t {threads} -j {q['dist']} {q['gbz']}",
+            f"vg gbwt -p --num-threads {threads} -r {q['ri']} -Z {q['gbz']}",
+            f"vg haplotypes -v 1 -t {threads} -d {q['dist']} -r {q['ri']} -H {q['hapl']} {q['gbz']}",
+        ]
+    )
+
+
+def kmc_command(list_file: str, prefix: str, tmp_dir: str, threads: int, memory_gb: int) -> str:
+    """k-mer counts of the reads listed in list_file -> <prefix>.kff (KFF, k=KMER_LENGTH), for haplotype sampling.
+
+    -hp hides the percentage progress that would otherwise fill the job log.
+    """
+    return (
+        f"kmc -k{KMER_LENGTH} -m{memory_gb} -okff -t{threads} -hp "
+        f"@{shlex.quote(list_file)} {shlex.quote(prefix)} {shlex.quote(tmp_dir)}"
+    )
+
+
+def giraffe_command(
+    files: dict, fastqs, out: str, threads: int, sample_id: str, ref_paths: str, kff: str = None, sampled: str = None
+) -> str:
+    """vg giraffe -> unsorted BAM surjected onto the GRCh38 paths, with Google's VG case-study flags.
+
+    kff + sampled (a name prefix in the work dir): haplotype sampling, giraffe builds the sampled graph's
+    indexes there. Without them: the whole graph, with its .dist/.min next to the GBZ (giraffe guesses
+    them from the GBZ's name and builds any that is missing). Paired-end gives both files (-f twice); the
+    mates of a pair come out next to each other, as fixmate needs. -N/-R write @RG ID:<id> SM:<id>.
+    """
+    fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    if len(fastqs) not in (1, 2):
+        raise ValueError(f"giraffe_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
+    if (kff is None) != (sampled is None):
+        raise ValueError("haplotype sampling needs both kff and sampled")
+    cmd = f"vg giraffe -t {threads} -Z {shlex.quote(files['gbz'])} "
+    if kff:
+        cmd += (
+            f"--haplotype-name {shlex.quote(files['hapl'])} --kff-name {shlex.quote(kff)} "
+            f"--index-basename {shlex.quote(sampled)} "
+        )
+    sid = shlex.quote(sample_id)
+    cmd += f"-N {sid} -R {sid} -o BAM --ref-paths {shlex.quote(ref_paths)} -P "
+    if len(fastqs) == 2:
+        cmd += f"-L {GIRAFFE_MAX_FRAGMENT_LENGTH} "
+    cmd += " ".join(f"-f {shlex.quote(f)}" for f in fastqs)
+    return f"{cmd} > {shlex.quote(out)}"
+
+
+def rename_graph_contigs(header: str, fai: str, sample: str = GRAPH_REFERENCE_SAMPLE) -> str:
+    """The giraffe BAM header with @SQ names as in the FASTA: GRCh38#0#chr20 -> chr20.
+
+    Only @SQ lines change (the records refer to contigs by index, so samtools reheader is enough). Each
+    renamed contig must be in the FASTA (fai: its .fai) with the same length; otherwise the graph was not
+    built on this reference, and a CRAM written against it would be wrong, so that's a ValueError.
+    """
+    lengths = dict(contig_lengths_from_fai(fai))
+    pattern = re.compile(rf"{re.escape(sample)}#(?:\d+#)?(.+)")
+    lines, contigs = [], 0
+    for line in header.splitlines():
+        if line.startswith("@SQ\t"):
+            fields = line.split("\t")
+            sn = next((i for i, f in enumerate(fields) if f.startswith("SN:")), None)
+            ln = next((f[3:] for f in fields if f.startswith("LN:")), None)
+            if sn is None:
+                raise ValueError(f"@SQ line without SN: {line!r}")
+            name = fields[sn][3:]
+            match = pattern.fullmatch(name)
+            contig = match.group(1) if match else name
+            if contig not in lengths:
+                raise ValueError(
+                    f"graph path {name!r} is not a contig of the reference FASTA (the graph's {sample} paths must match it)"
+                )
+            if ln is not None and int(ln) != lengths[contig]:
+                raise ValueError(f"graph path {name!r} is {ln} bp but the reference's {contig} is {lengths[contig]} bp")
+            fields[sn] = f"SN:{contig}"
+            line = "\t".join(fields)
+            contigs += 1
+        lines.append(line)
+    if not contigs:
+        raise ValueError("the giraffe BAM has no @SQ lines: nothing was surjected onto the reference paths")
+    return "\n".join(lines) + "\n"
+
+
+def giraffe_align(ref: str, fastqs, out: str, threads: int, wd: str, sample_id: str, files: dict, sampling: bool):
+    """vg giraffe on the gzipped reads -> the same sorted, duplicate-marked CRAM as align_command.
+
+    [kmc ->] giraffe -> unsorted BAM (work dir) -> header renamed to the FASTA's contigs (samtools reheader,
+    header only) -> postprocess_stages (fixmate | sort | markdup). The unsorted BAM is on disk, not piped,
+    because reheader needs a file; it costs about the CRAM's size again in work space.
+    """
+    fastqs = [fastqs] if isinstance(fastqs, str) else list(fastqs)
+    ref_paths = os.path.join(wd, "graph.ref-paths.txt")
+    run_shell(f"vg paths -x {shlex.quote(files['gbz'])} -L -Q {GRAPH_REFERENCE_SAMPLE} > {shlex.quote(ref_paths)}")
+    with open(ref_paths) as fh:
+        if not fh.read().strip():
+            raise ValueError(f"the graph has no {GRAPH_REFERENCE_SAMPLE} paths to surject onto")
+    kff = sampled = None
+    if sampling:
+        list_file, prefix = os.path.join(wd, "kmc.reads.txt"), os.path.join(wd, "kmers")
+        with open(list_file, "w") as fh:
+            fh.write("\n".join(fastqs) + "\n")
+        os.makedirs(os.path.join(wd, "kmc.tmp"), exist_ok=True)
+        _timed("kmc", kmc_command(list_file, prefix, os.path.join(wd, "kmc.tmp"), threads, kmc_memory_gb()))
+        kff, sampled = prefix + ".kff", os.path.join(wd, "sampled")
+    unsorted = os.path.join(wd, "giraffe.unsorted.bam")
+    _timed("giraffe", giraffe_command(files, fastqs, unsorted, threads, sample_id, ref_paths, kff, sampled))
+    header = subprocess.run(["samtools", "view", "-H", unsorted], check=True, capture_output=True, text=True).stdout
+    with open(ref + ".fai") as fh:
+        renamed = rename_graph_contigs(header, fh.read())
+    header_file = os.path.join(wd, "giraffe.header.sam")
+    with open(header_file, "w") as fh:
+        fh.write(renamed)
+    stages = [f"samtools reheader {shlex.quote(header_file)} {shlex.quote(unsorted)}"]
+    stages += postprocess_stages(ref, out, threads, wd, paired=len(fastqs) == 2)
+    _timed("post-processing", " | ".join(stages))
+    os.remove(unsorted)
+
+
+def _timed(label: str, command: str) -> None:
+    """run_shell, then print how long it took (the job log's per-step timing; the stage metric is the total)."""
+    started = time.monotonic()
+    run_shell(command)
+    print(f"{label}: {time.monotonic() - started:.1f} s", flush=True)
 
 
 def download_raw_reads(keys: dict, wd: str) -> list:
@@ -535,19 +765,28 @@ def align_command(
     check_aligner(aligner)
     if len(fastqs) not in (1, 2):
         raise ValueError(f"align_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
-    sort_threads = max(1, min(threads, SORT_MAX_THREADS))
-    tmp = os.path.join(tmp_dir, "tmp")
+    if aligner == GIRAFFE:
+        raise ValueError("giraffe is not a bwa-style 'mem' aligner: the align stage runs it via giraffe_align")
     read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
     stages = [
         f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
         + " ".join(shlex.quote(f) for f in fastqs)
     ]
-    if len(fastqs) == 2:
-        stages.append("samtools fixmate -m -u - -")
+    return " | ".join(stages + postprocess_stages(ref, out, threads, tmp_dir, paired=len(fastqs) == 2))
+
+
+def postprocess_stages(ref: str, out: str, threads: int, tmp_dir: str, paired: bool) -> list:
+    """[fixmate (paired only)], sort, markdup: the align stage's tail after any aligner (see align_command).
+
+    Reads a name-grouped BAM/SAM stream on stdin and writes out (CRAM against ref if out ends in .cram).
+    """
+    sort_threads = max(1, min(threads, SORT_MAX_THREADS))
+    tmp = os.path.join(tmp_dir, "tmp")
+    stages = ["samtools fixmate -m -u - -"] if paired else []
     stages.append(f"samtools sort -u -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} -")
     cram = f"--reference {shlex.quote(ref)} -O cram " if out.endswith(".cram") else ""
     stages.append(f"samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} {cram}- {shlex.quote(out)}")
-    return " | ".join(stages)
+    return stages
 
 
 def parse_flagstat(text: str) -> dict:
@@ -658,8 +897,11 @@ def alignment_stats(ref: str, cram: str, wd: str, threads: int, keys: dict) -> l
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa-mem2 (or ALIGNER=bwa) on the gzipped reads -> coordinate-sorted, duplicate-marked CRAM + .crai."""
+    """bwa-mem2 (or ALIGNER=bwa / giraffe) on the gzipped reads -> coordinate-sorted, duplicate-marked CRAM + .crai."""
     aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
+    giraffe = giraffe_settings(reference_name) if aligner == GIRAFFE else None  # so do bad GIRAFFE_* settings
+    if giraffe and giraffe["sampling"]:
+        kmc_memory_gb()
     layout = sample_layout(sample_id)
     keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
@@ -672,8 +914,14 @@ def align_task(sample_id, reference_name):
         aligner = prepare_aligner(reference_name, ref, aligner)
         print(f"Aligning with {aligner}", flush=True)
         provenance.note(aligner=aligner, layout=layout)
-        provenance.note_tools(aligner, "samtools", "mosdepth")
-        run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
+        if giraffe:
+            provenance.note(graph={"name": giraffe["graph"], "haplotype_sampling": giraffe["sampling"]})
+            provenance.note_tools("vg", *(["kmc"] if giraffe["sampling"] else []), "samtools", "mosdepth")
+            files = giraffe_files(os.path.dirname(ref), giraffe["graph"])  # where prepare_aligner put them
+            giraffe_align(ref, fastqs, cram, threads, wd, sample_id, files, giraffe["sampling"])
+        else:
+            provenance.note_tools(aligner, "samtools", "mosdepth")
+            run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
         run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
         stats = alignment_stats(ref, cram, wd, threads, keys)
         for path, key in stats:  # before the CRAM: a sample that shows as aligned has its stats

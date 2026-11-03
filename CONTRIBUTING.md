@@ -22,6 +22,7 @@ docker build -f Dockerfile -t geyser-app .
 | Truth check, single-end | `python scripts/make_test_data.py` then `python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --check` | before a PR |
 | Truth check, paired-end | `python scripts/make_test_data.py --sample PAIRED001 --paired` then `python scripts/run_local.py --sample PAIRED001 --reference synthetic_ref.fa --check` | before a PR |
 | DeepVariant (CPU image) | `GEYSER_DV_E2E=1 pytest tests/test_e2e_deepvariant.py` | when the caller changes; CI runs it on PRs |
+| Giraffe align (`ALIGNER=giraffe`) | `GEYSER_GIRAFFE_E2E=1 pytest tests/test_e2e_giraffe.py` (needs geyser-app and `docker build -f app-giraffe/Dockerfile -t geyser-giraffe .`) | when the align stage or app-giraffe changes; CI runs it on PRs |
 
 `--check` must report all planted SNPs called and no unexpected calls. CI (`.github/workflows/tests.yml`)
 runs the lint job (ruff, `terraform fmt`, `terraform validate -backend=false`), the unit tests and the Docker
