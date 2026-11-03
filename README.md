@@ -128,29 +128,7 @@ This project was born from a profound, life-changing journey through the world o
 
 For eighteen years, my life was an odyssey through a fog of medical uncertainty with no linking diagnosis. As part of the project, my mother, my father, and I all donated our blood. Our entire genomes would be sequenced and explored, becoming three more data points in a vast ocean of information. We were told it was unlikely we would hear anything back.
 
-<table align="center" border="0" cellspacing="0" cellpadding="10">
-  <tr>
-    <td align="center">
-      <img src="docs/assets/Family_Samples.jpg" alt="DNA samples from my family for the project" width="300"/>
-    </td>
-    <td align="center">
-      <img src="docs/assets/family_samples_2.jpg" alt="A closer view of the genomic samples" width="300"/>
-    </td>
-  </tr>
-</table>
-
 A year later, against all odds, I received a result. The project had delivered a link. In the three billion letters of my genetic code, they had found a single, ultra-rare mutation in the **COA3 gene**, causing a mitochondrial defect.
-
-<table align="center" border="0" cellspacing="0" cellpadding="10">
-  <tr>
-    <td align="center">
-      <img src="docs/assets/Mutation_highlight.jpg" alt="A DNA sequence with one letter highlighted in red to show a mutation" width="300"/>
-    </td>
-    <td align="center">
-      <img src="docs/assets/Genome_Family_Tree.jpg" alt="A family tree showing the inheritance of the genetic mutation" width="300"/>
-    </td>
-  </tr>
-</table>
 
 The statistical probability of this discovery is staggering. The odds of both parents carrying the same rare recessive fault and passing it on is approximately **1 in 64 million**.
 
@@ -171,22 +149,10 @@ This describes how genetic variations are distributed in a population, where `2p
 
 My donated genome will now serve as a data point to help others, ensuring that a single-letter fault doesn't define another patient's life. My odyssey of discovery took two decades, but it doesn't need to be that way for others. With technologies like Geyser Genomics, we can accelerate these discoveries and build solutions that may one day repair the very code of life itself.
 
-<table align="center" border="0" cellspacing="0" cellpadding="10">
-  <tr>
-    <td align="center" width="32%">
-      <img src="docs/assets/helping_hands.jpg" alt="Hands reaching out to form a double helix, representing helping others."/>
-      <br><em>We can help eachother</em>
-    </td>
-    <td align="center" width="32%">
-      <img src="docs/assets/odyssey.jpg" alt="A person climbing a DNA strand, representing the long diagnostic journey."/>
-      <br><em>By looking within ourselves</em>
-    </td>
-    <td align="center" width="32%">
-      <img src="docs/assets/future_solutions.jpg" alt="DNA being knitted or repaired, representing future solutions."/>
-      <br><em>To build a better future</em>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="docs/assets/odyssey.jpg" alt="A person climbing a DNA strand, representing the long diagnostic journey." width="300"/>
+  <br><em>We can help each other, by looking within ourselves, to build a better future</em>
+</p>
 
 ---
 
@@ -832,13 +798,13 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | | | |
 | :---: | :--- | :--- |
 | ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; small-sample cloud run 1 min 52 s, down from 3 min 45 s |
-| ☁️ | **Faster tools** | bwa-mem2 (align stage 1.56× faster on HG003 chr20) with its index stored (align job 45.7 s → 29.3 s); fastp; CRAM + indexes |
+| ☁️ | **Faster tools, less storage** | bwa-mem2 (align stage 1.56× faster on HG003 chr20) with its index stored (align job 45.7 s → 29.3 s); fastp; CRAM + indexes (real HG003 chr20 35x: 393 MB, about a third of the BAM) |
 | ☁️ | **Faster starts, cheaper capacity** | Slim image (186 → 87 MB compressed, pulled by every job); Fargate Spot first with on-demand fallback; about $0.07 per real chr20 sample (30-35x) at on-demand prices |
 | ☁️ | **Sharded variant calling** | Regions called in parallel by a `Map` state and merged exactly; for large samples, not small ones (it adds ~1.5 min of fixed overhead there) |
 | ✅ | **Quality gate (Rust)** | Fails a run with named reasons; thresholds calibrated on HG003/HG005; DeepVariant stats over PASS calls |
 | ✅ | **Variant consequences** | `bcftools csq` when the reference has gene models; shown in the web UI |
-| ✅ | **Quality gate in the pipeline: app** | Gate stage, binary in the image, verdict in the run record ([#148](../../pull/148)); real chr20 runs pass 11/11 |
-| 🚧 | **Quality gate in the pipeline: state machine** | A gate step after either caller, warn mode by default ([#162](../../pull/162)) |
+| ☁️ | **Quality gate in the pipeline** | Gate stage and verdict in the run record ([#148](../../pull/148)), a state-machine step after either caller in warn mode ([#162](../../pull/162)). Six real chr20 runs, about 22 min and $0.07 each: 4 good samples pass, 2 under-covered ones fail on mean depth, as they should ([#157](../../issues/157)) |
+| 🔜 | **Quality gate in fail mode** | A threshold profile per run so smoke tests aren't judged by human thresholds, then `warn` → `fail` ([#178](../../pull/178)) |
 | ☁️ | **DeepVariant in the cloud** | GPU environment in the public subnet, DeepVariant stage with bcftools fallback; 10/10 on a g6.xlarge for about $0.16 ([#125](../../pull/125)) |
 | 🔜 | **DeepVariant as the default caller** | The app treats DeepVariant's VCF as the sample's calls when it was the caller ([#170](../../pull/170)); next, a real-size chr20 DeepVariant run before switching `default_caller` |
 
@@ -850,6 +816,17 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | 🔜 | **Pangenome-aware DeepVariant in the cloud** | Same GPU environment as cloud DeepVariant, plus shared memory for the graph |
 | 🔜 | **Whole genomes in the cloud** | make_examples on large CPU Spot, call_variants on the GPU, bigger job disks |
 | 🔜 | **Spot for the GPU queue** | A Spot environment ahead of on-demand, as for Fargate |
+
+### 3.0 "Project Alpha Genome": planned
+
+<p align="center">
+  <img src="docs/assets/alpha-genome-3.0-release.jpg" alt="Project Alpha Genome: Geyser Genomics 3.0" width="600"/>
+</p>
+
+Planned, not started. The idea: score the called variants with [AlphaGenome](https://deepmind.google/science/alphagenome/)
+(Google DeepMind's model of how DNA sequence controls gene regulation), so a run reports which variants are
+predicted to change gene regulation, not just which change a protein (`bcftools csq`). For research use, not
+clinical. The scope and the release it lands in are still open.
 
 ---
 
