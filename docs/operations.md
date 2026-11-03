@@ -41,10 +41,30 @@ A duplicate S3 event starts nothing.
 
 **Reference:** every triggered run uses `chr20.fa` from `reference/`.
 
-**Coming, not live yet** (open pull requests): a per-upload reference from S3 metadata
-([#183](../../../pull/183)) and a quality-gate threshold profile per upload, e.g.
-`--metadata gate-profile=synthetic` for smoke tests ([#178](../../../pull/178)). Until they merge and are
-applied, S3 metadata on an upload changes nothing.
+**Quality-gate profile** ([#178](../../../pull/178)): an upload can name the gate's thresholds with S3 metadata
+`gate-profile`. The trigger passes it on as `gate_profile`, and the state machine checks it first
+(`Check_Gate_Profile`), before any job:
+
+```bash
+aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-profile=synthetic
+```
+
+| Profile | Thresholds (`gate/thresholds/`) | For |
+| :--- | :--- | :--- |
+| `default` (also when unset) | `default.toml` | real samples (calibrated on HG003/HG005 chr20) |
+| `synthetic` | `synthetic.toml` | the **local** synthetic data from `make_test_data.py` (`run_local.py --gate-profile synthetic`) |
+
+- Anything else fails the run at once with `UnknownGateProfile`, in either gate mode. That includes mates
+  whose `gate-profile` values disagree, a misspelt metadata key with "gate" in it, and metadata the trigger
+  couldn't read.
+- A manual start sets it in the input: `"gate_profile": "synthetic"`.
+- **Cloud smoke tests can't pass `synthetic` yet.** It's calibrated for the local 50 kb synthetic reference,
+  while the cloud smoke sample is 10,000 real chr20 reads judged over the whole of chr20 (mean depth about
+  0.02x). A `smoke` profile calibrated on the cloud checkpoints is planned ([#157](../../../issues/157)). Until
+  then, smoke tests fail the gate whatever their profile, which warn mode records without failing the run.
+
+**Coming, not live yet:** a per-upload reference from S3 metadata ([#183](../../../pull/183)). Until it merges
+and is applied, every triggered run uses `chr20.fa`.
 
 ### Choose the caller
 
@@ -68,7 +88,7 @@ Without `caller`, or with anything other than `deepvariant`, the run uses bcftoo
 ## Watch a run
 
 - **The Step Functions console:** the execution `<run>` and its graph:
-  `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
+  `Check_Gate_Profile` → `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
 - **The dashboard** (`geyser-dashboard-dev`): runs, failures and durations by stage, result quality, data lake
   storage, the trigger alarm. It's deployed by script; `--dry-run` prints the body and makes no AWS calls:
   ```bash
@@ -135,8 +155,10 @@ mean depth (≥ 20x), breadth at 10x, SNP count and Ti/Tv.
 
 ### Warn mode and fail mode
 
-Terraform's `gate_mode` decides what a failed verdict does. **It's `warn` now.** The switch to `fail` waits for
-the maintainer's sign-off on the real-sample evidence ([#157](../../../issues/157)).
+Terraform's `gate_mode` decides what a failed verdict does. **It's `warn` now, and stays `warn` until cloud
+smoke tests can pass the gate** (the `smoke` profile above) and the maintainer signs off on the real-sample
+evidence ([#157](../../../issues/157)). The profile picks the thresholds (`GATE_CONFIG` for the gate job); the
+mode picks what a failure does.
 
 | Verdict | `gate_mode = "warn"` (current) | `gate_mode = "fail"` |
 | :--- | :--- | :--- |
@@ -209,4 +231,4 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
 | **DeepVariant fails** | the run continues with bcftools (`DeepVariant` caught → `Prepare_Plan_Command`); the bcftools VCF in `variants/` is the sample's | read the DeepVariant job log |
 | **The gate gives no verdict** | warn: SUCCEEDED through `Gate_Skipped`, `gate.json` has `"verdict": null` and why; fail: `QualityGateError` | read the `QualityGate-<id>-<run>` job log |
 | **A job stuck waiting in the queue** | no queue limit of its own; the whole run ends `TimedOut` at 12 h (`pipeline_timeout_hours`) | `scripts/stop_run.py <run>`; check the compute environments' capacity |
-| **Unknown gate profile** | *after [#178](../../../pull/178): the run fails before any job (`UnknownGateProfile`)*; not live yet | — |
+| **Unknown gate profile** (`gate-profile=smoke`, a typo, mates that disagree) | the run fails before any job with `UnknownGateProfile: gate_profile "…" is not one of: default, synthetic`, through `Close_Run_Record` → `Notify_Failure` | upload again with `default`, `synthetic` or no `gate-profile` |
