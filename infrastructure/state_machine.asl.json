@@ -199,8 +199,8 @@
           "Command.$": "States.Array('python', 'tasks.py', 'regions', $.reference_name, '--window', '${variant_region_window}', '--output-key', States.Format('intermediate/variant-regions/{}/{}.json', $.srr_id, $$.Execution.Name))",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
-            { "Type": "VCPU", "Value": "${qc_vcpu}" },
-            { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
+            { "Type": "VCPU", "Value": "${plan_vcpu}" },
+            { "Type": "MEMORY", "Value": "${plan_memory_mb}" }
           ]
         }
       },
@@ -317,8 +317,8 @@
           "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--window', '${variant_region_window}')",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
-            { "Type": "VCPU", "Value": "${variants_vcpu}" },
-            { "Type": "MEMORY", "Value": "${variants_memory_mb}" }
+            { "Type": "VCPU", "Value": "${merge_vcpu}" },
+            { "Type": "MEMORY", "Value": "${merge_memory_mb}" }
           ]
         }
       },
