@@ -94,7 +94,8 @@ def batch_tasks(sfn_client, execution_arn) -> list:
     Each event is credited to the state entry its previousEventId chain leads back to, not just the last
     state entered: inside a Parallel state, QC's and align's events interleave. One row per entry, not
     per state name: a Map state enters its task once per item (Call_Shard: one job per region), and each
-    is its own job. A retried attempt stays in its entry's row (its events chain back to the same entry)."""
+    is its own job. A retried attempt stays in its entry's row (its events chain back to the same entry);
+    if the retry submitted a new job, the row describes the latest one."""
     tasks, by_entry, last_entry = [], {}, None
     entry_of, stage_of = {}, {}  # event id -> entry number; entry number -> state name
     for event in history_events(sfn_client, execution_arn):
@@ -119,7 +120,11 @@ def batch_tasks(sfn_client, execution_arn) -> list:
             by_entry[entry] = {"stage": stage_of[entry], "job_id": None, "job": {}}
             tasks.append(by_entry[entry])
         task = by_entry[entry]
-        task["job_id"] = task["job_id"] or _get(payload, "JobId")
+        job_id = _get(payload, "JobId")
+        if job_id and job_id != task["job_id"]:
+            # A Retry inside the same entry submitted a new job: the row follows the latest one, so
+            # describe_jobs and the history copy describe the same job (from T3's #189).
+            task["job_id"], task["job"] = job_id, {}
         if _get(payload, "StartedAt") or _get(payload, "Status"):
             task["job"] = payload
     return tasks

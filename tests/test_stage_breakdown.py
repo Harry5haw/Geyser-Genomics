@@ -322,3 +322,22 @@ def test_every_map_iteration_is_its_own_row_and_a_retry_stays_in_its_row():
     assert [r["run_seconds"] for r in rows] == [365.0, 117.0, 25.0]
     # Both shards are in the run's cost now (2 vCPU / 4 GiB; the merge billed at Fargate's 1-minute minimum).
     assert sb.totals(rows)["cost_usd"] == pytest.approx((117 + 365 + 60) / 3600 * (2 * 0.04656 + 4 * 0.00511))
+
+
+def test_retry_inside_one_entry_follows_the_latest_job():
+    # From T3's #189. A Retry in the same state entry submits a second job: the row must describe that
+    # job, and the live describe_jobs lookup must ask for it, not for the first (failed) one.
+    events = [
+        entered("Call_Shard"),
+        task_event("TaskSubmitted", {"JobId": "first"}),
+        task_event("TaskFailed", sfn_job("first", "FAILED", T0, T0 + 1000, T0 + 2000)),
+        task_event("TaskSubmitted", {"JobId": "second"}),
+        task_event("TaskSucceeded", sfn_job("second", "SUCCEEDED", T0 + 5000, T0 + 6000, T0 + 66_000)),
+    ]
+    tasks = sb.batch_tasks(paged_sfn(events), "exec-1")
+    assert [(t["job_id"], t["job"]["Status"]) for t in tasks] == [("second", "SUCCEEDED")]
+    batch = mock.Mock()
+    batch.describe_jobs.return_value = {"jobs": []}
+    rows = sb.execution_stages(paged_sfn(events), batch, "exec-1")
+    batch.describe_jobs.assert_called_once_with(jobs=["second"])
+    assert rows[0]["status"] == "SUCCEEDED" and rows[0]["run_seconds"] == 60.0
