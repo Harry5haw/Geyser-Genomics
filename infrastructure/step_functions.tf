@@ -32,6 +32,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
       # Read_Regions reads the planner's output (tasks.py regions --output-key) straight from S3.
       { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/variant-regions/*" },
+      # Close_Run_Record writes a failed run's closing run-record part (#155), and only that object.
+      { Sid = "CloseRunRecord", Effect = "Allow", Action = "s3:PutObject", Resource = "${aws_s3_bucket.data_lake.arn}/runs/*.provenance/Finalize.json" },
       # Read_Gate_Verdict reads the quality gate's verdict (tasks.py gate) to decide warn or fail.
       { Sid = "ReadGateVerdicts", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/qc_reports/*.gate.json" },
       { Sid = "EventsPermissions", Effect = "Allow", Action = ["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets"], Resource = "*" }

@@ -26,6 +26,7 @@ Environment:
     DEEPVARIANT_EXTRA_ARGS   extra run_deepvariant flags, e.g. --disable_small_model=true
     DEEPVARIANT_TIMEOUT_SECONDS       stop the wrapper after this long (default: no limit)
     DEEPVARIANT_IDLE_TIMEOUT_SECONDS  stop it after this long with no output (default: no limit)
+    DEEPVARIANT_CHECKPOINT            0 turns off keeping make_examples output for a retry (default on)
     DEEPVARIANT_FATAL_GRACE_SECONDS   after a fatal error line (e.g. GPU out of memory), stop it once it has been
                                       silent this long without exiting (default 120; the wrapper can hang)
     RUN_DEEPVARIANT          path to run_deepvariant (default: the image's copy)
@@ -33,6 +34,9 @@ Environment:
 """
 
 import argparse
+import hashlib
+import io
+import json
 import os
 import queue
 import re
@@ -223,7 +227,11 @@ FATAL_RE = re.compile(r"ResourceExhaustedError|RESOURCE_EXHAUSTED")
 
 class WrapperStopped(RuntimeError):
     """The wrapper was stopped by run_streaming: overall timeout, no output for too long, or a fatal error after
-    which it went quiet without exiting."""
+    which it went quiet without exiting. events: the output it printed before that, as run_streaming returns it."""
+
+    def __init__(self, message, events=None):
+        super().__init__(message)
+        self.events = events or []
 
 
 LIMIT_VARS = {
@@ -376,10 +384,11 @@ def run_streaming(cmd, limits=None, clock=time.monotonic, poll=1.0, drain=5.0, s
         code = proc.wait(timeout=stop_wait)
     except subprocess.TimeoutExpired:
         raise WrapperStopped(
-            f"{os.path.basename(cmd[0])} {reason or 'did not exit'}, and could not be stopped within {stop_wait:.0f} s"
+            f"{os.path.basename(cmd[0])} {reason or 'did not exit'}, and could not be stopped within {stop_wait:.0f} s",
+            events,
         ) from None
     if reason:
-        raise WrapperStopped(f"{os.path.basename(cmd[0])} {reason} (exit code {code} after being stopped)")
+        raise WrapperStopped(f"{os.path.basename(cmd[0])} {reason} (exit code {code} after being stopped)", events)
     # Steps left behind by a finished run (they may hold the GPU even after the pipe closes): stop the group.
     # A no-op once the group is gone.
     signal_group(proc, "SIGKILL")
@@ -405,6 +414,258 @@ def gpu_name():
     return names[0].strip() if names else None
 
 
+# ---- resuming after make_examples (#51) ----
+# Neither wrapper can skip a step, and make_examples is most of the run (936 of 1,241 s for pangenome on HG003
+# chr20). So when the wrapper fails or is stopped after make_examples finished, the intermediate files it made and
+# the remaining step commands, exactly as the wrapper printed them, are kept under CHECKPOINT_PREFIX. The next run of
+# the same stage on the same inputs and settings replays only call_variants and postprocess_variants. The prefix is
+# under intermediate/, which the data lake's lifecycle rule expires. The cloud role cannot delete objects, so a used
+# (or broken, or superseded) checkpoint is retired by overwriting its manifest.
+CHECKPOINT_PREFIX = "intermediate/deepvariant-checkpoints/{sample_id}/{caller}/"
+MANIFEST = "manifest.json"
+CHECKPOINT_VERSION = 1
+# Every step a wrapper can print, in run order (the pangenome wrapper loads the graph first): STEP_RE's steps plus
+# the graph loader, also matching a step binary followed by a quote.
+STEP_NAME_RE = re.compile(
+    r"/(load_gbz_into_shared_memory|make_examples|call_variants|postprocess_variants)\w*(?:\s|\"|$)"
+)
+RESUME_FROM = "call_variants"
+# call_variants' own output is redone on a retry; every other intermediate file (examples, small-model calls,
+# gVCF records, ...) comes from make_examples and is kept.
+REDONE_PREFIX = "call_variants_output"
+# How much of each end of an input file goes into its fingerprint (with its size): a re-aligned CRAM or a patched
+# reference differs in its header or tail, without hashing a whole 30 GB alignment.
+SAMPLE_BYTES = 64 * 1024 * 1024
+
+
+def checkpoints_enabled():
+    """DEEPVARIANT_CHECKPOINT=0 turns checkpoints off (default on)."""
+    return os.environ.get("DEEPVARIANT_CHECKPOINT", "1").strip() not in ("0", "false", "no", "off")
+
+
+def checkpoint_prefix(sample_id, pangenome=None):
+    return CHECKPOINT_PREFIX.format(sample_id=sample_id, caller=CALLER_NAME[bool(pangenome)])
+
+
+def step_commands(events):
+    """[(step, command)] the wrapper started, in order: after each banner, the first line naming a step, without
+    a leading 'time ' (a stray log line between banner and command is skipped, as in parse_step_timings)."""
+    steps, after_banner = [], False
+    for _, line in events:
+        if BANNER in line:
+            after_banner = True
+            continue
+        if after_banner:
+            command = line.strip()
+            match = STEP_NAME_RE.search(command)
+            if match:
+                steps.append((match.group(1), command[5:] if command.startswith("time ") else command))
+                after_banner = False
+    return steps
+
+
+def planned_steps(cmd):
+    """Every step the wrapper will run for cmd, from `<cmd> --dry_run=true` (both wrappers print the commands in
+    the same banner + 'time ...' form as a real run, without running them). [] if that fails: then only a run that
+    already printed postprocess_variants can be checkpointed."""
+    try:
+        out = subprocess.run(list(cmd) + ["--dry_run=true"], capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    lines = (out.stdout + "\n" + out.stderr).splitlines()
+    return step_commands([(0.0, line) for line in lines]) if out.returncode == 0 else []
+
+
+def remaining_steps(started, plan):
+    """The steps a retry must run, from RESUME_FROM on, or None if they are not known.
+
+    The plan (planned_steps) is used when the steps that did run are exactly its first entries; otherwise only the
+    run's own output, and only if it already shows the last step (a run stopped in call_variants never prints
+    postprocess_variants, so its own output alone is not enough)."""
+    names = [n for n, _ in plan]
+    if RESUME_FROM in names and started == plan[: len(started)]:
+        return plan[names.index(RESUME_FROM) :]
+    live = [n for n, _ in started]
+    if RESUME_FROM in live and live[-1] == "postprocess_variants":
+        return started[live.index(RESUME_FROM) :]
+    return None
+
+
+def make_examples_finished(steps):
+    """True if the wrapper got past make_examples: it starts the next step only after one has succeeded."""
+    names = [name for name, _ in steps]
+    return "make_examples" in names and RESUME_FROM in names[names.index("make_examples") :]
+
+
+def wrapper_version(wrapper):
+    """'1.10.0' from `<wrapper> --version` (both wrappers print 'DeepVariant version 1.10.0' in 1.10.0), or None if
+    it cannot be told: then no checkpoint is saved or used."""
+    try:
+        out = subprocess.run([wrapper, "--version"], capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"version (\S+)", out.stdout + out.stderr)
+    return match.group(1) if match else None
+
+
+def file_identity(path):
+    """[name, size, sha256 of the first and last SAMPLE_BYTES], or None for no file."""
+    if not path or not os.path.exists(path):
+        return None
+    size = os.path.getsize(path)
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        digest.update(fh.read(SAMPLE_BYTES))
+        if size > SAMPLE_BYTES:
+            fh.seek(max(SAMPLE_BYTES, size - SAMPLE_BYTES))
+            digest.update(fh.read(SAMPLE_BYTES))
+    return [os.path.basename(path), size, digest.hexdigest()]
+
+
+def run_fingerprint(wrapper, alignment, ref, graph, shards, model_type, extra_args):
+    """What a checkpoint is only valid for: the same DeepVariant, inputs and settings. None if the version is
+    unknown."""
+    version = wrapper_version(wrapper)
+    if version is None:
+        return None
+    return {
+        "wrapper": os.path.basename(wrapper),
+        "version": version,
+        "alignment": file_identity(alignment),
+        "reference": file_identity(ref),
+        "graph": file_identity(graph),
+        "shards": shards,
+        "model_type": model_type,
+        "extra_args": extra_args or "",
+    }
+
+
+def write_manifest(prefix, manifest):
+    storage().upload_stream(io.BytesIO(json.dumps(manifest, indent=2).encode("utf-8")), prefix + MANIFEST)
+
+
+def read_manifest(prefix):
+    if not storage().exists(prefix + MANIFEST):
+        return None
+    with storage().open_read(prefix + MANIFEST) as fh:
+        return json.load(fh)
+
+
+def retire(prefix, why):
+    """Overwrite a checkpoint's manifest so no run uses it (the cloud role cannot delete objects). Best effort."""
+    try:
+        if storage().exists(prefix + MANIFEST):
+            write_manifest(prefix, {"checkpoint_version": CHECKPOINT_VERSION, "consumed": True, "retired": why})
+    except Exception as err:  # noqa: BLE001 - best effort
+        print(f"[geyser] WARNING: could not retire the checkpoint: {err}", flush=True)
+
+
+def save_checkpoint(prefix, events, wd, intermediate, fingerprint, plan=()):
+    """Keep make_examples' intermediate files and the remaining steps, if the wrapper got past make_examples.
+    Best effort: never hides the original failure. Returns True if a checkpoint was saved."""
+    steps = step_commands(events)
+    if not make_examples_finished(steps):
+        print("[geyser] no checkpoint: the run failed before make_examples finished", flush=True)
+        return False
+    if fingerprint is None:
+        print("[geyser] no checkpoint: could not tell the DeepVariant version", flush=True)
+        return False
+    remaining = remaining_steps(steps, list(plan))
+    if remaining is None:
+        print("[geyser] no checkpoint: the remaining step commands are not known (no --dry_run plan)", flush=True)
+        return False
+    try:
+        retire(prefix, "being replaced")  # first: an older manifest must never describe the files about to be written
+        files = sorted(
+            f
+            for f in os.listdir(intermediate)
+            if os.path.isfile(os.path.join(intermediate, f)) and not f.startswith(REDONE_PREFIX)
+        )
+        size = sum(os.path.getsize(os.path.join(intermediate, f)) for f in files)
+        started = time.monotonic()
+        for name in files:
+            storage().upload(os.path.join(intermediate, name), prefix + name)
+        manifest = {
+            "checkpoint_version": CHECKPOINT_VERSION,
+            "fingerprint": fingerprint,
+            "work_dir": wd,
+            "steps": remaining,
+            "files": files,
+            "consumed": False,
+        }
+        write_manifest(prefix, manifest)  # last: a manifest means its files are all there
+        print(
+            f"[geyser] saved a checkpoint after make_examples: {len(files)} files ({size / 1e6:,.0f} MB, "
+            f"{time.monotonic() - started:.0f} s) under {storage().describe(prefix)}; the next run on the same inputs "
+            f"resumes at {RESUME_FROM}",
+            flush=True,
+        )
+        return True
+    except Exception as err:  # noqa: BLE001 - a checkpoint must never replace the real error
+        print(f"[geyser] WARNING: could not save a checkpoint: {err}", flush=True)
+        return False
+
+
+def load_checkpoint(prefix, wd, intermediate, fingerprint):
+    """The remaining [(step, command)] with paths moved to this run's work dir, after downloading the kept files,
+    or None to run in full: no checkpoint, a used one, one made for other inputs/settings, or a broken one (which
+    is then retired, so it is not tried again)."""
+    try:
+        manifest = read_manifest(prefix)
+        if not manifest or manifest.get("consumed") or manifest.get("checkpoint_version") != CHECKPOINT_VERSION:
+            return None
+        if fingerprint is None or manifest.get("fingerprint") != fingerprint:
+            old = manifest.get("fingerprint") or {}
+            changed = sorted(k for k in fingerprint or {} if old.get(k) != fingerprint[k]) or ["version unknown"]
+            print(f"[geyser] checkpoint under {storage().describe(prefix)} not used: {', '.join(changed)} differ")
+            return None
+        if not manifest["steps"] or manifest["steps"][-1][0] != "postprocess_variants":
+            raise ValueError("its steps do not end with postprocess_variants, so it could never write the VCF")
+        for name in manifest["files"]:
+            storage().download(prefix + name, os.path.join(intermediate, name))
+        old_wd = manifest["work_dir"]
+        steps = [(name, command.replace(old_wd, wd)) for name, command in manifest["steps"]]
+    except Exception as err:  # noqa: BLE001 - a broken checkpoint must not block the stage
+        print(f"[geyser] checkpoint under {storage().describe(prefix)} could not be used ({err}); running in full")
+        for name in os.listdir(intermediate):
+            os.remove(os.path.join(intermediate, name))
+        retire(prefix, f"unusable: {err}")
+        return None
+    print(
+        f"[geyser] resuming from the checkpoint under {storage().describe(prefix)}: make_examples skipped, "
+        f"running {', '.join(n for n, _ in steps)}",
+        flush=True,
+    )
+    return steps
+
+
+def run_steps(steps, limits):
+    """Run the remaining steps one by one under the stop limits, sharing one overall time budget between them.
+    Returns what run_streaming returns, with a banner and the command before each step so parse_step_timings and
+    step_commands see them."""
+    events, code, started = [], 0, time.monotonic()
+    for _, command in steps:
+        step_limits = limits
+        if limits.timeout:
+            left = limits.timeout - (time.monotonic() - started)
+            if left <= 0:
+                raise WrapperStopped(
+                    f"resumed steps did not finish within {limits.timeout:.0f} s (DEEPVARIANT_TIMEOUT_SECONDS)",
+                    events,
+                )
+            step_limits = WrapperLimits(timeout=left, idle=limits.idle, fatal_grace=limits.fatal_grace)
+        now = time.time()
+        events += [(now, BANNER), (now, "time " + command)]
+        try:
+            code, step_events, _ = run_streaming(["bash", "-o", "pipefail", "-c", command], limits=step_limits)
+        except WrapperStopped as err:
+            raise WrapperStopped(str(err), events + err.events) from None
+        events += step_events
+        if code != 0:
+            break
+    return code, events, time.time()
+
+
 def _call_variants(sample_id, reference_name, pangenome=None):
     """Shared body of the linear and pangenome-aware stages. pangenome: graph name under pangenome/."""
     label = STAGE_NAME[bool(pangenome)]
@@ -428,6 +689,8 @@ def _call_variants(sample_id, reference_name, pangenome=None):
 
         shards = int(os.environ.get("DEEPVARIANT_SHARDS") or os.cpu_count() or 1)
         gpu = gpu_name()
+        model_type = os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS")
+        extra_args = os.environ.get("DEEPVARIANT_EXTRA_ARGS", "")
         cmd = build_run_deepvariant_cmd(
             ref,
             bam,
@@ -435,13 +698,29 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             intermediate,
             sample_id,
             shards,
-            model_type=os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS"),
-            extra_args=os.environ.get("DEEPVARIANT_EXTRA_ARGS", ""),
+            model_type=model_type,
+            extra_args=extra_args,
             pangenome=graph,
         )
-        code, events, end_time = run_streaming(cmd, limits=limits)
+        prefix = checkpoint_prefix(sample_id, pangenome)
+        # Before the run: a timed-out run must not spend its last minutes asking the wrapper for its version.
+        fingerprint = (
+            run_fingerprint(cmd[0], bam, ref, graph, shards, model_type, extra_args) if checkpoints_enabled() else None
+        )
+        resumed = load_checkpoint(prefix, wd, intermediate, fingerprint) if checkpoints_enabled() else None
+        # The wrapper's own plan of all its steps, so a run stopped in call_variants can still be resumed
+        # (its output never shows the postprocess_variants command).
+        plan = planned_steps(cmd) if checkpoints_enabled() and not resumed else []
+        try:
+            code, events, end_time = run_steps(resumed, limits) if resumed else run_streaming(cmd, limits=limits)
+        except WrapperStopped as err:
+            if checkpoints_enabled() and not resumed:
+                save_checkpoint(prefix, err.events, wd, intermediate, fingerprint, plan)
+            raise
         if code != 0:
-            raise RuntimeError(f"{os.path.basename(cmd[0])} exited with code {code}")
+            if checkpoints_enabled() and not resumed:
+                save_checkpoint(prefix, events, wd, intermediate, fingerprint, plan)
+            raise RuntimeError(f"{'resumed steps' if resumed else os.path.basename(cmd[0])} exited with code {code}")
 
         timings = parse_step_timings(events, end_time)
         print(f"\n{label} step timings for {sample_id} (shards={shards}, gpu={gpu or 'none'}):")
@@ -456,7 +735,7 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             f"  examples sent to call_variants: {counts['examples']}; "
             f"called by the small model in make_examples (CPU): {counts['small_model_calls']}"
         )
-        missing = [s for s in step_metrics if s not in timings]
+        missing = [s for s in step_metrics if s not in timings and not (resumed and s == "make_examples")]
         if missing:
             print(f"WARNING: no timing found for {missing}; {os.path.basename(cmd[0])} output format may have changed")
 
@@ -466,6 +745,8 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             upload_output(local, key)
         upload_output(vcf, keys["vcf"])
         print(f"Uploaded {storage().describe(keys['vcf'])}")
+        if resumed:
+            retire(prefix, "used")
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 

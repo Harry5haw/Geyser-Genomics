@@ -100,7 +100,7 @@
       },
       "ResultPath": "$.parallel_output",
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Run_Close", "ResultPath": "$.error" }
       ],
       "Next": "Choose_Caller"
     },
@@ -197,7 +197,7 @@
       "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
       "ResultPath": "$.plan_output",
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Run_Close", "ResultPath": "$.error" }
       ],
       "Next": "Read_Regions"
     },
@@ -215,7 +215,7 @@
         { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
       ],
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Run_Close", "ResultPath": "$.error" }
       ],
       "Next": "Call_Variant_Shards"
     },
@@ -274,7 +274,7 @@
       },
       "ResultPath": null,
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Run_Close", "ResultPath": "$.error" }
       ],
       "Next": "Prepare_Variants_Command"
     },
@@ -315,7 +315,7 @@
       "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
       "ResultPath": "$.batch_output",
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Run_Close", "ResultPath": "$.error" }
       ],
       "Next": "Prepare_Gate_Command"
     },
@@ -337,7 +337,7 @@
           ]
         }
       },
-      "ResultPath": "$.gate_params",
+      "ResultPath": "$.batch_params",
       "Next": "Quality_Gate"
     },
     "Quality_Gate": {
@@ -345,10 +345,10 @@
       "Comment": "Parses a few small files: seconds of work, so a short attempt limit (the app's own limit for the binary is 300 s).",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
-        "JobName.$": "$.gate_params.JobName",
+        "JobName.$": "$.batch_params.JobName",
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
-        "ContainerOverrides.$": "$.gate_params.ContainerOverrides",
+        "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
         "Timeout": { "AttemptDurationSeconds": 900 }
       },
       "Retry": [
@@ -408,23 +408,23 @@
     "Gate_Failed": {
       "Type": "Choice",
       "Comment": "gate_mode = fail: the run fails with the gate's reasons. warn (the default until a handful of real runs pass cleanly, #157): recorded, the run succeeds.",
-      "Choices": [{ "Variable": "$.gate_params.Mode", "StringEquals": "fail", "Next": "Prepare_Gate_Failure" }],
+      "Choices": [{ "Variable": "$.batch_params.Mode", "StringEquals": "fail", "Next": "Prepare_Gate_Failure" }],
       "Default": "Gate_Warned"
     },
     "Prepare_Gate_Failure": {
       "Type": "Pass",
-      "Comment": "Notify_Failure publishes $.error: here the gate's named reasons.",
+      "Comment": "The failure path like any failed stage's (Prepare_Run_Close closes the run record as failed, Notify_Failure publishes $.error): here the gate's named reasons.",
       "Parameters": {
         "Error": "QualityGateFailed",
         "Cause.$": "States.Format('{} failed the quality gate: {} (verdict: qc_reports/{}.gate.json)', $.srr_id, States.JsonToString($.gate.verdict.reasons), $.srr_id)"
       },
       "ResultPath": "$.error",
-      "Next": "Notify_Failure"
+      "Next": "Prepare_Run_Close"
     },
     "Gate_Problem": {
       "Type": "Choice",
       "Comment": "The gate gave no verdict (its job failed, e.g. a bad GATE_CONFIG or an image without the gate; the verdict is missing, unreadable or null). warn: the run succeeds, through Gate_Skipped so it is told apart from a warned verdict. fail: no verdict is no pass.",
-      "Choices": [{ "Variable": "$.gate_params.Mode", "StringEquals": "fail", "Next": "Prepare_Gate_Error" }],
+      "Choices": [{ "Variable": "$.batch_params.Mode", "StringEquals": "fail", "Next": "Prepare_Gate_Error" }],
       "Default": "Gate_Skipped"
     },
     "Prepare_Gate_Error": {
@@ -434,7 +434,7 @@
         "Cause.$": "States.Format('The quality gate gave no verdict for {}: see the QualityGate job log and qc_reports/{}.gate.json', $.srr_id, $.srr_id)"
       },
       "ResultPath": "$.error",
-      "Next": "Notify_Failure"
+      "Next": "Prepare_Run_Close"
     },
     "Gate_Warned": {
       "Type": "Pass",
@@ -449,6 +449,40 @@
     "Pipeline_Succeeded": {
       "Type": "Succeed",
       "Comment": "Every successful run ends here, after the quality gate."
+    },
+    "Prepare_Run_Close": {
+      "Type": "Pass",
+      "Comment": "The failure path, before the notification: the run's closing run-record part (#155), so a run whose failing job never wrote its own part (killed, out of memory, timed out, or a step outside the stages) still ends as failed. The Catch output goes in as it is; the app parses the failing stage, reason, exit code and log stream from it when the record is read (provenance._failure_of). Only fields every Catch output has, so this Pass, which can't catch, can't fail.",
+      "Parameters": {
+        "schema": 1,
+        "task": "Finalize",
+        "sample_id.$": "$.srr_id",
+        "run_name.$": "$$.Execution.Name",
+        "finished.$": "$$.State.EnteredTime",
+        "status": "failed",
+        "caught.$": "$.error"
+      },
+      "ResultPath": "$.run_close",
+      "Next": "Close_Run_Record"
+    },
+    "Close_Run_Record": {
+      "Type": "Task",
+      "Comment": "Written straight to S3, not by a Batch job: no Fargate start-up on failure, and a retried job's Cause (every attempt's description) can be too big for a command line. Best effort: if this fails, the run still goes on to Notify_Failure with the original $.error.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('runs/{}.provenance/Finalize.json', $.srr_id)",
+        "Body.$": "States.JsonToString($.run_close)",
+        "ContentType": "application/json"
+      },
+      "Retry": [
+        { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Notify_Failure", "ResultPath": "$.close_error" }
+      ],
+      "Next": "Notify_Failure"
     },
     "Notify_Failure": {
       "Type": "Task",

@@ -533,3 +533,56 @@ def test_stratification_with_missing_bed_stops_before_hap_py(tmp_path, monkeypat
             ]
         )
     assert ran == []
+
+
+def test_r2_graph_is_the_benchmark_build_cut_from_its_gbz(tmp_path):
+    graph = fetch.PANGENOMES["r2-chr20"]
+    assert "benchmark-graphs/hprc-v2.0-mc-grch38-eval/" in graph["url"] and graph["url"].endswith("-eval.gbz")
+    assert graph["size"] == 5386150200 and graph["from"] == "gbz" and graph["path"] == "GRCh38#0#chr20"
+    assert graph["build"] == "pangenome/hprc-v2.0-mc-grch38-eval.chr20.gbz"
+    script = fetch.gbz_chunk_command(str(tmp_path), graph["key"], graph["build"], graph["path"])[-1]
+    assert f"vg chunk -x /data/{graph['key']} -p GRCh38#0#chr20 -C -O gfa" in script
+    assert "--set-reference GRCh38 --set-reference CHM13" in script
+    assert script.index("vg gbwt -G") < script.index(f"mv /data/{graph['build']}.part /data/{graph['build']}")
+    assert fetch.dataset_files("hg003-chr20", pangenome="r2-chr20")[-1][2] == graph["key"]
+
+
+def test_vcf_built_graph_needs_no_download():
+    # the r2 VCF is read remotely by index while building, so nothing is fetched first
+    assert fetch.dataset_files("hg003-chr20", pangenome="r2-chr20-vcf") == fetch.dataset_files("hg003-chr20")
+
+
+def test_vcf_graph_commands_build_a_capped_gbz_with_the_reference_path(tmp_path):
+    graph = fetch.PANGENOMES["r2-chr20-vcf"]
+    prep, build = fetch.vcf_graph_commands(str(tmp_path), graph, "reference/GRCh38_chr20.fa")
+    assert prep[:4] == ["docker", "run", "--rm", "--memory"] and prep[4] == "4g"
+    assert build[4] == "12g" and build[-4] == fetch.VG_IMAGE
+    p, b = prep[-1], build[-1]
+    # top-level sites of chr20, read by index; contig and FASTA renamed to the path DeepVariant looks for
+    assert f"bcftools view -i 'INFO/LV=0' -r chr20 {graph['url']}" in p
+    assert "sed '1s/.*/>GRCh38#0#chr20/'" in p and '$1="GRCh38#0#chr20"' in p
+    assert "-o pipefail" in p
+    # haplotypes (overlaps dropped) merged with the reference path, GRCh38 as the reference sample
+    assert "vg gbwt -x graph.vg -o haplotypes.gbwt -v vars.vcf.gz --discard-overlaps" in b
+    assert "vg gbwt -x graph.vg -o reference.gbwt -E" in b
+    gbz = f"/data/{graph['build']}"
+    assert f"-g {gbz}.part --set-reference GRCh38; mv {gbz}.part {gbz}" in b
+    assert f"trap 'rm -f {gbz}.part' ERR" in b
+
+
+def test_build_runs_both_vcf_steps(tmp_path, monkeypatch):
+    graph = fetch.PANGENOMES["r2-chr20-vcf"]
+    dest = tmp_path.joinpath(*graph["build"].split("/"))
+    calls = []
+
+    def fake_run(cmd, check):
+        calls.append(cmd[-4])
+        if len(calls) == 2:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"gbz")
+
+    monkeypatch.setattr(fetch.subprocess, "run", fake_run)
+    fetch.build_chr20_gbz(str(tmp_path), pangenome="r2-chr20-vcf")
+    assert calls == [fetch.APP_IMAGE, fetch.VG_IMAGE] and dest.exists()
+    fetch.build_chr20_gbz(str(tmp_path), pangenome="r2-chr20-vcf")  # exists: no rebuild
+    assert len(calls) == 2
