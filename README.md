@@ -294,6 +294,8 @@ The platform's design is guided by modern cloud-native principles:
 
 **Why not Nextflow?** Most genomics pipelines are written for a workflow engine. [docs/design/why-not-nextflow.md](docs/design/why-not-nextflow.md) maps Geyser's pieces to Nextflow concepts, lists what an engine would and wouldn't have replaced, and says when the choice should change.
 
+**Operating it:** the [operations runbook](docs/operations.md) covers starting, watching and stopping a run, the run record and gate verdict, image rollback and common failures.
+
 **Design notes:** [why not Nextflow](docs/design/why-not-nextflow.md) · [guardrails for the automation role](docs/design/claude-guardrails.md) · [cloud DeepVariant](docs/design/cloud-deepvariant.md) · [DeepVariant sizing on AWS](app-deepvariant/README.md) · [a whole-genome vg giraffe align stage](docs/design/giraffe-align.md)
 
 ---
@@ -676,7 +678,7 @@ Deployment is deliberate, not automatic. Terraform runs locally from `infrastruc
 
 | Variable | Default | What it does |
 | :--- | :--- | :--- |
-| `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variants 2 / 4 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements`. Checked against Fargate's valid vCPU/memory pairs, and QC + align (which run at the same time) must fit in `fargate_max_vcpus`. |
+| `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variant shard 1 / 2 GiB, region planner 0.25 / 0.5 GiB, merge 0.25 / 0.5 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements` (a change updates the state machine in place). Sized from the real-sample runs' peaks (#173). Checked against Fargate's valid vCPU/memory pairs, and QC (or the planner) + align, which run at the same time, must fit in `fargate_max_vcpus`. |
 | `job_disk_gb` | 20 | Fargate ephemeral storage per job. 20 GiB is free; 21-200 is billed. A whole human genome at 30x needs ~100+. |
 | `pipeline_timeout_hours` | 12 | Time limit for a whole run, queue waits included. A run past it ends as TimedOut. |
 | `log_retention_days` | 30 | How long Batch job logs (`/aws/batch/geyser-<env>`) and trigger Lambda logs (`/aws/lambda/geyser-sfn-trigger-<env>`) are kept. |
@@ -733,6 +735,7 @@ Once deployed, a run is started by uploading a file.
 | Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error (a DeepVariant-only run is complete when DeepVariant, its caller, succeeds: it has no bcftools stage), the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. Every job gets the Step Functions execution name as `RUN_NAME`, so each part says which run wrote it. The record also names the stage whose calls are the sample's (`variant_stage`, `vcf`): DeepVariant's when it was the run's caller. |
 
 ### 3. Monitoring
+For the day-to-day commands (watching, stopping a run, rollback, common failures), see the [operations runbook](docs/operations.md).
 
 > [!NOTE]
 > The dashboard (`geyser-dashboard-dev`) and the trigger alarm (`geyser-dev-trigger-lambda-errors`) are deployed, with the scripts below, after a `--dry-run` check. Both are within the CloudWatch free tier. The alarm has no actions: it is a signal on the dashboard, not an email.
