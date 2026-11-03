@@ -707,6 +707,8 @@ Deployment is deliberate, not automatic. Terraform runs locally from `infrastruc
 | `job_disk_gb` | 20 | Fargate ephemeral storage per job. 20 GiB is free; 21-200 is billed. A whole human genome at 30x needs ~100+. |
 | `pipeline_timeout_hours` | 12 | Time limit for a whole run, queue waits included. A run past it ends as TimedOut. |
 | `log_retention_days` | 30 | How long Batch job logs (`/aws/batch/geyser-<env>`) and trigger Lambda logs (`/aws/lambda/geyser-sfn-trigger-<env>`) are kept. |
+| `intermediate_expiry_days` | 7 | How long `intermediate/` (region parts, the planner's regions) and `decompressed/` are kept, and when unfinished multipart uploads are aborted. Nothing reads a part after the merge, so this is only a debugging window. |
+| `alignment_expiry_days` | 180 | When `alignments/` (CRAM + `.crai`) expires: the **break-even** of storing a CRAM vs re-aligning its raw reads, `align cost / (CRAM GiB × S3 price per GiB-day)` = 178-248 days on the six real chr20 runs (`scripts/lifecycle_break_even.py --results <dir>`; the same for a whole genome, since both scale together). `0` keeps alignments forever. Raw reads, references, VCFs, reports, stats and run records never expire. |
 
 **Retries.** The Batch job definition retries only infrastructure failures, up to 3 attempts: a host going away, a Spot interruption, a task that failed to start, or a failed image pull or log setup. Anything else exits at once, including every non-zero exit code, so an application error such as a corrupt upload fails fast. Each Batch task in the state machine also retries Batch API errors (throttling, server errors) 3 times with back-off. Both are tested offline in Step Functions Local.
 

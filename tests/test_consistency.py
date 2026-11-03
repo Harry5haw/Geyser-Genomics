@@ -143,11 +143,20 @@ def test_lifecycle_expires_the_apps_intermediate_prefix():
     assert tasks.region_part_key("S1", "chr20:1-100").startswith(tasks.INTERMEDIATE_PREFIX)
 
 
+def _alignment_prefix():
+    """The one prefix every alignment form (and its index) is written under."""
+    keys = tasks.keys_for("S1")
+    (prefix,) = {keys[name].split("/")[0] + "/" for name in (*tasks.ALIGNMENT_FORMS, "crai")}
+    return prefix
+
+
 def test_lifecycle_never_expires_raw_reads_references_or_outputs():
     # Decided with the user (2 Nov 2026): only disposable prefixes expire. A rule with an expiration must
-    # not cover (or sit inside) raw_reads/, reference/ or any output prefix the pipeline writes.
+    # not cover (or sit inside) raw_reads/, reference/ or any output prefix the pipeline writes, except
+    # alignments/, which expires at its break-even (recomputable from the raw reads; the test below).
     kept = {"raw_reads/", "reference/"} | {key.split("/")[0] + "/" for key in tasks.keys_for("S1").values()}
     kept |= {key.split("/")[0] + "/" for key in tasks.keys_for("S1", tasks.PAIRED).values()}
+    kept.discard(_alignment_prefix())
     for rule_id, (prefix, expires) in _lifecycle_prefixes().items():
         if not expires:
             continue  # e.g. aborting unfinished multipart uploads touches no stored object
@@ -247,3 +256,18 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     assert low <= default <= high
     for name in ("align_sizes", "variant_region_window_min", "variant_region_window_max"):
         assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=", sfn_tf), name
+
+
+def test_alignments_expire_by_break_even_and_nothing_else_shares_the_prefix():
+    # The alignments rule covers exactly the CRAM, its index and an old BAM, and only those: no other key
+    # the pipeline writes (a VCF, a report) lives under the same prefix.
+    prefix = _alignment_prefix()
+    assert _lifecycle_prefixes()["expire-alignments"] == (prefix, True)
+    alignment_keys = {"cram", "crai", "bam"}
+    for layout in (None, tasks.PAIRED):
+        keys = tasks.keys_for("S1", layout) if layout else tasks.keys_for("S1")
+        assert {name for name, key in keys.items() if key.startswith(prefix)} == alignment_keys
+    with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    block = tf[tf.index('variable "alignment_expiry_days"') :]
+    assert re.search(r"default\s*=\s*180\b", block[: block.index("validation")])
