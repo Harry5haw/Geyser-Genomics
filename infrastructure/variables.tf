@@ -223,9 +223,9 @@ variable "default_caller" {
 }
 
 variable "gate_mode" {
-  description = "What a failed quality-gate verdict does to a cloud run (#144). warn: recorded (qc_reports/{id}.gate.json, the run record, the execution history) and the run succeeds. fail: the run fails through Notify_Failure with the gate's reasons. Stays warn until at least 5 real-sample cloud runs have passed with no false fails against the calibrated thresholds; then switch (#157)."
+  description = "What a failed quality-gate verdict does to a cloud run (#144). warn: recorded (qc_reports/{id}.gate.json, the run record, the execution history) and the run succeeds. fail: the run fails through Notify_Failure with the gate's reasons. Was warn until at least 5 real-sample cloud runs had been judged with no false fails against the calibrated thresholds; switched to fail on 3 Nov 2026 after 6 runs (4 pass, 2 true negatives on depth, #157). Smoke tests set gate_profile = synthetic (#178)."
   type        = string
-  default     = "warn"
+  default     = "fail"
 
   validation {
     condition     = contains(["warn", "fail"], var.gate_mode)
