@@ -252,6 +252,7 @@ JOB_NAME_STAGES = (
     ("QualityControl-", "QualityControl"),
     ("AlignGenome-", "Align"),
     ("PlanRegions-", "PlanRegions"),
+    ("DeepVariant-", "DeepVariant"),  # the cloud DeepVariant step (#125)
 )
 REASON_LIMIT = 1000  # characters of a failure reason kept in the record
 EXTRA_CALLERS = ("DeepVariant", "PangenomeDeepVariant")  # their failure never fails the core run

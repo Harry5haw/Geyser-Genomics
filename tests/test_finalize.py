@@ -70,6 +70,7 @@ def test_a_batch_cause_gives_the_stage_reason_exit_code_and_log_stream():
         ("PlanRegions-S1-run", "PlanRegions"),
         ("CallVariantsShard-3-run", "CallVariantsShard"),  # not taken for CallVariants
         ("CallVariants-S1-run", "CallVariants"),
+        ("DeepVariant-S1-run", "DeepVariant"),
         ("SomethingElse-S1", None),
     ],
 )
