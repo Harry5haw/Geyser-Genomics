@@ -225,9 +225,16 @@ def test_gate_settings_reach_the_gate_container(monkeypatch):
     assert "GATE_MODE=fail" in seen[0] and "GATE_CONFIG=/c.toml" in seen[0]
 
 
+def _local_inputs(root, reference="r.fa"):
+    """An upload and its reference under a local storage root (main() checks the reference first)."""
+    (root / "raw_reads").mkdir()
+    (root / "raw_reads" / "S1.fastq.gz").write_bytes(b"")
+    (root / "reference").mkdir()
+    (root / "reference" / reference).write_text(">r\nACGT\n")
+
+
 def test_main_runs_the_gate_unless_no_gate(tmp_path, monkeypatch):
-    (tmp_path / "raw_reads").mkdir()
-    (tmp_path / "raw_reads" / "S1.fastq.gz").write_bytes(b"")
+    _local_inputs(tmp_path)
     ran = []
     monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: ran.append(job["name"]) or 0)
     assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa"]) == 0
@@ -252,8 +259,7 @@ def test_gate_profile_picks_the_thresholds_file_and_wins_over_the_rest(tmp_path,
 
 
 def test_main_passes_the_gate_profile_to_the_gate_job(tmp_path, monkeypatch):
-    (tmp_path / "raw_reads").mkdir()
-    (tmp_path / "raw_reads" / "S1.fastq.gz").write_bytes(b"")
+    _local_inputs(tmp_path)
     jobs = []
     monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: jobs.append(job) or 0)
     args = ["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa", "--gate-profile", "synthetic"]
@@ -262,3 +268,25 @@ def test_main_passes_the_gate_profile_to_the_gate_job(tmp_path, monkeypatch):
     assert gate["env"] == {"GATE_CONFIG": "/opt/geyser-gate/thresholds/synthetic.toml"}
     with pytest.raises(SystemExit):
         run_local.main(args[:-1] + ["strict"])
+
+
+# --- the reference: checked before any job, as the state machine's Check_Reference_Name / Check_Reference
+
+
+@pytest.mark.parametrize("name", ["", "sub/r.fa", "/r.fa", None, 42, ["r.fa"]])
+def test_a_reference_that_is_not_a_file_name_is_refused(tmp_path, name):
+    assert "is not a file name under reference/" in run_local.reference_problem(str(tmp_path), name)
+
+
+def test_a_reference_must_exist_under_the_root(tmp_path):
+    _local_inputs(tmp_path)
+    assert run_local.reference_problem(str(tmp_path), "r.fa") is None
+    assert "reference/GRCh37.fa is not under" in run_local.reference_problem(str(tmp_path), "GRCh37.fa")
+
+
+def test_main_fails_a_missing_reference_before_any_job(tmp_path, monkeypatch, capsys):
+    _local_inputs(tmp_path)
+    ran = []
+    monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: ran.append(job["name"]) or 0)
+    assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "GRCh37.fa"]) == 1
+    assert ran == [] and "FAILED before any job for S1" in capsys.readouterr().out

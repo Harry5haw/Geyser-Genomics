@@ -504,6 +504,7 @@ def test_run_local_aligner_defaults():
 
 def test_run_local_main_passes_the_giraffe_image_and_graph(tmp_path, monkeypatch):
     put(tmp_path, "raw_reads/S1.fastq.gz")
+    put(tmp_path, "reference/ref.fa")  # run_local checks the reference exists before any job (#183)
     ran = []
     monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: ran.append(job) or 0)
     monkeypatch.delenv("ALIGNER", raising=False)
