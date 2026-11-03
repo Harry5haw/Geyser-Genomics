@@ -60,22 +60,23 @@ aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata refer
 (`Check_Gate_Profile`), before any job:
 
 ```bash
-aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-profile=synthetic
+aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-profile=smoke
 ```
 
 | Profile | Thresholds (`gate/thresholds/`) | For |
 | :--- | :--- | :--- |
 | `default` (also when unset) | `default.toml` | real samples (calibrated on HG003/HG005 chr20) |
 | `synthetic` | `synthetic.toml` | the **local** synthetic data from `make_test_data.py` (`run_local.py --gate-profile synthetic`) |
+| `smoke` | `smoke.toml` | the **cloud** smoke tests (CLOUD0xx: 10,000 real chr20 reads with 10 planted SNPs) |
 
 - Anything else fails the run at once with `UnknownGateProfile`, in either gate mode. That includes mates
   whose `gate-profile` values disagree, a misspelt metadata key with "gate" in it, and metadata the trigger
   couldn't read.
-- A manual start sets it in the input: `"gate_profile": "synthetic"`.
-- **Cloud smoke tests can't pass `synthetic` yet.** It's calibrated for the local 50 kb synthetic reference,
-  while the cloud smoke sample is 10,000 real chr20 reads judged over the whole of chr20 (mean depth about
-  0.02x). A `smoke` profile calibrated on the cloud checkpoints is planned ([#157](../../../issues/157)). Until
-  then, smoke tests fail the gate whatever their profile, which warn mode records without failing the run.
+- A manual start sets it in the input: `"gate_profile": "smoke"`.
+- **Cloud smoke tests use `smoke`, not `synthetic`.** `synthetic` is calibrated for the local 50 kb synthetic
+  reference, while the cloud smoke sample is 10,000 real chr20 reads judged over the whole of chr20 (mean
+  depth about 0.02x, 0% at 10x, GC 37.5%), so it fails them. `smoke` is calibrated on the cloud checkpoints
+  CLOUD005-016 ([#157](../../../issues/157)); every one passes it.
 
 ### Choose the caller
 
@@ -96,10 +97,43 @@ aws stepfunctions start-execution --state-machine-arn "$SFN_ARN" \
 
 Without `caller`, or with anything other than `deepvariant`, the run uses bcftools.
 
+**Per-run sizes (`overrides`, manual starts only):** an optional `overrides` object changes align's Fargate
+size and the variant-calling window for this run alone, with no Terraform apply. It's for experiments such
+as the cost x turnaround grid (`docs/figures/cost-surface-grid.md`). Uploads never set it, so triggered runs
+always use Terraform's defaults.
+
+| Key | Type | Default (Terraform) | Allowed |
+| :--- | :--- | :--- | :--- |
+| `align_vcpu` | string | `"4"` (`stage_resources["align"]`) | with `align_memory_mb`, a valid Fargate pair (`"0.25"`: 512/1024/2048 MiB; `"0.5"`: 1-4 GiB; `"1"`: 2-8 GiB; `"2"`: 4-16 GiB; `"4"`: 8-30 GiB, in 1 GiB steps), where QC or the planner plus align still fit in `fargate_max_vcpus` (so no 8 vCPU at the default cap). Written as Terraform writes it: `"4"`, not `"4.0"` |
+| `align_memory_mb` | string | `"8192"` | as above |
+| `variant_region_window` | number | `50000000` (`variant_region_window`) | a whole number from 5,000,000 to 250,000,000 (bases per region; the planner and the merge both use it). 65 Mb = 1 shard on chr20, 33 Mb = 2, 17 Mb = 4, 9 Mb = 8 |
+
+Any key left out keeps its default. Only align and the window change: QC, the planner, the shards and the
+merge keep their sizes.
+
+```bash
+aws stepfunctions start-execution --state-machine-arn "$SFN_ARN" \
+  --name "REAL-HG003-30x-chr20-$(date -u +%Y%m%dT%H%M%SZ)-a2w17" \
+  --input '{"srr_id": "REAL-HG003-30x-chr20", "reference_name": "chr20.fa",
+            "overrides": {"align_vcpu": "2", "align_memory_mb": "4096", "variant_region_window": 17000000}}'
+```
+
+**Checked before any job** (`Run_Setting_Rules` → `Set_Run_Settings`, after `Check_Gate_Profile`). Each of
+these fails the run with `InvalidRunOverrides`, closed and notified like any failed run, and the Cause lists
+the allowed pairs and bounds:
+- `overrides` that isn't an object;
+- an unknown key (a misspelling such as `align_cpu` is never silently ignored);
+- a wrong type (a number for a size, a string for the window);
+- a pair that isn't allowed;
+- a window out of bounds or not whole.
+
+The settings the run used are in the execution's output, under `run_settings`. A valid size that is too
+small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its job, with `OutOfMemoryError`.
+
 ## Watch a run
 
 - **The Step Functions console:** the execution `<run>` and its graph:
-  `Check_Gate_Profile` → `Check_Reference_Name` → `Check_Reference` → `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
+  `Check_Gate_Profile` → `Check_Reference_Name` → `Check_Reference` → the run-settings checks → `QC_and_Align` → `Choose_Caller` → variant calling → `Quality_Gate` → `Pipeline_Succeeded`.
 - **The dashboard** (`geyser-dashboard-dev`): runs, failures and durations by stage, result quality, data lake
   storage, the trigger alarm. It's deployed by script; `--dry-run` prints the body and makes no AWS calls:
   ```bash
@@ -166,18 +200,18 @@ mean depth (≥ 20x), breadth at 10x, SNP count and Ti/Tv.
 
 ### Warn mode and fail mode
 
-Terraform's `gate_mode` decides what a failed verdict does. **It's `warn` now, and stays `warn` until cloud
-smoke tests can pass the gate** (the `smoke` profile above) and the maintainer signs off on the real-sample
-evidence ([#157](../../../issues/157)). The profile picks the thresholds (`GATE_CONFIG` for the gate job); the
+Terraform's `gate_mode` decides what a failed verdict does. **It's `fail`** since [#157](../../../issues/157):
+real-sample runs passed with no false fails, and cloud smoke tests pass with the `smoke` profile above. So
+**upload smoke tests with `gate-profile=smoke`**: without it they're judged as real samples and the run fails. The profile picks the thresholds (`GATE_CONFIG` for the gate job); the
 mode picks what a failure does.
 
-| Verdict | `gate_mode = "warn"` (current) | `gate_mode = "fail"` |
+| Verdict | `gate_mode = "warn"` | `gate_mode = "fail"` (current) |
 | :--- | :--- | :--- |
 | pass | run SUCCEEDED | run SUCCEEDED |
 | fail | run SUCCEEDED through `Gate_Warned`; the verdict is in `gate.json`, the run record, the job log and the execution's output | run FAILED with `QualityGateFailed` and the reasons, through `Close_Run_Record` → `Notify_Failure` |
 | no verdict (gate job failed, verdict missing or unreadable) | run SUCCEEDED through `Gate_Skipped`; never judged, so it doesn't count as a pass | run FAILED with `QualityGateError` |
 
-So in warn mode, **a SUCCEEDED run isn't necessarily a good one.** Read `gate.json`, or look for
+In warn mode (the way back, one in-place apply), **a SUCCEEDED run isn't necessarily a good one.** Read `gate.json`, or look for
 `Gate_Warned` / `Gate_Skipped` in the execution's history.
 
 ## Images: tags and rollback
@@ -242,6 +276,6 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
 | **DeepVariant fails** | the run continues with bcftools (`DeepVariant` caught → `Prepare_Plan_Command`); the bcftools VCF in `variants/` is the sample's | read the DeepVariant job log |
 | **The gate gives no verdict** | warn: SUCCEEDED through `Gate_Skipped`, `gate.json` has `"verdict": null` and why; fail: `QualityGateError` | read the `QualityGate-<id>-<run>` job log |
 | **A job stuck waiting in the queue** | no queue limit of its own; the whole run ends `TimedOut` at 12 h (`pipeline_timeout_hours`) | `scripts/stop_run.py <run>`; check the compute environments' capacity |
-| **Unknown gate profile** (`gate-profile=smoke`, a typo, mates that disagree) | the run fails before any job with `UnknownGateProfile: gate_profile "…" is not one of: default, synthetic`, through `Close_Run_Record` → `Notify_Failure` | upload again with `default`, `synthetic` or no `gate-profile` |
+| **Unknown gate profile** (`gate-profile=strict`, a typo, mates that disagree) | the run fails before any job with `UnknownGateProfile: gate_profile "…" is not one of: default, synthetic, smoke`, through `Close_Run_Record` → `Notify_Failure` | upload again with `default`, `synthetic`, `smoke` or no `gate-profile` |
 | **Bad reference name** (`reference=sub/x.fa`, an empty value, mates that disagree, a misspelt key) | the run fails before any job with `UnknownReference: reference_name "…" is not a file name under reference/ (a non-empty string without a slash)`, through `Close_Run_Record` → `Notify_Failure` | upload again with a plain file name, or no `reference` for `chr20.fa` |
 | **Reference not in the data lake** (`reference=nope.fa`) | the run fails before any job with `ReferenceNotFound: reference/nope.fa could not be read from <data-lake> (S3.NoSuchKeyException)…`, through `Close_Run_Record` → `Notify_Failure` (`CLOUD018`) | upload the FASTA to `reference/`, or name one that's there |

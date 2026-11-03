@@ -58,6 +58,26 @@ resource "aws_cloudwatch_log_group" "geyser_sfn_log_group" {
   tags              = { Name = "${var.project_name}-sfn-log-group", Environment = var.environment, ManagedBy = "Terraform" }
 }
 
+locals {
+  # Per-run overrides (the input's "overrides" object, checked in Run_Setting_Rules and after): the
+  # vCPU/MiB pairs align may ask for. Fargate's valid memory per vCPU (resilience.tf: 0.25 vCPU takes
+  # 512, 1024 or 2048 MiB; the others any 1 GiB step in range), and only sizes where QC or the planner
+  # plus align still fit in fargate_max_vcpus, the same rule as the precondition below. "<vcpu>/<MiB>"
+  # strings, as the state machine formats them.
+  fargate_memory_options = {
+    for vcpu, range_mb in local.fargate_memory_mb :
+    vcpu => vcpu == "0.25" ? [512, 1024, 2048] : range(range_mb[0], range_mb[1] + 1, 1024)
+  }
+  align_override_sizes = flatten([
+    for vcpu, options in local.fargate_memory_options : [for mb in options : "${vcpu}/${mb}"]
+    if tonumber(vcpu) + max(var.stage_resources["qc"].vcpu, var.stage_resources["plan"].vcpu) <= var.fargate_max_vcpus
+  ])
+  # An override window's bounds. 5 Mb: ~620 shards on a whole genome, well inside a Standard execution's
+  # 25,000-event history (a shard is ~10 events). 250 Mb: one region per GRCh38 chromosome (chr1 is 248.9 Mb).
+  variant_region_window_min = 5000000
+  variant_region_window_max = 250000000
+}
+
 resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   name     = "${var.project_name}-pipeline-sfn-${var.environment}"
   role_arn = aws_iam_role.geyser_sfn_execution_role.arn
@@ -84,6 +104,9 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     variant_region_window      = var.variant_region_window
     variants_max_concurrency   = var.variants_max_concurrency
     gate_mode                  = var.gate_mode
+    align_sizes                = jsonencode(local.align_override_sizes)
+    variant_region_window_min  = local.variant_region_window_min
+    variant_region_window_max  = local.variant_region_window_max
   })
 
   lifecycle {
@@ -95,6 +118,11 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     precondition {
       condition     = var.variants_max_concurrency * var.stage_resources["variants"].vcpu <= var.fargate_max_vcpus
       error_message = "variants_max_concurrency shards of the variants size must fit in fargate_max_vcpus (more would only queue)."
+    }
+    precondition {
+      # The defaults go through the same checks as an override (Run_Setting_Rules), so they must pass them.
+      condition     = var.variant_region_window >= local.variant_region_window_min && var.variant_region_window <= local.variant_region_window_max
+      error_message = "variant_region_window must be within the per-run override bounds (5 Mb to 250 Mb), or every run would fail its own settings check."
     }
   }
   logging_configuration {

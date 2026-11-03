@@ -12,7 +12,7 @@ small TOML file. It is written in Rust because it is meant to ship as one static
 > **Status:** in the pipeline image and run by `tasks.py gate <id>` after variant calling (#144):
 > locally by `run_local.py`, in the cloud by a Step Functions state after either caller. **Warn** mode
 > for now: the verdict is stored and recorded, and a failed verdict doesn't fail the run. See
-> [In the pipeline](#in-the-pipeline) and [Warn now, fail later](#warn-now-fail-later).
+> [In the pipeline](#in-the-pipeline) and [Warn first, then fail](#warn-first-then-fail).
 
 ## Inputs
 
@@ -178,6 +178,17 @@ the alignment and variant bounds the Docker end-to-end test asserts, plus perfec
 `--leading-gap 1000`). No Ti/Tv check: 10 SNPs are too few for the ratio to mean anything. The default
 thresholds fail synthetic data, by design (Ti/Tv 1.5).
 
+### The smoke profile ([`thresholds/smoke.toml`](thresholds/smoke.toml))
+
+For the cloud smoke tests (the CLOUD0xx checkpoints): 10,000 real single-end reads (or 5,000 pairs)
+simulated from GRCh38 chr20:10,000,001-10,050,000 with 10 planted SNPs, aligned to the whole of chr20.
+Calibrated on every cloud checkpoint with stats, CLOUD005-CLOUD016 (11 runs, all identical). Because 50 kb
+of reads are judged over a 64.4 Mb chromosome, the mean depth is about 0.02x and breadth is 0, so there is
+no breadth check and the depth bounds (0.015-0.03) only check that the reads landed and were counted once.
+GC is real chr20 sequence (35-40%), exactly 10 SNPs and no indels, and the mapping, read-count and
+run-record checks are kept. No Ti/Tv check (10 SNPs). `synthetic` fails these runs (GC 37.5 < 45, depth,
+breadth), and `smoke` fails real samples and the local synthetic data (depth above 0.03, GC above 40).
+
 ## Verdict
 
 ```jsonc
@@ -295,7 +306,7 @@ attempt limit) → **`Read_Gate_Verdict`** (reads `qc_reports/<id>.gate.json` st
 **`Gate_Decision`**. The job always runs the app's warn mode, so a failed verdict never fails the job;
 the state machine decides with Terraform's **`gate_mode`**:
 
-| Verdict | `gate_mode = "warn"` (default) | `gate_mode = "fail"` |
+| Verdict | `gate_mode = "warn"` | `gate_mode = "fail"` (default since #157) |
 | :--- | :--- | :--- |
 | pass | `Pipeline_Succeeded` | `Pipeline_Succeeded` |
 | fail | `Gate_Warned` → `Pipeline_Succeeded` (recorded) | `Notify_Failure` → `Pipeline_Failed`; the notification's error is `QualityGateFailed`, its cause lists the gate's reasons |
@@ -305,7 +316,7 @@ The execution itself always fails as `PipelineStageFailed`, like any failed stag
 reasons are in the SNS failure notification (`ErrorDetails`) and in the execution's data (`$.error`,
 `$.gate.verdict`); the job pins `GATE_MODE=warn`, so the state machine is the one place the mode is
 decided. Before applying, the image in ECR (`dev-local`) must have the gate (main from #148 on):
-with an older image every gate job fails, which warn mode shows as `Gate_Skipped` on every run.
+with an older image every gate job fails, which fail mode turns into a failed run every time.
 
 The gate costs one more Fargate job per run: about a minute of start-up overhead and a fraction of a
 cent. Verdicts are per sample (`qc_reports/<id>.gate.json`), like every other key of a sample, so two
@@ -323,19 +334,20 @@ Which thresholds a cloud run is judged by is per run, not global: the execution 
 | `gate_profile` | Thresholds | For |
 | :--- | :--- | :--- |
 | `default` (also when unset) | `default.toml` (human germline WGS, ~30x) | real samples |
-| `synthetic` | `synthetic.toml` | the CLOUD00x smoke tests and `make_test_data.py` data |
+| `synthetic` | `synthetic.toml` | `make_test_data.py` data (local runs, the Docker E2E) |
+| `smoke` | `smoke.toml` | the cloud smoke tests (CLOUD0xx: 10,000 real chr20 reads, 10 planted SNPs) |
 
 - **Uploads:** set it with S3 user metadata `gate-profile` (or `gate_profile`) on the upload, for
-  example `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=synthetic`,
+  example `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=smoke`,
   on either mate of a pair. The trigger passes it on exactly as uploaded (one HeadObject for a
-  single-end upload). **Manual starts:** `"gate_profile": "synthetic"` in the input. Values are
+  single-end upload). **Manual starts:** `"gate_profile": "smoke"` in the input. Values are
   case-sensitive.
 - **One validator, visible failures:** the trigger never drops a run or picks for you. Mates that
   disagree, a metadata key that looks like a misspelling (`gateprofile`) and metadata it couldn't read
   all go on as values `Check_Gate_Profile` rejects, so the run fails with the reason, closed and
   notified. A single-end profile is read when the trigger runs: like the reads themselves, an upload
   overwritten in the meantime is judged as the newer one.
-- **Locally:** `run_local.py --gate-profile synthetic|default`. Without it, a `make_test_data.py` sample
+- **Locally:** `run_local.py --gate-profile default|synthetic|smoke`. Without it, a `make_test_data.py` sample
   still gets `synthetic`.
 - **Checked first:** `Check_Gate_Profile`, before any job. An unknown profile (`strict`, `Synthetic`,
   a number, the trigger's flagged values) fails the run there, in either `gate_mode`, with
@@ -345,28 +357,27 @@ Which thresholds a cloud run is judged by is per run, not global: the execution 
   ships (main from #148 on); `default.toml` is also the binary's built-in default.
 - **Why:** with the human thresholds, a synthetic smoke test fails the gate (CLOUD015: mean depth 0.02x,
   0% at 10x, Ti/Tv 0.25). In warn mode that's only a recorded verdict, but in fail mode every smoke test
-  would fail. With `gate-profile=synthetic` the smoke tests are judged by what they are.
+  would fail. `synthetic` doesn't fit them either: it is calibrated for the local 50 kb random
+  reference at ~30x. With `gate-profile=smoke` the smoke tests are judged by what they are.
 
-## Warn now, fail later
+## Warn first, then fail
 
-The user's decision (2 Nov 2026): **warn first, then fail** (#157).
+The user's decision (2 Nov 2026): **warn first, then fail** (#157). **Fail since #157's apply** (decided 3 Nov 2026).
 
 - **Criterion for the switch:** at least **5 real-sample cloud runs** (not the simulated CLOUD00x
   checkpoints) that the gate **judged** (`Gate_Decision` reached; a `Gate_Skipped` run doesn't count),
   and **no false fails** against the calibrated thresholds: every failed verdict was a really bad run,
-  or the threshold was corrected first. DeepVariant runs need #158 first:
-  until their run record counts a DeepVariant-only run as complete, the gate's `run_status` check fails
-  them.
-- **The switch, one line:** `gate_mode = "fail"` (tfvars, or the default in
-  `infrastructure/variables.tf`), then `terraform plan` (expect only an in-place update of the state
-  machine) and, after review, apply. Together with the threshold profile (above) it is **one apply**:
-  the profile's state-machine change and `gate_mode` are the same resource (plus the trigger Lambda's
-  code). From then on, upload smoke tests with `--metadata gate-profile=synthetic`.
+  or the threshold was corrected first. DeepVariant runs needed #158 (done in #166): the run record
+  counts a DeepVariant-only run as complete, so the gate's `run_status` check can pass them.
+- **The switch, one line:** `gate_mode = "fail"` (the default in `infrastructure/variables.tf` since
+  #157; a `gate_mode` in tfvars overrides it), then `terraform plan` (expect only an in-place update of the
+  state machine) and, after review, apply. It ships with the `smoke` profile (above) in one apply: both
+  change the same resource, the state machine. From then on, upload smoke tests with
+  `--metadata gate-profile=smoke`.
 - **Back:** `gate_mode = "warn"`, the same in-place update.
 
 ## Not yet
 
-- **The switch to fail** (#157), and **#158** for DeepVariant runs (see above).
 - **Adapter content:** the QC stage runs fastp with adapter trimming disabled (report-only), and then
   fastp doesn't detect adapters, so the report has no adapter numbers. Checking them needs a QC-stage
   change (e.g. let fastp detect adapters without writing trimmed reads).
