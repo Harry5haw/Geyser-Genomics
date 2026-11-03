@@ -25,6 +25,7 @@ from geyser_web.pipeline import (
     layout_from_raw,
     read_part,
     record_key,
+    sample_vcf_key,
 )
 
 from . import status as status_mod
@@ -210,8 +211,11 @@ def sample_detail(request, sample_id):
     sample = _load_sample_or_404(storage, sample_id)
     truth = read_truth(storage, sample_id)
     record = load_record(storage, sample_id)
-    # The annotated VCF has the same records plus consequences: show it when the latest run wrote it.
-    variants_key = _current_annotated_vcf(storage, sample) or sample.keys["vcf"]
+    # sample.keys["vcf"] is the record's VCF (status.build_sample): DeepVariant's when it was the run's
+    # caller. bcftools csq annotates the bcftools VCF only, so the annotated copy applies only to that one.
+    bcftools_calls = sample.keys["vcf"] == keys_for(sample_id)["vcf"]
+    annotated = _current_annotated_vcf(storage, sample) if bcftools_calls else None
+    variants_key = annotated or sample.keys["vcf"]
     variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     downloads = []
@@ -219,6 +223,8 @@ def sample_detail(request, sample_id):
         key = _file_key(sample_id, kind, sample.keys)
         if kind in ("csq_vcf", "csq_tbi") and variants_key != sample.keys["csq_vcf"]:
             continue  # an annotated VCF (and its index) from an earlier run: not this sample's current calls
+        if kind == "tbi" and not bcftools_calls:
+            continue  # the bcftools VCF's index; DeepVariant's VCF is served without one
         if storage.exists(key):
             downloads.append(
                 {"kind": kind, "label": label, "description": description, "filename": os.path.basename(key)}
@@ -264,6 +270,14 @@ def sample_file(request, sample_id, kind):
             keys = keys_for(sample_id, layout_from_raw(sample_id, storage.exists))
         except LayoutError:
             raise Http404("No such sample") from None
+    if kind in ("vcf", "tbi", "csq_vcf", "csq_tbi"):
+        # "vcf" is the sample's current calls (the run record's VCF: DeepVariant's when it was the caller);
+        # the bcftools-only files (its index, the annotated copy) don't belong to DeepVariant's calls.
+        vcf = sample_vcf_key(load_record(storage, sample_id), sample_id)
+        if vcf != keys["vcf"]:
+            if kind != "vcf":
+                raise Http404("No such file")
+            keys = {**keys, "vcf": vcf}
     key = _file_key(sample_id, kind, keys)
     if key is None:
         raise Http404("No such file")  # e.g. raw_R1 for a single-end sample

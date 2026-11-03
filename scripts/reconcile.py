@@ -248,6 +248,11 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
         output_layout = layout or (PAIRED if any(k in keys for k in legacy_qc_keys(sample_id, PAIRED)) else SINGLE)
         forms = {name: output_keys(keys_for(sample_id, output_layout), name) for name, _ in STAGE_OUTPUTS}
         forms["qc_html"].append(legacy_qc_keys(sample_id, output_layout))  # QC done by FastQC before #100
+        record = records.get(sample_id)
+        # The sample's calls are the run record's VCF: DeepVariant's when it was the run's caller (#125),
+        # bcftools' otherwise (and without a record).
+        vcf_key = provenance.sample_vcf_key(record, sample_id)
+        forms["vcf"] = [[vcf_key]]
         # A multi-key form (paired-end FastQC: one report per mate) only counts once it is complete.
         outputs = {name: any(all(k in keys for k in form) for form in forms[name]) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
@@ -275,7 +280,6 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
         if open_count > 1:
             note = f"{open_count} runs at once: they overwrite each other's outputs"
             problem = "concurrent runs"
-        record = records.get(sample_id)
         failed_stages = [t for t, st in (record or {}).get("stages", {}).items() if st != "Success"]
         if failed_stages:
             # Each failed stage with its own run (an inherited upstream stage can come from an older run).
