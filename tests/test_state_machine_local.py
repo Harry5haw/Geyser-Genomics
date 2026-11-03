@@ -886,7 +886,7 @@ def test_the_gate_profile_picks_the_thresholds_file(sfn, profile):
     desc, events = run_case(sfn, "HappyPath", gate_profile=profile)
     assert desc["status"] == "SUCCEEDED"
     assert gate_environment(events)["GATE_CONFIG"] == f"$GATE_THRESHOLDS_DIR/{profile}.toml"
-    assert json.loads(desc["output"])["batch_params"]["Profile"] == profile
+    assert json.loads(desc["output"])["gate_profile"] == profile
 
 
 def test_without_a_profile_the_run_uses_the_default_thresholds(sfn):
@@ -896,7 +896,21 @@ def test_without_a_profile_the_run_uses_the_default_thresholds(sfn):
     assert gate_environment(events)["GATE_CONFIG"] == "$GATE_THRESHOLDS_DIR/default.toml"
 
 
-@pytest.mark.parametrize("profile", ["strict", "Synthetic", 42, None])
+@pytest.mark.parametrize(
+    "profile",
+    [
+        "strict",
+        "Synthetic",
+        " synthetic",
+        42,
+        None,
+        # What the trigger passes on when it can't pass a plain value: mates that disagree, a likely
+        # misspelt metadata key, metadata it couldn't read.
+        ["default", "synthetic"],
+        {"unrecognised metadata key": "gateprofile"},
+        {"metadata unreadable": "AccessDenied"},
+    ],
+)
 @pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
 def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request, machine, profile):
     desc, events = run_case(request.getfixturevalue(machine), "HappyPath", gate_profile=profile)
@@ -906,7 +920,8 @@ def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request,
     assert "QC_and_Align" not in states and "Quality_Gate" not in states  # no job ran
     assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
     error = published_message(events)["ErrorDetails"]
-    assert error["Error"] == "UnknownGateProfile" and json.dumps(profile) in error["Cause"]
+    # States.JsonToString writes compact JSON.
+    assert error["Error"] == "UnknownGateProfile" and json.dumps(profile, separators=(",", ":")) in error["Cause"]
     assert "default, synthetic" in error["Cause"]
 
 

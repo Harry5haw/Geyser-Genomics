@@ -221,12 +221,18 @@ def test_a_pairs_gate_profile_can_be_on_either_mate(trigger, aws):
     assert json.loads(sfn.started[0]["input"])["gate_profile"] == "synthetic"
 
 
-def test_mates_with_different_profiles_are_an_error(trigger, aws):
+def test_mates_with_different_profiles_go_on_as_both_for_the_state_machine_to_refuse(trigger, aws):
     meta = {
         "raw_reads/S1_R1.fastq.gz": {"gate-profile": "default"},
         "raw_reads/S1_R2.fastq.gz": {"gate-profile": "synthetic"},
     }
     s3, sfn = aws(PAIR, metadata=meta)
-    with pytest.raises(ValueError, match="differ"):
-        trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
-    assert sfn.started == []
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["gate_profile"] == ["default", "synthetic"]
+
+
+def test_mates_with_the_same_profile_give_one_value(trigger, aws):
+    meta = {k: {"gate-profile": "synthetic"} for k in PAIR}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    assert json.loads(sfn.started[0]["input"])["gate_profile"] == "synthetic"

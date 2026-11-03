@@ -325,15 +325,24 @@ Which thresholds a cloud run is judged by is per run, not global: the execution 
 | `default` (also when unset) | `default.toml` (human germline WGS, ~30x) | real samples |
 | `synthetic` | `synthetic.toml` | the CLOUD00x smoke tests and `make_test_data.py` data |
 
-- **Uploads:** set it with S3 user metadata `gate-profile` on the upload, for example
-  `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=synthetic`
-  (either mate of a pair; mates that disagree are an error). The trigger passes it on (one HeadObject
-  for a single-end upload). **Manual starts:** `"gate_profile": "synthetic"` in the input.
+- **Uploads:** set it with S3 user metadata `gate-profile` (or `gate_profile`) on the upload, for
+  example `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=synthetic`,
+  on either mate of a pair. The trigger passes it on exactly as uploaded (one HeadObject for a
+  single-end upload). **Manual starts:** `"gate_profile": "synthetic"` in the input. Values are
+  case-sensitive.
+- **One validator, visible failures:** the trigger never drops a run or picks for you. Mates that
+  disagree, a metadata key that looks like a misspelling (`gateprofile`) and metadata it couldn't read
+  all go on as values `Check_Gate_Profile` rejects, so the run fails with the reason, closed and
+  notified. A single-end profile is read when the trigger runs: like the reads themselves, an upload
+  overwritten in the meantime is judged as the newer one.
 - **Locally:** `run_local.py --gate-profile synthetic|default`. Without it, a `make_test_data.py` sample
   still gets `synthetic`.
-- **Checked first:** `Check_Gate_Profile`, before any job. An unknown profile (`strict`, `Synthetic` sent
-  past the trigger, a number) fails the run there, in either `gate_mode`, with `UnknownGateProfile`.
-  It never falls back to the default silently.
+- **Checked first:** `Check_Gate_Profile`, before any job. An unknown profile (`strict`, `Synthetic`,
+  a number, the trigger's flagged values) fails the run there, in either `gate_mode`, with
+  `UnknownGateProfile`. It never falls back to the default silently. The failure goes through
+  `Prepare_Run_Close` like any failed run, so the sample's record shows its latest run as failed.
+- **The image:** `GATE_CONFIG` is `$GATE_THRESHOLDS_DIR/<profile>.toml`, which every image with the gate
+  ships (main from #148 on); `default.toml` is also the binary's built-in default.
 - **Why:** with the human thresholds, a synthetic smoke test fails the gate (CLOUD015: mean depth 0.02x,
   0% at 10x, Ti/Tv 0.25). In warn mode that's only a recorded verdict, but in fail mode every smoke test
   would fail. With `gate-profile=synthetic` the smoke tests are judged by what they are.

@@ -355,7 +355,6 @@
       "Comment": "The quality gate (#144) on whichever caller ran. The job runs with GATE_MODE=warn (pinned here, whatever the job definition or the app default says), so a failed verdict never fails the job itself: it stores qc_reports/{id}.gate.json, and the states below decide. Mode is Terraform's gate_mode. The image must have the gate (main from #148 on).",
       "Parameters": {
         "Mode": "${gate_mode}",
-        "Profile.$": "$.gate_profile",
         "JobName.$": "States.Format('QualityGate-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
           "Command.$": "States.Array('python', 'tasks.py', 'gate', $.srr_id)",

@@ -95,13 +95,11 @@ DEEPVARIANT_ENV_VARS = (
 # GATE_MODE (warn | fail) and GATE_CONFIG (a thresholds file) set up the quality gate.
 PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE", "GATE_MODE", "GATE_CONFIG")
 # The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
-SYNTHETIC_GATE_CONFIG = {
-    "docker": "/opt/geyser-gate/thresholds/synthetic.toml",
-    "host": os.path.join(REPO_ROOT, "gate", "thresholds", "synthetic.toml"),
-}
 # The gate's threshold profiles (gate/thresholds/<profile>.toml), as the state machine's gate_profile
 # input names them (Check_Gate_Profile; tests/test_consistency.py keeps the three in step).
 GATE_PROFILES = ("default", "synthetic")
+# Where the image has gate/thresholds/ (Dockerfile: $GATE_THRESHOLDS_DIR).
+IMAGE_THRESHOLDS_DIR = "/opt/geyser-gate/thresholds"
 
 
 def gate_profile_config(profile, runner):
@@ -109,7 +107,7 @@ def gate_profile_config(profile, runner):
     if profile not in GATE_PROFILES:
         raise ValueError(f"gate profile must be one of {GATE_PROFILES}, got {profile!r}")
     if runner == "docker":
-        return f"/opt/geyser-gate/thresholds/{profile}.toml"
+        return f"{IMAGE_THRESHOLDS_DIR}/{profile}.toml"
     return os.path.join(REPO_ROOT, "gate", "thresholds", f"{profile}.toml")
 
 
@@ -267,7 +265,7 @@ def gate_config_for(root, sample_id, runner, profile=None):
     if host:
         return container_path(host, root) if runner == "docker" else None
     if os.path.exists(os.path.join(root, "truth", f"{sample_id}.json")):
-        return SYNTHETIC_GATE_CONFIG[runner]
+        return gate_profile_config("synthetic", runner)
     return None
 
 
@@ -278,7 +276,7 @@ def container_path(host_path, root):
         return host_path
     path = os.path.abspath(host_path)
     bases = (
-        (os.path.join(REPO_ROOT, "gate", "thresholds"), "/opt/geyser-gate/thresholds"),
+        (os.path.join(REPO_ROOT, "gate", "thresholds"), IMAGE_THRESHOLDS_DIR),
         (root, "/data"),
     )
     for base, target in bases:

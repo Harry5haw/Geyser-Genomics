@@ -220,10 +220,22 @@ def _start(trigger, monkeypatch, key="raw_reads/S1.fastq.gz"):
     return json.loads(calls[0]["input"])
 
 
-def test_an_uploads_gate_profile_metadata_reaches_the_input(trigger, monkeypatch, s3):
-    s3.metadata = {"gate-profile": " Synthetic "}
-    assert _start(trigger, monkeypatch)["gate_profile"] == "synthetic"  # trimmed, lower-cased
+@pytest.mark.parametrize("key", ["gate-profile", "gate_profile"])
+def test_an_uploads_gate_profile_metadata_reaches_the_input(trigger, monkeypatch, s3, key):
+    s3.metadata = {key: "synthetic"}
+    assert _start(trigger, monkeypatch)["gate_profile"] == "synthetic"
     assert s3.heads == ["raw_reads/S1.fastq.gz"]
+
+
+def test_the_value_goes_on_exactly_as_uploaded(trigger, monkeypatch, s3):
+    # No normalising here: the state machine is the one validator, for uploads and manual starts alike.
+    s3.metadata = {"gate-profile": " Synthetic "}
+    assert _start(trigger, monkeypatch)["gate_profile"] == " Synthetic "
+
+
+def test_a_misspelled_key_goes_on_flagged_not_ignored(trigger, monkeypatch, s3):
+    s3.metadata = {"gateprofile": "synthetic"}
+    assert _start(trigger, monkeypatch)["gate_profile"] == {"unrecognised metadata key": "gateprofile"}
 
 
 def test_without_the_metadata_the_input_has_no_profile(trigger, monkeypatch, s3):
@@ -237,7 +249,17 @@ def test_an_unknown_profile_is_passed_on_for_the_state_machine_to_refuse(trigger
     assert _start(trigger, monkeypatch)["gate_profile"] == "strict"
 
 
-def test_a_vanished_upload_is_an_error_not_a_default(trigger, monkeypatch, s3):
+def test_a_vanished_upload_still_starts_its_run(trigger, monkeypatch, s3):
+    # As before the profile: the run starts and QC fails on the missing upload, visibly.
     s3.missing = True
-    with pytest.raises(RuntimeError, match="is gone"):
-        _start(trigger, monkeypatch)
+    assert "gate_profile" not in _start(trigger, monkeypatch)
+
+
+def test_unreadable_metadata_goes_on_flagged_so_the_run_fails_visibly(trigger, monkeypatch, s3):
+    from botocore.exceptions import ClientError
+
+    def denied(Bucket, Key):
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "HeadObject")
+
+    s3.head_object = denied
+    assert _start(trigger, monkeypatch)["gate_profile"] == {"metadata unreadable": "AccessDenied"}
