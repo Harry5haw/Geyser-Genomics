@@ -7,6 +7,9 @@
 //!   the data the default thresholds were checked on. No run record (not run through run_local).
 //!   HG003's alignment is the pipeline's align stage on its reads (aligner benchmark); HG005's is the
 //!   downloaded 30x BAM, and its fastp report is of reads extracted from that BAM.
+//! - tests/fixtures/{CLOUD015,CLOUD006}/: two cloud smoke checkpoints (single-, paired-end) as the cloud wrote
+//!   them, run record included: 10,000 reads from a 50 kb window of chr20, aligned to the whole of chr20
+//!   (the data thresholds/smoke.toml is calibrated on)
 //! - tests/fixtures/HG003_chr20_giraffe/: HG003's same reads aligned to the HPRC chr20 graph with vg giraffe
 //!   (giraffe benchmark, #129) and called with DeepVariant: bcftools stats of its PASS calls, and of all
 //!   its records (RefCall candidates included) to show why DeepVariant stats must be PASS-only.
@@ -288,4 +291,73 @@ fn deepvariant_stats_must_count_pass_calls_only() {
     let (code, v, _) = run(dir.path(), "HG003_chr20_giraffe", &[]);
     assert_eq!(code, 1);
     assert_eq!(reasons(&v), ["tstv 0.8564 is below the minimum 1.7"]);
+}
+
+fn smoke_config() -> String {
+    crate_path("thresholds/smoke.toml").display().to_string()
+}
+
+/// A cloud smoke checkpoint as the cloud wrote it, run record included: CLOUD015 (single-end) or CLOUD006
+/// (paired-end), 10,000 reads from a 50 kb window of chr20 judged over the whole of chr20.
+fn cloud_bucket(sample: &str) -> tempfile::TempDir {
+    let record = fs::read_to_string(crate_path(&format!("tests/fixtures/{sample}/provenance.json"))).unwrap();
+    bucket(sample, Some(record))
+}
+
+#[test]
+fn cloud_smoke_tests_pass_the_smoke_profile() {
+    let dir = cloud_bucket("CLOUD015");
+    let (code, v, stderr) = run(dir.path(), "CLOUD015", &["--config", &smoke_config()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(v["verdict"], "pass");
+    assert_eq!(v["layout"], "single");
+    let m = &v["metrics"];
+    assert_eq!(
+        [&m["gc_pct"], &m["mean_depth"], &m["breadth_10x_pct"], &m["duplicate_pct"], &m["snps"], &m["tstv"]],
+        [&json!(37.4985), &json!(0.0222), &json!(0.0), &json!(4.78), &json!(10), &json!(0.25)]
+    );
+    assert_eq!(check(&v, "mean_depth")["status"], "pass");
+    assert!(stderr.contains("CLOUD015: PASS (11 checks)"), "{stderr}");
+
+    let dir = cloud_bucket("CLOUD006");
+    let (code, v, stderr) = run(dir.path(), "CLOUD006", &["--config", &smoke_config()]);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(v["layout"], "paired");
+    assert_eq!(check(&v, "properly_paired_pct")["value"], 100.0);
+    assert_eq!([&v["metrics"]["gc_pct"], &v["metrics"]["mean_depth"]], [&json!(37.2803), &json!(0.0232)]);
+}
+
+#[test]
+fn cloud_smoke_tests_fail_the_synthetic_profile_on_what_the_smoke_profile_relaxes() {
+    // Why `smoke` exists (#157): `synthetic` is calibrated for make_test_data.py's 50 kb random reference.
+    let dir = cloud_bucket("CLOUD015");
+    let (code, v, _) = run(dir.path(), "CLOUD015", &["--config", &synthetic_config()]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        reasons(&v),
+        [
+            "gc_pct 37.4985 is below the minimum 45",
+            "mean_depth 0.0222 is below the minimum 25",
+            "breadth_10x_pct 0 is below the minimum 95"
+        ]
+    );
+}
+
+#[test]
+fn the_smoke_profile_fails_real_samples_and_local_synthetic_data() {
+    // A profile for one fixed input: a real sample or the local synthetic data uploaded with
+    // gate-profile=smoke fails, rather than passing with checks that don't fit it.
+    let dir = giab_bucket("HG003_chr20");
+    let (code, v, _) = run(dir.path(), "HG003_chr20", &["--config", &smoke_config()]);
+    assert_eq!(code, 1);
+    assert!(reasons(&v).contains(&"mean_depth 36.7812 is above the maximum 0.03"), "{:?}", reasons(&v));
+    assert!(reasons(&v).contains(&"snps 118410 is above the maximum 10"), "{:?}", reasons(&v));
+
+    let (root, sample) = synthetic_bucket("single", "succeeded");
+    let (code, v, _) = run(root.path(), sample, &["--config", &smoke_config()]);
+    assert_eq!(code, 1);
+    assert_eq!(
+        reasons(&v),
+        ["gc_pct 49.5339 is above the maximum 40", "mean_depth 28.545 is above the maximum 0.03"]
+    );
 }

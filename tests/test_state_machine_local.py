@@ -885,7 +885,7 @@ def gate_environment(events) -> dict:
     return {e["Name"]: e["Value"] for e in params["ContainerOverrides"]["Environment"]}
 
 
-@pytest.mark.parametrize("profile", ["default", "synthetic"])
+@pytest.mark.parametrize("profile", ["default", "synthetic", "smoke"])
 def test_the_gate_profile_picks_the_thresholds_file(sfn, profile):
     desc, events = run_case(sfn, "HappyPath", gate_profile=profile)
     assert desc["status"] == "SUCCEEDED"
@@ -926,10 +926,10 @@ def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request,
     error = published_message(events)["ErrorDetails"]
     # States.JsonToString writes compact JSON.
     assert error["Error"] == "UnknownGateProfile" and json.dumps(profile, separators=(",", ":")) in error["Cause"]
-    assert "default, synthetic" in error["Cause"]
+    assert "default, synthetic, smoke" in error["Cause"]
 
 
-@pytest.mark.parametrize("profile", ["default", "synthetic"])
+@pytest.mark.parametrize("profile", ["default", "synthetic", "smoke"])
 @pytest.mark.parametrize(
     "machine,case,outcome",
     [

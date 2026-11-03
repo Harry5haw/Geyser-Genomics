@@ -116,7 +116,7 @@ ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them e
 # The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
 # The gate's threshold profiles (gate/thresholds/<profile>.toml), as the state machine's gate_profile
 # input names them (Check_Gate_Profile; tests/test_consistency.py keeps the three in step).
-GATE_PROFILES = ("default", "synthetic")
+GATE_PROFILES = ("default", "synthetic", "smoke")
 # Where the image has gate/thresholds/ (Dockerfile: $GATE_THRESHOLDS_DIR).
 IMAGE_THRESHOLDS_DIR = "/opt/geyser-gate/thresholds"
 

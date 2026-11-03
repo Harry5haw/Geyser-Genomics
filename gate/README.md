@@ -178,6 +178,17 @@ the alignment and variant bounds the Docker end-to-end test asserts, plus perfec
 `--leading-gap 1000`). No Ti/Tv check: 10 SNPs are too few for the ratio to mean anything. The default
 thresholds fail synthetic data, by design (Ti/Tv 1.5).
 
+### The smoke profile ([`thresholds/smoke.toml`](thresholds/smoke.toml))
+
+For the cloud smoke tests (the CLOUD0xx checkpoints): 10,000 real single-end reads (or 5,000 pairs)
+simulated from GRCh38 chr20:10,000,001-10,050,000 with 10 planted SNPs, aligned to the whole of chr20.
+Calibrated on every cloud checkpoint with stats, CLOUD005-CLOUD016 (11 runs, all identical). Because 50 kb
+of reads are judged over a 64.4 Mb chromosome, the mean depth is about 0.02x and breadth is 0, so there is
+no breadth check and the depth bounds (0.015-0.03) only check that the reads landed and were counted once.
+GC is real chr20 sequence (35-40%), exactly 10 SNPs and no indels, and the mapping, read-count and
+run-record checks are kept. No Ti/Tv check (10 SNPs). `synthetic` fails these runs (GC 37.5 < 45, depth,
+breadth), and `smoke` fails real samples and the local synthetic data (depth above 0.03, GC above 40).
+
 ## Verdict
 
 ```jsonc
@@ -323,19 +334,20 @@ Which thresholds a cloud run is judged by is per run, not global: the execution 
 | `gate_profile` | Thresholds | For |
 | :--- | :--- | :--- |
 | `default` (also when unset) | `default.toml` (human germline WGS, ~30x) | real samples |
-| `synthetic` | `synthetic.toml` | the CLOUD00x smoke tests and `make_test_data.py` data |
+| `synthetic` | `synthetic.toml` | `make_test_data.py` data (local runs, the Docker E2E) |
+| `smoke` | `smoke.toml` | the cloud smoke tests (CLOUD0xx: 10,000 real chr20 reads, 10 planted SNPs) |
 
 - **Uploads:** set it with S3 user metadata `gate-profile` (or `gate_profile`) on the upload, for
-  example `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=synthetic`,
+  example `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=smoke`,
   on either mate of a pair. The trigger passes it on exactly as uploaded (one HeadObject for a
-  single-end upload). **Manual starts:** `"gate_profile": "synthetic"` in the input. Values are
+  single-end upload). **Manual starts:** `"gate_profile": "smoke"` in the input. Values are
   case-sensitive.
 - **One validator, visible failures:** the trigger never drops a run or picks for you. Mates that
   disagree, a metadata key that looks like a misspelling (`gateprofile`) and metadata it couldn't read
   all go on as values `Check_Gate_Profile` rejects, so the run fails with the reason, closed and
   notified. A single-end profile is read when the trigger runs: like the reads themselves, an upload
   overwritten in the meantime is judged as the newer one.
-- **Locally:** `run_local.py --gate-profile synthetic|default`. Without it, a `make_test_data.py` sample
+- **Locally:** `run_local.py --gate-profile default|synthetic|smoke`. Without it, a `make_test_data.py` sample
   still gets `synthetic`.
 - **Checked first:** `Check_Gate_Profile`, before any job. An unknown profile (`strict`, `Synthetic`,
   a number, the trigger's flagged values) fails the run there, in either `gate_mode`, with
@@ -345,7 +357,8 @@ Which thresholds a cloud run is judged by is per run, not global: the execution 
   ships (main from #148 on); `default.toml` is also the binary's built-in default.
 - **Why:** with the human thresholds, a synthetic smoke test fails the gate (CLOUD015: mean depth 0.02x,
   0% at 10x, Ti/Tv 0.25). In warn mode that's only a recorded verdict, but in fail mode every smoke test
-  would fail. With `gate-profile=synthetic` the smoke tests are judged by what they are.
+  would fail. `synthetic` doesn't fit them either: it is calibrated for the local 50 kb random
+  reference at ~30x. With `gate-profile=smoke` the smoke tests are judged by what they are.
 
 ## Warn now, fail later
 
@@ -361,7 +374,7 @@ The user's decision (2 Nov 2026): **warn first, then fail** (#157).
   `infrastructure/variables.tf`), then `terraform plan` (expect only an in-place update of the state
   machine) and, after review, apply. Together with the threshold profile (above) it is **one apply**:
   the profile's state-machine change and `gate_mode` are the same resource (plus the trigger Lambda's
-  code). From then on, upload smoke tests with `--metadata gate-profile=synthetic`.
+  code). From then on, upload smoke tests with `--metadata gate-profile=smoke`.
 - **Back:** `gate_mode = "warn"`, the same in-place update.
 
 ## Not yet
