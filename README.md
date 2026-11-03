@@ -54,14 +54,15 @@
 3.  [The Challenge: From a DNA Sample to an Answer](#-the-challenge-from-a-dna-sample-to-an-answer)
 4.  [Design Goals and Where They Stand](#-design-goals-and-where-they-stand)
 5.  [Project Status & Features](#️-project-status--features)
-6.  [How It Works: The Architecture](#️-how-it-works-the-architecture)
-7.  [Technical Deep Dive](#-technical-deep-dive)
-8.  [Run It Locally in 2 Minutes (No AWS)](#-run-it-locally-in-2-minutes-no-aws)
-9.  [Web UI](#️-web-ui)
-10. [Deployment & Usage](#-deployment--usage)
-11. [Roadmap](#️-roadmap)
-12. [Repository Layout](#️-repository-layout)
-13. [Contributing, Security and Citing](#-contributing-security-and-citing)
+6.  [Results](#-results)
+7.  [How It Works: The Architecture](#️-how-it-works-the-architecture)
+8.  [Technical Deep Dive](#-technical-deep-dive)
+9.  [Run It Locally in 2 Minutes (No AWS)](#-run-it-locally-in-2-minutes-no-aws)
+10. [Web UI](#️-web-ui)
+11. [Deployment & Usage](#-deployment--usage)
+12. [Roadmap](#️-roadmap)
+13. [Repository Layout](#️-repository-layout)
+14. [Contributing, Security and Citing](#-contributing-security-and-citing)
 
 ---
 
@@ -203,6 +204,22 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 | **Variant consequences** | ✅ Local | `bcftools csq` when the reference has gene models (`reference/<name>.gff3.gz`), shown in the web UI. The cloud reference has none yet. |
 | **Web UI** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (QC summary and report, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
 | **Other S3-compatible storage** | ✅ Unit-tested | `S3_ENDPOINT_URL` points the storage layer at any S3-compatible service (OVHcloud Object Storage, MinIO, LocalStack). Not yet run against one. |
+
+---
+
+## 📊 Results
+
+Real chromosome 20 data (GIAB HG003 and HG005), drawn by scripts from small derived CSVs, never by hand. Sources, commands and the numbers behind each figure are in [docs/figures](docs/figures/README.md). Click a figure for the SVG.
+
+<a href="docs/figures/coverage-terrain.svg"><img src="docs/figures/coverage-terrain.png" alt="Ridgeline of read depth along chr20 for seven alignments of HG003 and HG005: flat along the arms, rising around the centromere at 26-31 Mb with a spike at 31 Mb in every alignment" width="100%"/></a>
+
+**Read depth along chr20, seven alignments.** Coverage is flat along the chromosome arms, but around the centromere (26-31 Mb) reads pile up in every alignment, to about 1.7× the usual depth, and 2-3× in one window at 31 Mb, most likely reads from repeated sequence piling up on the reference's single copy.
+
+<a href="docs/figures/variant-density.svg"><img src="docs/figures/variant-density.png" alt="Heatmap of calls per megabase along chr20 for bcftools, DeepVariant and pangenome-aware DeepVariant on HG003 and HG005: bcftools is much denser around 28-31 Mb" width="100%"/></a>
+
+**Calls per megabase along chr20, by caller.** In that same pile-up, bcftools makes about 4× as many calls per Mb as DeepVariant's PASS calls (HG003, 29-30 Mb: 16,421 against 3,763), and about 25% more over the whole chromosome. bcftools applies no filter here, so its row is every call, as hap.py scored it. Linear and pangenome-aware DeepVariant look the same at this scale.
+
+Also: [per-base quality by sequencing cycle](docs/figures/quality-surface.png) for the six real-sample cloud runs (R2 a little lower than R1 towards the end of the read, as expected for Illumina).
 
 ---
 
