@@ -1,5 +1,6 @@
 """Nothing at build time checks that tasks.py, the state machine and the local runner agree. This does."""
 
+import fnmatch
 import glob
 import json
 import os
@@ -185,6 +186,46 @@ def test_gate_profiles_agree_across_the_state_machine_run_local_and_the_threshol
         f[: -len(".toml")] for f in os.listdir(os.path.join(REPO_ROOT, "gate", "thresholds")) if f.endswith(".toml")
     }
     assert in_state_machine == set(run_local.GATE_PROFILES) == shipped
+
+
+def _choice_matches(rule, value):
+    """Evaluate one Choice rule on $.reference_name = value: only the operators Check_Reference_Name uses."""
+    if "And" in rule:
+        return all(_choice_matches(r, value) for r in rule["And"])
+    if "Not" in rule:
+        return not _choice_matches(rule["Not"], value)
+    assert rule["Variable"] == "$.reference_name", rule
+    if "IsPresent" in rule:
+        return (value is not _ABSENT) == rule["IsPresent"]
+    if "IsString" in rule:
+        return isinstance(value, str) == rule["IsString"]
+    if not isinstance(value, str):  # string comparisons are false on other types
+        return False
+    if "StringEquals" in rule:
+        return value == rule["StringEquals"]
+    if "StringMatches" in rule:
+        return fnmatch.fnmatchcase(value, rule["StringMatches"])
+    raise AssertionError(f"Check_Reference_Name uses an operator this test doesn't know: {rule}")
+
+
+_ABSENT = object()
+
+
+def test_reference_rules_agree_across_the_state_machine_and_run_local(tmp_path):
+    # Check_Reference_Name (which names may be looked up) and run_local.reference_problem refuse the same
+    # names, and Check_Reference looks where tasks.py reads the FASTA (tasks.REFERENCE_PREFIX).
+    states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
+    choice = states["Check_Reference_Name"]
+    (lookup,) = [c for c in choice["Choices"] if c["Next"] == "Check_Reference"]
+    (reference_dir := tmp_path / "reference").mkdir()
+    for value in ["chr20.fa", "GRCh38 v2.fa", "", "sub/r.fa", "/r.fa", "r.fa/", 42, None, ["chr20.fa"], {"a": 1}]:
+        if isinstance(value, str) and value and "/" not in value:
+            (reference_dir / value).write_text(">r\nA\n")
+        assert _choice_matches(lookup, value) == (run_local.reference_problem(str(tmp_path), value) is None), value
+    assert _choice_matches(choice["Choices"][0], _ABSENT)  # a missing name has its own message
+    check = states["Check_Reference"]
+    assert check["Resource"] == "arn:aws:states:::aws-sdk:s3:headObject"
+    assert check["Parameters"]["Key.$"] == f"States.Format('{tasks.REFERENCE_PREFIX}{{}}', $.reference_name)"
 
 
 def test_run_overrides_agree_with_their_checks_and_terraform():

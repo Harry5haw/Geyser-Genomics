@@ -1,6 +1,6 @@
 # A vg giraffe align stage for the whole genome (design, #146)
 
-**Status:** design only; nothing here is built. It sizes an `ALIGNER=giraffe` align stage for a whole human genome, so the cloud decision (instance class, budget) can be made from numbers. The headline measurements in #146 are on HG003 chr20. Every whole-genome number below is labelled **measured**, **published** or **estimated**, and the estimates say what they assume.
+**Status:** the align stage is built and tested offline (`ALIGNER=giraffe`, `app-giraffe/`, run locally with `run_local.py --aligner giraffe`); the cloud job definition, the variants-stage flag rule (§5) and the whole-genome measurements (§6) are still to do. This note sizes an `ALIGNER=giraffe` align stage for a whole human genome, so the cloud decision (instance class, budget) can be made from numbers. The headline measurements in #146 are on HG003 chr20. Every whole-genome number below is labelled **measured**, **published** or **estimated**, and the estimates say what they assume.
 
 **Why giraffe at all:** on Google's whole-genome alignments of HG003 35x, scored on chr20 (#145), vg giraffe + linear DeepVariant has **half the errors** of BWA + DeepVariant: 186 against 378 SNP+indel errors in hap.py. In low-mappability regions, SNP errors fall from 257 to 46. Graph alignment is where the pangenome pays off (#51).
 
@@ -140,8 +140,9 @@ A whole-genome cloud run is therefore **a budget decision for the user**: spot o
 - **Image:** a separate `app-giraffe/` image (vg 1.55.0 static binary + kmc 3.2.4 + our samtools, sharing `app/tasks.py`), like `app-deepvariant/`, rather than adding vg to `geyser-app`.
   - `geyser-app` was just slimmed to 87 MB compressed (#142); every bwa-mem2 and QC job would pay vg's size in start-up time.
   - The giraffe job's start-up is negligible next to ~10 h.
-- **Reference files:** under `reference/pangenome/`: `<graph>.gbz`, `<graph>.hapl`, `<graph>.GRCh38.paths.txt`.
-  - Uploaded once, from HPRC's published files where they exist, like the bwa-mem2 index (#115).
+- **Graph files (as built):** `pangenome/<graph>.gbz` with `<graph stem>.hapl` beside it (`.dist`/`.min` for `GIRAFFE_SAMPLING=off`). That is the key pangenome-aware DeepVariant, `make_test_data.py --pangenome` and `benchmark_giraffe.py` already use, so one stored graph serves the aligner and the caller (rather than the `reference/pangenome/` this note first proposed). `GIRAFFE_GRAPH` names the graph; the default is `<reference stem>.gbz`.
+  - Uploaded once, from HPRC's published files where they exist, like the bwa-mem2 index (#115). A `.hapl` that isn't stored is built in the job, which for a whole genome takes hours.
+  - The GRCh38 path list isn't stored: `vg paths -L -Q GRCh38` writes it in seconds per job.
   - The align job downloads them; at ~9 GB that's under a minute in-region.
 - **Code** (#146's remaining tasks):
   - `ALIGNER=giraffe` in `prepare_aligner` / `align_command`: kmc → `vg haplotypes` → `vg giraffe` → rename → the existing fixmate | sort | markdup;

@@ -21,6 +21,13 @@ and the state machine uses `default`. The state machine is the one validator (Ch
 anything the trigger can't pass on as a plain value (mates that disagree, a metadata key that looks
 like a misspelling, metadata it couldn't read) goes on as a value the state machine rejects, so the
 run fails visibly, recorded and notified, instead of being dropped here or using the default.
+
+Reference genome per upload: S3 user metadata `reference` (e.g. `--metadata reference=GRCh38.fa`, on
+either mate) names the FASTA under reference/ that the run aligns to and calls against. It is handled
+exactly like the gate profile: read from the same HeadObject, passed on as `reference_name` as
+uploaded, and validated only by the state machine (Check_Reference_Name, then Check_Reference: the
+object reference/<name> must exist) before any job starts. Without the metadata the run uses
+REFERENCE_NAME or DEFAULT_REFERENCE_GENOME, as before.
 """
 
 import hashlib
@@ -42,6 +49,9 @@ NOT_FOUND_CODES = ("404", "NoSuchKey", "NotFound")
 # S3 user metadata (x-amz-meta-gate-profile) naming the quality gate's thresholds for this run (#157).
 # Both spellings count; any other key with "gate" in it is passed on flagged (a likely misspelling).
 GATE_PROFILE_METADATA = ("gate-profile", "gate_profile")
+# S3 user metadata (x-amz-meta-reference) naming this upload's reference genome under reference/.
+# Any other key with "ref" in it is passed on flagged (a likely misspelling, e.g. "refernce", "genome-ref").
+REFERENCE_METADATA = ("reference", "reference-name", "reference_name")
 
 # Execution names: 1-80 characters. Kept to [A-Za-z0-9_-] because the name is reused in the Batch job
 # names (letters, digits, hyphens, underscores; max 128) and non-ASCII names break CloudWatch logging.
@@ -186,25 +196,34 @@ def _head(bucket: str, key: str):
         raise
 
 
-def gate_profile(heads):
-    """The upload's gate_profile for the input: the gate-profile metadata as uploaded, or None if unset.
+def _metadata_value(heads, keys, hint):
+    """One setting from the upload's S3 user metadata, as uploaded, or None if unset.
 
-    heads: the HeadObject responses of the upload (one, or both mates). Never raises and never picks:
-    mates that disagree give both values (a list), and a metadata key with "gate" in it that isn't one
-    of GATE_PROFILE_METADATA gives {"unrecognised metadata key": key}. The state machine rejects both,
-    so the run fails visibly with the reason.
+    heads: the HeadObject responses of the upload (one, or both mates). keys: the metadata keys that
+    name the setting. hint: a substring that makes any other key a likely misspelling of it. Never
+    raises and never picks: mates that disagree give both values (a list), and a key containing hint
+    that isn't one of keys gives {"unrecognised metadata key": key}. The state machine rejects both
+    (they aren't plain strings), so the run fails visibly with the reason.
     """
     values = []
     for head in heads:
         for key, value in ((head or {}).get("Metadata") or {}).items():
-            found = (
-                value if key in GATE_PROFILE_METADATA else {"unrecognised metadata key": key} if "gate" in key else None
-            )
+            found = value if key in keys else {"unrecognised metadata key": key} if hint in key else None
             if found is not None and found not in values:
                 values.append(found)
     if not values:
         return None
     return values[0] if len(values) == 1 else values
+
+
+def gate_profile(heads):
+    """The upload's gate_profile for the input (metadata gate-profile), or None if unset (#157)."""
+    return _metadata_value(heads, GATE_PROFILE_METADATA, "gate")
+
+
+def reference_metadata(heads):
+    """The upload's reference_name for the input (metadata reference), or None if unset."""
+    return _metadata_value(heads, REFERENCE_METADATA, "ref")
 
 
 def _response(status: int, **body) -> dict:
@@ -237,15 +256,17 @@ def handler(event, context):
         name = build_execution_name(
             sample_id, record.get("eventTime"), f"{bucket_name}/{object_key}/{sequencer}" if sequencer else None
         )
-        # For its metadata only (the gate profile); the name still comes from the event, as before. A
-        # vanished upload starts the run as before (QC then fails on it, visibly); metadata that can't be
-        # read goes on flagged, so the run fails at Check_Gate_Profile rather than here, unseen.
+        # For its metadata only (gate profile, reference); the name still comes from the event, as
+        # before. A vanished upload starts the run as before (QC then fails on it, visibly); metadata
+        # that can't be read goes on flagged, so the run fails at Check_Gate_Profile rather than here,
+        # unseen (and with neither setting silently defaulted).
         try:
             head = _head(bucket_name, object_key)
-            profile = gate_profile([head]) if head is not None else None
+            heads = [head] if head is not None else []
+            profile, reference = gate_profile(heads), reference_metadata(heads)
         except Exception as err:  # noqa: BLE001 - reported through the run, not by dropping the event
             logger.warning(f"could not read the metadata of s3://{bucket_name}/{object_key}: {err}")
-            profile = {"metadata unreadable": _error_code(err) or type(err).__name__}
+            profile = reference = {"metadata unreadable": _error_code(err) or type(err).__name__}
     else:
         other_key = mate_key(object_key)
         keys = {mate: object_key, parse_raw_key(other_key)[1]: other_key}
@@ -258,9 +279,13 @@ def handler(event, context):
             logger.info(f"'{sample_id}': {mate} arrived, waiting for s3://{bucket_name}/{waiting_for}")
             return _response(202, waiting_for=waiting_for)
         name = paired_execution_name(sample_id, [(heads[m]["ETag"], heads[m]["LastModified"]) for m in MATES])
-        profile = gate_profile(heads.values())
+        profile, reference = gate_profile(heads.values()), reference_metadata(heads.values())
     if profile:
         pipeline_input["gate_profile"] = profile
+    # Even an empty value goes on (the state machine rejects it): metadata that is set never falls back
+    # to REFERENCE_NAME / the default silently.
+    if reference is not None:
+        pipeline_input["reference_name"] = reference
 
     logger.info(f"Triggering pipeline for '{sample_id}' from s3://{bucket_name}/{object_key}")
     try:

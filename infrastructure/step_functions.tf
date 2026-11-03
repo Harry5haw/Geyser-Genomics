@@ -32,6 +32,12 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
       # Read_Regions reads the planner's output (tasks.py regions --output-key) straight from S3.
       { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/variant-regions/*" },
+      # Check_Reference checks the run's reference/<name> exists before any job (HeadObject needs
+      # s3:GetObject). s3:ListBucket makes S3 answer a missing reference with 404 (NoSuchKey) instead of
+      # 403, so the run fails with "not found" rather than an access error. As for the trigger Lambda,
+      # it can't be narrowed by prefix: HeadObject carries no s3:prefix to match.
+      { Sid = "CheckReference", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/reference/*" },
+      { Sid = "MissingReferenceIs404", Effect = "Allow", Action = "s3:ListBucket", Resource = aws_s3_bucket.data_lake.arn },
       # Close_Run_Record writes a failed run's closing run-record part (#155), and only that object.
       { Sid = "CloseRunRecord", Effect = "Allow", Action = "s3:PutObject", Resource = "${aws_s3_bucket.data_lake.arn}/runs/*.provenance/Finalize.json" },
       # Read_Gate_Verdict reads the quality gate's verdict (tasks.py gate) to decide warn or fail.
