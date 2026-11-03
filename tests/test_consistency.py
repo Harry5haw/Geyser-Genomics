@@ -100,8 +100,12 @@ def test_quality_gate_reads_the_keys_the_stages_write():
     # gate/ (Rust) hardcodes the stats and run record keys; a rename in tasks.py or provenance.py must reach it.
     import provenance
 
-    with open(os.path.join(REPO_ROOT, "gate", "src", "inputs.rs"), encoding="utf-8") as fh:
-        rs = fh.read()
+    # gate/src/inputs/: mod.rs has the keys, run_record.rs the schema; read them all, wherever they live.
+    inputs_dir = os.path.join(REPO_ROOT, "gate", "src", "inputs")
+    rs = ""
+    for name in sorted(os.listdir(inputs_dir)):
+        with open(os.path.join(inputs_dir, name), encoding="utf-8") as fh:
+            rs += fh.read()
     gate_keys = {
         k.replace("{sample_id}", "S1") for k in re.findall(r'format!\("((?:qc_reports|stats|runs)/[^"]+)"', rs)
     }
