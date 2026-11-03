@@ -170,6 +170,14 @@ def test_haplotype_index_is_built_from_distance_index_and_r_index():
     assert steps[2][-5:] == ["-r", f["ri"], "-H", f["hapl"], f["gbz"]]
 
 
+def test_a_fasta_index_for_giraffe_is_refused_before_any_download(local_env, monkeypatch):
+    monkeypatch.setenv("ALIGNER", "giraffe")  # as the geyser-giraffe image sets it
+    with pytest.raises(ValueError, match="no FASTA index"):
+        tasks.ensure_reference_local("absent.fa", str(local_env))  # nothing stored: a download would fail otherwise
+    with pytest.raises(ValueError, match="no FASTA index"):
+        tasks.prepare_aligner("ref.fa", "/w/ref.fa", "giraffe")
+
+
 def test_align_command_refuses_giraffe():
     with pytest.raises(ValueError, match="giraffe_align"):
         tasks.align_command("/w/ref.fa", "/w/S1.fastq.gz", "/w/S1.cram", 4, "/w", "S1", "giraffe")

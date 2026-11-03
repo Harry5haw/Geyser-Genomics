@@ -397,6 +397,8 @@ def ensure_reference_local(reference_name: str, dest_dir: str, need_bwa_index: b
     local_ref = os.path.join(dest_dir, reference_name)
     if need_bwa_index:
         aligner = check_aligner(aligner) if aligner else aligner_from_env()  # before the (large) download
+        if aligner == GIRAFFE:
+            raise ValueError("giraffe has no FASTA index: it aligns to a pangenome graph (prepare_graph)")
 
     try:
         print(f"Fetching reference {storage().describe(fasta_key)}")
@@ -421,11 +423,13 @@ def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
     """Choose the aligner for this reference (effective_aligner) and fetch or build its index.
 
     Returns the aligner to run. The only way to a FASTA aligner index, so the guard can't be skipped.
-    giraffe has no FASTA index: it aligns to its graph, which align_task fetches with prepare_graph.
+    giraffe has no FASTA index (it aligns to its graph: prepare_graph), so asking for one is an error,
+    not a reference that silently comes back without an index.
     """
+    if requested == GIRAFFE:
+        raise ValueError("giraffe has no FASTA index: it aligns to a pangenome graph (prepare_graph)")
     aligner = effective_aligner(requested, local_ref)
-    if aligner != GIRAFFE:
-        _ensure_aligner_index(reference_name, local_ref, aligner)
+    _ensure_aligner_index(reference_name, local_ref, aligner)
     return aligner
 
 
