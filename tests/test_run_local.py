@@ -14,10 +14,11 @@ def names(jobs):
 
 
 def test_default_caller_runs_exactly_the_state_machine_stages():
-    jobs = run_local.pipeline_jobs("S1", "ref.fa")
+    # The quality gate is the state machine's last step (#144); run_local's command line runs it by default.
+    jobs = run_local.pipeline_jobs("S1", "ref.fa", gate=True)
     assert [j["cmd"] for j in jobs] == [
         run_local.stage_command(stage, "S1", "ref.fa", needs_ref) for stage, needs_ref in run_local.STAGES
-    ]
+    ] + [run_local.stage_command("gate", "S1", None, False)]
     assert all(j["image"] == "geyser-app" and not j["gpus"] for j in jobs)
 
 
@@ -185,7 +186,8 @@ def test_a_deepvariant_only_run_is_gated_but_an_added_caller_is_not():
     assert "gate" not in [j["name"] for j in jobs]
 
 
-def test_pipeline_jobs_default_is_still_the_state_machine():
+def test_pipeline_jobs_runs_the_gate_only_when_asked():
+    # The command line asks (unless --no-gate); callers of pipeline_jobs() choose explicitly.
     assert "gate" not in [j["name"] for j in run_local.pipeline_jobs("S1", "r.fa")]
 
 
@@ -233,3 +235,30 @@ def test_main_runs_the_gate_unless_no_gate(tmp_path, monkeypatch):
     ran.clear()
     assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa", "--no-gate"]) == 0
     assert ran == ["qc", "align", "variants"]
+
+
+def test_gate_profile_picks_the_thresholds_file_and_wins_over_the_rest(tmp_path, monkeypatch):
+    (tmp_path / "truth").mkdir()
+    (tmp_path / "truth" / "S1.json").write_text("{}")  # would mean synthetic
+    monkeypatch.setenv("GATE_CONFIG", "/opt/geyser-gate/thresholds/synthetic.toml")
+    assert (
+        run_local.gate_config_for(str(tmp_path), "S1", "docker", "default")
+        == "/opt/geyser-gate/thresholds/default.toml"
+    )
+    host = run_local.gate_config_for(str(tmp_path), "S1", "host", "synthetic")
+    assert host == os.path.join(run_local.REPO_ROOT, "gate", "thresholds", "synthetic.toml") and os.path.isfile(host)
+    with pytest.raises(ValueError, match="gate profile must be one of"):
+        run_local.gate_profile_config("strict", "docker")
+
+
+def test_main_passes_the_gate_profile_to_the_gate_job(tmp_path, monkeypatch):
+    (tmp_path / "raw_reads").mkdir()
+    (tmp_path / "raw_reads" / "S1.fastq.gz").write_bytes(b"")
+    jobs = []
+    monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: jobs.append(job) or 0)
+    args = ["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa", "--gate-profile", "synthetic"]
+    assert run_local.main(args) == 0
+    (gate,) = [j for j in jobs if j["name"] == "gate"]
+    assert gate["env"] == {"GATE_CONFIG": "/opt/geyser-gate/thresholds/synthetic.toml"}
+    with pytest.raises(SystemExit):
+        run_local.main(args[:-1] + ["strict"])

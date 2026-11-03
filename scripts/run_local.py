@@ -11,8 +11,8 @@ This plays the part of the cloud orchestration:
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 
 After variant calling, the quality gate (tasks.py gate, #144) checks the run's QC statistics and
-writes qc_reports/<id>.gate.json; it isn't a Step Functions state yet. GATE_MODE=warn (default) only
-warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
+writes qc_reports/<id>.gate.json, as the state machine's last step does in the cloud. GATE_MODE=warn
+(default) only warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
 it uses the synthetic thresholds unless GATE_CONFIG is set; --no-gate skips it.
 
 Typical use:
@@ -95,10 +95,22 @@ DEEPVARIANT_ENV_VARS = (
 # GATE_MODE (warn | fail) and GATE_CONFIG (a thresholds file) set up the quality gate.
 PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE", "GATE_MODE", "GATE_CONFIG")
 # The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
-SYNTHETIC_GATE_CONFIG = {
-    "docker": "/opt/geyser-gate/thresholds/synthetic.toml",
-    "host": os.path.join(REPO_ROOT, "gate", "thresholds", "synthetic.toml"),
-}
+# The gate's threshold profiles (gate/thresholds/<profile>.toml), as the state machine's gate_profile
+# input names them (Check_Gate_Profile; tests/test_consistency.py keeps the three in step).
+GATE_PROFILES = ("default", "synthetic")
+# Where the image has gate/thresholds/ (Dockerfile: $GATE_THRESHOLDS_DIR).
+IMAGE_THRESHOLDS_DIR = "/opt/geyser-gate/thresholds"
+
+
+def gate_profile_config(profile, runner):
+    """GATE_CONFIG for a threshold profile: its file in the image, or in the repo for --runner host."""
+    if profile not in GATE_PROFILES:
+        raise ValueError(f"gate profile must be one of {GATE_PROFILES}, got {profile!r}")
+    if runner == "docker":
+        return f"{IMAGE_THRESHOLDS_DIR}/{profile}.toml"
+    return os.path.join(REPO_ROOT, "gate", "thresholds", f"{profile}.toml")
+
+
 # ALTs that are not real variants (gVCF-style placeholders, DeepVariant RefCall rows).
 NON_VARIANT_ALTS = {".", "<*>", "<NON_REF>"}
 
@@ -242,15 +254,18 @@ def local_regions(root, reference_name, window):
     return tasks.reference_regions(os.path.join(root, "reference", reference_name), window)
 
 
-def gate_config_for(root, sample_id, runner):
-    """GATE_CONFIG for the gate job: the host's if set (for docker, a host file in the repo's
-    gate/thresholds/ or under the storage root becomes its path in the container), else the synthetic
-    thresholds for a make_test_data.py sample (it has truth/<id>.json), else None (built-in thresholds)."""
+def gate_config_for(root, sample_id, runner, profile=None):
+    """GATE_CONFIG for the gate job: an explicit --gate-profile's file, else the host's GATE_CONFIG if set
+    (for docker, a host file in the repo's gate/thresholds/ or under the storage root becomes its path
+    in the container), else the synthetic thresholds for a make_test_data.py sample (it has
+    truth/<id>.json), else None (built-in thresholds)."""
+    if profile:
+        return gate_profile_config(profile, runner)
     host = os.environ.get("GATE_CONFIG")
     if host:
         return container_path(host, root) if runner == "docker" else None
     if os.path.exists(os.path.join(root, "truth", f"{sample_id}.json")):
-        return SYNTHETIC_GATE_CONFIG[runner]
+        return gate_profile_config("synthetic", runner)
     return None
 
 
@@ -261,7 +276,7 @@ def container_path(host_path, root):
         return host_path
     path = os.path.abspath(host_path)
     bases = (
-        (os.path.join(REPO_ROOT, "gate", "thresholds"), "/opt/geyser-gate/thresholds"),
+        (os.path.join(REPO_ROOT, "gate", "thresholds"), IMAGE_THRESHOLDS_DIR),
         (root, "/data"),
     )
     for base, target in bases:
@@ -489,6 +504,12 @@ def main(argv=None):
     )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     p.add_argument("--no-gate", action="store_true", help="skip the quality gate after variant calling")
+    p.add_argument(
+        "--gate-profile",
+        choices=GATE_PROFILES,
+        help="the gate's thresholds, as the cloud's gate_profile input (S3 metadata gate-profile) names them; "
+        "default: synthetic for make_test_data.py samples, else the built-in human WGS thresholds",
+    )
     a = p.parse_args(argv)
     if a.shard_window is not None and a.shard_window < 1:
         p.error("--shard-window must be >= 1")
@@ -523,7 +544,7 @@ def main(argv=None):
             else None,
             shard_window=a.shard_window,
             gate=not a.no_gate,
-            gate_config=gate_config_for(a.root, sample_id, a.runner),
+            gate_config=gate_config_for(a.root, sample_id, a.runner, a.gate_profile),
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:

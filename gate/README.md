@@ -9,10 +9,10 @@ It doesn't re-run any tool. It only reads the tools' own output files and applie
 small TOML file. It is written in Rust because it is meant to ship as one static binary
 (1 MB, `x86_64-unknown-linux-musl`) that can be copied into the pipeline image without adding a runtime.
 
-> **Status:** in the pipeline image and run by `tasks.py gate <id>` after variant calling (#144), in
-> **warn** mode by default: the verdict is stored and recorded, and a failed verdict doesn't fail the run.
-> `run_local.py` runs it; the cloud's Step Functions state for it is a later infrastructure change. See
-> [In the pipeline](#in-the-pipeline).
+> **Status:** in the pipeline image and run by `tasks.py gate <id>` after variant calling (#144):
+> locally by `run_local.py`, in the cloud by a Step Functions state after either caller. **Warn** mode
+> for now: the verdict is stored and recorded, and a failed verdict doesn't fail the run. See
+> [In the pipeline](#in-the-pipeline) and [Warn now, fail later](#warn-now-fail-later).
 
 ## Inputs
 
@@ -287,12 +287,86 @@ A gate re-run by hand (`tasks.py gate <id>` without `RUN_NAME`) keeps the core s
 not the extra callers': a run still in progress (gate done, DeepVariant running) would otherwise borrow
 an older run's DeepVariant entry.
 
+### In the cloud (Step Functions)
+
+After `Call_Variants` (bcftools, merged) or a successful `DeepVariant`, the state machine runs
+`Prepare_Gate_Command` → **`Quality_Gate`** (a Batch job at QC's size: `tasks.py gate <id>`, 900 s
+attempt limit) → **`Read_Gate_Verdict`** (reads `qc_reports/<id>.gate.json` straight from S3) →
+**`Gate_Decision`**. The job always runs the app's warn mode, so a failed verdict never fails the job;
+the state machine decides with Terraform's **`gate_mode`**:
+
+| Verdict | `gate_mode = "warn"` (default) | `gate_mode = "fail"` |
+| :--- | :--- | :--- |
+| pass | `Pipeline_Succeeded` | `Pipeline_Succeeded` |
+| fail | `Gate_Warned` → `Pipeline_Succeeded` (recorded) | `Notify_Failure` → `Pipeline_Failed`; the notification's error is `QualityGateFailed`, its cause lists the gate's reasons |
+| none (the job failed, the verdict is missing, unreadable or `null`) | `Gate_Skipped` → `Pipeline_Succeeded` (not judged) | `Notify_Failure` → `Pipeline_Failed`; the notification's error is `QualityGateError` |
+
+The execution itself always fails as `PipelineStageFailed`, like any failed stage. The gate's error and
+reasons are in the SNS failure notification (`ErrorDetails`) and in the execution's data (`$.error`,
+`$.gate.verdict`); the job pins `GATE_MODE=warn`, so the state machine is the one place the mode is
+decided. Before applying, the image in ECR (`dev-local`) must have the gate (main from #148 on):
+with an older image every gate job fails, which warn mode shows as `Gate_Skipped` on every run.
+
+The gate costs one more Fargate job per run: about a minute of start-up overhead and a fraction of a
+cent. Verdicts are per sample (`qc_reports/<id>.gate.json`), like every other key of a sample, so two
+runs of the same sample at once can read each other's verdict, as they already overwrite each other's
+stats; `scripts/reconcile.py` flags concurrent runs.
+
+A stage that fails before the gate (QC, align, variants) ends the run through `Notify_Failure` as before;
+the gate never runs then.
+
+### Threshold profile per run (`gate_profile`)
+
+Which thresholds a cloud run is judged by is per run, not global: the execution input's
+**`gate_profile`** names a file in the image's `$GATE_THRESHOLDS_DIR` (`gate/thresholds/`):
+
+| `gate_profile` | Thresholds | For |
+| :--- | :--- | :--- |
+| `default` (also when unset) | `default.toml` (human germline WGS, ~30x) | real samples |
+| `synthetic` | `synthetic.toml` | the CLOUD00x smoke tests and `make_test_data.py` data |
+
+- **Uploads:** set it with S3 user metadata `gate-profile` (or `gate_profile`) on the upload, for
+  example `aws s3 cp reads.fastq.gz s3://<data lake>/raw_reads/CLOUD016.fastq.gz --metadata gate-profile=synthetic`,
+  on either mate of a pair. The trigger passes it on exactly as uploaded (one HeadObject for a
+  single-end upload). **Manual starts:** `"gate_profile": "synthetic"` in the input. Values are
+  case-sensitive.
+- **One validator, visible failures:** the trigger never drops a run or picks for you. Mates that
+  disagree, a metadata key that looks like a misspelling (`gateprofile`) and metadata it couldn't read
+  all go on as values `Check_Gate_Profile` rejects, so the run fails with the reason, closed and
+  notified. A single-end profile is read when the trigger runs: like the reads themselves, an upload
+  overwritten in the meantime is judged as the newer one.
+- **Locally:** `run_local.py --gate-profile synthetic|default`. Without it, a `make_test_data.py` sample
+  still gets `synthetic`.
+- **Checked first:** `Check_Gate_Profile`, before any job. An unknown profile (`strict`, `Synthetic`,
+  a number, the trigger's flagged values) fails the run there, in either `gate_mode`, with
+  `UnknownGateProfile`. It never falls back to the default silently. The failure goes through
+  `Prepare_Run_Close` like any failed run, so the sample's record shows its latest run as failed.
+- **The image:** `GATE_CONFIG` is `$GATE_THRESHOLDS_DIR/<profile>.toml`, which every image with the gate
+  ships (main from #148 on); `default.toml` is also the binary's built-in default.
+- **Why:** with the human thresholds, a synthetic smoke test fails the gate (CLOUD015: mean depth 0.02x,
+  0% at 10x, Ti/Tv 0.25). In warn mode that's only a recorded verdict, but in fail mode every smoke test
+  would fail. With `gate-profile=synthetic` the smoke tests are judged by what they are.
+
+## Warn now, fail later
+
+The user's decision (2 Nov 2026): **warn first, then fail** (#157).
+
+- **Criterion for the switch:** at least **5 real-sample cloud runs** (not the simulated CLOUD00x
+  checkpoints) that the gate **judged** (`Gate_Decision` reached; a `Gate_Skipped` run doesn't count),
+  and **no false fails** against the calibrated thresholds: every failed verdict was a really bad run,
+  or the threshold was corrected first. DeepVariant runs need #158 first:
+  until their run record counts a DeepVariant-only run as complete, the gate's `run_status` check fails
+  them.
+- **The switch, one line:** `gate_mode = "fail"` (tfvars, or the default in
+  `infrastructure/variables.tf`), then `terraform plan` (expect only an in-place update of the state
+  machine) and, after review, apply. Together with the threshold profile (above) it is **one apply**:
+  the profile's state-machine change and `gate_mode` are the same resource (plus the trigger Lambda's
+  code). From then on, upload smoke tests with `--metadata gate-profile=synthetic`.
+- **Back:** `gate_mode = "warn"`, the same in-place update.
+
 ## Not yet
 
-- **The Step Functions state** that runs `tasks.py gate` after variant calling in the cloud (and, in
-  `fail` mode, ends a failed run through `Notify_Failure` with the gate's reasons). An infrastructure
-  change of its own.
-- **Choosing warn or fail** for the cloud, once there are verdicts from real runs.
+- **The switch to fail** (#157), and **#158** for DeepVariant runs (see above).
 - **Adapter content:** the QC stage runs fastp with adapter trimming disabled (report-only), and then
   fastp doesn't detect adapters, so the report has no adapter numbers. Checking them needs a QC-stage
   change (e.g. let fastp detect adapters without writing trimmed reads).
