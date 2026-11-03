@@ -279,3 +279,29 @@ def test_parallel_branches_are_credited_by_event_chain_not_order():
         ("Quality_Control", "qc-job", "qc-job"),
         ("Align_Genome", "align-job", "align-job"),
     ]
+
+
+def test_map_iterations_get_one_row_each():
+    # Call_Shard runs inside a Map: every iteration enters the same state name and submits its own
+    # Batch job. Each must be its own row, or the run's cost counts only the first shard.
+    def ev(eid, prev, event):
+        return {**event, "id": eid, "previousEventId": prev}
+
+    events = [
+        ev(1, 0, {"type": "ExecutionStarted"}),
+        ev(2, 1, {"type": "MapStateEntered", "stateEnteredEventDetails": {"name": "Call_Variant_Shards"}}),
+        ev(3, 2, {"type": "MapIterationStarted"}),
+        ev(4, 2, {"type": "MapIterationStarted"}),
+        ev(5, 3, entered("Call_Shard")),
+        ev(6, 4, entered("Call_Shard")),
+        ev(7, 5, task_event("TaskSubmitted", {"JobId": "shard-0"})),
+        ev(8, 6, task_event("TaskSubmitted", {"JobId": "shard-1"})),
+        ev(9, 8, task_event("TaskSucceeded", sfn_job("shard-1", "SUCCEEDED", T0, T0 + 1000, T0 + 91_000))),
+        ev(10, 7, task_event("TaskSucceeded", sfn_job("shard-0", "SUCCEEDED", T0, T0 + 2000, T0 + 62_000))),
+    ]
+    rows = sb.execution_stages(paged_sfn(events), None, "exec-1")
+    assert [(r["stage"], r["job_id"], r["run_seconds"]) for r in rows] == [
+        ("Call_Shard", "shard-0", 60.0),
+        ("Call_Shard", "shard-1", 90.0),
+    ]
+    assert sb.totals(rows)["run_seconds"] == 150.0

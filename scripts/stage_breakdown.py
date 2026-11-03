@@ -88,34 +88,38 @@ def history_events(sfn_client, execution_arn):
 
 
 def batch_tasks(sfn_client, execution_arn) -> list:
-    """[{"stage", "job_id", "job"}] for each Batch task state, in execution order.
+    """[{"stage", "job_id", "job"}] for each Batch task state entered, in execution order.
     "job" is the latest job description found in the history (may be empty).
 
-    Each event is credited to the state its previousEventId chain leads back to, not just the last
-    state entered: inside a Parallel state, QC's and align's events interleave."""
-    tasks, by_state, last_state = [], {}, None
-    state_of = {}  # event id -> state name
+    Each event is credited to the state entry its previousEventId chain leads back to, not just the last
+    state entered: inside a Parallel state, QC's and align's events interleave. Rows are per *entry*, not
+    per state name, so the iterations of a Map state (Call_Shard: one Batch job per region) each get
+    their own row; before, every shard after the first was folded into one row and missing from the
+    run's cost."""
+    tasks, by_entry, last_entry, entries = [], {}, None, 0
+    entry_of = {}  # event id -> (state name, entry number)
     for event in history_events(sfn_client, execution_arn):
         kind = event.get("type")
         if kind == "TaskStateEntered":
-            state = last_state = event.get("stateEnteredEventDetails", {}).get("name")
+            entries += 1
+            entry = last_entry = (event.get("stateEnteredEventDetails", {}).get("name"), entries)
         else:
-            state = state_of.get(event.get("previousEventId"), last_state)
+            entry = entry_of.get(event.get("previousEventId"), last_entry)
         if event.get("id") is not None:
-            state_of[event["id"]] = state
+            entry_of[event["id"]] = entry
         if kind == "TaskStateEntered":
             continue
-        if kind not in BATCH_TASK_EVENTS or state is None:
+        if kind not in BATCH_TASK_EVENTS or entry is None or entry[0] is None:
             continue
         details_key, field = BATCH_TASK_EVENTS[kind]
         details = event.get(details_key, {})
         if details.get("resourceType") != "batch":
             continue
         payload = _json(details.get(field))
-        if state not in by_state:
-            by_state[state] = {"stage": state, "job_id": None, "job": {}}
-            tasks.append(by_state[state])
-        task = by_state[state]
+        if entry not in by_entry:
+            by_entry[entry] = {"stage": entry[0], "job_id": None, "job": {}}
+            tasks.append(by_entry[entry])
+        task = by_entry[entry]
         task["job_id"] = task["job_id"] or _get(payload, "JobId")
         if _get(payload, "StartedAt") or _get(payload, "Status"):
             task["job"] = payload

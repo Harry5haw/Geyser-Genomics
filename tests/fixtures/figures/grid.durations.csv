@@ -1,0 +1,2 @@
+SampleId,DurationSeconds,RuntimeFormatted,Status,StartTimeUTC,StopTimeUTC,ExecutionName
+FIXTURE-a2-s1,999,,SUCCEEDED,,,FIXTURE-a2-s1

@@ -15,7 +15,7 @@ per-file-target-version = { "app/storage.py" = "py310", "app/metrics.py" = "py31
 extend-exclude = ["**/_archive"]
 # Where modules are imported from by path (sys.path), not as installed packages: these count as
 # first-party for import sorting.
-src = [".", "app", "app-deepvariant", "scripts", "web", "tests"]
+src = [".", "app", "app-deepvariant", "scripts", "scripts/figures", "web", "tests"]
 
 [tool.ruff.lint]
 # An explicit list, so a ruff upgrade (Dependabot) can't change the gate by changing its defaults.
