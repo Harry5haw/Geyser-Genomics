@@ -2,6 +2,9 @@
 
 import gzip
 import json
+import os
+import sys
+import time
 
 import pytest
 
@@ -112,6 +115,7 @@ def dv_inputs(local_env, monkeypatch):
     indexed = []
     monkeypatch.setattr(dv, "index_bam", indexed.append)
     monkeypatch.setattr(dv, "gpu_name", lambda: "Fake GPU")
+    monkeypatch.setenv(dv.GPU_SAMPLE_VAR, "0")  # never sample a real GPU on the test machine
     return indexed
 
 
@@ -493,7 +497,7 @@ def test_stage_fails_with_the_reason_when_the_wrapper_is_stopped(dv_inputs, monk
 def test_run_local_passes_the_limits_through():
     import run_local
 
-    for name in dv.LIMIT_VARS.values():
+    for name in (*dv.LIMIT_VARS.values(), dv.GPU_SAMPLE_VAR):
         assert name in run_local.DEEPVARIANT_ENV_VARS
 
 
@@ -822,3 +826,231 @@ def test_a_checkpoint_without_postprocess_is_retired_not_replayed(dv_inputs, loc
     monkeypatch.setattr(dv, "run_streaming", lambda cmd, **_: full.append(cmd) or fake_run(b"x")(cmd))
     dv.deepvariant_task("S1", "ref.fa")
     assert full[0][0] == dv.RUN_DEEPVARIANT and manifest(local_env)["retired"].startswith("unusable")
+
+
+# ---- GPU utilisation and memory (#139) ----
+# 39 s of `nvidia-smi ... -lms 1000` on the RTX 3080 around the start of call_variants (HG003 chr20, 3 Nov 2026):
+# the end of make_examples (1.8 GB, idle), TensorFlow reserving the free memory, then the model running.
+GPU_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "deepvariant", "nvidia-smi-loop.txt")
+
+
+def recorded_gpu_lines():
+    with open(GPU_FIXTURE, encoding="utf-8") as fh:
+        return fh.read().splitlines()
+
+
+def test_parse_gpu_line_reads_recorded_nvidia_smi_output():
+    parsed = [s for s in map(dv.parse_gpu_line, recorded_gpu_lines()) if s]
+    assert len(parsed) >= 10, "fixture has too few samples"
+    for index, util, used, total in parsed:
+        assert index == 0 and total == 10240.0
+        assert 0 <= util <= 100 and 0 < used <= total
+    assert max(u for _, u, _, _ in parsed) >= 50  # the fixture covers call_variants busy on the GPU
+    used = [m for _, _, m, _ in parsed]
+    assert min(used) < 2000 and max(used) > 9000  # and TensorFlow reserving nearly all of the 10 GB
+
+
+@pytest.mark.parametrize(
+    "line, expected",
+    [
+        ("0, 97, 9581, 10240", (0, 97.0, 9581.0, 10240.0)),
+        ("1, [N/A], 512, 24576", (1, None, 512.0, 24576.0)),  # a GPU that doesn't report utilisation
+        ("0, [Not Supported], [Not Supported], 15360", None),  # nothing to learn from
+        ("", None),
+        ("Failed to initialize NVML: Driver/library version mismatch", None),
+        ("index, utilization.gpu [%], memory.used [MiB], memory.total [MiB]", None),  # a header, if ever printed
+    ],
+)
+def test_parse_gpu_line_skips_what_is_not_a_sample(line, expected):
+    assert dv.parse_gpu_line(line) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [(None, dv.GPU_SAMPLE_DEFAULT), ("", dv.GPU_SAMPLE_DEFAULT), ("0", 0.0), ("0.5", 0.5), ("x", 0.0), ("-1", 0.0)],
+)
+def test_gpu_sample_interval(value, expected):
+    env = {} if value is None else {dv.GPU_SAMPLE_VAR: value}
+    assert dv.gpu_sample_interval(env) == expected
+
+
+# Samples at the times of SAMPLE_OUTPUT's steps: make_examples 100-130.5, call_variants 130.5-151, postprocess 151-156.
+FAKE_SAMPLES = [
+    (110.0, 0, 0.0, 300.0, 10240.0),
+    (120.0, 0, 2.0, 300.0, 10240.0),
+    (135.0, 0, 80.0, 9500.0, 10240.0),
+    (145.0, 0, 100.0, 9600.0, 10240.0),
+    (153.0, 0, 0.0, 400.0, 10240.0),
+]
+
+
+def test_summarise_gpu_overall_and_per_step():
+    summary = dv.summarise_gpu(FAKE_SAMPLES, dv.parse_step_windows(SAMPLE_OUTPUT, 156.0))
+    assert summary["gpus"] == 1 and summary["memory_total_mib"] == 10240.0 and summary["samples"] == 5
+    assert summary["utilization_mean_pct"] == 36.4 and summary["utilization_peak_pct"] == 100.0
+    assert summary["memory_peak_mib"] == 9600.0
+    assert summary["steps"] == {
+        "make_examples": {
+            "samples": 2,
+            "utilization_mean_pct": 1.0,
+            "utilization_peak_pct": 2.0,
+            "memory_peak_mib": 300.0,
+        },
+        "call_variants": {
+            "samples": 2,
+            "utilization_mean_pct": 90.0,
+            "utilization_peak_pct": 100.0,
+            "memory_peak_mib": 9600.0,
+        },
+        "postprocess_variants": {
+            "samples": 1,
+            "utilization_mean_pct": 0.0,
+            "utilization_peak_pct": 0.0,
+            "memory_peak_mib": 400.0,
+        },
+    }
+
+
+def test_summarise_gpu_without_samples_is_none():
+    assert dv.summarise_gpu([], dv.parse_step_windows(SAMPLE_OUTPUT, 156.0)) is None
+
+
+def test_step_windows_and_timings_agree():
+    windows = dv.parse_step_windows(SAMPLE_OUTPUT, 156.0)
+    assert [w[0] for w in windows] == ["make_examples", "call_variants", "postprocess_variants"]
+    assert windows[1] == ("call_variants", 130.5, 151.0)
+
+
+def test_sampler_does_nothing_without_nvidia_smi(monkeypatch):
+    monkeypatch.setattr(dv.shutil, "which", lambda name: None)
+    sampler = dv.GpuSampler(1.0).start()
+    sampler.stop()
+    sampler.stop()  # safe twice
+    assert sampler.samples == []
+
+
+def test_sampler_is_off_at_interval_zero(monkeypatch):
+    started = []
+    monkeypatch.setattr(dv.subprocess, "Popen", lambda *a, **k: started.append(a))
+    sampler = dv.GpuSampler(0).start()
+    sampler.stop()
+    assert started == [] and sampler.samples == []
+
+
+def test_sampler_reads_a_looping_nvidia_smi(monkeypatch):
+    # A stand-in for `nvidia-smi -lms`: prints the recorded lines, then keeps running until stopped.
+    script = (
+        "import sys, time\n"
+        f"for line in open({GPU_FIXTURE!r}, encoding='utf-8'):\n"
+        "    print(line, end='', flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    monkeypatch.setattr(dv.GpuSampler, "command", lambda self: [sys.executable, "-c", script])
+    sampler = dv.GpuSampler(0.1).start()
+    expected = len([line for line in recorded_gpu_lines() if dv.parse_gpu_line(line)])
+    deadline = time.monotonic() + 20
+    while len(sampler.samples) < expected and time.monotonic() < deadline:
+        time.sleep(0.05)
+    started = time.monotonic()
+    sampler.stop()
+    assert time.monotonic() - started < 15  # stopped, not waited out
+    assert len(sampler.samples) == expected
+    assert all(ts > 0 and index == 0 for ts, index, *_ in sampler.samples)
+
+
+def test_sampler_command_loops_in_milliseconds():
+    cmd = dv.GpuSampler(2.0).command()
+    assert cmd[0] == "nvidia-smi" and "--format=csv,noheader,nounits" in cmd
+    assert cmd[-2:] == ["-lms", "2000"] and f"--query-gpu={dv.GPU_QUERY}" in cmd
+
+
+class FakeSampler:
+    def __init__(self, interval):
+        self.interval = interval
+        self.samples = list(FAKE_SAMPLES) if interval else []
+        self.stopped = 0
+
+    def start(self):
+        return self
+
+    def stop(self):
+        self.stopped += 1
+
+
+def dv_part(root):
+    return json.loads((root / "runs" / "S1.provenance" / "DeepVariant.json").read_text())
+
+
+def test_stage_records_gpu_use_in_the_run_record_and_step_metrics(local_env, dv_inputs, monkeypatch):
+    monkeypatch.setenv(dv.GPU_SAMPLE_VAR, "2")
+    monkeypatch.setattr(dv, "GpuSampler", FakeSampler)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+
+    dv.deepvariant_task("S1", "ref.fa")
+
+    gpu = dv_part(local_env)["gpu"]
+    assert gpu["model"] == "Fake GPU" and gpu["sample_seconds"] == 2.0 and gpu["memory_peak_mib"] == 9600.0
+    assert gpu["steps"]["call_variants"]["utilization_mean_pct"] == 90.0
+    by_task = {m["task"]: m for m in metrics_lines(local_env)}
+    call = by_task["DeepVariant.CallVariants"]
+    assert (call["gpu_utilization_mean_pct"], call["gpu_utilization_peak_pct"], call["gpu_memory_peak_mib"]) == (
+        90.0,
+        100.0,
+        9600.0,
+    )
+    assert by_task["DeepVariant.MakeExamples"]["gpu_utilization_mean_pct"] == 1.0  # the GPU idles here
+    assert "gpu_utilization_mean_pct" not in by_task["DeepVariant"]  # the stage metric keeps its CPU usage only
+
+
+def test_stage_without_a_gpu_records_no_gpu_figures(local_env, dv_inputs, monkeypatch):
+    monkeypatch.setattr(dv, "gpu_name", lambda: None)  # CPU image / CI: no nvidia-smi
+    made = []
+    monkeypatch.setattr(dv, "GpuSampler", lambda interval: made.append(interval) or FakeSampler(interval))
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+
+    dv.deepvariant_task("S1", "ref.fa")
+
+    assert made == [0]  # sampling off
+    assert "gpu" not in dv_part(local_env)
+    assert not any(k.startswith("gpu_") for m in metrics_lines(local_env) for k in m)
+
+
+def test_gpu_model_is_recorded_even_with_sampling_off(local_env, dv_inputs, monkeypatch):
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")  # dv_inputs sets the interval to 0
+    assert dv_part(local_env)["gpu"] == {"model": "Fake GPU", "sample_seconds": None, "samples": 0}
+
+
+def test_a_stopped_wrapper_still_records_gpu_use(local_env, dv_inputs, monkeypatch):
+    # e.g. call_variants out of GPU memory and hung: the peak memory is the evidence.
+    monkeypatch.setenv(dv.GPU_SAMPLE_VAR, "2")
+    monkeypatch.setenv("DEEPVARIANT_CHECKPOINT", "0")
+    samplers = []
+    monkeypatch.setattr(dv, "GpuSampler", lambda interval: samplers.append(FakeSampler(interval)) or samplers[-1])
+
+    def stopped(cmd, **_):
+        raise dv.WrapperStopped("call_variants went quiet", SAMPLE_OUTPUT[:5])
+
+    monkeypatch.setattr(dv, "run_streaming", stopped)
+    with pytest.raises(dv.WrapperStopped):
+        dv.deepvariant_task("S1", "ref.fa")
+    part = dv_part(local_env)
+    assert part["status"] == "Failure" and part["gpu"]["memory_peak_mib"] == 9600.0
+    assert samplers[0].stopped >= 1
+
+
+def test_a_broken_gpu_summary_never_fails_the_stage(local_env, dv_inputs, monkeypatch, capsys):
+    monkeypatch.setenv(dv.GPU_SAMPLE_VAR, "2")
+    monkeypatch.setattr(dv, "GpuSampler", FakeSampler)
+    monkeypatch.setattr(dv, "summarise_gpu", lambda *a: 1 / 0)
+    monkeypatch.setattr(dv, "run_streaming", fake_run(gzip.compress(b"##fileformat=VCFv4.2\n")))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert "could not summarise GPU use" in capsys.readouterr().out
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz").exists()
+
+
+def test_gpu_metric_usage_drops_missing_values():
+    assert dv.gpu_metric_usage(None) is None
+    assert dv.gpu_metric_usage({"utilization_mean_pct": None, "memory_peak_mib": 512.0}) == {
+        "gpu_memory_peak_mib": 512.0
+    }

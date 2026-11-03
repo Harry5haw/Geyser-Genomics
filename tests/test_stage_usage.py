@@ -235,3 +235,25 @@ def test_query_cli_shows_usage_columns(tmp_path, capsys):
     header, row = list(csv.reader(out_csv.open(newline="")))
     values = dict(zip(header, row, strict=True))
     assert values["CpuSeconds"] == "15.0" and values["PeakMemoryMiB"] == "2048.0" and values["MemoryUse"] == "0.25"
+
+
+def test_cloudwatch_sends_gpu_usage_with_its_units():
+    # DeepVariant's step metrics on a GPU (#139)
+    from botocore.stub import ANY, Stubber
+
+    m = metrics.CloudWatchMetrics("eu-west-2")
+    stub = Stubber(m._client)
+    sent = {}
+    stub.add_response("put_metric_data", {}, {"Namespace": "GeyserGenomics", "MetricData": ANY})
+    original = m._client.put_metric_data
+    m._client.put_metric_data = lambda **kwargs: sent.update(kwargs) or original(**kwargs)
+    usage = {"gpu_utilization_mean_pct": 90.0, "gpu_utilization_peak_pct": 100.0, "gpu_memory_peak_mib": 9600.0}
+    with stub:
+        m.record("DeepVariant.CallVariants", "S1", "Success", 20.5, usage=usage)
+    names = [(d["MetricName"], d["Value"], d["Unit"]) for d in sent["MetricData"]]
+    assert names == [
+        ("Duration", 20.5, "Seconds"),
+        ("GpuUtilization", 90.0, "Percent"),
+        ("GpuUtilizationPeak", 100.0, "Percent"),
+        ("GpuPeakMemory", 9600.0, "Megabytes"),
+    ]

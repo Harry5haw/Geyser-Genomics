@@ -30,6 +30,10 @@ Record (schema 1):
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
     stages {Task: {status, started, finished, duration_seconds, error, run_name}},
     failure {stage, error, reason, exit_code, job_id, log_stream} (only for a run closed as failed, below)
+Parts only: resources {cpu_seconds, peak_memory_mib} (tasks.timed_stage); DeepVariant parts on a GPU also
+    gpu {model, sample_seconds, samples, gpus, memory_total_mib, utilization_mean_pct, utilization_peak_pct,
+    memory_peak_mib, steps {make_examples | call_variants | postprocess_variants: the same four figures}}
+    (deepvariant_task.note_gpu, #139).
     gate {verdict (pass | fail | null when the gate couldn't run), reasons, mode, config, gate_version, key}:
         the quality gate's verdict (tasks.gate_task), once the QualityGate stage has run. It doesn't
         change the status: in GATE_MODE=fail a failed verdict fails the QualityGate stage itself.
