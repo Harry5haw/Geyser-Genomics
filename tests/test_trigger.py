@@ -3,6 +3,28 @@ import json
 import pytest
 
 
+class FakeS3:
+    """HeadObject for any key: the single-end trigger reads the upload's metadata (the gate profile)."""
+
+    def __init__(self, metadata=None, missing=False):
+        self.metadata, self.missing, self.heads = metadata or {}, missing, []
+
+    def head_object(self, Bucket, Key):
+        self.heads.append(Key)
+        if self.missing:
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        return {"ETag": '"e"', "LastModified": "2026-11-01 20:00:00+00:00", "Metadata": dict(self.metadata)}
+
+
+@pytest.fixture(autouse=True)
+def s3(trigger, monkeypatch):
+    fake = FakeS3()
+    monkeypatch.setattr(trigger, "_s3_client", fake)
+    return fake
+
+
 @pytest.mark.parametrize(
     "key,expected",
     [
@@ -177,3 +199,45 @@ def test_trigger_callers_match_the_state_machine_choice(trigger):
         asl = fh.read()
     assert '"StringEquals": "deepvariant"' in asl
     assert set(trigger.CALLERS) == {"bcftools", "deepvariant"}
+
+
+# --- the gate threshold profile (#157): S3 user metadata gate-profile -> the input's gate_profile ------
+
+
+def _start(trigger, monkeypatch, key="raw_reads/S1.fastq.gz"):
+    calls = []
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            calls.append(kwargs)
+            return {"executionArn": "arn:fake"}
+
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.delenv("REFERENCE_NAME", raising=False)
+    monkeypatch.delenv("CALLER", raising=False)
+    monkeypatch.setattr(trigger, "_sfn_client", FakeSfn())
+    trigger.handler({"Records": [{"s3": {"bucket": {"name": "b"}, "object": {"key": key}}}]}, None)
+    return json.loads(calls[0]["input"])
+
+
+def test_an_uploads_gate_profile_metadata_reaches_the_input(trigger, monkeypatch, s3):
+    s3.metadata = {"gate-profile": " Synthetic "}
+    assert _start(trigger, monkeypatch)["gate_profile"] == "synthetic"  # trimmed, lower-cased
+    assert s3.heads == ["raw_reads/S1.fastq.gz"]
+
+
+def test_without_the_metadata_the_input_has_no_profile(trigger, monkeypatch, s3):
+    s3.metadata = {"other": "x"}
+    assert "gate_profile" not in _start(trigger, monkeypatch)  # the state machine's default
+
+
+def test_an_unknown_profile_is_passed_on_for_the_state_machine_to_refuse(trigger, monkeypatch, s3):
+    # One place validates (Check_Gate_Profile): the run fails there with UnknownGateProfile.
+    s3.metadata = {"gate-profile": "strict"}
+    assert _start(trigger, monkeypatch)["gate_profile"] == "strict"
+
+
+def test_a_vanished_upload_is_an_error_not_a_default(trigger, monkeypatch, s3):
+    s3.missing = True
+    with pytest.raises(RuntimeError, match="is gone"):
+        _start(trigger, monkeypatch)

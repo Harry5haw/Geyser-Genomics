@@ -12,6 +12,12 @@ events see both files and derive the same execution name from the two objects (E
 LastModified), and Step Functions (STANDARD) lets only one execution have it, so the sample runs
 exactly once. This needs s3:GetObject on raw_reads/* and s3:ListBucket (so a missing mate is a
 404, not a 403).
+
+Gate threshold profile (#157): an upload can carry S3 user metadata `gate-profile` (e.g.
+`aws s3 cp reads.fastq.gz s3://<bucket>/raw_reads/S1.fastq.gz --metadata gate-profile=synthetic`, on
+either mate of a pair). The trigger reads it from the object (HeadObject; for a pair, the mates it
+already HEADs) and passes it on as `gate_profile`; without it the input has none and the state
+machine uses `default`. The state machine validates the value: an unknown profile fails the run.
 """
 
 import hashlib
@@ -30,6 +36,8 @@ DEFAULT_REFERENCE_GENOME = "chr20.fa"
 MATES = ("R1", "R2")  # must match app/tasks.py (tests/test_consistency.py checks)
 RAW_SUFFIX = ".fastq.gz"  # the raw key suffix tasks.keys_for reads
 NOT_FOUND_CODES = ("404", "NoSuchKey", "NotFound")
+# S3 user metadata (x-amz-meta-gate-profile) naming the quality gate's thresholds for this run (#157).
+GATE_PROFILE_METADATA = "gate-profile"
 
 # Execution names: 1-80 characters. Kept to [A-Za-z0-9_-] because the name is reused in the Batch job
 # names (letters, digits, hyphens, underscores; max 128) and non-ASCII names break CloudWatch logging.
@@ -164,15 +172,27 @@ def _s3():
     return _s3_client
 
 
-def _object_version(bucket: str, key: str):
-    """(ETag, LastModified) of an object, or None if it doesn't exist. Any other error propagates."""
+def _head(bucket: str, key: str):
+    """HeadObject of an object, or None if it doesn't exist. Any other error propagates."""
     try:
-        head = _s3().head_object(Bucket=bucket, Key=key)
+        return _s3().head_object(Bucket=bucket, Key=key)
     except Exception as err:  # noqa: BLE001 - botocore ClientError, told apart by its code
         if _error_code(err) in NOT_FOUND_CODES:
             return None
         raise
-    return head["ETag"], head["LastModified"]
+
+
+def gate_profile(heads) -> str:
+    """The upload's gate threshold profile (user metadata gate-profile, lower-cased), or None if unset.
+
+    heads: the HeadObject responses of the upload (one, or both mates). Mates that disagree are an
+    error, not a silent pick. The value is passed on as it is otherwise: the state machine validates it.
+    """
+    values = {(h.get("Metadata") or {}).get(GATE_PROFILE_METADATA, "").strip().lower() for h in heads if h}
+    values.discard("")
+    if len(values) > 1:
+        raise ValueError(f"the mates' {GATE_PROFILE_METADATA} metadata differ: {sorted(values)}")
+    return values.pop() if values else None
 
 
 def _response(status: int, **body) -> dict:
@@ -205,18 +225,26 @@ def handler(event, context):
         name = build_execution_name(
             sample_id, record.get("eventTime"), f"{bucket_name}/{object_key}/{sequencer}" if sequencer else None
         )
+        # For its metadata only (the gate profile); the name still comes from the event, as before.
+        head = _head(bucket_name, object_key)
+        if head is None:
+            raise RuntimeError(f"s3://{bucket_name}/{object_key} is gone: nothing to run")
+        profile = gate_profile([head])
     else:
         other_key = mate_key(object_key)
         keys = {mate: object_key, parse_raw_key(other_key)[1]: other_key}
         # HEAD both mates (not just the other one) so that both events derive the name from the
         # same two (ETag, LastModified) pairs, whichever event runs first.
-        versions = {m: _object_version(bucket_name, keys[m]) for m in MATES}
-        missing = [m for m in MATES if versions[m] is None]
+        heads = {m: _head(bucket_name, keys[m]) for m in MATES}
+        missing = [m for m in MATES if heads[m] is None]
         if missing:
             waiting_for = keys[missing[0]]
             logger.info(f"'{sample_id}': {mate} arrived, waiting for s3://{bucket_name}/{waiting_for}")
             return _response(202, waiting_for=waiting_for)
-        name = paired_execution_name(sample_id, [versions[m] for m in MATES])
+        name = paired_execution_name(sample_id, [(heads[m]["ETag"], heads[m]["LastModified"]) for m in MATES])
+        profile = gate_profile(heads.values())
+    if profile:
+        pipeline_input["gate_profile"] = profile
 
     logger.info(f"Triggering pipeline for '{sample_id}' from s3://{bucket_name}/{object_key}")
     try:
