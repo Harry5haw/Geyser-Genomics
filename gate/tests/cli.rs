@@ -356,8 +356,5 @@ fn the_smoke_profile_fails_real_samples_and_local_synthetic_data() {
     let (root, sample) = synthetic_bucket("single", "succeeded");
     let (code, v, _) = run(root.path(), sample, &["--config", &smoke_config()]);
     assert_eq!(code, 1);
-    assert_eq!(
-        reasons(&v),
-        ["gc_pct 49.5339 is above the maximum 40", "mean_depth 28.545 is above the maximum 0.03"]
-    );
+    assert_eq!(reasons(&v), ["gc_pct 49.5339 is above the maximum 40", "mean_depth 28.545 is above the maximum 0.03"]);
 }
