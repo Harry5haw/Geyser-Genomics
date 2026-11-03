@@ -1,5 +1,6 @@
 """Nothing at build time checks that tasks.py, the state machine and the local runner agree. This does."""
 
+import glob
 import os
 import re
 
@@ -100,8 +101,12 @@ def test_quality_gate_reads_the_keys_the_stages_write():
     # gate/ (Rust) hardcodes the stats and run record keys; a rename in tasks.py or provenance.py must reach it.
     import provenance
 
-    with open(os.path.join(REPO_ROOT, "gate", "src", "inputs.rs"), encoding="utf-8") as fh:
-        rs = fh.read()
+    # gate/src/inputs/: mod.rs has the keys, run_record.rs the schema; read them all, wherever they live.
+    inputs_dir = os.path.join(REPO_ROOT, "gate", "src", "inputs")
+    rs = ""
+    for path in sorted(glob.glob(os.path.join(inputs_dir, "**", "*.rs"), recursive=True)):
+        with open(path, encoding="utf-8") as fh:
+            rs += fh.read()
     gate_keys = {
         k.replace("{sample_id}", "S1") for k in re.findall(r'format!\("((?:qc_reports|stats|runs)/[^"]+)"', rs)
     }
@@ -110,8 +115,9 @@ def test_quality_gate_reads_the_keys_the_stages_write():
     expected |= {provenance.record_key("S1"), provenance.part_prefix("S1")}
     assert gate_keys == expected
     # The gate reads one run record schema; a schema bump in provenance.py must reach the gate.
-    gate_schema = re.search(r"pub const RUN_RECORD_SCHEMA: u64 = (\d+);", rs).group(1)
-    assert int(gate_schema) == provenance.SCHEMA_VERSION
+    gate_schema = re.search(r"pub const RUN_RECORD_SCHEMA: u64 = (\d+);", rs)
+    assert gate_schema, "no RUN_RECORD_SCHEMA in gate/src/inputs/ (run_record.rs)"
+    assert int(gate_schema.group(1)) == provenance.SCHEMA_VERSION
 
 
 def _lifecycle_prefixes():
@@ -143,3 +149,23 @@ def test_lifecycle_never_expires_raw_reads_references_or_outputs():
             continue  # e.g. aborting unfinished multipart uploads touches no stored object
         assert prefix, f"{rule_id} expires the whole bucket"
         assert not any(k.startswith(prefix) or prefix.startswith(k) for k in kept), (rule_id, prefix)
+
+
+def test_queue_wait_widgets_read_the_terraform_event_log_group():
+    # #138: batch_wait.tf sends Batch RUNNING events to this group; the dashboard queries it.
+    import monitoring
+
+    with open(os.path.join(REPO_ROOT, "infrastructure", "batch_wait.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    template = re.search(r'name\s*=\s*"(/aws/events/[^"]+)"', tf).group(1)
+    rendered = template.replace("${var.project_name}", "geyser").replace("${var.environment}", "dev")
+    assert rendered == monitoring.BATCH_EVENTS_LOG_GROUP
+
+
+def test_failure_parsing_knows_every_job_name_the_state_machine_sets():
+    # provenance.parse_failure names the failing stage from the Batch job name in a Catch's Cause, so every
+    # JobName prefix the state machine builds must map to a stage, and none may be stale.
+    import provenance
+
+    prefixes = set(re.findall(r"States\.Format\('(\w+)-\{\}", asl_text()))
+    assert prefixes and prefixes == {p.rstrip("-") for p, _ in provenance.JOB_NAME_STAGES}, prefixes

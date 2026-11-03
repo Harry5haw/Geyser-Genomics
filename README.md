@@ -33,15 +33,15 @@
 
 <table>
   <tr>
-    <td align="center" width="20%"><h3>3</h3>stages, QC and alignment<br/>in parallel</td>
-    <td align="center" width="20%"><h3>10 / 10</h3>planted SNPs recovered<br/>on every push</td>
-    <td align="center" width="20%"><h3>1 min 52 s</h3>cloud run, small sample,<br/>under 1 cent</td>
-    <td align="center" width="20%"><h3>0.9977</h3>DeepVariant SNP F1<br/>on HG003 chr20*</td>
+    <td align="center" width="20%"><h3>~$0.07</h3>per real chr20 sample<br/>(HG003, 30-35x), cloud</td>
+    <td align="center" width="20%"><h3>11 / 11</h3>quality-gate checks passed<br/>on those real runs</td>
+    <td align="center" width="20%"><h3>10 / 10</h3>planted SNPs recovered<br/>in every CI run</td>
+    <td align="center" width="20%"><h3>−51%</h3>variant errors: graph<br/>alignment vs BWA*</td>
     <td align="center" width="20%"><h3>0</h3>stored AWS keys<br/>in CI (OIDC)</td>
   </tr>
 </table>
 
-<sub>* hap.py (vcfeval, PASS only) against GIAB v4.2.1 confident regions, the same method as Google's case studies. Linear and pangenome-aware DeepVariant score the same here. See <a href="#deepvariant-on-a-local-nvidia-gpu">DeepVariant</a>.</sub>
+<sub>* HG003 chr20, linear DeepVariant on Google's published case-study alignments: vg giraffe (graph) against BWA, 186 SNP + indel errors against 378, scored with hap.py (vcfeval, PASS only) against GIAB v4.2.1 confident regions, the method of Google's case studies (<a href="https://github.com/Harry5haw/Geyser-Genomics/pull/145">#145</a>). The giraffe BAM is not duplicate-marked and the BWA one is. Aligning only the reads BWA had placed on chr20 with this project's own giraffe step gave a smaller gain (368 errors, <a href="https://github.com/Harry5haw/Geyser-Genomics/pull/129">#129</a>). Cloud cost at Fargate on-demand list prices.</sub>
 
 </div>
 
@@ -60,7 +60,8 @@
 9.  [Web UI](#️-web-ui)
 10. [Deployment & Usage](#-deployment--usage)
 11. [Roadmap](#️-roadmap)
-12. [Contributing, Security and Citing](#-contributing-security-and-citing)
+12. [Repository Layout](#️-repository-layout)
+13. [Contributing, Security and Citing](#-contributing-security-and-citing)
 
 ---
 
@@ -79,18 +80,23 @@ flowchart LR
     Q --> R(["📊 QC report<br/>HTML + JSON"])
     A --> C(["🗜️ CRAM + index"])
     A --> S1(["📈 flagstat, mosdepth"])
-    C --> V["🧪 Call variants<br/>bcftools"]
-    V --> OUT(["📄 VCF.gz + index"])
-    V --> S2(["📈 bcftools stats"])
-    C -.->|"alternative callers,<br/>local GPU"| DV["🧠 DeepVariant<br/>linear or pangenome-aware"]
-    DV -.-> OUT2(["📄 VCF.gz"])
+    C --> CH{"caller"}
+    CH -->|"bcftools<br/>(default)"| V["🧪 Call variants by region<br/>shards in parallel → exact merge"]
+    CH -->|"deepvariant"| DV["🧠 DeepVariant<br/>on a cloud GPU"]
+    DV -.->|"if it fails"| V
+    V --> OUT(["📄 VCF.gz"])
+    DV --> OUT
+    OUT --> S2(["📈 bcftools stats"])
+    S2 -.-> G["🚦 Quality gate (Rust)<br/>pass / fail with reasons"]
+    S1 -.-> G
+    R -.-> G
 
     classDef io fill:#6A1B9A,stroke:#4A148C,color:#fff
     classDef stage fill:#E65100,stroke:#BF360C,color:#fff
     classDef alt fill:#2E7D32,stroke:#1B5E20,color:#fff
-    class IN,OUT,OUT2,R,C,S1,S2 io
-    class Q,A,V stage
-    class DV alt
+    class IN,OUT,R,C,S1,S2 io
+    class Q,A,V,CH stage
+    class DV,G alt
 ```
 
 Every run also writes a **run record** (`runs/<id>.provenance.json`): the inputs, the reference's MD5, the tool versions, the image, and each stage's timing and outcome.
@@ -98,17 +104,19 @@ Every run also writes a **run record** (`runs/<id>.provenance.json`): the inputs
 What it does today:
 
 *   ⚙️ **Event-driven:** an upload to `raw_reads/` starts the run (both mates, for paired-end). No one launches the stages by hand.
-*   ⚡ **Parallel where it can be:** QC and alignment both read the gzipped upload directly, so they run at the same time, then variant calling reads the CRAM. There is no decompressed copy in between.
+*   ⚡ **Parallel where it can be:** QC and alignment both read the gzipped upload directly, so they run at the same time. Variant calling is then split by region into jobs that run side by side (a Step Functions `Map` state) and merged into one VCF, identical to an unsplit call.
+*   🧠 **Two callers:** bcftools on Fargate by default, or **DeepVariant on a GPU** (`caller=deepvariant`), which falls back to bcftools automatically if it fails. Pangenome-aware DeepVariant is benchmarked locally.
+*   🚦 **A run can succeed and still not be good enough:** a quality gate written in Rust checks the run's QC statistics (read quality, mapping, duplicates, depth, breadth, Ti/Tv) against calibrated thresholds and names every failed check.
 *   📦 **Sized per stage, scales to zero:** QC gets 1 vCPU / 2 GiB, alignment 4 / 8 GiB, variant calling 2 / 4 GiB, on AWS Batch (Fargate), all from one Docker image. Nothing runs between samples.
 *   🛟 **Resilient without hiding bugs:** infrastructure failures (a lost host, a task that failed to start) are retried; a failing tool or a corrupt upload fails at once and notifies through SNS. Each stage and each run has a time limit.
-*   💰 **Cost-bounded:** no NAT gateway, Fargate capped at 8 vCPUs, ECR images and logs pruned, a $10 monthly budget alert, and a $20 project cap with an automatic kill switch for the automation role. A small test run costs well under a cent; idle cost is storage.
-*   🧪 **Tested offline:** every push runs the linters, the unit tests, a Docker end-to-end run on synthetic data with planted mutations (which must all be recovered, and nothing else), and the state machine itself in Step Functions Local.
+*   💰 **Cost-bounded:** no NAT gateway, Fargate capped at 8 vCPUs on Spot plus 8 on-demand, ECR images and logs pruned, a $10 monthly budget alert, and a $20 project cap with an automatic kill switch for the automation role. A real chr20 sample (HG003, 30-35x) costs about $0.07 per run, a small test run under a cent, a GPU DeepVariant run about $0.16; idle cost is storage.
+*   🧪 **Tested offline:** every pull request and push to `main` runs the linters, the unit tests, a Docker end-to-end run on synthetic data with planted mutations (which must all be recovered, and nothing else), and the state machine itself in Step Functions Local.
 
 > [!NOTE]
-> **Where it stands (2 November 2026):**
-> - **In the cloud:** the three-stage pipeline, with its retries, time limits and per-stage sizes, is applied in AWS and verified by real runs ([Deployment](#-deployment--usage)).
-> - **Locally and in CI only, for now:** the image those runs used predates the move to bwa-mem2, fastp, CRAM, the QC statistics and the run record. All of these are verified locally and in CI, and they reach the cloud with the next image push.
-> - **Locally on a GPU:** pangenome-aware DeepVariant is benchmarked on two samples.
+> **Where it stands (3 November 2026):**
+> - **In the cloud, verified by real runs:** the whole bcftools pipeline (fastp, bwa-mem2, CRAM, region-split calling, QC statistics, run record) on two real GIAB HG003 chr20 samples at 35x and 30x: about 22 minutes and $0.07 each, both passing all 11 quality-gate checks. DeepVariant on a GPU (g6.xlarge), 10/10 planted SNPs. See [Deployment](#-deployment--usage).
+> - **Locally and in CI, on its way to the cloud:** the quality gate as a pipeline stage (the app side is merged; the state machine step is [#162](../../pull/162)); for the real runs above it was run afterwards on their outputs.
+> - **Locally on a GPU:** pangenome-aware DeepVariant, benchmarked on HG003 and HG005, and graph alignment (vg giraffe), benchmarked on HG003 ([benchmark history](docs/benchmarks/README.md)).
 
 ---
 
@@ -196,22 +204,22 @@ Analyzing genomes is incredibly difficult. Scientists face three major hurdles:
 
 | Goal | Approach | Where it is today |
 | :--- | :--- | :--- |
-| **Reproducible results** | Tools and Python packages pinned exactly, base image pinned by digest; synthetic data with planted mutations as a truth check; a run record per sample | Done. The end-to-end truth check runs on every push. |
-| **No manual steps** | An S3 upload triggers a Lambda, which starts Step Functions | Verified in the cloud (single-end). Paired-end triggering is tested offline. |
-| **Pay only while running** | Batch on Fargate scales to zero, no NAT gateway, budgets | Applied. Cost per sample, measured on the cloud runs CLOUD005-010 (10k single-end reads or 5k pairs from chr20; three stages): **$0.0066-0.0070**, at Fargate on-demand list prices for eu-west-2 (`query_pipeline_duration.py --stages`, defaults in `scripts/stage_breakdown.py`). Almost all of it is fixed per-job overhead (Fargate bills at least a minute per job). Storage is the remaining idle cost. |
+| **Reproducible results** | Tools and Python packages pinned exactly, base image pinned by digest; synthetic data with planted mutations as a truth check; a run record per sample | Done. The end-to-end truth check runs in CI on every pull request. |
+| **No manual steps** | An S3 upload triggers a Lambda, which starts Step Functions | Verified in the cloud, single-end and paired-end. |
+| **Pay only while running** | Batch on Fargate (Spot first) and a GPU environment, both scaling to zero; no NAT gateway; budgets | Applied. Measured per run at on-demand list prices for eu-west-2 (`query_pipeline_duration.py --stages`): **about $0.07** for a real chr20 sample (HG003, 30-35x, ~22 min), **$0.0066-0.0070** for the 10k-read test sample (almost all of it Fargate's 1-minute minimum per job), and **about $0.16** for a GPU DeepVariant run, two-thirds of which is starting the instance and pulling the 10 GB image. Storage is the remaining idle cost. |
 | **Fail loudly, recover from flaky infrastructure** | Infrastructure-only retries, per-stage and per-run time limits, failures published to SNS | Applied and tested in the cloud: a truncated upload fails once, notifies and ends Failed. |
-| **Scale out** | One execution per sample, QC and alignment in parallel, up to 8 Fargate vCPUs at once | Applied. Splitting one sample's variant calling across jobs is planned (2.0). |
+| **Scale out** | One execution per sample, QC and alignment in parallel, variant calling split by region, up to 8 Fargate Spot plus 8 on-demand vCPUs at once | Applied. The region split pays off on large samples: on a 10k-read sample it adds about 1.5 minutes of fixed job overhead (2 min 19 s → 3 min 45 s on the same image). |
 | **Accessible to non-cloud users** | A web UI for uploading samples and browsing results | Works offline against the local folder. Not deployed. |
 
 ---
 
 ## 🗺️ Project Status & Features
 
-Three levels of "done", kept separate: **☁️ verified in the cloud** (applied in AWS and proven by a real run), **✅ verified locally and in CI** (Docker end-to-end on every push, not yet run in AWS), and **🔜 planned**.
+Three levels of "done", kept separate: **☁️ verified in the cloud** (applied in AWS and proven by a real run), **✅ verified locally and in CI** (Docker end-to-end in CI on every pull request, not yet run in AWS), and **🔜 planned**.
 
 | Feature | Status | Description |
 | :--- | :---: | :--- |
-| **Orchestration and trigger** | ☁️ Cloud | S3 upload → Lambda → Step Functions: QC and alignment in a `Parallel` state, then variant calling, each a Batch job on Fargate. Runs are named after the sample (`<id>-<UTC time>-<hash>`); a duplicate S3 event starts nothing. Tested offline in Step Functions Local. |
+| **Orchestration and trigger** | ☁️ Cloud | S3 upload → Lambda → Step Functions: QC and alignment in a `Parallel` state, then a caller choice: bcftools split by region (plan the regions, a `Map` over them, an exact merge) or DeepVariant on the GPU queue with a bcftools fallback, each a Batch job. Runs are named after the sample (`<id>-<UTC time>-<hash>`); a duplicate S3 event starts nothing. Tested offline in Step Functions Local. |
 | **Resilience and sizing** | ☁️ Cloud | Infrastructure-only retries (3 attempts), Batch API retries with back-off, per-stage timeouts and a 12-hour run limit, per-stage vCPU/memory, 30-day log retention. A failed stage publishes to SNS and the run ends Failed; a run that hits the time limit ends TimedOut (no SNS message, but it counts in the Step Functions metrics). |
 | **Bioinformatics tools** | ☁️ Cloud | fastp QC (one report per sample), bwa-mem2 alignment (with an automatic fallback to bwa for references that would trigger a bwa-mem2 bug), duplicates marked, CRAM + index, tabix-indexed VCF from bcftools. Verified in the cloud on 2 Nov 2026 (image `main-c6f490b`): single-end and paired-end chr20 runs, 10/10 planted SNPs each. The cloud reference stores both aligners' indexes, so no job builds one. |
 | **QC statistics** | ☁️ Cloud | `samtools flagstat`, `mosdepth` coverage and `bcftools stats` per sample, under `stats/<id>/`. |
@@ -222,8 +230,11 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 | **CI authentication (OIDC)** | ✅ Complete | GitHub Actions gets short-lived AWS credentials through OIDC, with no stored keys. Separate dev and prod roles; the Terraform roles are read-only, and prod only trusts the `main` branch. |
 | **Cost safety and guardrails** | ☁️ Applied | No NAT gateway, Fargate in a public subnet, capped Batch capacity, ECR and log retention, a $10 monthly budget alert. The role automation uses has a permissions boundary and a $20 project budget that attaches a deny-all policy by itself ([guardrails](docs/design/claude-guardrails.md)). |
 | **Automated deployment** | ⏸️ Manual by design | CI runs tests and checks only. The "Terraform Plan" workflow can only plan, is manual, and is disabled. Applies happen from a reviewed plan. |
-| **Monitoring** | ☁️ Cloud | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). A CloudWatch dashboard (runs, end-to-end time, failures and durations by stage, console links) and one alarm on trigger Lambda errors are deployed by scripts (see [Monitoring](#3-monitoring)). |
-| **DeepVariant and pangenome-aware DeepVariant** | ✅ Local GPU | Alternative variant callers, benchmarked with hap.py on HG003 and HG005 chr20 (see below). A GPU Batch environment exists in AWS; the stage isn't wired into Step Functions yet and needs larger instances. |
+| **Monitoring** | ☁️ Cloud | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). A CloudWatch dashboard (runs, end-to-end time, failures and durations by stage, result quality per sample, data lake size, console links) and one alarm on trigger Lambda errors are deployed by scripts (see [Monitoring](#3-monitoring)). Each job also records its CPU time and peak memory. |
+| **DeepVariant in the cloud** | ☁️ Cloud | A GPU Batch environment (g6.xlarge / g5.xlarge, public subnet, scales to zero, at most one instance) and a DeepVariant stage chosen per run (`caller=deepvariant`), falling back to bcftools if it fails. Verified 2 Nov 2026: 10/10 planted SNPs, 9 min 42 s, about $0.16. Normal runs stay on bcftools until a real-size chr20 DeepVariant run is checked. |
+| **Pangenome-aware DeepVariant, graph alignment** | ✅ Local GPU | Pangenome-aware DeepVariant (HG003 and HG005 chr20) and vg giraffe alignment (HG003 chr20), benchmarked with hap.py (see below and the [benchmark history](docs/benchmarks/README.md)). |
+| **Quality gate** | ✅ Local + CI | [`gate/`](gate/README.md), a Rust tool: reads a run's fastp report, QC statistics and run record, checks them against thresholds calibrated on HG003/HG005 and fails with named reasons. It runs as a pipeline stage locally (warn mode by default); the cloud state machine step is [#162](../../pull/162). |
+| **Variant consequences** | ✅ Local | `bcftools csq` when the reference has gene models (`reference/<name>.gff3.gz`), shown in the web UI. The cloud reference has none yet. |
 | **Web UI** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (QC summary and report, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
 | **Other S3-compatible storage** | ✅ Unit-tested | `S3_ENDPOINT_URL` points the storage layer at any S3-compatible service (OVHcloud Object Storage, MinIO, LocalStack). Not yet run against one. |
 
@@ -246,13 +257,19 @@ flowchart TB
             SF1["Quality control<br/>fastp · 1 vCPU / 2 GiB"]
             SF2["Align<br/>bwa-mem2 → CRAM · 4 vCPU / 8 GiB"]
         end
-        PAR --> SF3["Call variants<br/>bcftools · 2 vCPU / 4 GiB"]
+        PAR --> CC{"Choose caller"}
+        CC -->|"bcftools"| PLAN["Plan regions"] --> MAP["Map: one bcftools job<br/>per region · 2 vCPU / 4 GiB"] --> MERGE["Merge → VCF"]
+        CC -->|"deepvariant"| DVS["DeepVariant<br/>GPU queue"]
+        DVS -.->|"fails"| PLAN
     end
 
-    SFN ==>|"submitJob.sync, one job per stage<br/>Batch API errors retried"| BATCH["🐳 AWS Batch on Fargate<br/>one geyser-app image · max 8 vCPUs<br/>infrastructure failures retried"]
+    SFN ==>|"submitJob.sync, one job per stage<br/>Batch API errors retried"| BATCH["🐳 AWS Batch on Fargate<br/>Spot first, on-demand fallback<br/>one geyser-app image · max 8 + 8 vCPUs<br/>infrastructure failures retried"]
+    SFN ==>|"DeepVariant job"| GPU["🎮 AWS Batch on EC2 GPU<br/>g6.xlarge / g5.xlarge · max 1 instance<br/>scales to zero"]
     SFN -.->|"any failure"| SNS["📣 SNS: Notify_Failure<br/>then the run ends Failed"]
     ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
+    ECR -.->|"DeepVariant image"| GPU
     BATCH -->|"outputs, stats,<br/>run record"| OUT[("🪣 S3: qc_reports/, alignments/,<br/>variants/, stats/, runs/")]
+    GPU -->|"VCF, stats,<br/>run record"| OUT
     BATCH -.->|"Duration, FailureCount<br/>logs kept 30 days"| CW["📈 CloudWatch"]
     CW -.-> DASH["Dashboard + alarm<br/>deployed by scripts"]
     BUD["🛡️ Budgets: $10/month alert<br/>$20 project cap → automatic deny-all"]
@@ -263,7 +280,7 @@ flowchart TB
     classDef obs fill:#1565C0,stroke:#0D47A1,color:#fff
     class U user
     class S3,ECR,OUT store
-    class L,SF1,SF2,SF3,BATCH,SNS aws
+    class L,SF1,SF2,CC,PLAN,MAP,MERGE,DVS,BATCH,GPU,SNS aws
     class CW,BUD,DASH obs
 ```
 
@@ -300,17 +317,18 @@ The platform's design is guided by modern cloud-native principles:
 | Technology | Role & Rationale |
 | :--- | :--- |
 | **Terraform** | **The Cloud Architect.** Defines every AWS resource (VPC, S3, IAM, ECR, Batch, Step Functions, Lambda, budgets, log groups) as code, with state per environment, so every change is a plan that can be reviewed before it happens. |
-| **AWS Step Functions** | **The Conductor.** Replaced a self-hosted Airflow setup from earlier in the project. Runs QC and alignment in a `Parallel` state, then variant calling, retries Batch API errors, enforces a 12-hour limit and routes any failure to SNS. The definition is a JSON file that is tested in Step Functions Local. ([Why not Nextflow?](docs/design/why-not-nextflow.md)) |
-| **AWS Batch + Fargate** | **The Compute Engine.** Runs each stage as a container job at its own size (QC 1 vCPU / 2 GiB, alignment 4 / 8, variants 2 / 4), retrying only infrastructure failures. Capped at 8 vCPUs, which bounds the spend rate. |
+| **AWS Step Functions** | **The Conductor.** Replaced a self-hosted Airflow setup from earlier in the project. Runs QC and alignment in a `Parallel` state, chooses the caller, splits bcftools calling by region with a `Map` state, retries Batch API errors, enforces a 12-hour limit and routes any failure to SNS. The definition is a JSON file that is tested in Step Functions Local. ([Why not Nextflow?](docs/design/why-not-nextflow.md)) |
+| **AWS Batch** | **The Compute Engine.** Runs each stage as a container job at its own size on Fargate, Spot first (QC 1 vCPU / 2 GiB, alignment 4 / 8, variants 2 / 4), and DeepVariant on an EC2 GPU environment, retrying only infrastructure failures. Capped at 8 Fargate Spot plus 8 on-demand vCPUs and one GPU instance, which bounds the spend rate. |
 | **Docker** | **The Reproducible Toolbox.** One image with every pipeline tool (fastp, bwa-mem2 and bwa, samtools, bcftools, mosdepth) at pinned versions, on a base image pinned by digest. DeepVariant has its own images (CPU and GPU, linear and pangenome-aware). |
-| **GitHub Actions** | **The CI Engine.** Every push and pull request runs ruff, `terraform fmt`/`validate`, the unit tests, the Docker end-to-end truth check (with cached image layers) and the state machine in Step Functions Local, all without AWS credentials. A manual workflow can run `terraform plan` with short-lived OIDC credentials and a read-only role. Dependabot proposes grouped dependency updates. |
+| **GitHub Actions** | **The CI Engine.** Every pull request and every push to `main` runs ruff, `terraform fmt`/`validate`, the unit tests, the Docker end-to-end truth check (with cached image layers) and the state machine in Step Functions Local, all without AWS credentials. A manual workflow can run `terraform plan` with short-lived OIDC credentials and a read-only role. Dependabot proposes grouped dependency updates. |
 | **pytest + synthetic data** | **The Safety Net.** A generator creates a small reference genome and simulated reads (single- or paired-end, optionally with PCR-like duplicates) with known mutations. The end-to-end test runs every stage in Docker and requires the final VCF to contain exactly those mutations. |
 | **Amazon S3** | **The Data Lake.** Holds the inputs, the outputs, the QC statistics and the run records under fixed key prefixes. An upload to `raw_reads/` is the event that starts the pipeline. |
 | **Python** | The stage logic (`app/tasks.py`), the storage and metrics backends, the trigger Lambda, the ops scripts and the Django web UI. Cloud specifics stay in the backends, the Lambda and Terraform. |
+| **Rust** | **The Quality Gate.** `gate/` builds to one static 1 MB binary that parses the tools' outputs (no tool re-run) and returns a verdict with named reasons; tested in CI with fixtures from real HG003/HG005 runs. |
 
 **Why not Nextflow?** Most genomics pipelines are written for a workflow engine. [docs/design/why-not-nextflow.md](docs/design/why-not-nextflow.md) maps Geyser's pieces to Nextflow concepts, lists what an engine would and wouldn't have replaced, and says when the choice should change.
 
-**Design notes:** [why not Nextflow](docs/design/why-not-nextflow.md) · [guardrails for the automation role](docs/design/claude-guardrails.md) · [DeepVariant sizing on AWS](app-deepvariant/README.md)
+**Design notes:** [why not Nextflow](docs/design/why-not-nextflow.md) · [guardrails for the automation role](docs/design/claude-guardrails.md) · [cloud DeepVariant](docs/design/cloud-deepvariant.md) · [DeepVariant sizing on AWS](app-deepvariant/README.md) · [a whole-genome vg giraffe align stage](docs/design/giraffe-align.md)
 
 ---
 
@@ -402,7 +420,7 @@ pytest                                           # unit tests, no Docker needed
 GEYSER_E2E=1 pytest tests/test_e2e_docker.py     # full pipeline in Docker
 ```
 
-The tests also check that the stage list in the Step Functions definition (`infrastructure/state_machine.asl.json`, which `step_functions.tf` renders with `templatefile()`), the stage code (`app/tasks.py`) and the local runner all agree. `tests/test_state_machine_local.py` runs that same definition in [Step Functions Local](https://docs.aws.amazon.com/step-functions/latest/dg/sfn-local.html) (Docker) with Batch and SNS mocked: the happy path (QC and alignment in parallel, then variants), each stage failing, and a failed notification still ending the run as Failed (`GEYSER_SFN_LOCAL=1`; CI runs it on every push).
+The tests also check that the stage list in the Step Functions definition (`infrastructure/state_machine.asl.json`, which `step_functions.tf` renders with `templatefile()`), the stage code (`app/tasks.py`) and the local runner all agree. `tests/test_state_machine_local.py` runs that same definition in [Step Functions Local](https://docs.aws.amazon.com/step-functions/latest/dg/sfn-local.html) (Docker) with Batch and SNS mocked: the happy path (QC and alignment in parallel, then variants), each stage failing, and a failed notification still ending the run as Failed (`GEYSER_SFN_LOCAL=1`; CI runs it on every pull request).
 
 **Quality gate (Rust):** [`gate/`](gate/README.md) reads a run's QC statistics (fastp's report and `stats/<id>/`) and run record, checks them against thresholds from a TOML file (base quality, GC, reads lost in alignment, mapped %, duplicates, properly paired, mean depth, breadth at 10x, SNP count, Ti/Tv) and exits pass or fail with a JSON verdict that names each failed check. The default thresholds were checked on HG003 and HG005 chr20. It is in the image and runs as `tasks.py gate <id>` after variant calling, in **warn** mode for now (`GATE_MODE`: the verdict is stored in `qc_reports/<id>.gate.json` and the run record, and a failed verdict doesn't fail the run); `run_local.py` runs it, the cloud state comes later. Develop it with `cd gate && cargo test`.
 
@@ -644,7 +662,7 @@ Same machine, median of 3 runs:
 
 </details>
 
-**Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. `GEYSER_PG_E2E=1 pytest tests/test_e2e_pangenome.py` runs the real pangenome-aware image on synthetic data with a synthetic graph (`make_test_data.py --pangenome`): the 10 planted SNPs are called, and none of the 5 SNPs only the graph's panel carries. In the cloud, a GPU Batch environment exists, but the stage is not wired into Step Functions yet, and its instances are too small for a whole chromosome. See the sizing notes in [`app-deepvariant/README.md`](app-deepvariant/README.md).
+**Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. `GEYSER_PG_E2E=1 pytest tests/test_e2e_pangenome.py` runs the real pangenome-aware image on synthetic data with a synthetic graph (`make_test_data.py --pangenome`): the 10 planted SNPs are called, and none of the 5 SNPs only the graph's panel carries. In the cloud, linear DeepVariant runs on a GPU Batch environment (g6.xlarge / g5.xlarge) when a run is started with `caller=deepvariant`, with bcftools as the fallback ([design](docs/design/cloud-deepvariant.md)). Pangenome-aware DeepVariant is local only for now. Sizing notes: [`app-deepvariant/README.md`](app-deepvariant/README.md).
 
 ---
 
@@ -693,7 +711,7 @@ Deployment is deliberate, not automatic. Terraform runs locally from `infrastruc
 | Variable | Default | What it does |
 | :--- | :--- | :--- |
 | `stage_resources` | QC 1 vCPU / 2 GiB, align 4 / 8 GiB, variants 2 / 4 GiB | Each stage's Fargate size, sent by the state machine as `ContainerOverrides.ResourceRequirements`. Checked against Fargate's valid vCPU/memory pairs, and QC + align (which run at the same time) must fit in `fargate_max_vcpus`. |
-| `job_disk_gb` | 20 | Fargate ephemeral storage per job. 20 GiB is free; 21-200 is billed. A real 30x sample needs ~100+. |
+| `job_disk_gb` | 20 | Fargate ephemeral storage per job. 20 GiB is free; 21-200 is billed. A whole human genome at 30x needs ~100+. |
 | `pipeline_timeout_hours` | 12 | Time limit for a whole run, queue waits included. A run past it ends as TimedOut. |
 | `log_retention_days` | 30 | How long Batch job logs (`/aws/batch/geyser-<env>`) and trigger Lambda logs (`/aws/lambda/geyser-sfn-trigger-<env>`) are kept. |
 
@@ -718,13 +736,17 @@ The GitHub Actions workflow `.github/workflows/deploy-platform.yml` ("Terraform 
 ### 2. How to Use the Platform (Event-Driven)
 Once deployed, a run is started by uploading a file.
 
-**Verified in the cloud (2 November 2026).** Each checkpoint used the same small sample: 10,000 single-end reads from GRCh38 chr20:10,000,001-10,050,000, with the image `geyser-app:main-69daa5c` (bwa, FastQC and BAM; the tool upgrades on main reach the cloud with the next image).
+**Verified in the cloud (2-3 November 2026).** Most checkpoints used one small sample: 10,000 single-end reads from GRCh38 chr20:10,000,001-10,050,000 with 10 planted SNPs. The real-sample runs used GIAB HG003 chr20, paired-end. Costs are Fargate (or EC2 GPU) on-demand list prices.
 
 | Run | What it showed |
 | :--- | :--- |
-| `CLOUD002-20261102T132058Z-43888afd` | The three-stage state machine: QC and alignment overlapped, the run SUCCEEDED in 1 min 52 s (the old four-stage run took 3 min 45 s), the VCF has all 10 planted SNPs, cost about $0.006. |
-| `CLOUD003-20261102T144231Z-08dc9420` | Per-stage sizes in effect (QC 1 vCPU / 2 GiB, alignment 4 / 8, variants 2 / 4), logs in the new 30-day log groups, 10/10 SNPs. |
+| `CLOUD002-20261102T132058Z-43888afd` | The three-stage state machine: QC and alignment overlapped, the run SUCCEEDED in 1 min 52 s (the old four-stage run took 3 min 45 s), all 10 planted SNPs, about $0.006. |
 | `CLOUD004-20261102T144542Z-3aa11cd4` | A deliberately truncated upload: the stages fail, `Notify_Failure` publishes to SNS, the run ends Failed, and each job ran once (application failures are not retried). |
+| `CLOUD005` / `CLOUD006` / `CLOUD007` | bwa-mem2, fastp, CRAM + indexes, QC statistics and the run record, single- and paired-end; with the bwa-mem2 index stored in S3 the align job dropped from 45.7 s to 29.3 s. |
+| `CLOUD012-20261102T185742Z-2f9926cc` | Region-split variant calling: regions planned, 2 shards in parallel, merged. On a sample this small it is slower (3 min 45 s): each extra job adds about a minute of fixed overhead. |
+| `CLOUD014-20261102T203644Z-dv` | **DeepVariant on a GPU** (`caller=deepvariant`): g6.xlarge (NVIDIA L4), 9 min 42 s (2.6 min instance start, 4 min image pull, 1.7 min DeepVariant), 10/10 planted SNPs, no false calls, about $0.16. The instance scaled back to zero after the job. |
+| `REAL-HG003-35x-chr20-…-5bd4cf33` | **A real sample:** GIAB HG003 chr20 at 35x (19.0 M reads), 22 min 31 s, about $0.067. Quality gate (run on its outputs): **11/11 checks passed**, mean depth 36.8x, Ti/Tv 1.81, the same numbers as the offline calibration. |
+| `REAL-HG003-30x-chr20-…-3da626bc` | The same at 30x (16.2 M reads): 21 min 25 s, about $0.068, gate 11/11. Peak memory: alignment 2.3-2.9 GiB of 8, a variant-calling shard 0.13 GiB of 4. |
 
 1.  **Locate the S3 Data Lake:** Find the S3 bucket created by Terraform. Its name has the format `<project_name>-data-lake-<random-suffix>`.
 2.  **Upload Raw Data:** Upload your gzipped FASTQ file to the `raw_reads/` prefix, e.g. `raw_reads/SRR062634.fastq.gz`. The sample ID is the part of the filename before the first dot.
@@ -737,11 +759,11 @@ Once deployed, a run is started by uploading a file.
 | :--- | :--- |
 | Quality control | `qc_reports/<id>.fastp.html` and `qc_reports/<id>.fastp.json` from [fastp](https://github.com/OpenGene/fastp) in report-only mode (nothing trimmed or filtered); one report per sample, both mates for paired-end |
 | Alignment | `alignments/<id>.cram` + `.cram.crai`, one per sample (coordinate-sorted, duplicates marked with samtools markdup; paired-end runs `samtools fixmate -m` first). CRAM stores the reads against the reference, so it is far smaller than a BAM, and it needs that same reference to read it: `samtools view -T reference/<name> alignments/<id>.cram` |
-| Variant calling | `variants/<id>.vcf.gz` + `.vcf.gz.tbi` (tabix index, for region queries) |
+| Variant calling | `variants/<id>.vcf.gz` + `.vcf.gz.tbi` (tabix index, for region queries), from bcftools; with `caller=deepvariant`, `variants_deepvariant/<id>.vcf.gz` instead, or bcftools' VCF if DeepVariant fails |
 | Consequence annotation (optional) | `variants/<id>.csq.vcf.gz` + `.tbi`: the same VCF with [bcftools csq](https://samtools.github.io/bcftools/howtos/csq-calling.html) consequences in `INFO/BCSQ` (e.g. `missense\|DEFB125\|ENST00000382410\|protein_coding\|+\|10I>10T`). Written only when the reference has gene models at `reference/<name>.gff3.gz` (Ensembl-style GFF3); `ANNOTATE=off` skips it. The cloud reference has none yet, so cloud runs don't annotate. |
 | QC statistics | `stats/<id>/`: `flagstat.txt` (samtools flagstat: mapped, duplicates, properly paired) and `mosdepth.summary.txt` / `mosdepth.global.dist.txt` (mean depth, and the fraction of bases covered at each depth; duplicates excluded) from the align stage; `bcftools.stats.txt` (SNP and indel counts, Ti/Tv) from variant calling. DeepVariant and pangenome-aware DeepVariant write `bcftools.stats.<caller>.txt` over their **PASS calls only** (their VCFs also keep rejected RefCall candidates, which would halve Ti/Tv), and the sample's `bcftools.stats.txt` when they are the run's caller. The job log prints the headline numbers. |
-| Quality gate | `qc_reports/<id>.gate.json`: the verdict of [`gate/`](gate/README.md) on the QC statistics, the fastp report and the run record (pass or fail, each failed check named). Local runs only until the cloud state exists; warn mode, so it never fails a run yet |
-| Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error (a DeepVariant-only run is complete when DeepVariant, its caller, succeeds: it has no bcftools stage), the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. In the cloud the state machine doesn't pass the execution name to the jobs yet, so cloud records say `run_name: null`, and after a partial re-run one record can mix two runs. |
+| Quality gate | `qc_reports/<id>.gate.json`: the verdict of [`gate/`](gate/README.md) on the QC statistics, the fastp report and the run record (pass or fail, each failed check named). Written by local runs (`run_local.py`, after variant calling; `--no-gate` skips it); in the cloud once the state machine step lands ([#162](../../pull/162)). Warn mode by default: a failed verdict is recorded, not fatal |
+| Run record | `runs/<id>.provenance.json`: what produced the outputs. It lists the input keys and sizes, the reference (name, MD5, size), the tool versions the image reports, the image (`APP_VERSION`), the aligner and layout, each stage's status, timings and any error (a DeepVariant-only run is complete when DeepVariant, its caller, succeeds: it has no bcftools stage), the outputs with sizes, and the headline QC stats. Each stage writes its own part (`runs/<id>.provenance/<stage>.json`) and rebuilds the record, so a failed stage is recorded too. Best effort: it never fails a stage. `scripts/reconcile.py` shows it in its R column. Every job gets the Step Functions execution name as `RUN_NAME`, so each part says which run wrote it. The record also names the stage whose calls are the sample's (`variant_stage`, `vcf`): DeepVariant's when it was the run's caller. |
 
 ### 3. Monitoring
 
@@ -752,11 +774,12 @@ Each stage records `Duration` (and `FailureCount` when it fails) in the CloudWat
 
 | Script | What it creates |
 | :--- | :--- |
-| `scripts/deploy_dashboard.py` | Dashboard `geyser-dashboard-dev`: links to the console pages for a run (Step Functions runs, Batch jobs, logs, Logs Insights, alarms, S3, budgets), alarm status, pipeline runs per day, end-to-end time (p50/p95), failures by stage, and stage durations for the core pipeline, DeepVariant and pangenome DeepVariant |
+| `scripts/deploy_dashboard.py` | Dashboard `geyser-dashboard-dev`: links to the console pages for a run (Step Functions runs, Batch jobs, logs, Logs Insights, alarms, S3, budgets), alarm status, pipeline runs per day, end-to-end time (p50/p95), failures by stage, result quality per sample (from the job logs), data lake size and object count, and stage durations for the core pipeline, the region shards, DeepVariant and pangenome DeepVariant |
 | `scripts/deploy_alarms.py` | Alarm `geyser-dev-trigger-lambda-errors`: the trigger Lambda failing, the one failure that leaves no trace in the pipeline's own metrics because no run starts. Its state shows on the dashboard |
 | `scripts/runtime_deploy_pipeline_dashboard.py` | Optional dashboard with only the Step Functions widgets |
-| `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only). With `--stages`: for each stage, how long the Batch job queued vs ran, its vCPU/memory, attempts, why it failed (e.g. out of memory), and an estimated Fargate cost per stage and per run (`--stages-csv` to export) |
+| `scripts/query_pipeline_duration.py` | Prints a table of recent Step Functions run times (read-only). With `--stages`: for each stage, how long the Batch job queued vs ran, its vCPU/memory, attempts, why it failed (e.g. out of memory), and an estimated Fargate cost per stage and per run, and the CPU time and peak memory each job used against what it was given (`--stages-csv` to export) |
 | `scripts/reconcile.py` | Compares uploads, runs and outputs to find what the pipeline silently missed: uploads the trigger ignores (not `.gz`), refuses (a mate not named `<id>_R1.fastq.gz`/`_R2.fastq.gz`) or that start a run which will fail (anything but `raw_reads/<id>.fastq.gz` or `<id>_R1`/`_R2`), paired-end samples with only one mate or uploaded both ways, samples with no VCF, orphan outputs, and (with `--state-machine-arn`) two runs of one sample at once. Works offline: `--local-dir local_bucket` |
+| `scripts/stop_run.py` | Stops a run: its Step Functions execution **and** the Batch jobs it started (stopping an execution alone leaves its running `.sync` jobs running and billing). Finds the jobs by name (every job name ends with the execution name) in every job queue, queued or running only. `--dry-run` only reads. `python scripts/stop_run.py <execution-name> --dry-run`, with `SFN_ARN` set |
 
 **Preview without AWS:** `--dry-run` prints the JSON and makes no AWS calls. No ARNs are needed.
 ```bash
@@ -782,13 +805,13 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 
 ✅ done · ☁️ done and verified in the cloud · 🚧 in progress · 🎯 top priority · 🔜 next
 
-Release notes for each version (drafts, not tagged yet) are in [`docs/releases/`](docs/releases/README.md).
+**Releases:** [v0.3](../../releases/tag/v0.3) (observability), [v0.35](../../releases/tag/v0.35) (legacy names removed), [v0.4](../../releases/tag/v0.4) (DeepVariant, local GPU to cloud GPU) are tagged. v1.0 and v2.0 are drafted in [`docs/releases/`](docs/releases/README.md).
 
 ### 1.0: the platform, made public
 
 | | | |
 | :---: | :--- | :--- |
-| ✅ | **Offline pipeline** | Storage and metrics backends, Docker end-to-end truth check on every push |
+| ✅ | **Offline pipeline** | Storage and metrics backends, Docker end-to-end truth check in CI |
 | ☁️ | **Cost-safe networking and CI hardening** | NAT gateway off, budgets, OIDC with read-only Terraform roles, prod restricted to `main` |
 | ☁️ | **Paired-end input, duplicate marking, run names** | R1/R2 pairing in the trigger, layout-aware stages, `samtools markdup`, runs named after the sample |
 | ✅ | **DeepVariant and pangenome-aware DeepVariant (local GPU)** | hap.py on HG003 chr20 reproduces Google's published result; HG005 vs an HG003 control by GIAB region type |
@@ -807,23 +830,42 @@ Release notes for each version (drafts, not tagged yet) are in [`docs/releases/`
 
 | | | |
 | :---: | :--- | :--- |
-| ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; cloud run 1 min 52 s, down from 3 min 45 s |
+| ☁️ | **Three stages, QC and alignment in parallel** | No decompressed intermediate; small-sample cloud run 1 min 52 s, down from 3 min 45 s |
 | ☁️ | **Faster tools** | bwa-mem2 (align stage 1.56× faster on HG003 chr20) with its index stored (align job 45.7 s → 29.3 s); fastp; CRAM + indexes |
-| ☁️ | **Faster starts, cheaper capacity** | Slim image (186 → 87 MB compressed, pulled by every job); Fargate Spot first with on-demand fallback; $0.0066-0.0070 per small sample at on-demand prices |
-| ☁️ | **Sharded variant calling** | Regions called in parallel by a `Map` state and merged exactly; for whole genomes, not small samples (it adds ~2 min of fixed overhead there) |
+| ☁️ | **Faster starts, cheaper capacity** | Slim image (186 → 87 MB compressed, pulled by every job); Fargate Spot first with on-demand fallback; about $0.07 per real chr20 sample (30-35x) at on-demand prices |
+| ☁️ | **Sharded variant calling** | Regions called in parallel by a `Map` state and merged exactly; for large samples, not small ones (it adds ~1.5 min of fixed overhead there) |
 | ✅ | **Quality gate (Rust)** | Fails a run with named reasons; thresholds calibrated on HG003/HG005; DeepVariant stats over PASS calls |
 | ✅ | **Variant consequences** | `bcftools csq` when the reference has gene models; shown in the web UI |
-| 🚧 | **Quality gate in the pipeline** | Gate stage, binary in the image, verdict in the run record ([#148](../../pull/148)) |
-| 🚧 | **DeepVariant in the cloud** | GPU environment in the public subnet, DeepVariant stage with bcftools fallback ([#125](../../pull/125), [#43](../../issues/43), [#44](../../issues/44)) |
+| ✅ | **Quality gate in the pipeline: app** | Gate stage, binary in the image, verdict in the run record ([#148](../../pull/148)); real chr20 runs pass 11/11 |
+| 🚧 | **Quality gate in the pipeline: state machine** | A gate step after either caller, warn mode by default ([#162](../../pull/162)) |
+| ☁️ | **DeepVariant in the cloud** | GPU environment in the public subnet, DeepVariant stage with bcftools fallback; 10/10 on a g6.xlarge for about $0.16 ([#125](../../pull/125)) |
+| 🔜 | **DeepVariant as the default caller** | The app treats DeepVariant's VCF as the sample's calls when it was the caller ([#170](../../pull/170)); next, a real-size chr20 DeepVariant run before switching `default_caller` |
 
 ### After 2.0
 
 | | | |
 | :---: | :--- | :--- |
 | 🎯 | **Pangenome: where it should help most** | Done offline on chr20: HG005's extra errors explained (MAPQ-0 reads), reads aligned to the graph (`vg giraffe`, fewest errors). Next: newer HPRC graph, whole genome, giraffe in the pipeline ([#51](../../issues/51), [#146](../../issues/146)). **Top priority** |
-| 🔜 | **Pangenome-aware DeepVariant in the cloud** | Same GPU environment as 2.0's DeepVariant, plus shared memory for the graph |
+| 🔜 | **Pangenome-aware DeepVariant in the cloud** | Same GPU environment as cloud DeepVariant, plus shared memory for the graph |
 | 🔜 | **Whole genomes in the cloud** | make_examples on large CPU Spot, call_variants on the GPU, bigger job disks |
 | 🔜 | **Spot for the GPU queue** | A Spot environment ahead of on-demand, as for Fargate |
+
+---
+
+## 🗂️ Repository Layout
+
+| Path | What it holds |
+| :--- | :--- |
+| `app/` | The pipeline stages (`tasks.py`: QC, align, variants, regions, gate), the storage and metrics backends, the provenance run record |
+| `app-deepvariant/` | The DeepVariant stage and its image (linear and pangenome-aware; GPU and CPU builds), with AWS sizing notes |
+| `lambda/trigger/` | The S3 → Step Functions trigger: sample IDs, mate pairing, run names |
+| `infrastructure/` | Terraform for everything in AWS, and the state machine definition (`state_machine.asl.json`) |
+| `gate/` | The quality gate in Rust, with its thresholds and test fixtures |
+| `web/` | The Django web UI (upload, demo data, results), running against the same storage layer |
+| `scripts/` | Local runner (`run_local.py`), test data, benchmarks (hap.py, aligners, giraffe), monitoring and reconciliation |
+| `tests/` | Unit tests, Docker end-to-end tests and the Step Functions Local tests |
+| `docs/` | [Design notes](docs/design/), [release notes](docs/releases/README.md), the [benchmark history](docs/benchmarks/README.md) |
+| `Dockerfile` | The pipeline image: every tool at a pinned version, on a base pinned by digest |
 
 ---
 

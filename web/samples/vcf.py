@@ -1,11 +1,16 @@
-"""Read a bcftools VCF (gzipped) into table rows, and compare calls against a demo truth file."""
+"""Read a VCF (gzipped) into table rows, and compare calls against a demo truth file.
+
+Only calls count: filtered records (DeepVariant's RefCall and NoCall) and placeholder ALTs are skipped,
+as in run_local.read_vcf_calls. bcftools writes FILTER '.', DeepVariant 'PASS' for its calls."""
 
 import gzip
 import io
 import json
 from dataclasses import dataclass, field
 
-from geyser_web.pipeline import ObjectNotFound
+from geyser_web.pipeline import ObjectNotFound, run_local
+
+NON_VARIANT_ALTS = run_local.NON_VARIANT_ALTS  # one rule for what is a call, here and in run_local --check
 
 
 @dataclass(frozen=True)
@@ -24,7 +29,7 @@ class Variant:
 @dataclass
 class VariantTable:
     rows: list = field(default_factory=list)  # at most `limit` Variants
-    total: int = 0  # every record in the file
+    total: int = 0  # every call in the file (filtered records left out)
     calls: set = field(default_factory=set)  # {(pos, ref, alt)} for all records, as run_local.read_vcf_calls
     annotated: bool = False  # the file carries bcftools csq consequences (a BCSQ header line)
 
@@ -83,6 +88,8 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
         if len(cols) < 8:
             continue
         chrom, pos, ref, alts, qual, info = cols[0], int(cols[1]), cols[3], cols[4], cols[5], cols[7]
+        if cols[6] not in ("PASS", "."):
+            continue  # a candidate the caller rejected (DeepVariant RefCall / NoCall), not a call
         genotype = ""
         if len(cols) >= 10:
             fmt, sample = cols[8].split(":"), cols[9].split(":")
@@ -91,6 +98,8 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
         depth = _info_field(info, "DP")
         bcsq = _info_field(info, "BCSQ")
         for alt in alts.split(","):
+            if alt in NON_VARIANT_ALTS:
+                continue  # no alternative allele: a placeholder, not a call (as run_local.read_vcf_calls)
             table.total += 1
             table.calls.add((pos, ref, alt))
             if len(table.rows) < limit:

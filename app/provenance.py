@@ -23,13 +23,25 @@ Everything here is best effort: a provenance problem prints a warning and never 
 Record (schema 1):
     schema, sample_id, run_name, status (succeeded | failed | incomplete), complete, updated,
     caller (PIPELINE_CALLER: deepvariant | pangenome when one of them was the run's caller, else absent),
+    variant_stage (CallVariants | DeepVariant | PangenomeDeepVariant: the stage whose calls are the sample's),
+    vcf (that stage's VCF key: variants/, variants_deepvariant/ or variants_pangenome/<id>.vcf.gz),
     app_version (APP_VERSION: the image tag in the cloud), layout, aligner,
     reference {name, md5, bytes}, inputs [{key, bytes}], outputs [{key, bytes}],
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
     stages {Task: {status, started, finished, duration_seconds, error, run_name}},
+    failure {stage, error, reason, exit_code, job_id, log_stream} (only for a run closed as failed, below)
     gate {verdict (pass | fail | null when the gate couldn't run), reasons, mode, config, gate_version, key}:
         the quality gate's verdict (tasks.gate_task), once the QualityGate stage has run. It doesn't
         change the status: in GATE_MODE=fail a failed verdict fails the QualityGate stage itself.
+
+Closing a failed run: a stage that fails in Python writes its own Failure part, but a job that is killed (out of
+memory, timeout), never starts, or a step outside the stages (the region planner, reading the regions, a shard)
+leaves the record without a final status. A closing part, runs/{id}.provenance/Finalize.json, fixes that: the
+record is then failed, with the failing stage (from the Batch job name in the Catch's Cause) and why. The state
+machine's failure path writes it itself, straight to S3 with the Catch output as "caught" (parsed on read), and
+can't re-assemble: the stored runs/{id}.provenance.json keeps the last stage's view until something assembles
+it, while every reader that uses read_record() (reconcile, the web UI, the next stage) sees the close. By hand or
+for a local run: `tasks.py finalize <id> --status failed --run-name <run> [--caught JSON]` (close_run).
 """
 
 import hashlib
@@ -52,6 +64,14 @@ CORE_STAGES = ("QualityControl", "Align", "CallVariants")
 # earlier run: not its stage, VCF or stats. Without a caller (bcftools runs, --caller both, a caller
 # added with --skip-to-variants) the core pipeline is CORE_STAGES, as before.
 CALLER_STAGES = {"deepvariant": "DeepVariant", "pangenome": "PangenomeDeepVariant"}
+# The VCF each variant-calling stage writes (tasks.keys_for "vcf", deepvariant_task.deepvariant_keys "vcf";
+# tests/test_provenance.py checks they agree). The record's "vcf" is the sample's current calls: what
+# reconcile and the web UI show, whichever caller made them.
+STAGE_VCF = {
+    "CallVariants": "variants/{id}.vcf.gz",
+    "DeepVariant": "variants_deepvariant/{id}.vcf.gz",
+    "PangenomeDeepVariant": "variants_pangenome/{id}.vcf.gz",
+}
 # Stages whose outputs a stage builds on. When the latest run starts part-way (run_local
 # --skip-to-variants, a stage re-run by hand), its upstream stages come from the run that last ran
 # them; downstream ones never do, so a run still in progress never borrows an old run's later stages.
@@ -234,6 +254,107 @@ def finish(storage, status: str, duration: float, error: str = None, usage: dict
         _warn("write the run record", err)
 
 
+# The state machine's job names start with these (state_machine.asl.json); the stage (metric) name each runs.
+# Longest first: CallVariantsShard- also starts with CallVariants.
+JOB_NAME_STAGES = (
+    ("CallVariantsShard-", "CallVariantsShard"),
+    ("CallVariants-", "CallVariants"),
+    ("QualityControl-", "QualityControl"),
+    ("AlignGenome-", "Align"),
+    ("PlanRegions-", "PlanRegions"),
+    ("DeepVariant-", "DeepVariant"),  # G2: the GPU caller; an extra caller, so its failure doesn't fail the run
+)
+REASON_LIMIT = 1000  # characters of a failure reason kept in the record
+EXTRA_CALLERS = ("DeepVariant", "PangenomeDeepVariant")  # their failure never fails the core run
+FINALIZE_TASK = "Finalize"
+
+
+def parse_failure(error: str = None, cause: str = None) -> dict:
+    """What failed, from a Step Functions Catch's Error and Cause.
+
+    A failed Batch task's Cause is the job's description (JSON): its job name gives the stage, and its status
+    reason, exit code and log stream say why and where to look. Any other Cause (a timeout, an S3 error, plain
+    text) is kept as the reason, and the stage stays unknown (None).
+    """
+    failure = {"stage": None, "error": error or None, "reason": None, "exit_code": None, "job_id": None}
+    failure["log_stream"] = None
+    try:
+        job = json.loads(cause) if cause else None
+    except ValueError:
+        job = None
+    if isinstance(job, dict) and job.get("JobName"):
+        name = job["JobName"]
+        failure["stage"] = next((stage for prefix, stage in JOB_NAME_STAGES if name.startswith(prefix)), None)
+        if failure["stage"] == "CallVariantsShard":  # CallVariantsShard-<index>-<execution>: which region failed
+            index = name.split("-")[1]
+            failure["shard_index"] = int(index) if index.isdigit() else None
+        container = job.get("Container") or {}
+        failure["reason"] = "; ".join(r for r in (job.get("StatusReason"), container.get("Reason")) if r) or None
+        failure["exit_code"] = container.get("ExitCode")
+        failure["job_id"] = job.get("JobId")
+        failure["log_stream"] = container.get("LogStreamName")
+    elif cause:
+        failure["reason"] = cause
+    if failure["reason"] and len(failure["reason"]) > REASON_LIMIT:
+        failure["reason"] = failure["reason"][:REASON_LIMIT] + "..."
+    return failure
+
+
+def _second(timestamp):
+    """A timestamp to the second, as the stages write them: the state machine's $$.State.EnteredTime has
+    milliseconds ('...:48.429Z'), which would sort before the same second written without them ('...:48Z')."""
+    if timestamp and timestamp.endswith("Z") and "." in timestamp:
+        return timestamp.split(".")[0] + "Z"
+    return timestamp
+
+
+def _failure_of(final) -> dict:
+    """A closing part's failure: parsed by close_run, or (the state machine writes the Catch output as it is)
+    parsed here from its "caught" {Error, Cause}."""
+    if final.get("failure"):
+        return final["failure"]
+    caught = final.get("caught")
+    if final.get("status") == "failed" and isinstance(caught, dict):
+        return parse_failure(caught.get("Error"), caught.get("Cause"))
+    return None
+
+
+def close_run(
+    storage, sample_id: str, status: str = "failed", error: str = None, cause: str = None, run_name: str = None
+):
+    """Close a run with a final status (tasks.py finalize), so a run whose failing job never wrote its own part
+    (killed, out of memory, timed out, or a step outside the stages) still ends as failed, with the failing stage
+    and why. Writes the Finalize part, then re-assembles the record. Never raises; returns the record (or None).
+
+    run_name: the run to close (default RUN_NAME). Never guessed from the parts: the job that failed has often
+    written none, so the latest part can belong to an earlier, successful run.
+
+    The state machine's failure path writes the same part itself, straight to S3 with the Catch output as
+    "caught" (no Batch job: a retried job's Cause can be too big for a command line), and build() parses it.
+    """
+    run_name = run_name or os.environ.get("RUN_NAME") or None
+    part = {
+        "schema": SCHEMA_VERSION,
+        "task": FINALIZE_TASK,
+        "sample_id": sample_id,
+        "run_name": run_name,
+        "app_version": os.environ.get("APP_VERSION") or None,
+        "finished": _now(),
+        "status": status,
+        "failure": parse_failure(error, cause) if status == "failed" else None,
+        "inputs": [],
+        "outputs": [],
+        "tools": {},
+        "stats": {},
+    }
+    try:
+        _put_json(storage, f"{part_prefix(sample_id)}{FINALIZE_TASK}.json", part)
+        return assemble(storage, sample_id)
+    except Exception as err:  # noqa: BLE001 - provenance must never fail the failure path
+        _warn("close the run record", err)
+        return None
+
+
 def build(storage, sample_id: str, part_keys=None) -> dict:
     """The record from the parts (see the module docstring), or None if there are none. Doesn't write.
 
@@ -244,6 +365,9 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     parts = [p for p in (_read_json(storage, k) for k in part_keys if k.endswith(".json")) if p]
     if not parts:
         return None
+    for p in parts:
+        if p.get("task") == FINALIZE_TASK:
+            p["finished"] = _second(p.get("finished"))
     latest = max(parts, key=lambda p: p.get("finished") or "")
     run = [p for p in parts if p.get("run_name") == latest.get("run_name")]
     # Upstream stages the latest run didn't include come from whichever run last ran them (one part per task).
@@ -255,13 +379,37 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     inherited = [p for p in parts if p["task"] in upstream]
     run += inherited
     caller = own_caller or run_caller(inherited)  # a gate re-run by hand judges the inherited caller's calls
+    # The run's closing part (the state machine's failure path, or tasks.py finalize), if it has one. Not a stage.
+    final = next((p for p in run if p["task"] == FINALIZE_TASK), None)
+    run = [p for p in run if p["task"] != FINALIZE_TASK]
+    if final and final.get("run_name") is None and any((p.get("started") or "") > final["finished"] for p in run):
+        # Without a run name every part is one run: a stage that *started* after the close is a new run, so the old
+        # close doesn't fail it. (A sibling that started before and finished after the close is the same run.)
+        final = None
     stages = {
         p["task"]: {
             k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error", "run_name", "resources")
         }
         for p in run
     }
+    failure = _failure_of(final) if final else None
+    if failure and failure.get("stage") and failure["stage"] not in stages:
+        # The failing job never wrote its part (killed, out of memory, timed out before Python could record it).
+        stages[failure["stage"]] = {
+            "status": "Failure",
+            "started": None,
+            "finished": final.get("finished"),
+            "duration_seconds": None,
+            "error": failure.get("reason") or failure.get("error"),
+            "run_name": final.get("run_name"),
+            "resources": None,
+        }
     complete, failed = _core_status(stages, caller)
+    # A run closed as failed is failed whichever step failed (the planner, a shard, reading the regions, or
+    # unknown), unless that step is an extra caller: the same rule as for its own part (_core_status). The run's
+    # own caller (PIPELINE_CALLER) is its variant calling, so its failure does fail the run.
+    extra = set(EXTRA_CALLERS) - {CALLER_STAGES.get(caller)}
+    failed = failed or ((final or {}).get("status") == "failed" and (failure or {}).get("stage") not in extra)
     record = {
         "schema": SCHEMA_VERSION,
         "sample_id": sample_id,
@@ -269,13 +417,23 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
         "status": "failed" if failed else "succeeded" if complete else "incomplete",
         "complete": complete,
         "updated": _now(),
-        "app_version": latest.get("app_version"),
+        # The state machine's closing part has no app_version: the latest part of the run that knows it.
+        "app_version": next(
+            (
+                p["app_version"]
+                for p in sorted(run, key=lambda p: p.get("finished") or "", reverse=True)
+                if p.get("app_version")
+            ),
+            latest.get("app_version"),
+        ),
         "stages": stages,
         "inputs": _union(p["inputs"] for p in run),
         "outputs": _union(p["outputs"] for p in run),
         "tools": {},
         "stats": {},
     }
+    if failure:
+        record["failure"] = failure
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
         record["stats"].update(p.get("stats") or {})
@@ -284,13 +442,53 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
                 record[field] = p[field]
     if caller:
         record["caller"] = caller
+    record["variant_stage"] = variant_stage(stages, caller) if caller else _calls_stage(stages, parts)
+    record["vcf"] = STAGE_VCF[record["variant_stage"]].format(id=sample_id)
     return record
+
+
+def _calls_stage(stages: dict, parts: list) -> str:
+    """The variant stage of a run without a caller of its own: CallVariants when the record has one (its own
+    or inherited). An add-on run (run_local --caller pangenome --skip-to-variants) after a run whose caller was
+    DeepVariant has none: the sample's calls are still that run's, i.e. the latest successful part of a
+    caller's own stage (PIPELINE_CALLER set), whichever run it belongs to.
+
+    Reaching past CallVariants means the sample has no bcftools calls at all (an earlier CallVariants part
+    would have been inherited into stages). One part is kept per stage, so a re-run of the same caller as an
+    add-on replaces the caller's part and its mark: then the latest successful caller-stage part, marked or
+    not, holds the only calls there are."""
+    if "CallVariants" in stages:
+        return "CallVariants"
+    done = [p for p in parts if p["task"] in CALLER_STAGES.values() and p.get("status") == "Success"]
+    owned = [p for p in done if p.get("caller") in CALLER_STAGES and p["task"] == CALLER_STAGES[p["caller"]]]
+    if not (owned or done):
+        return "CallVariants"
+    return max(owned or done, key=lambda p: p.get("finished") or "")["task"]
+
+
+def sample_vcf_key(record, sample_id: str) -> str:
+    """The sample's current VCF: the record's "vcf", or the bcftools VCF without a record (or an old record)."""
+    vcf = (record or {}).get("vcf")
+    return (
+        vcf
+        if vcf in {v.format(id=sample_id) for v in STAGE_VCF.values()}
+        else STAGE_VCF["CallVariants"].format(id=sample_id)
+    )
 
 
 def run_caller(parts: list):
     """The caller these parts name (PIPELINE_CALLER, CALLER_STAGES), or None (none, or more than one)."""
     callers = {p.get("caller") for p in parts if p.get("caller") in CALLER_STAGES}
     return callers.pop() if len(callers) == 1 else None
+
+
+def variant_stage(stages: dict, caller) -> str:
+    """The stage whose calls are the run's: CallVariants without a caller; with one, the later-started of
+    the caller's stage and CallVariants (a CallVariants after a failed DeepVariant is the cloud's fallback)."""
+    if not caller:
+        return "CallVariants"
+    attempts = [t for t in (CALLER_STAGES[caller], "CallVariants") if t in stages]
+    return max(attempts, key=lambda t: stages[t].get("started") or "") if attempts else CALLER_STAGES[caller]
 
 
 def _core_status(stages: dict, caller) -> tuple:
@@ -302,11 +500,7 @@ def _core_status(stages: dict, caller) -> tuple:
     cloud's fallback, and one before it belongs to an earlier run (which matters only when parts have no
     run name to tell runs apart). Until the fallback finishes, a failed DeepVariant reads as failed.
     """
-    variant = "CallVariants"
-    if caller:
-        attempts = [t for t in (CALLER_STAGES[caller], "CallVariants") if t in stages]
-        variant = max(attempts, key=lambda t: stages[t].get("started") or "") if attempts else CALLER_STAGES[caller]
-    core = ("QualityControl", "Align", variant)
+    core = ("QualityControl", "Align", variant_stage(stages, caller))
     complete = all(stages.get(t, {}).get("status") == "Success" for t in core)
     failed = any(stages[t].get("status") != "Success" for t in core if t in stages)
     return complete, failed
@@ -349,4 +543,7 @@ def summary(record: dict) -> dict:
         "app_version": record.get("app_version"),
         "stages": {task: s.get("status") for task, s in stages.items()},
         "stage_runs": {task: s.get("run_name") for task, s in stages.items()},
+        "failed_stage": (record.get("failure") or {}).get("stage"),
+        "caller": record.get("caller"),
+        "vcf": record.get("vcf"),
     }
