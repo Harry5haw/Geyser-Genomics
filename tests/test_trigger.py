@@ -143,6 +143,8 @@ def test_batch_job_names_still_fit(trigger):
         "Preflight",
         "AlignMerge",
         "DeepVariant",
+        # v1.5 split mode: the same GPU job on the make_examples parts' examples (--from-examples).
+        "DeepVariant",
         "PlanRegions",
         "CallVariants",
         "QualityGate",
@@ -157,6 +159,10 @@ def test_batch_job_names_still_fit(trigger):
     assert "States.Format('CallVariantsShard-{}-{}', $.index, $$.Execution.Name)" in asl
     shard = f"CallVariantsShard-{99999}-{name}"
     assert len(shard) <= 128 and re.fullmatch(r"[A-Za-z0-9_-]+", shard)
+    # v1.5 the make_examples parts likewise name their part (0..5): 'DeepVariant-' keeps provenance's stage.
+    assert "States.Format('DeepVariant-Examples-{}-{}', $.part, $$.Execution.Name)" in asl
+    part = f"DeepVariant-Examples-{99}-{name}"
+    assert len(part) <= 128 and re.fullmatch(r"[A-Za-z0-9_-]+", part)
 
 
 def test_handler_names_the_execution_after_the_sample(trigger, monkeypatch):

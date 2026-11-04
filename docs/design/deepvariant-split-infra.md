@@ -49,7 +49,9 @@ A per-run override, like v1.3's `merge_threads`.
   - `parts_text`;
   - `shards_text = States.Format('{}', States.ArrayGetItem(dv_shards_by_parts, dv_parts))`.
   Check in Step Functions Local that it accepts nested `ArrayRange`, `MathAdd` and `ArrayGetItem`.
-- **`Make_Examples_Parts`** (Map, legacy `Parameters`/`Iterator`, `MaxConcurrencyPath $.run_settings.dv_parts`):
+- **`Make_Examples_Parts`** (Map, legacy `Parameters`/`Iterator`, `MaxConcurrency 0`: the Map has exactly
+  `dv_parts` items, so "all at once" equals `MaxConcurrencyPath $.run_settings.dv_parts` without a Step Functions
+  Local stand-in):
   - **Job name:** `DeepVariant-Examples-{part}-{exec}`. The existing `("DeepVariant-", "DeepVariant")` entry in
     `provenance.JOB_NAME_STAGES` covers it, so no app change is needed.
   - **Command:** `deepvariant_task.py <id> <ref> --make-examples-part P --parts J`.
@@ -80,7 +82,12 @@ DeepVariant being an extra caller whose failure never fails the run (`provenance
   - `dv_parts` 3 gives 3 part jobs with the right commands, shards text and job names, then the GPU job with
     `--from-examples`;
   - a failed part falls back to bcftools;
-  - out-of-bounds `dv_parts` (0, 7, 2.5, "3") fails before any job;
-  - add the `MaxConcurrencyPath` entry to `CONCURRENCY_PATHS` and `for_sfn_local`.
-- **Consistency:** `dv_shards_by_parts` matches `dv_part_resources`; both job definitions' `DEEPVARIANT_*`
-  agree; the CPU repo and job definition are referenced; `setting_count` is 8.
+  - out-of-bounds `dv_parts` (0, 7, 2.5, 3.0, "3", null, -1) fails before any job;
+  - `dv_parts` > 1 with bcftools as the caller changes nothing.
+- **Consistency:** `dv_shards_by_parts` matches `dv_part_resources`; neither job definition sets
+  `DEEPVARIANT_MODEL_TYPE` / `DEEPVARIANT_EXTRA_ARGS`; `setting_count` is 8.
+- **Job names:** `test_stop_run` and `test_trigger` accept the hyphenated `DeepVariant-Examples-<P>-<exec>` and
+  the second `DeepVariant-<id>-<exec>` format (the `--from-examples` job).
+
+All written (4 Nov 2026): unit tests, 201 Step Functions Local tests and
+`aws stepfunctions validate-state-machine-definition` (OK, no diagnostics) pass.

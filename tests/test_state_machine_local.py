@@ -85,6 +85,13 @@ TEMPLATE_VARS = {
     "chunk_memory_mb": "32768",
     "align_merge_vcpu": "8",
     "align_merge_memory_mb": "16384",
+    # v1.5 the DeepVariant split (deepvariant_cpu.tf): variables.tf's defaults, and what step_functions.tf derives
+    # from fargate_spot_max_vcpus = 48 and dv_part_resources' 8 vCPUs (parts x 8 shards, 0..48 / 8 parts).
+    "deepvariant_cpu_job_definition": "geyser-deepvariant-cpu-job",
+    "deepvariant_split_parts": "1",
+    "dv_parts_max": "6",
+    "dv_shards_by_parts": "[0,8,16,24,32,40,48]",
+    "dv_part_timeout_seconds": "14400",
 }
 # Each Map's MaxConcurrencyPath (the run's setting): the real definition's, which this Step Functions Local image
 # rejects ("Field 'MaxConcurrencyPath' is not supported"). for_sfn_local() swaps in the default as MaxConcurrency;
@@ -206,6 +213,10 @@ TEST_CASES = {
         "Call_Variants": FAIL,
         "Notify_Failure": "Published",
     },
+    # v1.5 split mode (dv_parts > 1): the make_examples parts on the Fargate queue, then the GPU job...
+    "DeepVariantSplitOk": {"Make_Examples_Part": "ShardsOk", "DeepVariant": OK},
+    # ...and bcftools when a part fails (every part, as ShardsFail: see its note), without the GPU job.
+    "DeepVariantSplitPartFails": {"Make_Examples_Part": "ShardsFail", "DeepVariant": OK},
     "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
     # aligner is neither bwa-mem2 nor giraffe: the align branch fails before submitting anything.
     "AlignerUnknown": {"Notify_Failure": "Published"},
@@ -858,6 +869,95 @@ def test_both_callers_failing_fails_the_run(sfn):
     assert entered(events)[-2:] == ["Notify_Failure", "Pipeline_Failed"]
 
 
+# --- v1.5 the DeepVariant split: make_examples parts on Fargate, then the GPU job (#228, #236) ----------------
+
+
+@pytest.mark.parametrize("overrides", [_UNSET, {"dv_parts": 1}])
+def test_dv_parts_1_is_the_single_gpu_job_as_before(sfn, overrides):
+    desc, events = run_case(sfn, "DeepVariantOk", caller="deepvariant", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Choose_DeepVariant_Mode") < states.index("Prepare_DeepVariant_Command")
+    assert "Make_Examples_Parts" not in states and not batch_calls(events, "Make_Examples_Part")
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert "--from-examples" not in dv["ContainerOverrides"]["Command"]
+
+
+def test_split_mode_runs_one_cpu_part_per_dv_part_then_the_gpu_job_on_their_examples(sfn):
+    desc, events = run_case(
+        sfn, "DeepVariantSplitOk", sample="SAMPLE7", reference="ref.fa", caller="deepvariant", overrides={"dv_parts": 3}
+    )
+    assert desc["status"] == "SUCCEEDED"
+    parts = batch_calls(events, "Make_Examples_Part")
+    assert sorted(p["JobName"] for p in parts) == [f"DeepVariant-Examples-{i}-{desc['name']}" for i in range(3)]
+    for p in parts:
+        part = p["JobName"].split("-")[2]
+        assert p["JobDefinition"] == TEMPLATE_VARS["deepvariant_cpu_job_definition"]
+        assert p["JobQueue"] == TEMPLATE_VARS["job_queue"]  # the Fargate queue, Spot first
+        assert p["Timeout"]["AttemptDurationSeconds"] == 14400
+        assert p["ContainerOverrides"]["Command"] == [
+            "/opt/geyser-venv/bin/python",
+            "deepvariant_task.py",
+            "SAMPLE7",
+            "ref.fa",
+            "--make-examples-part",
+            part,
+            "--parts",
+            "3",
+        ]
+        # Every part gets the same N = parts x the part's 8 vCPUs.
+        assert p["ContainerOverrides"]["Environment"] == [
+            {"Name": "RUN_NAME", "Value": desc["name"]},
+            {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+            {"Name": "DEEPVARIANT_SHARDS", "Value": "24"},
+        ]
+    # The GPU job comes after every part, on their examples, as the single job otherwise.
+    by_id = {e["id"]: e for e in events}
+    assert ancestor(by_id, state_entered(events, "DeepVariant"), "MapStateExited") is not None
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert dv["JobQueue"] == TEMPLATE_VARS["gpu_job_queue"]
+    assert dv["JobDefinition"] == TEMPLATE_VARS["deepvariant_job_definition"]
+    assert dv["JobName"] == f"DeepVariant-SAMPLE7-{desc['name']}"
+    assert dv["ContainerOverrides"]["Command"] == [
+        "/opt/geyser-venv/bin/python",
+        "deepvariant_task.py",
+        "SAMPLE7",
+        "ref.fa",
+        "--from-examples",
+    ]
+    assert dv["ContainerOverrides"]["Environment"] == [
+        {"Name": "RUN_NAME", "Value": desc["name"]},
+        {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+    ]
+    assert "Plan_Regions" not in entered(events)
+    assert json.loads(desc["output"])["run_settings"]["dv_parts"] == 3
+
+
+def test_split_mode_only_applies_to_deepvariant(sfn):
+    desc, events = run_case(sfn, "HappyPath", overrides={"dv_parts": 3})
+    assert desc["status"] == "SUCCEEDED"
+    assert "Choose_DeepVariant_Mode" not in entered(events) and "Call_Variants" in entered(events)
+
+
+def test_a_failed_part_falls_back_to_bcftools_without_the_gpu_job(sfn):
+    desc, events = run_case(sfn, "DeepVariantSplitPartFails", caller="deepvariant", overrides={"dv_parts": 2})
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Make_Examples_Parts") < states.index("Plan_Regions") < states.index("Call_Variants")
+    assert "DeepVariant" not in states and "Notify_Failure" not in states
+    assert json.loads(desc["output"])["deepvariant_error"]["Error"] == "States.TaskFailed"
+
+
+@pytest.mark.parametrize("dv_parts", [0, 7, 2.5, 3.0, "3", None, -1])
+def test_an_invalid_dv_parts_fails_the_run_before_any_job(sfn, dv_parts):
+    desc, events = run_case(sfn, "DeepVariantSplitOk", caller="deepvariant", overrides={"dv_parts": dv_parts})
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    assert "Prepare_Run_Overrides_Error" in entered(events)
+    assert "States.Runtime" not in history_text(events)
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidRunOverrides" and "dv_parts (1 to 6)" in error["Cause"]
+
+
 # --- scatter-gather: the Map over the planned regions (#108) ------------------------------------
 
 
@@ -1311,6 +1411,8 @@ DEFAULT_RUN_SETTINGS = {
     "align_concurrency": 5,
     "calling_concurrency": 4,
     "merge_threads": "8",
+    # v1.5: DeepVariant's make_examples parts (a number: Prepare_Examples_Parts does arithmetic on it).
+    "dv_parts": 1,
 }
 OVERRIDE_CHAIN = [
     "Run_Setting_Rules",
