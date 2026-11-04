@@ -4,7 +4,8 @@ Every page is the live UI's own view and template, rendered with a StaticSite on
 (samples/static_site.py), so the published pages and the Django pages can't drift apart:
 - index.html (the sample list), samples/<id>/index.html and samples/<id>/calls/<n>/index.html (the call pages,
   up to max_pages per sample: past that the VCF has the rest), figures/ (--all only; each figure's data when its
-  CSV is here: they live in the repo, not the data lake), and 404.html;
+  CSV is here: they live in the repo, not the data lake), 404.html, and with an API base uploads/index.html (the
+  token-gated upload page: the browser sends the reads to the data lake through the API);
 - the static files under static/ with their content-hashed names, as collectstatic writes them;
 - csp-hashes.json: the sha256 of every inline <script> and <style>, for the hosted site's strict CSP;
 - with no API base, the public files themselves under samples/<id>/files/ (the allowlist only; never reads or
@@ -41,7 +42,7 @@ from geyser_web.pipeline import get_storage
 from . import figures as figures_mod
 from . import status as status_mod
 from . import views
-from .static_site import PUBLIC_KINDS, StaticSite
+from .static_site import PUBLIC_KINDS, StaticSite, reference_names
 from .vcf import read_truth, read_variants
 
 IMMUTABLE = "public, max-age=31536000, immutable"  # content-hashed names: a change is a new name
@@ -186,6 +187,7 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
     site = StaticSite(api_base=(api_base or "").rstrip("/"), max_pages=max(1, int(max_pages)))
     # One listing for the whole site: the list, every row and every sample page come from it.
     site.samples = {s.sample_id: s for s in status_mod.load_all(storage)}
+    site.references = reference_names(storage.list_keys("reference/"))  # the upload page's reference choice
     unknown = [i for i in sample_ids if i not in site.samples]
     if unknown:
         raise PublishError(f"not a sample in {storage.describe('raw_reads/')}: {', '.join(unknown)}")
@@ -263,6 +265,8 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
         request.geyser_static = site
         pages["404.html"] = render_to_string("samples/404.html", {"static": site}, request=request)
         pages["index.html"] = _render(views.sample_list, reverse("samples:list"), site)
+        if site.api_base:  # the upload page talks to the web API: without one there is nothing to upload to
+            pages["uploads/index.html"] = _render(views.upload_page, reverse("samples:upload_page"), site)
 
     hashes = csp_hashes({**pages, "figures/index.html": figures_html})
     writer.put("csp-hashes.json", json.dumps(hashes, indent=1).encode("utf-8"), DATA_CACHE)
@@ -273,6 +277,8 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
     invalidated = []
     if distribution_id and isinstance(writer, S3Writer):
         changed = ["/", "/index.html", "/404.html", *(f"/samples/{i}/*" for i in targets)]
+        if site.api_base:
+            changed.append("/uploads/*")  # it lists the IDs on the site (to ask before replacing one)
         invalidated = ["/*"] if everything else changed
         _invalidate(distribution_id, invalidated)
     summary = {

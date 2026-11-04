@@ -70,6 +70,10 @@ label{display:block;margin-bottom:1rem;font-weight:600;color:#f4fbf7}label .mute
 input{display:block;width:100%;margin-top:.35rem;padding:.7rem .9rem;font:inherit;color:var(--text);background:var(--ink);border:1px solid #4fae87;border-radius:.4rem}
 input:hover{border-color:var(--mint)}input::placeholder{color:#8fb8a5}input[aria-invalid=true]{border-color:var(--fail)}
 input[type=file]{padding:1rem 1.1rem;border-style:dashed}input[type=file]::file-selector-button{margin-right:1rem;font:inherit}
+select{display:block;width:100%;margin-top:.35rem;padding:.7rem .9rem;font:inherit;color:var(--text);background:var(--ink);border:1px solid #4fae87;border-radius:.4rem}
+fieldset{border:0;margin:0 0 1rem;padding:0}legend{font-weight:600;color:#f4fbf7;margin-bottom:.35rem}label.radio{display:inline-flex;align-items:center;margin:0 1.5rem 0 0;font-weight:400}input[type=radio]{display:inline-block;width:auto;margin:0 .45rem 0 0;accent-color:var(--mint)}
+progress{display:block;width:100%;height:.75rem;margin:1rem 0 .5rem;accent-color:var(--mint)}#up-status.ok{color:var(--mint)}
+[hidden]{display:none!important}
 button{width:100%;padding:.75rem 1rem;font:600 1rem/1.2 system-ui,sans-serif;color:#fff;background:#0a7d4f;border:0;border-radius:.4rem;cursor:pointer}
 button:hover{background:#086b43}button.upload{background:#1f6fe0}button.upload:hover{background:#1a5bc0}
 /* States: run state by badge and pill (icon + fill), each stage by its own colour */

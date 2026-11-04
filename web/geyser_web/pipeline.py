@@ -58,6 +58,7 @@ def _load_trigger():
 _trigger = _load_trigger()
 parse_sample_id = _trigger.parse_sample_id
 parse_raw_key = _trigger.parse_raw_key
+DEFAULT_REFERENCE_GENOME = _trigger.DEFAULT_REFERENCE_GENOME  # a run's reference without `reference` metadata
 
 
 @lru_cache(maxsize=4)

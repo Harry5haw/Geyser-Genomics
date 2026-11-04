@@ -11,6 +11,8 @@ urlpatterns = [
     path("figures/<str:name>.json", views.figure_data, name="figure_data"),
     path("figures/<str:name>.csv", views.figure_csv, name="figure_csv"),
     path("upload/", views.upload, name="upload"),
+    # The hosted site's upload page (static only, with a web API): straight to the data lake, token-gated.
+    path("uploads/", views.upload_page, name="upload_page"),
     path("demo/", views.demo, name="demo"),
     path("samples/<str:sample_id>/", views.sample_detail, name="detail"),
     # Calls pages as paths (not ?vpage=), so the static site can publish each as a folder with an index.html.
