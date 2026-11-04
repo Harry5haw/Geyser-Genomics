@@ -35,10 +35,18 @@ def state_machine_stages():
     return stages
 
 
+def annotate_in_state_machine() -> bool:
+    """Whether the state machine has the AlphaGenome Annotate step yet (3.0: #207 adds the stage, #209 the state;
+    either can merge first, so the checks below require it only once the state exists)."""
+    return any(stage == "annotate" for stage, _, _ in state_machine_commands())
+
+
 def test_state_machine_matches_local_runner():
     # File order: the QC branch, the align branch, variants, then the quality gate (#144). run_local runs
-    # the core stages in that order and the gate as its last job (pipeline_jobs(gate=True)).
-    assert state_machine_stages() == run_local.STAGES + [("gate", False)]
+    # the core stages in that order and the gate as its last job (pipeline_jobs(gate=True)), then the optional
+    # AlphaGenome annotation (pipeline_jobs(annotate=...)).
+    annotate = [("annotate", True)] if annotate_in_state_machine() else []
+    assert state_machine_stages() == run_local.STAGES + [("gate", False)] + annotate
 
 
 def test_variant_shards_and_merge_use_the_planners_window():
@@ -66,7 +74,8 @@ def test_state_machine_is_rendered_from_the_asl_file():
 def test_the_state_machine_runs_every_task():
     # The reverse of test_state_machine_stages_exist_in_tasks: a new tasks.py stage needs its state too
     # (the repo rule: tasks, state machine and run_local change together). The gate's arrived with #144.
-    assert set(tasks.TASKS) == {stage for stage, _ in state_machine_stages()}
+    expected = set(tasks.TASKS) - (set() if annotate_in_state_machine() else {"annotate"})
+    assert expected == {stage for stage, _ in state_machine_stages()}
 
 
 def test_state_machine_stages_exist_in_tasks():
@@ -181,7 +190,10 @@ def test_failure_parsing_knows_every_job_name_the_state_machine_sets():
     import provenance
 
     prefixes = set(re.findall(r"States\.Format\('(\w+)-\{\}", asl_text()))
-    assert prefixes and prefixes == {p.rstrip("-") for p, _ in provenance.JOB_NAME_STAGES}, prefixes
+    known = {p.rstrip("-") for p, _ in provenance.JOB_NAME_STAGES}
+    if not annotate_in_state_machine():
+        known.discard("Annotate")  # #207's stage before #209's state is on main
+    assert prefixes and prefixes == known, prefixes
 
 
 def test_gate_profiles_agree_across_the_state_machine_run_local_and_the_thresholds():

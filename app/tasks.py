@@ -163,6 +163,10 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     # Consequence annotation (bcftools csq), written only when the reference has a GFF (annotate_vcf).
     keys["csq_vcf"] = f"variants/{sample_id}.csq.vcf.gz"
     keys["csq_tbi"] = f"variants/{sample_id}.csq.vcf.gz.tbi"
+    # AlphaGenome regulatory-effect scores (annotate_task, opt-in): the scored variants and the ranked table.
+    keys["alphagenome_vcf"] = f"variants/{sample_id}.alphagenome.vcf.gz"
+    keys["alphagenome_tbi"] = f"variants/{sample_id}.alphagenome.vcf.gz.tbi"
+    keys["alphagenome_tsv"] = f"stats/{sample_id}/alphagenome.tsv"
     # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
     for name, filename in STATS_FILES.items():
         keys[name] = f"stats/{sample_id}/{filename}"
@@ -1514,11 +1518,182 @@ def gate_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
+# --- AlphaGenome annotation (3.0, opt-in; app/alphagenome_annotation.py) ---------------------------------------------
+
+ANNOTATE_METRIC = "Annotate"  # an extra stage: provenance.EXTRA_STAGES, so a failure never fails the run
+ANNOTATE_CALLS_METRIC = "Annotate.ApiCalls"  # a count: the backend calls one annotation made
+ALPHAGENOME_PREFIX = REFERENCE_PREFIX + "alphagenome/"  # local AlphaGenome data per reference (never committed)
+
+
+def alphagenome_avi_key(reference_name: str) -> str:
+    """The AVI table for a reference (--source avi-file): an extract of the official download for its contigs,
+    as bgzip TSV `#CHROM POS REF ALT raw_score PHRED` (ag.AviFileBackend)."""
+    return f"{ALPHAGENOME_PREFIX}{reference_name}.avi.tsv.gz"
+
+
+def annotate_input(sample_id: str) -> str:
+    """The calls to annotate: the run record's VCF (whichever caller made it), or its bcftools csq copy when
+    that is the VCF and the csq copy exists (the same calls plus consequences, which the selection uses)."""
+    keys = keys_for(sample_id)
+    vcf = provenance.sample_vcf_key(provenance.read_record(storage(), sample_id), sample_id)
+    if vcf == keys["vcf"] and storage().exists(keys["csq_vcf"]):
+        return keys["csq_vcf"]
+    return vcf
+
+
+@timed_stage(ANNOTATE_METRIC)
+def annotate_task(sample_id, reference_name, source, max_variants=None):
+    """AlphaGenome scores for the sample's selected variants -> variants/{id}.alphagenome.vcf.gz (+ .tbi) and
+    stats/{id}/alphagenome.tsv. Research use only. An extra stage: a failure here is noted, never fatal.
+
+    max_variants: the selection cap (default $ALPHAGENOME_MAX_VARIANTS, else ag.DEFAULT_MAX_VARIANTS).
+    """
+    import alphagenome_annotation as ag  # only this stage needs it
+
+    if source not in ag.SOURCES:  # before any download
+        raise ValueError(f"unknown AlphaGenome source {source!r}; expected one of {ag.SOURCES}")
+    if max_variants is None:
+        max_variants = ag.max_variants_from_env()
+    elif max_variants < 1:
+        raise ValueError(f"max_variants must be >= 1, got {max_variants}")
+    keys = keys_for(sample_id)
+    wd = work_dir(sample_id)
+    backend = None
+    try:
+        input_key = annotate_input(sample_id)
+        if not storage().exists(input_key):
+            raise FileNotFoundError(f"no calls to annotate: {storage().describe(input_key)} does not exist")
+        local_vcf = os.path.join(wd, os.path.basename(input_key))
+        storage().download(input_key, local_vcf)
+        provenance.note_input(input_key, local_vcf)
+        table = None
+        if source == "avi-file":
+            avi_key = alphagenome_avi_key(reference_name)
+            table = os.path.join(wd, os.path.basename(avi_key))
+            storage().download(avi_key, table)
+            provenance.note_input(avi_key, table)
+        backend = ag.backend_for(source, table=table)
+
+        header, contigs, has_bcsq, records = ag.read_vcf(local_vcf)
+        selected, counts = ag.select(records, contigs, has_bcsq, max_variants, kinds=backend.KINDS)
+        print(
+            f"AlphaGenome ({source}): {counts['selected']} of {counts['candidates']} candidate variants selected "
+            f"({counts['pass']} PASS records; consequences {'used' if has_bcsq else 'not available'}; "
+            f"cap {max_variants})",
+            flush=True,
+        )
+        scores = backend.score(selected)
+        rows = ag.scored_rows(selected, scores)
+        print(f"AlphaGenome: {len(rows)} scored, {len(selected) - len(rows)} not scored", flush=True)
+        unscored = [v for v in selected if v.key not in scores]
+        summary = {
+            "source": backend.name,
+            "model_version": backend.model_version,
+            "input": input_key,
+            "consequences": has_bcsq,
+            "max_variants": max_variants,
+            "selection": counts,
+            "scored": len(rows),
+            "not_scored": len(unscored),
+            # Why: indels a source doesn't take (atlas, avi-file), or variants the service answered NOT_FOUND /
+            # INVALID_ARGUMENT for (its messages, grouped, and a few examples), or that an AVI table lacks.
+            "not_scored_by_kind": {kind: sum(v.kind == kind for v in unscored) for kind in ("snv", "indel")},
+            "api_calls": backend.api_calls,
+            **(backend.diagnostics() if hasattr(backend, "diagnostics") else {}),
+            "vcf": "pending",
+        }
+        provenance.note(alphagenome=summary)
+
+        # The table and the record first: they don't need bcftools, so a missing htslib (a run outside the image)
+        # costs only the VCF.
+        tsv = os.path.join(wd, os.path.basename(keys["alphagenome_tsv"]))
+        with open(tsv, "w", encoding="utf-8") as fh:
+            fh.write(ag.tsv_text(rows))
+        upload_output(tsv, keys["alphagenome_tsv"])
+
+        if not shutil.which("bcftools"):
+            summary["vcf"] = "failed: bcftools not found"
+            raise RuntimeError(
+                "bcftools/bgzip not found: run inside the image or install htslib "
+                f"(the table {keys['alphagenome_tsv']} and the run record were written; the VCF was not)"
+            )
+        plain = os.path.join(wd, "alphagenome.vcf")
+        with open(plain, "w", encoding="utf-8") as fh:
+            fh.write(ag.vcf_text(rows, header, contigs, reference_name, backend.name, backend.model_version))
+        vcf = os.path.join(wd, os.path.basename(keys["alphagenome_vcf"]))
+        tbi = os.path.join(wd, os.path.basename(keys["alphagenome_tbi"]))
+        try:
+            run_shell(f"bcftools view -Oz -o {shlex.quote(vcf)} {shlex.quote(plain)}")
+            run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
+        except subprocess.CalledProcessError as err:
+            summary["vcf"] = f"failed: bcftools exited {err.returncode}"
+            raise RuntimeError(
+                f"bcftools could not write the annotated VCF (exit {err.returncode}); "
+                f"the table {keys['alphagenome_tsv']} and the run record were written"
+            ) from None
+        upload_output(tbi, keys["alphagenome_tbi"])
+        upload_output(vcf, keys["alphagenome_vcf"])  # last, as elsewhere: the VCF marks the stage done
+        summary["vcf"] = "written"
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+        calls = getattr(backend, "api_calls", 0)
+        try:  # best effort, like every metric; counted even when scoring failed part-way
+            metrics().count(ANNOTATE_CALLS_METRIC, sample_id, calls)
+        except Exception as err:  # noqa: BLE001
+            print(f"WARNING: could not record metric {ANNOTATE_CALLS_METRIC}: {err}", flush=True)
+
+
+ALPHAGENOME_SOURCE_ENV = "ALPHAGENOME_SOURCE"
+
+
+def annotate_main(argv) -> int:
+    """tasks.py annotate <srr_id> <reference_name> [--source atlas|api|fake] [--max-variants N]: AlphaGenome
+    regulatory-effect scores. Opt-in, research use only.
+
+    --source defaults to $ALPHAGENOME_SOURCE; with neither it is a usage error, so a run never falls back to fake
+    scores unnoticed (run_local.py --annotate alphagenome picks fake offline). --max-variants defaults to
+    $ALPHAGENOME_MAX_VARIANTS, else 500. The API key comes from $ALPHAGENOME_API_KEY and is never logged.
+
+    Exit codes: 0 when the annotation ran, and also when it failed (an extra stage: the failure is in the run
+    record and the log, never fatal to the run); 2 only for usage errors (arguments, a source or cap that isn't
+    valid), before anything runs.
+    """
+    import alphagenome_annotation as ag
+
+    parser = argparse.ArgumentParser(prog="tasks.py annotate", description=annotate_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("reference_name")
+    parser.add_argument("--source", help=f"one of {', '.join(ag.SOURCES)}; default ${ALPHAGENOME_SOURCE_ENV}")
+    parser.add_argument("--max-variants", type=int, help=f"selection cap; default ${ag.MAX_VARIANTS_ENV}")
+    args = parser.parse_args(argv)
+    source = (args.source or os.environ.get(ALPHAGENOME_SOURCE_ENV, "")).strip().lower()
+    if source not in ag.SOURCES:
+        parser.error(f"--source (or ${ALPHAGENOME_SOURCE_ENV}) must be one of {ag.SOURCES}, got {source!r}")
+    max_variants = args.max_variants
+    if max_variants is None:
+        try:
+            max_variants = ag.max_variants_from_env()
+        except ValueError as err:
+            parser.error(str(err))
+    elif max_variants < 1:
+        parser.error("--max-variants must be >= 1")
+    try:
+        annotate_task(args.srr_id, args.reference_name, source, max_variants)
+    except Exception as err:  # noqa: BLE001 - noted in the run record (timed_stage); never fatal
+        print(f"WARNING: annotation failed for '{args.srr_id}' (noted; the run is unaffected): {err}", flush=True)
+        return 0
+    print(f"Task 'annotate' completed for sample '{args.srr_id}'.")
+    return 0
+
+
 TASKS = {
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),
     "gate": (gate_task, False),
+    # 3.0: the CLI is annotate_main (--source, --max-variants, exit codes); listed here so the state machine's
+    # Annotate step (#209) and tasks.py agree on the stage and its reference argument (tests/test_consistency.py).
+    "annotate": (annotate_task, True),
 }
 
 
@@ -1526,6 +1701,8 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["regions"]:
         return regions_main(argv[1:])
+    if argv[:1] == ["annotate"]:  # its own options and exit codes (annotate_main)
+        return annotate_main(argv[1:])
     if argv[:1] == ["finalize"]:
         return finalize_main(argv[1:])
     parser = argparse.ArgumentParser(description="Run one Geyser Genomics pipeline stage.")

@@ -350,3 +350,30 @@ def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
     genes = {c.split("|")[1] for c in consequences.values()}
     assert genes == {"SYNTHG1", "SYNTHG2"}
     assert (root / "variants" / "SYNTH001.csq.vcf.gz.tbi").exists()
+
+
+def test_alphagenome_annotation_with_the_fake_backend(tmp_path, capfd):
+    # 3.0: run_local --annotate alphagenome (fake by default offline) after the gate. The annotated VCF must be
+    # one bcftools reads back, with its index serving a region query, and the run stays succeeded.
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root)])
+    exit_code, log = _run(root, "SYNTH001", capfd, "--annotate", "alphagenome")
+    assert exit_code == 0, log
+    assert "AlphaGenome (fake): 10 of 10 candidate variants selected" in log
+    script = (
+        "set -e; cd /data; "
+        "bcftools query -r synth1 -f '%POS\t%INFO/AG_AVI\t%INFO/AG_SOURCE\n' variants/SYNTH001.alphagenome.vcf.gz"
+    )
+    out = subprocess.run(
+        run_local.docker_command(["bash", "-c", script], str(root), os.environ.get("GEYSER_IMAGE", "geyser-app")),
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    rows = [line.split("\t") for line in out.stdout.splitlines()]
+    assert len(rows) == 10 and {r[2] for r in rows} == {"fake"} and all(float(r[1]) >= 0 for r in rows)
+    tsv = (root / "stats" / "SYNTH001" / "alphagenome.tsv").read_text().splitlines()
+    assert len([line for line in tsv if not line.startswith("#")]) == 11  # the column header + 10 variants
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert record["status"] == "succeeded" and record["stages"]["Annotate"]["status"] == "Success"
+    assert record["alphagenome"]["source"] == "fake" and record["alphagenome"]["scored"] == 10

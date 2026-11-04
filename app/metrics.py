@@ -24,6 +24,10 @@ says why it stopped. ``getrusage`` is Unix-only: on Windows there is no usage, o
 
 DeepVariant's step metrics (``DeepVariant.CallVariants`` ...) also carry GPU utilisation and peak GPU memory
 when the job had a GPU (#139; see deepvariant_task.py).
+
+Counts (``count()``): a number a stage reports besides its timing, e.g. ``Annotate.ApiCalls``, the AlphaGenome
+calls one annotation made. Locally a line with ``count`` and no ``duration_seconds``; in CloudWatch the metric
+``Count`` (unit Count) with the same TaskName/SampleId/Status dimensions.
 """
 
 import json
@@ -88,6 +92,9 @@ class NullMetrics:
     def record(self, task_name: str, sample_id: str, status: str, duration_seconds: float, usage=None) -> None:
         pass
 
+    def count(self, task_name: str, sample_id: str, value: int) -> None:
+        pass
+
 
 class LocalMetrics:
     def __init__(self, path: str):
@@ -103,6 +110,15 @@ class LocalMetrics:
             "duration_seconds": round(duration_seconds, 3),
         }
         entry.update({k: v for k, v in (usage or {}).items() if k in USAGE_METRICS})
+        self._append(entry)
+
+    def count(self, task_name, sample_id, value):
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+        self._append(
+            {"timestamp": time.time(), "task": task_name, "sample_id": sample_id, "status": "Success", "count": value}
+        )
+
+    def _append(self, entry):
         with open(self.path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
 
@@ -138,6 +154,17 @@ class CloudWatchMetrics:
                 }
             )
         self._client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=data)
+
+    def count(self, task_name, sample_id, value):
+        dimensions = [
+            {"Name": "TaskName", "Value": task_name},
+            {"Name": "SampleId", "Value": sample_id},
+            {"Name": "Status", "Value": "Success"},
+        ]
+        self._client.put_metric_data(
+            Namespace=METRIC_NAMESPACE,
+            MetricData=[{"MetricName": "Count", "Dimensions": dimensions, "Value": value, "Unit": "Count"}],
+        )
 
 
 def metrics_from_env(env=None):
