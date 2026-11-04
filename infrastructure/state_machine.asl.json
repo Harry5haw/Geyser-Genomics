@@ -708,21 +708,18 @@
     },
     "Publish": {
       "Type": "Task",
-      "Comment": "Renders the sample's page and the index to the site bucket and invalidates /index.html (the web UI's publisher, W2: manage.py publish <id> --out s3://<site>). Best effort: a failed publish is noted ($.publish_error) and the run keeps its own outcome.",
+      "Comment": "Renders the sample's pages and the index into the site bucket and invalidates them (the web UI's publisher, W2: manage.py publish <id>, in the geyser-publish image, publish.tf). The job definition carries the site bucket, the distribution, the API base and its size. Best effort: a failed publish is noted ($.publish_error) and the run keeps its own outcome.",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
         "JobName.$": "States.Format('Publish-{}-{}', $.srr_id, $$.Execution.Name)",
-        "JobDefinition": "${job_definition}",
+        "JobDefinition": "${publish_job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides": {
-          "Command.$": "States.Array('python', 'manage.py', 'publish', $.srr_id, '--out', 's3://${site_bucket}')",
+          "Command.$": "States.Array('python', 'manage.py', 'publish', $.srr_id)",
           "Environment": [
             { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "SITE_BUCKET", "Value": "${site_bucket}" },
             { "Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "${site_distribution_id}" }
-          ],
-          "ResourceRequirements": [
-            { "Type": "VCPU", "Value": "${qc_vcpu}" },
-            { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
           ]
         },
         "Timeout": { "AttemptDurationSeconds": 900 }

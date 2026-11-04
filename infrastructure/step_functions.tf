@@ -25,7 +25,10 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}:*"
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}:*",
+          # W3: the Publish job (publish.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}:*"
         ]
       },
       {
@@ -80,8 +83,13 @@ locals {
   variant_region_window_max = 250000000
 }
 
+locals {
+  # One name for the state machine, so the web API (web_api.tf) can build its ARN without depending on it.
+  pipeline_state_machine_name = "${var.project_name}-pipeline-sfn-${var.environment}"
+}
+
 resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
-  name     = "${var.project_name}-pipeline-sfn-${var.environment}"
+  name     = local.pipeline_state_machine_name
   role_arn = aws_iam_role.geyser_sfn_execution_role.arn
   # The definition lives in state_machine.asl.json so that tests/test_state_machine_local.py can run
   # the very same file in Step Functions Local (Docker, no AWS). Only these values are filled in.
@@ -110,10 +118,12 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     align_sizes                = jsonencode(local.align_override_sizes)
     variant_region_window_min  = local.variant_region_window_min
     variant_region_window_max  = local.variant_region_window_max
-    # The hosted site (web_api.tf, infrastructure/web/): the Publish state's switch and its targets.
-    publish_enabled      = var.publish_enabled
-    site_bucket          = var.web_site_bucket
-    site_distribution_id = var.web_site_distribution_id
+    # The hosted site (publish.tf, infrastructure/web/): the Publish state's switch, its job definition, and the
+    # site bucket and distribution it passes per run.
+    publish_enabled        = var.publish_enabled
+    publish_job_definition = aws_batch_job_definition.geyser_publish_job_def.name
+    site_bucket            = var.web_site_bucket
+    site_distribution_id   = var.web_site_distribution_id
   })
 
   lifecycle {

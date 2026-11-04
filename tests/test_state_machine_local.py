@@ -71,6 +71,7 @@ TEMPLATE_VARS = {
     "gate_mode": "warn",
     # The hosted site (W3): publishing off, as variables.tf's default. MACHINE_PUBLISH renders it on.
     "publish_enabled": "false",
+    "publish_job_definition": "geyser-publish-job",
     "site_bucket": "",
     "site_distribution_id": "",
 }
@@ -1376,11 +1377,23 @@ def test_a_succeeded_run_publishes_its_page_then_succeeds(sfn_publish):
     assert desc["status"] == "SUCCEEDED"
     assert entered(events)[-4:] == ["Publish_Run", "Publish", "Publish_Finished", "Pipeline_Succeeded"]
     (params,) = batch_calls(events, "Publish")
-    assert params["JobDefinition"] == TEMPLATE_VARS["job_definition"]
+    # Its own job definition (publish.tf: the geyser-publish image; the site, distribution and API base are its env).
+    assert params["JobDefinition"] == TEMPLATE_VARS["publish_job_definition"]
     assert params["JobName"] == f"Publish-SAMPLE7-{desc['name']}"
     overrides = params["ContainerOverrides"]
-    assert overrides["Command"] == ["python", "manage.py", "publish", "SAMPLE7", "--out", "s3://geyser-site-local"]
-    assert {"Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "E2EXAMPLE"} in overrides["Environment"]
+    assert overrides["Command"] == [
+        "python",
+        "manage.py",
+        "publish",
+        "SAMPLE7",
+    ]  # T3's contract: the site from $SITE_BUCKET
+    # The site and the distribution per run, so switching publishing on never changes the job definition.
+    assert overrides["Environment"] == [
+        {"Name": "RUN_NAME", "Value": desc["name"]},
+        {"Name": "SITE_BUCKET", "Value": "geyser-site-local"},
+        {"Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "E2EXAMPLE"},
+    ]
+    assert "ResourceRequirements" not in overrides  # the job definition's own size
     assert params["Timeout"] == {"AttemptDurationSeconds": 900}
 
 

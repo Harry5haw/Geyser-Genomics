@@ -342,3 +342,24 @@ variable "web_max_upload_gb" {
   type        = number
   default     = 64
 }
+
+variable "publish_image_version" {
+  description = "Tag of the geyser-publish image (app-publish/Dockerfile: the app image plus web/) the Publish job runs, like image_version for the app image."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "publish_resources" {
+  description = "vCPU and memory (MiB) of the Publish job: one pass over the VCF and the stats, a few seconds for chr20 and ~2-4 min for a 30x genome at 0.5 vCPU (T3's measurements)."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 0.5, memory_mb = 1024 }
+
+  validation {
+    condition = (
+      (var.publish_resources.vcpu == 0.25 && contains([512, 1024, 2048], var.publish_resources.memory_mb)) ||
+      (var.publish_resources.vcpu == 0.5 && var.publish_resources.memory_mb >= 1024 && var.publish_resources.memory_mb <= 4096 && var.publish_resources.memory_mb % 1024 == 0) ||
+      (var.publish_resources.vcpu == 1 && var.publish_resources.memory_mb >= 2048 && var.publish_resources.memory_mb <= 8192 && var.publish_resources.memory_mb % 1024 == 0)
+    )
+    error_message = "publish_resources needs a valid Fargate pair: 0.25 vCPU with 512/1024/2048 MiB, 0.5 vCPU with 1024-4096, or 1 vCPU with 2048-8192 (1024 steps)."
+  }
+}

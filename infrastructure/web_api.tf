@@ -14,6 +14,9 @@
 # read by the function at cold start.
 
 locals {
+  # The state machine's ARN from its name, not the resource: the state machine depends on the Publish job definition,
+  # which carries this API's URL, so referencing the resource here would be a dependency cycle.
+  pipeline_state_machine_arn     = "arn:aws:states:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:stateMachine:${local.pipeline_state_machine_name}"
   web_upload_token_parameter_arn = "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.web_upload_token_parameter, "/")}"
   web_origins                    = var.web_origin == "" ? [] : [var.web_origin]
   # The prefixes of the output files the API may presign a GET for (PUBLIC_FILES and TOKEN_FILES in the function;
@@ -85,7 +88,7 @@ resource "aws_iam_role_policy" "geyser_web_api" {
         Sid      = "RunStatus"
         Effect   = "Allow"
         Action   = ["states:ListExecutions"]
-        Resource = aws_sfn_state_machine.geyser_pipeline_state_machine.arn
+        Resource = local.pipeline_state_machine_arn
       },
       {
         # The upload token, one parameter (default key aws/ssm: no kms:Decrypt needed).
@@ -119,7 +122,7 @@ resource "aws_lambda_function" "geyser_web_api" {
   environment {
     variables = {
       BUCKET_NAME            = aws_s3_bucket.data_lake.bucket
-      STATE_MACHINE_ARN      = aws_sfn_state_machine.geyser_pipeline_state_machine.arn
+      STATE_MACHINE_ARN      = local.pipeline_state_machine_arn
       UPLOAD_TOKEN_PARAMETER = var.web_upload_token_parameter
       MAX_UPLOAD_BYTES       = tostring(var.web_max_upload_gb * 1024 * 1024 * 1024)
     }
@@ -179,36 +182,7 @@ resource "aws_s3_bucket_cors_configuration" "data_lake_web_uploads" {
   }
 }
 
-# The Publish job (the app job definition, task role) writes the site and invalidates its index.
-resource "aws_iam_role_policy" "geyser_batch_task_publish" {
-  count = var.publish_enabled ? 1 : 0
-  name  = "${var.project_name}-batch-task-publish-${var.environment}"
-  role  = aws_iam_role.geyser_batch_task_role.id
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [
-      {
-        Sid      = "WriteSite"
-        Effect   = "Allow"
-        Action   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
-        Resource = ["arn:aws:s3:::${var.web_site_bucket}", "arn:aws:s3:::${var.web_site_bucket}/*"]
-      },
-      {
-        Sid      = "InvalidateIndex"
-        Effect   = "Allow"
-        Action   = ["cloudfront:CreateInvalidation"]
-        Resource = "arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/${var.web_site_distribution_id}"
-      }
-    ]
-  })
-
-  lifecycle {
-    precondition {
-      condition     = var.web_site_bucket != "" && var.web_site_distribution_id != ""
-      error_message = "publish_enabled needs web_site_bucket and web_site_distribution_id (infrastructure/web/'s outputs)."
-    }
-  }
-}
+# The Publish job has its own image, job definition and role: publish.tf.
 
 output "web_api_url" {
   description = "The web API's function URL (the site's API origin, for infrastructure/web/'s api_origin)."
