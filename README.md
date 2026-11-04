@@ -806,7 +806,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 
 ✅ done · ☁️ done and verified in the cloud · 🚧 in progress · 🎯 top priority · 🔜 next
 
-**Releases:** [v0.3](../../releases/tag/v0.3) (observability), [v0.35](../../releases/tag/v0.35) (legacy names removed), [v0.4](../../releases/tag/v0.4) (DeepVariant, local GPU to cloud GPU) are tagged. v1.0 and v2.0 are drafted in [`docs/releases/`](docs/releases/README.md).
+**Releases:** [v0.3](../../releases/tag/v0.3) (observability), [v0.35](../../releases/tag/v0.35) (legacy names removed), [v0.4](../../releases/tag/v0.4) (DeepVariant, local GPU to cloud GPU) and [v1.0](../../releases/tag/v1.0) (public release) are tagged. v2.0 is drafted in [`docs/releases/`](docs/releases/README.md).
 
 ### 1.0: the platform, made public
 
@@ -821,7 +821,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | ☁️ | **Terraform state per environment, guardrails for automation** | Bounded role with a permissions boundary and an automatic $20 kill switch |
 | ☁️ | **Provenance and monitoring** | Run record per sample with the execution name; dashboard with result quality, data lake storage and stage durations; trigger alarm; per-stage CPU and memory use |
 | ✅ | **Repository quality** | ruff, Terraform and Rust checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
-| 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |
+| ✅ | **Public release** | Tagged [v1.0](../../releases/tag/v1.0) on 4 Nov 2026, after the `main` ruleset (PRs and 7 checks required, no force-push or deletion), `prod` environment protection and private vulnerability reporting ([#47](../../issues/47)) |
 
 ### 2.0 "XLR8": faster and cheaper
 
