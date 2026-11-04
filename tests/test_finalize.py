@@ -1,5 +1,6 @@
 """Closing a failed run's record: tasks.py finalize and provenance.close_run (the state machine's failure path)."""
 
+import io
 import json
 import os
 
@@ -278,3 +279,51 @@ def test_tasks_finalize_reads_the_whole_catch_output(store, monkeypatch):
 def test_tasks_finalize_needs_a_status():
     with pytest.raises(SystemExit):
         tasks.main(["finalize", "S1"])
+
+
+# ---- the closing part as Close_Run_Record really stored it (#155): a JSON string holding the JSON ----
+
+DOUBLE_ENCODED = os.path.join(os.path.dirname(__file__), "fixtures", "failures", "finalize_double_encoded.json")
+
+
+def put_raw(store, key, path):
+    """Store a file's bytes unchanged (not through _put_json, which would re-encode them)."""
+    with open(path, "rb") as fh:
+        store.upload_stream(io.BytesIO(fh.read()), key)
+
+
+def test_the_stored_double_encoded_close_is_read_as_a_part(store):
+    # CLOUD018's Finalize.json as S3 holds it (bucket name anonymised, every other byte kept).
+    with open(DOUBLE_ENCODED, encoding="utf-8") as fh:
+        assert isinstance(json.load(fh), str)  # the fixture really is the double-encoded form
+    put_raw(store, "runs/S1.provenance/Finalize.json", DOUBLE_ENCODED)
+    write_part(store, "QualityControl", run_name="CLOUD018-20261103T225329Z-187c52f4", finished="2026-11-03T22:53:35Z")
+    assert provenance.read_part(store, "S1", "Finalize")["caught"]["Error"] == "ReferenceNotFound"
+    record = provenance.read_record(store, "S1")
+    assert record["status"] == "failed" and record["run_name"] == "CLOUD018-20261103T225329Z-187c52f4"
+    assert record["failure"]["error"] == "ReferenceNotFound"
+
+
+def test_a_successful_run_after_a_double_encoded_close_reads_as_succeeded(store):
+    # The grid's slots: a run rejected before any job left this close; the next run of the sample must read as
+    # succeeded under its own run name (the gate crashed here, failing REAL-HG003-30x-chr20-p1's run, 4 Nov 2026).
+    put_raw(store, "runs/S1.provenance/Finalize.json", DOUBLE_ENCODED)
+    for task in provenance.CORE_STAGES:
+        write_part(store, task, run_name="run-2", finished="2026-11-04T00:03:57Z")
+    record = provenance.read_record(store, "S1")
+    assert record["status"] == "succeeded" and record["run_name"] == "run-2" and "failure" not in record
+    tasks.fetch_gate_inputs("S1", str(store.root) + "-gate")  # what the gate job runs first: no crash
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"[1, 2]", b'"not json inside"', b'{"no_task": true}', b"42", b'"[\\"a list\\"]"'],
+)
+def test_a_part_that_is_not_a_part_is_skipped_with_a_warning(store, capsys, body):
+    store.upload_stream(io.BytesIO(body), "runs/S1.provenance/Odd.json")
+    for task in provenance.CORE_STAGES:
+        write_part(store, task, run_name="run-1")
+    record = provenance.read_record(store, "S1")
+    assert record["status"] == "succeeded" and "Odd" not in record["stages"]
+    assert "runs/S1.provenance/Odd.json" in capsys.readouterr().out
+    assert provenance.read_part(store, "S1", "Odd") is None
