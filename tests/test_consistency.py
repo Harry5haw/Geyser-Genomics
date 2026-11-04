@@ -197,6 +197,28 @@ def test_gate_profiles_agree_across_the_state_machine_run_local_and_the_threshol
     assert in_state_machine == set(run_local.GATE_PROFILES) == shipped
 
 
+def test_the_state_machines_aligners_are_the_apps():
+    # Choose_Aligner (#146): every aligner it routes is one tasks.py knows, a run without one gets the app's
+    # default (bwa-mem2, in geyser-app), and giraffe goes to the job definition whose image sets ALIGNER=giraffe.
+    asl = asl_text()
+    start = asl.index('"Choose_Aligner": {')
+    choice = asl[start : asl.index('"Prepare_Giraffe_Command": {', start)]
+    routes = dict(re.findall(r'"StringEquals": "([\w-]+)", "Next": "(\w+)"', choice))
+    assert routes == {tasks.DEFAULT_ALIGNER: "Prepare_Align_Command", "giraffe": "Prepare_Giraffe_Command"}
+    assert set(routes) <= set(tasks.ALIGNERS)
+    with open(os.path.join(REPO_ROOT, "app-giraffe", "Dockerfile"), encoding="utf-8") as fh:
+        assert re.search(r"^ENV ALIGNER=giraffe\b", fh.read(), re.M)
+
+
+def test_the_giraffe_job_definition_uses_the_apps_kmc_default():
+    # variables.tf giraffe_kmc_memory_gb (the cloud's KMC_MEMORY_GB) starts from tasks.py's default.
+    with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    block = tf[tf.index('variable "giraffe_kmc_memory_gb"') :]
+    (default,) = re.findall(r"default\s*=\s*(\d+)", block[: block.index("validation")])
+    assert int(default) == tasks.DEFAULT_KMC_MEMORY_GB
+
+
 def _choice_matches(rule, value):
     """Evaluate one Choice rule on $.reference_name = value: only the operators Check_Reference_Name uses."""
     if "And" in rule:

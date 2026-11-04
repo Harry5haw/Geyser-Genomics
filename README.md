@@ -116,7 +116,7 @@ What it does today:
 > [!NOTE]
 > **Where it stands (3 November 2026):**
 > - **In the cloud, verified by real runs:** the whole bcftools pipeline (fastp, bwa-mem2, CRAM, region-split calling, QC statistics, run record) on six real GIAB chr20 runs (HG003 and HG005): about 22 minutes and $0.07 for a 30-35x paired sample. The 4 well-covered samples pass all 11 quality-gate checks, and the 2 under-covered ones fail on mean depth, as they should. DeepVariant on a GPU (g6.xlarge), 10/10 planted SNPs. See [Deployment](#-deployment--usage).
-> - **The quality gate is a step in the cloud state machine** ([#162](../../pull/162)), in warn mode: the verdict is recorded and the run still succeeds. Thresholds are chosen per run ([#178](../../pull/178)). Fail mode waits for a threshold profile for the cloud smoke tests ([#157](../../issues/157)).
+> - **The quality gate is a step in the cloud state machine** ([#162](../../pull/162)), in **fail mode** since 3 Nov 2026 ([#195](../../pull/195), [#157](../../issues/157)): a failed verdict fails the run, with its reasons. Thresholds are chosen per run ([#178](../../pull/178)), including a `smoke` profile for the cloud smoke tests.
 > - **Locally on a GPU:** pangenome-aware DeepVariant, benchmarked on HG003 and HG005, and graph alignment (vg giraffe), benchmarked on HG003 ([benchmark history](docs/benchmarks/README.md)).
 
 ---
@@ -200,7 +200,7 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 | **Monitoring** | ☁️ Cloud | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). A CloudWatch dashboard (runs, end-to-end time, failures and durations by stage, result quality per sample, data lake size, console links) and one alarm on trigger Lambda errors are deployed by scripts (see [Monitoring](#3-monitoring)). Each job also records its CPU time and peak memory. |
 | **DeepVariant in the cloud** | ☁️ Cloud | A GPU Batch environment (g6.xlarge / g5.xlarge, public subnet, scales to zero, at most one instance) and a DeepVariant stage chosen per run (`caller=deepvariant`), falling back to bcftools if it fails. Verified 2 Nov 2026: 10/10 planted SNPs, 9 min 42 s, about $0.16. Normal runs stay on bcftools until a real-size chr20 DeepVariant run is checked. |
 | **Pangenome-aware DeepVariant, graph alignment** | ✅ Local GPU | Pangenome-aware DeepVariant (HG003 and HG005 chr20) and vg giraffe alignment (HG003 chr20), benchmarked with hap.py (see below and the [benchmark history](docs/benchmarks/README.md)). |
-| **Quality gate** | ☁️ Cloud | [`gate/`](gate/README.md), a Rust tool: reads a run's fastp report, QC statistics and run record, checks them against thresholds calibrated on HG003/HG005 and fails with named reasons. It runs as a pipeline stage, locally and as a step in the cloud state machine after either caller ([#162](../../pull/162)), in warn mode by default. The thresholds are chosen per run (`gate_profile`, [#178](../../pull/178)). |
+| **Quality gate** | ☁️ Cloud | [`gate/`](gate/README.md), a Rust tool: reads a run's fastp report, QC statistics and run record, checks them against thresholds calibrated on HG003/HG005 and fails with named reasons. It runs as a pipeline stage, locally and as a step in the cloud state machine after either caller ([#162](../../pull/162)). In the cloud it runs in fail mode ([#195](../../pull/195)): a failed verdict fails the run. Locally `run_local.py` defaults to warn. The thresholds are chosen per run (`gate_profile`, [#178](../../pull/178)). |
 | **Variant consequences** | ✅ Local | `bcftools csq` when the reference has gene models (`reference/<name>.gff3.gz`), shown in the web UI. The cloud reference has none yet. |
 | **Web UI** | ✅ Works offline | A Django app for uploading samples, generating demo data and browsing results (QC summary and report, variants, downloads). Runs locally; not deployed. See [Web UI](#️-web-ui). |
 | **Other S3-compatible storage** | ✅ Unit-tested | `S3_ENDPOINT_URL` points the storage layer at any S3-compatible service (OVHcloud Object Storage, MinIO, LocalStack). Not yet run against one. |
@@ -210,6 +210,10 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 ## 📊 Results
 
 Real chromosome 20 data (GIAB HG003 and HG005), drawn by scripts from small derived CSVs, never by hand. Sources, commands and the numbers behind each figure are in [docs/figures](docs/figures/README.md). Click a figure for the SVG.
+
+<a href="docs/figures/cost-surface.svg"><img src="docs/figures/cost-surface.png" alt="Heatmaps of cost per run and turnaround over align vCPUs (1, 2, 4) and calling shards (1, 2, 4, 8) for 25 cloud runs of HG003 30x chr20, with the Pareto front: 2 vCPU x 4 shards cheapest, 4 vCPU x 4 shards fastest" width="100%"/></a>
+
+**Cost and turnaround of a real 30x chromosome-20 run, over the two sizing knobs** (25 Fargate runs, 2-3 per setting). Align vCPUs set the turnaround: about 85, 45 and 25 minutes at 1, 2 and 4. Calling shards matter far less: at 2 and 4 vCPUs, 4 shards is both the cheapest and the fastest. The cheapest setting (2 vCPU, 4 shards) costs 6.95¢ a run; the fastest (4 vCPU, 4 shards) costs 7.78¢ and takes 24 minutes. 1 vCPU is both the slowest and the most expensive. Costs are at on-demand list prices, an upper bound, since jobs try Fargate Spot first.
 
 <a href="docs/figures/coverage-terrain.svg"><img src="docs/figures/coverage-terrain.png" alt="Ridgeline of read depth along chr20 for seven alignments of HG003 and HG005: flat along the arms, rising around the centromere at 26-31 Mb with a spike at 31 Mb in every alignment" width="100%"/></a>
 
@@ -806,7 +810,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 
 ✅ done · ☁️ done and verified in the cloud · 🚧 in progress · 🎯 top priority · 🔜 next
 
-**Releases:** [v0.3](../../releases/tag/v0.3) (observability), [v0.35](../../releases/tag/v0.35) (legacy names removed), [v0.4](../../releases/tag/v0.4) (DeepVariant, local GPU to cloud GPU) are tagged. v1.0 and v2.0 are drafted in [`docs/releases/`](docs/releases/README.md).
+**Releases:** [v0.3](../../releases/tag/v0.3) (observability), [v0.35](../../releases/tag/v0.35) (legacy names removed), [v0.4](../../releases/tag/v0.4) (DeepVariant, local GPU to cloud GPU) and [v1.0](../../releases/tag/v1.0) (public release) are tagged. v2.0 is drafted in [`docs/releases/`](docs/releases/README.md).
 
 ### 1.0: the platform, made public
 
@@ -821,7 +825,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | ☁️ | **Terraform state per environment, guardrails for automation** | Bounded role with a permissions boundary and an automatic $20 kill switch |
 | ☁️ | **Provenance and monitoring** | Run record per sample with the execution name; dashboard with result quality, data lake storage and stage durations; trigger alarm; per-stage CPU and memory use |
 | ✅ | **Repository quality** | ruff, Terraform and Rust checks in CI, exact pins and Dependabot, CONTRIBUTING / SECURITY / CITATION |
-| 🔜 | **Public release** | Branch and environment protection, private vulnerability reporting, tagged releases ([#47](../../issues/47)) |
+| ✅ | **Public release** | Tagged [v1.0](../../releases/tag/v1.0) on 4 Nov 2026, after the `main` ruleset (PRs and 7 checks required, no force-push or deletion), `prod` environment protection and private vulnerability reporting ([#47](../../issues/47)) |
 
 ### 2.0 "XLR8": faster and cheaper
 
@@ -837,7 +841,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 | ☁️ | **Sharded variant calling** | Regions called in parallel by a `Map` state and merged exactly; for large samples, not small ones (it adds ~1.5 min of fixed overhead there) |
 | ✅ | **Quality gate (Rust)** | Fails a run with named reasons; thresholds calibrated on HG003/HG005; DeepVariant stats over PASS calls |
 | ✅ | **Variant consequences** | `bcftools csq` when the reference has gene models; shown in the web UI |
-| ☁️ | **Quality gate in the pipeline** | Gate stage and verdict in the run record ([#148](../../pull/148)), a state-machine step after either caller in warn mode ([#162](../../pull/162)). Six real chr20 runs, about 22 min and $0.07 each: 4 good samples pass, 2 under-covered ones fail on mean depth, as they should ([#157](../../issues/157)) |
+| ☁️ | **Quality gate in the pipeline** | Gate stage and verdict in the run record ([#148](../../pull/148)), a state-machine step after either caller ([#162](../../pull/162)), in fail mode since 3 Nov 2026 ([#195](../../pull/195)). Six real chr20 runs, about 22 min and $0.07 each: 4 good samples pass, 2 under-covered ones fail on mean depth, as they should ([#157](../../issues/157)). All 25 runs of the cost grid passed in fail mode ([#221](../../pull/221)) |
 | 🔜 | **Quality gate in fail mode** | Threshold profiles per run are live ([#178](../../pull/178)); next, a `smoke` profile for the cloud smoke sample, then `warn` → `fail` ([#157](../../issues/157)) |
 | ☁️ | **DeepVariant in the cloud** | GPU environment in the public subnet, DeepVariant stage with bcftools fallback; 10/10 on a g6.xlarge for about $0.16 ([#125](../../pull/125)) |
 | 🔜 | **DeepVariant as the default caller** | The app treats DeepVariant's VCF as the sample's calls when it was the caller ([#170](../../pull/170)); next, a real-size chr20 DeepVariant run before switching `default_caller` |

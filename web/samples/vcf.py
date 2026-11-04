@@ -28,14 +28,24 @@ class Variant:
 
 @dataclass
 class VariantTable:
-    rows: list = field(default_factory=list)  # at most `limit` Variants
+    rows: list = field(default_factory=list)  # at most `limit` Variants, from call number `offset` on
     total: int = 0  # every call in the file (filtered records left out)
+    offset: int = 0  # how many calls come before rows[0]
     calls: set = field(default_factory=set)  # {(pos, ref, alt)} for all records, as run_local.read_vcf_calls
     annotated: bool = False  # the file carries bcftools csq consequences (a BCSQ header line)
 
     @property
     def truncated(self) -> bool:
         return self.total > len(self.rows)
+
+    @property
+    def first(self) -> int:
+        """1-based number of the first call shown (0 when none)."""
+        return self.offset + 1 if self.rows else 0
+
+    @property
+    def last(self) -> int:
+        return self.offset + len(self.rows)
 
 
 def _kind(ref: str, alt: str) -> str:
@@ -77,8 +87,9 @@ def _consequence(bcsq, alt: str = None) -> str:
     return ", ".join(seen)
 
 
-def parse_vcf(lines, limit: int = 500) -> VariantTable:
-    table = VariantTable()
+def parse_vcf(lines, limit: int = 500, offset: int = 0) -> VariantTable:
+    """Every call counted (total, calls); rows only for calls offset+1 .. offset+limit (one page)."""
+    table = VariantTable(offset=max(0, offset))
     for line in lines:
         if line.startswith("##INFO=<ID=BCSQ,"):
             table.annotated = True
@@ -102,7 +113,7 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
                 continue  # no alternative allele: a placeholder, not a call (as run_local.read_vcf_calls)
             table.total += 1
             table.calls.add((pos, ref, alt))
-            if len(table.rows) < limit:
+            if table.total > table.offset and len(table.rows) < limit:
                 table.rows.append(
                     Variant(
                         chrom=chrom,
@@ -119,7 +130,7 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
     return table
 
 
-def read_variants(storage, key: str, limit: int = 500):
+def read_variants(storage, key: str, limit: int = 500, offset: int = 0):
     """Parse a gzipped VCF from storage; None if it doesn't exist."""
     try:
         source = storage.open_read(key)
@@ -127,7 +138,7 @@ def read_variants(storage, key: str, limit: int = 500):
         return None
     try:
         with gzip.GzipFile(fileobj=source, mode="rb") as gz:
-            return parse_vcf(io.TextIOWrapper(gz, encoding="utf-8", errors="replace"), limit)
+            return parse_vcf(io.TextIOWrapper(gz, encoding="utf-8", errors="replace"), limit, offset)
     finally:
         source.close()
 

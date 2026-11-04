@@ -1,8 +1,8 @@
 {% load geyser %}
-<div id="sample-table"{% if any_active %} hx-get="{% url 'samples:rows' %}" hx-trigger="every {{ poll_seconds }}s" hx-swap="outerHTML"{% endif %}>
+<div id="sample-table"{% if any_active %} data-poll="{% url 'samples:rows' %}" data-poll-seconds="{{ poll_seconds }}"{% endif %}>
 {% if samples %}
-  <div class="overflow-auto table-frame">
-  <table class="samples data-table">
+  <div class="frame">
+  <table class="data">
     <thead>
       <tr><th>Sample</th><th>Status</th><th>Stages</th><th class="num">Run time</th><th>Last activity</th></tr>
     </thead>

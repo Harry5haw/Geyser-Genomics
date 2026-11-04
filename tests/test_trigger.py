@@ -133,8 +133,10 @@ def test_batch_job_names_still_fit(trigger):
     with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
         asl = fh.read()
     prefixes = re.findall(r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", asl)
+    # AlignGenome twice: bwa-mem2 and giraffe (#146) name their align job the same way.
     assert prefixes == [
         "QualityControl",
+        "AlignGenome",
         "AlignGenome",
         "DeepVariant",
         "PlanRegions",

@@ -1,20 +1,21 @@
 {% extends "samples/base.html" %}
 {% block content %}
-<section class="hero">
+<section>
   <h1>From raw reads to variants</h1>
   <p class="lead">
     Upload a gzipped FASTQ and Geyser Genomics runs it through quality control, alignment and variant calling.
     No data to hand? Generate a synthetic sample with known mutations and see whether the pipeline finds them all.
   </p>
-  <div class="flow" aria-label="Pipeline stages">
-    <span class="step">raw_reads/</span><span class="arrow">→</span>
-    {% for st in stages %}<span class="step s-{{ st.name }}">{{ st.label }}</span>{% if not forloop.last %}<span class="arrow">→</span>{% endif %}{% endfor %}
-    <span class="arrow">→</span><span class="step">variants/*.vcf.gz</span>
-  </div>
+  <p class="flow" aria-label="Pipeline stages">
+    <b>raw_reads/</b><i>→</i>
+    {% for st in stages %}<b class="s-{{ st.name }}">{{ st.label }}</b><i>→</i>{% endfor %}
+    <b>variants/*.vcf.gz</b>
+  </p>
+  <p><a href="{% url 'samples:figures' %}">See the project's results in 3D →</a></p>
 </section>
 
 <section class="actions">
-  <article>
+  <div class="card">
     <h3>Try a demo sample</h3>
     <p>Creates a 50 kb synthetic genome and 30× reads with 8–14 SNPs planted in them. The run takes about a minute.</p>
     <ul class="checklist">
@@ -27,34 +28,34 @@
       {% csrf_token %}
       <button type="submit">Generate demo sample</button>
     </form>
-  </article>
-  <article>
+  </div>
+  <div class="card">
     <h3>Upload reads</h3>
     <form method="post" action="{% url 'samples:upload' %}" enctype="multipart/form-data">
       {% csrf_token %}
-      {% if form.non_field_errors %}<small class="error">{{ form.non_field_errors|join:" " }}</small>{% endif %}
+      {% if form.non_field_errors %}<p class="error"><small>{{ form.non_field_errors|join:" " }}</small></p>{% endif %}
       <label>
         {{ form.reads.label }} <span class="muted">(max {{ max_upload_mb }} MB)</span>
         <input type="file" name="reads" required accept=".fastq.gz,.fq.gz" data-max-bytes="{{ max_upload_bytes }}"
                {% if form.reads.errors %}aria-invalid="true" aria-describedby="reads-err"{% endif %}>
-        {% if form.reads.errors %}<small id="reads-err">{{ form.reads.errors|join:" " }}</small>{% endif %}
+        {% if form.reads.errors %}<small id="reads-err" class="error">{{ form.reads.errors|join:" " }}</small>{% endif %}
       </label>
       <label>
         {{ form.reads_r2.label }} <span class="muted">(optional: the R2 file of a pair; the first file is then R1)</span>
         <input type="file" name="reads_r2" accept=".fastq.gz,.fq.gz" data-max-bytes="{{ max_upload_bytes }}"
                {% if form.reads_r2.errors %}aria-invalid="true" aria-describedby="reads-r2-err"{% endif %}>
-        {% if form.reads_r2.errors %}<small id="reads-r2-err">{{ form.reads_r2.errors|join:" " }}</small>{% endif %}
+        {% if form.reads_r2.errors %}<small id="reads-r2-err" class="error">{{ form.reads_r2.errors|join:" " }}</small>{% endif %}
       </label>
       <label>
         {{ form.sample_id.label }} <span class="muted">(optional)</span>
         <input type="text" name="sample_id" maxlength="64" pattern="[A-Za-z0-9_\-]{1,64}"
                value="{{ form.sample_id.value|default:'' }}" placeholder="from the filename, e.g. SRR062634"
                {% if form.sample_id.errors %}aria-invalid="true" aria-describedby="id-err"{% endif %}>
-        <small id="id-err">{% if form.sample_id.errors %}{{ form.sample_id.errors|join:" " }}{% else %}{{ form.sample_id.help_text }}{% endif %}</small>
+        <small id="id-err"{% if form.sample_id.errors %} class="error"{% endif %}>{% if form.sample_id.errors %}{{ form.sample_id.errors|join:" " }}{% else %}{{ form.sample_id.help_text }}{% endif %}</small>
       </label>
-      <button type="submit" class="upload-btn">Upload</button>
+      <button type="submit" class="upload">Upload</button>
     </form>
-  </article>
+  </div>
 </section>
 
 <section class="panel" id="samples">

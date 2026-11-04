@@ -261,12 +261,13 @@
           }
         },
         {
-          "StartAt": "Prepare_Align_Command",
+          "StartAt": "Choose_Aligner",
           "States": {
             "Prepare_Align_Command": {
               "Type": "Pass",
               "Parameters": {
                 "JobName.$": "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)",
+                "JobDefinition": "${job_definition}",
                 "ContainerOverrides": {
                   "Command.$": "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)",
                   "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
@@ -284,7 +285,7 @@
               "Resource": "arn:aws:states:::batch:submitJob.sync",
               "Parameters": {
                 "JobName.$": "$.batch_params.JobName",
-                "JobDefinition": "${job_definition}",
+                "JobDefinition.$": "$.batch_params.JobDefinition",
                 "JobQueue": "${job_queue}",
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
                 "Timeout": { "AttemptDurationSeconds": 14400 }
@@ -300,6 +301,39 @@
               "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
               "ResultPath": "$.batch_output",
               "End": true
+            },
+            "Choose_Aligner": {
+              "Type": "Choice",
+              "Comment": "aligner in the input (#146): none or bwa-mem2 runs bwa-mem2 in geyser-app as before; giraffe runs vg giraffe in the geyser-giraffe image (giraffe.tf), same command, keys and size. Anything else fails the run: a misspelt aligner must not silently align with bwa-mem2.",
+              "Choices": [
+                { "Not": { "Variable": "$.aligner", "IsPresent": true }, "Next": "Prepare_Align_Command" },
+                { "Variable": "$.aligner", "StringEquals": "bwa-mem2", "Next": "Prepare_Align_Command" },
+                { "Variable": "$.aligner", "StringEquals": "giraffe", "Next": "Prepare_Giraffe_Command" }
+              ],
+              "Default": "Unknown_Aligner"
+            },
+            "Prepare_Giraffe_Command": {
+              "Type": "Pass",
+              "Comment": "Prepare_Align_Command in the giraffe job definition: the align stage's command, job name and size (the run's settings, overrides included), so everything downstream (and the run record's aligner) is unchanged.",
+              "Parameters": {
+                "JobName.$": "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)",
+                "JobDefinition": "${giraffe_job_definition}",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)",
+                  "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value.$": "$.run_settings.align_vcpu" },
+                    { "Type": "MEMORY", "Value.$": "$.run_settings.align_memory_mb" }
+                  ]
+                }
+              },
+              "ResultPath": "$.batch_params",
+              "Next": "Align_Genome"
+            },
+            "Unknown_Aligner": {
+              "Type": "Fail",
+              "Error": "UnknownAligner",
+              "Cause": "aligner must be bwa-mem2 or giraffe (or left out for bwa-mem2)"
             }
           }
         }
