@@ -1,0 +1,7 @@
+{% if pager %}
+  <nav class="pager" aria-label="Pages of {{ noun }}">
+    <span class="muted">{{ pager.first }}–{{ pager.last }} of {{ pager.total }} {{ noun }}</span>
+    {% if pager.prev %}<a href="{{ pager.prev }}" rel="prev">← Previous</a>{% endif %}
+    {% if pager.next %}<a href="{{ pager.next }}" rel="next">Next →</a>{% endif %}
+  </nav>
+{% endif %}

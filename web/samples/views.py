@@ -11,6 +11,7 @@ from django.contrib import messages
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.clickjacking import xframe_options_sameorigin
+from django.views.decorators.gzip import gzip_page
 from django.views.decorators.http import require_GET, require_POST
 
 from geyser_web.pipeline import (
@@ -126,12 +127,14 @@ def _list_context(storage, form):
 
 
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_list(request):
     storage = get_storage()
     return render(request, "samples/list.html", _list_context(storage, UploadForm(storage=storage)))
 
 
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_rows(request):
     storage = get_storage()
     return render(request, "samples/_sample_table.html", _list_context(storage, None))
@@ -218,7 +221,43 @@ def _current_annotated_vcf(storage, sample):
     return key if any(o.get("key") == key for o in part.get("outputs") or []) else None
 
 
+def _page_offset(request, param: str, size: int) -> int:
+    """The offset for ?<param>=N (1-based page); page 1 for anything else."""
+    try:
+        page = int(request.GET.get(param, "1"))
+    except ValueError:
+        page = 1
+    return (max(page, 1) - 1) * size
+
+
+def _url(request, anchor: str, **changes) -> str:
+    """This page's URL with query parameters changed (None removes one), scrolled to #anchor."""
+    query = request.GET.copy()
+    for name, value in changes.items():
+        if value is None:
+            query.pop(name, None)
+        else:
+            query[name] = str(value)
+    encoded = query.urlencode()
+    return f"{request.path}{'?' + encoded if encoded else ''}#{anchor}"
+
+
+def _pager(request, param: str, anchor: str, table, size: int):
+    """Previous/next links for one paged table (first page inline; each page is its own prerenderable URL)."""
+    if table is None or table.total <= size:
+        return None
+    page = table.offset // size + 1
+    return {
+        "first": table.first,
+        "last": table.last,
+        "total": table.total,
+        "prev": _url(request, anchor, **{param: None if page == 2 else page - 1}) if page > 1 else None,
+        "next": _url(request, anchor, **{param: page + 1}) if table.last < table.total else None,
+    }
+
+
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_detail(request, sample_id):
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
@@ -229,11 +268,16 @@ def sample_detail(request, sample_id):
     bcftools_calls = sample.keys["vcf"] == keys_for(sample_id)["vcf"]
     annotated = _current_annotated_vcf(storage, sample) if bcftools_calls else None
     variants_key = annotated or sample.keys["vcf"]
-    variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
+    size = settings.GEYSER_TABLE_ROWS
+    variants = read_variants(storage, variants_key, size, _page_offset(request, "vpage", size))
+    if variants is not None and variants.total and not variants.rows:  # past the end (a stale link): the last page
+        variants = read_variants(storage, variants_key, size, (variants.total - 1) // size * size)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     # Only next to calls: there is nothing to annotate before the variants stage.
     alphagenome = (
-        read_annotation(storage, sample_id, record, request.GET.get("avi", "desc"), settings.GEYSER_VARIANT_ROWS)
+        read_annotation(
+            storage, sample_id, record, request.GET.get("avi", "desc"), size, _page_offset(request, "agpage", size)
+        )
         if variants is not None
         else None
     )
@@ -263,18 +307,25 @@ def sample_detail(request, sample_id):
         "record": record_view(record),
         "alphagenome": alphagenome,
         "alphagenome_terms_url": ALPHAGENOME_TERMS_URL,
+        "variant_pager": _pager(request, "vpage", "variants", variants, size),
+        "alphagenome_pager": _pager(request, "agpage", "alphagenome", alphagenome, size),
+        # Sorting starts again from the first page, highest or lowest AVI.
+        "alphagenome_sort_url": _url(
+            request, "alphagenome", avi="desc" if alphagenome and alphagenome.sort == "asc" else "asc", agpage=None
+        ),
     }
     return render(request, "samples/detail.html", context)
 
 
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_status(request, sample_id):
-    """Polled by htmx while a run is active. Once it finishes, reload the page to show the results."""
+    """Polled by geyser.js while a run is active. Once it finishes, the page reloads to show the results."""
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
     if request.GET.get("was_active") and not sample.active:
         response = HttpResponse(status=204)
-        response["HX-Refresh"] = "true"
+        response["Geyser-Refresh"] = "true"
         return response
     return render(request, "samples/_status.html", _status_context(storage, sample))
 

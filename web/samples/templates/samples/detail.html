@@ -7,7 +7,7 @@
 {% include "samples/_status.html" %}
 
 {% if gate %}
-  <section class="panel gate gate-{{ gate.state }}" aria-labelledby="gate-heading">
+  <section class="panel gate-{{ gate.state }}" aria-labelledby="gate-heading">
     <h2 id="gate-heading">Quality gate <span class="badge {{ gate.css }}">{{ gate.label }}</span></h2>
     {% if gate.state == "pass" %}
       <p>Every configured check passed.</p>
@@ -21,10 +21,10 @@
       <p class="muted">{{ gate.error }}</p>
     {% endif %}
     {% if gate.reasons %}
-      <ul class="gate-reasons">{% for r in gate.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+      <ul>{% for r in gate.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
     {% endif %}
     {% if gate.failed_checks %}
-      <table class="gate-checks">
+      <table class="kv">
         <thead><tr><th scope="col">Check</th><th scope="col">Value</th><th scope="col">Allowed</th></tr></thead>
         <tbody>
         {% for c in gate.failed_checks %}
@@ -50,18 +50,18 @@
 {% endif %}
 
 {% if variants %}
-  <section class="panel">
+  <section class="panel" id="variants">
     <h2>Variants <small class="muted">({{ variants.total }} call{{ variants.total|pluralize }})</small></h2>
     {% if variants.rows %}
-      <div class="overflow-auto table-frame">
-      <table class="variants data-table">
-        <thead><tr><th>Chrom</th><th class="num">Position</th><th class="base">Ref</th><th class="base">Alt</th><th>Type</th>
+      <div class="frame">
+      <table class="data mono variants">
+        <thead><tr><th>Chrom</th><th class="num">Position</th><th class="b">Ref</th><th class="b">Alt</th><th>Type</th>
                    <th class="num">Quality</th><th class="num">Depth</th><th>Genotype</th>{% if variants.annotated %}<th>Consequence</th>{% endif %}</tr></thead>
         <tbody>
         {% for v in variants.rows %}
           <tr{% if v|call_key in planted %} class="planted"{% endif %}>
             <td>{{ v.chrom }}</td><td class="num">{{ v.pos }}</td>
-            <td class="base nt-{{ v.ref }}">{{ v.ref }}</td><td class="base nt-{{ v.alt }}">{{ v.alt }}</td><td>{{ v.kind }}</td>
+            <td class="b nt-{{ v.ref }}">{{ v.ref }}</td><td class="b nt-{{ v.alt }}">{{ v.alt }}</td><td>{{ v.kind }}</td>
             <td class="num">{{ v.qual|default_if_none:"–" }}</td><td class="num">{{ v.depth|default_if_none:"–" }}</td><td>{{ v.genotype|default:"–" }}</td>
             {% if variants.annotated %}<td>{{ v.consequence|default:"–" }}</td>{% endif %}
           </tr>
@@ -69,7 +69,7 @@
         </tbody>
       </table>
       </div>
-      {% if variants.truncated %}<p class="muted"><small>Showing the first {{ variants.rows|length }} of {{ variants.total }}. Download the VCF for the rest.</small></p>{% endif %}
+      {% include "samples/_pager.html" with pager=variant_pager noun="calls" %}
     {% else %}
       <p class="muted">The variant caller found no differences from the reference.</p>
     {% endif %}
@@ -77,18 +77,18 @@
 {% endif %}
 
 {% if alphagenome %}
-  <section class="panel alphagenome" id="alphagenome" aria-labelledby="alphagenome-heading">
+  <section class="panel" id="alphagenome" aria-labelledby="alphagenome-heading">
     <h2 id="alphagenome-heading">Variants of interest <small class="muted">(AlphaGenome{% if alphagenome.total %}, {{ alphagenome.total }} scored{% endif %})</small>
       {% if alphagenome.test_data %}<span class="badge warn">Test data</span>{% endif %}</h2>
-    <p class="research-only" role="note"><strong>Research use only, not for clinical use.</strong>
+    <p class="note" role="note"><strong>Research use only, not for clinical use.</strong>
       These are AlphaGenome's predictions of how each variant may change gene regulation (expression, splicing, chromatin).
       They are not a diagnosis and have not been clinically validated.</p>
     {% if alphagenome.state == "rows" %}
-      <div class="overflow-auto table-frame">
-      <table class="variants alphagenome-table data-table">
-        <thead><tr><th>Gene</th><th>Chrom</th><th class="num">Position</th><th class="base">Ref</th><th class="base">Alt</th>
+      <div class="frame">
+      <table class="data mono alphagenome-table">
+        <thead><tr><th>Gene</th><th>Chrom</th><th class="num">Position</th><th class="b">Ref</th><th class="b">Alt</th>
           <th class="num" aria-sort="{% if alphagenome.sort == 'asc' %}ascending{% else %}descending{% endif %}">
-            <a href="?avi={% if alphagenome.sort == 'asc' %}desc{% else %}asc{% endif %}#alphagenome"
+            <a href="{{ alphagenome_sort_url }}"
                title="Sort by AVI, {% if alphagenome.sort == 'asc' %}highest{% else %}lowest{% endif %} first">AVI {% if alphagenome.sort == "asc" %}▲{% else %}▼{% endif %}</a></th>
           <th>Top track</th><th class="num" title="Predicted RNA-seq log fold change (ALT vs REF) of the gene's expression: below 0 down, above 0 up (Atlas scores only)">RNA LFC</th>
           <th>Consequence (csq)</th><th>Source</th></tr></thead>
@@ -96,7 +96,7 @@
         {% for v in alphagenome.rows %}
           <tr>
             <td>{{ v.gene|default:"–" }}</td><td>{{ v.chrom }}</td><td class="num">{{ v.pos }}</td>
-            <td class="base nt-{{ v.ref }}">{{ v.ref }}</td><td class="base nt-{{ v.alt }}">{{ v.alt }}</td>
+            <td class="b nt-{{ v.ref }}">{{ v.ref }}</td><td class="b nt-{{ v.alt }}">{{ v.alt }}</td>
             <td class="num">{% if v.avi is None %}–{% else %}{{ v.avi|floatformat:"-3" }}{% endif %}</td>
             <td>{{ v.top_track|default:"–" }}</td>
             <td class="num">{% if v.rna_lfc is None %}–{% else %}{{ v.rna_lfc|floatformat:"-3" }}{% endif %}</td>
@@ -106,10 +106,10 @@
         </tbody>
       </table>
       </div>
-      {% if alphagenome.truncated %}<p class="muted"><small>Showing {{ alphagenome.rows|length }} of {{ alphagenome.total }}, by AVI. Download the table for the rest.</small></p>{% endif %}
+      {% include "samples/_pager.html" with pager=alphagenome_pager noun="scored variants, by AVI" %}
       <p class="muted"><small>Sources: {% for source, n in alphagenome.sources %}{{ source }} {{ n }}{% if not forloop.last %}, {% endif %}{% endfor %}.
         AVI: AlphaGenome Variant Impact, PHRED-scaled (20 = top 1% genome-wide); higher means a larger predicted effect.</small></p>
-      <p class="terms-notice" role="note"><strong>By using this information, you agree to AlphaGenome Output Terms of Use found at
+      <p class="note" role="note"><strong>By using this information, you agree to AlphaGenome Output Terms of Use found at
         <a href="{{ alphagenome_terms_url }}" rel="noopener noreferrer" target="_blank">{{ alphagenome_terms_url }}</a></strong></p>
     {% elif alphagenome.state == "empty" %}
       <p class="muted">AlphaGenome annotated this run, but none of its variants were selected as of interest.</p>
@@ -129,19 +129,16 @@
   <section class="panel">
     <h2>Quality control</h2>
     {% if qc_summary %}
-    <table class="qc-summary">
+    <table class="kv">
       <tbody>
       {% for label, value in qc_summary %}<tr><th scope="row">{{ label }}</th><td>{{ value }}</td></tr>{% endfor %}
       </tbody>
     </table>
     {% endif %}
     {% if qc_report %}
-    <details>
-      <summary>fastp report{% if sample.layout == "paired" %} (both mates){% endif %}</summary>
-      <p class="muted">Charts are blank here (the report's scripts are blocked). The downloaded report draws them when opened online: it loads its chart script from opengene.org.</p>
-      <iframe class="qc-report" title="fastp report for {{ sample.sample_id }}" sandbox
-              src="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1"></iframe>
-    </details>
+    {# On request only: a real fastp report is ~220 KB and asks for a ~1 MB chart script, so it never loads with this page. #}
+    <p><a href="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1" target="_blank" rel="noopener">View the full fastp report{% if sample.layout == "paired" %} (both mates){% endif %}</a>
+      <small class="muted">(opens in a new tab, sandboxed: its charts stay blank there because its scripts are blocked; the downloaded report draws them when opened online)</small></p>
     {% endif %}
   </section>
 {% endif %}
@@ -149,26 +146,28 @@
 {% if record %}
   <section class="panel" aria-labelledby="record-heading">
     <h2 id="record-heading">Run record{% if record.status %} <span class="badge {{ record.status }}">{{ record.status }}</span>{% endif %}</h2>
-    <table class="record-facts">
+    <table class="kv">
       <tbody>
       {% for label, value in record.facts %}<tr><th scope="row">{{ label }}</th><td><code>{{ value }}</code></td></tr>{% endfor %}
       </tbody>
     </table>
     {% if record.stages %}
-    <table class="record-stages">
+    <div class="frame">
+    <table class="data">
       <thead><tr><th scope="col">Stage</th><th scope="col">Status</th><th scope="col">Time</th><th scope="col">CPU</th><th scope="col">Peak memory</th></tr></thead>
       <tbody>
       {% for s in record.stages %}
-        <tr><th scope="row">{{ s.name }}</th><td>{{ s.status }}{% if s.error %}<br><small class="muted">{{ s.error }}</small>{% endif %}</td>
+        <tr><td>{{ s.name }}</td><td>{{ s.status }}{% if s.error %}<br><small class="muted">{{ s.error }}</small>{% endif %}</td>
           <td>{{ s.duration }}</td><td>{{ s.cpu }}</td><td>{{ s.memory }}</td></tr>
       {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endif %}
     {% if record.tools %}
     <details>
       <summary>Tool versions ({{ record.tools|length }})</summary>
-      <table class="record-tools">
+      <table class="kv">
         <tbody>
         {% for name, version in record.tools %}<tr><th scope="row">{{ name }}</th><td><code>{{ version }}</code></td></tr>{% endfor %}
         </tbody>
@@ -181,7 +180,7 @@
 {% if downloads %}
   <section class="panel">
     <h2>Files</h2>
-    <ul class="downloads">
+    <ul class="files">
       {% for d in downloads %}
         <li><a href="{% url 'samples:file' sample.sample_id d.kind %}" download>{{ d.label }}</a>
           <small>{{ d.filename }} · {{ d.description }}</small></li>

@@ -64,8 +64,9 @@ class Scored:
 @dataclass
 class AnnotationView:
     state: str  # rows | empty | not_annotated | failed | unreadable
-    rows: list = field(default_factory=list)  # at most `limit` Scored, in `sort` order
+    rows: list = field(default_factory=list)  # at most `limit` Scored, in `sort` order, from row `offset` on
     total: int = 0  # every row in the file
+    offset: int = 0  # how many rows (in `sort` order) come before rows[0]
     sort: str = "desc"
     sources: list = field(default_factory=list)  # [(source, count)], most first
     error: str = ""  # failed / unreadable: why
@@ -74,6 +75,14 @@ class AnnotationView:
     @property
     def truncated(self) -> bool:
         return self.total > len(self.rows)
+
+    @property
+    def first(self) -> int:
+        return self.offset + 1 if self.rows else 0
+
+    @property
+    def last(self) -> int:
+        return self.offset + len(self.rows)
 
     @property
     def current(self) -> bool:
@@ -149,7 +158,7 @@ def sort_rows(rows, order: str = "desc") -> list:
     )
 
 
-def read_annotation(storage, sample_id: str, record=None, order: str = "desc", limit: int = 500):
+def read_annotation(storage, sample_id: str, record=None, order: str = "desc", limit: int = 500, offset: int = 0):
     """The sample's variants of interest, in every state the page can show. Never raises.
 
     record: the assembled run record. When it exists but has no Annotate stage, this run wasn't annotated,
@@ -180,10 +189,13 @@ def read_annotation(storage, sample_id: str, record=None, order: str = "desc", l
     counts = {}
     for row in rows:
         counts[row.source or "unknown"] = counts.get(row.source or "unknown", 0) + 1
+    if offset >= len(rows):  # past the end (a stale link): the last page
+        offset = max(0, (len(rows) - 1) // limit * limit) if rows else 0
     return AnnotationView(
         state="rows" if rows else "empty",
-        rows=sort_rows(rows, order)[:limit],
+        rows=sort_rows(rows, order)[offset : offset + limit],
         total=len(rows),
+        offset=offset,
         sort=order,
         sources=sorted(counts.items(), key=lambda item: (-item[1], item[0])),
         stage=stage,

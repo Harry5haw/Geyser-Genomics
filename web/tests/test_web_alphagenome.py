@@ -192,7 +192,7 @@ def test_page_shows_the_table_sorted_by_avi_with_the_research_note(client, stora
     # AlphaGenome's output terms: required wherever its outputs are published, with the link.
     assert "By using this information, you agree to AlphaGenome Output Terms of Use found at" in body
     assert f'<a href="{TERMS_URL}"' in body
-    assert 'href="?avi=asc#alphagenome"' in body and 'aria-sort="descending"' in body
+    assert 'href="/samples/S1/?avi=asc#alphagenome"' in body and 'aria-sort="descending"' in body
     assert "RNA LFC" in body and "1.375" in body and "-0.62" in body  # signed (ALT vs REF); a dash when absent
 
 
@@ -200,7 +200,7 @@ def test_page_sorts_lowest_first_on_request(client, storage):
     sample_with(storage, fixture_text(), record({"status": "Success"}))
     body = client.get("/samples/S1/?avi=asc").content.decode()
     assert body.index("CAGE:hepg2") < body.index("RNA_SEQ:liver") < body.index("SPLICE_SITES:brain")
-    assert 'href="?avi=desc#alphagenome"' in body and 'aria-sort="ascending"' in body
+    assert 'href="/samples/S1/?avi=desc#alphagenome"' in body and 'aria-sort="ascending"' in body
 
 
 def test_page_without_annotation_shows_the_empty_state(client, storage):
