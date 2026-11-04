@@ -115,7 +115,7 @@ always use Terraform's defaults.
 The maxima come from the **Fargate Spot** cap, so a run that asks for the most still stays on Spot prices. Raising
 them (a "fast" genome) is a cap raise in Terraform: a compute-environment change, the user's apply.
 
-**Big inputs (v1.4): the large route.** The trigger passes the upload's size as `input_bytes` (both mates added
+**Big inputs (v1.3): the large route.** The trigger passes the upload's size as `input_bytes` (both mates added
 up). At or above `large_input_gb` (5 GB) a run takes the large route:
 - QC on the whole input, alongside a **pre-flight**: one streaming pass for gzip integrity, the read count, mates
   in step and `chunk_count` equal chunks;

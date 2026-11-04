@@ -29,7 +29,7 @@ uploaded, and validated only by the state machine (Check_Reference_Name, then Ch
 object reference/<name> must exist) before any job starts. Without the metadata the run uses
 REFERENCE_NAME or DEFAULT_REFERENCE_GENOME, as before.
 
-Input size (v1.4 Big inputs): the upload's size in bytes (HeadObject ContentLength, both mates added up for a
+Input size (v1.3 Big inputs): the upload's size in bytes (HeadObject ContentLength, both mates added up for a
 pair; the S3 event's size if the HEAD didn't answer) goes on as `input_bytes`. The state machine's
 Choose_Route sends large inputs (Terraform large_input_gb) down the large route; smaller ones run as before.
 """
@@ -297,7 +297,7 @@ def handler(event, context):
         name = paired_execution_name(sample_id, [(heads[m]["ETag"], heads[m]["LastModified"]) for m in MATES])
         profile, reference = gate_profile(heads.values()), reference_metadata(heads.values())
         size = input_bytes(heads.values())
-    # The upload's size (both mates added up): Choose_Route sends large inputs down the large route (v1.4).
+    # The upload's size (both mates added up): Choose_Route sends large inputs down the large route (v1.3).
     if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
         pipeline_input["input_bytes"] = size
     if profile:

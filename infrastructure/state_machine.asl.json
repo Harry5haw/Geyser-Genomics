@@ -99,7 +99,7 @@
     },
     "Run_Setting_Rules": {
       "Type": "Pass",
-      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus). The genome's parallelism (v1.4, whole numbers): chunk_count (the large route's alignment chunks), align_concurrency (chunks aligned at once), calling_concurrency (calling shards at once, both routes) and merge_threads; their maxima are rendered from the Fargate Spot cap (step_functions.tf), so a run can't ask for more than the cap holds.",
+      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus). The genome's parallelism (v1.3, whole numbers): chunk_count (the large route's alignment chunks), align_concurrency (chunks aligned at once), calling_concurrency (calling shards at once, both routes) and merge_threads; their maxima are rendered from the Fargate Spot cap (step_functions.tf), so a run can't ask for more than the cap holds.",
       "Result": {
         "defaults": {
           "align_vcpu": "${align_vcpu}",
@@ -246,7 +246,7 @@
     },
     "Choose_Route": {
       "Type": "Choice",
-      "Comment": "Big inputs (v1.4): input_bytes in the input (the trigger passes the upload's ContentLength, both mates added up; a manual start may pass it, e.g. to send a small canary down the large route). At or above large_input_bytes (Terraform large_input_gb) the large route: pre-flight, chunked alignment, a streaming merge. Below it, or without it, today's path, unchanged. A value that isn't a non-negative number fails the run before any job.",
+      "Comment": "Big inputs (v1.3): input_bytes in the input (the trigger passes the upload's ContentLength, both mates added up; a manual start may pass it, e.g. to send a small canary down the large route). At or above large_input_bytes (Terraform large_input_gb) the large route: pre-flight, chunked alignment, a streaming merge. Below it, or without it, today's path, unchanged. A value that isn't a non-negative number fails the run before any job.",
       "Choices": [
         { "Not": { "Variable": "$.input_bytes", "IsPresent": true }, "Next": "QC_and_Align" },
         {
@@ -440,7 +440,7 @@
     },
     "Large_QC_and_Align": {
       "Type": "Parallel",
-      "Comment": "The large route (v1.4, docs/design/genome-scale-app.md): QC on the whole input, alongside the pre-flight (one streaming pass: gzip integrity, read count, chunk_count equal chunks), then the chunks aligned in parallel (align_concurrency at a time) and a streaming merge (markdup, CRAM). The outputs are today's align's, so everything after Choose_Caller is unchanged. Every job runs on the large-disk job definition. Peak vCPU: QC + pre-flight, then QC + align_concurrency chunks, within the Fargate Spot cap (step_functions.tf derives align_concurrency_max from it).",
+      "Comment": "The large route (v1.3, docs/design/genome-scale-app.md): QC on the whole input, alongside the pre-flight (one streaming pass: gzip integrity, read count, chunk_count equal chunks), then the chunks aligned in parallel (align_concurrency at a time) and a streaming merge (markdup, CRAM). The outputs are today's align's, so everything after Choose_Caller is unchanged. Every job runs on the large-disk job definition. Peak vCPU: QC + pre-flight, then QC + align_concurrency chunks, within the Fargate Spot cap (step_functions.tf derives align_concurrency_max from it).",
       "Branches": [
         {
           "StartAt": "Quality_Control_Large",

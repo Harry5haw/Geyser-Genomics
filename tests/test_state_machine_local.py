@@ -67,7 +67,7 @@ TEMPLATE_VARS = {
     # The quality gate (#144): warn here, so the warn paths stay tested; MACHINE_FAIL renders variables.tf's
     # default, fail (#157).
     "gate_mode": "warn",
-    # v1.4 the large route (genome_scale.tf) and the per-run parallelism: variables.tf's defaults, and the
+    # v1.3 the large route (genome_scale.tf) and the per-run parallelism: variables.tf's defaults, and the
     # maxima step_functions.tf derives from fargate_spot_max_vcpus = 48 (live, 4 Nov 2026).
     "large_job_definition": "geyser-app-large-job",
     "large_input_bytes": "5000000000",
@@ -225,7 +225,7 @@ TEST_CASES = {
     "ReferenceMissing": {"Check_Reference": "NoSuchKey", "Notify_Failure": "Published"},
     # S3 errors on the HeadObject once (e.g. a 503), then answers: retried, the run goes on.
     "ReferenceFlakyOnce": {"Check_Reference": "ReferenceFlakyThenFound"},
-    # v1.4 the large route: QC alongside the pre-flight, the chunks, the merge. The manifest has three chunks.
+    # v1.3 the large route: QC alongside the pre-flight, the chunks, the merge. The manifest has three chunks.
     "LargeRouteOk": {
         "Quality_Control_Large": OK,
         "Preflight": OK,
@@ -1306,7 +1306,7 @@ DEFAULT_RUN_SETTINGS = {
     "align_vcpu": "4",
     "align_memory_mb": "8192",
     "variant_region_window": "50000000",
-    # v1.4: the genome's parallelism (the concurrencies as numbers, for MaxConcurrencyPath).
+    # v1.3: the genome's parallelism (the concurrencies as numbers, for MaxConcurrencyPath).
     "chunk_count": "24",
     "align_concurrency": 5,
     "calling_concurrency": 4,
@@ -1322,7 +1322,7 @@ OVERRIDE_CHAIN = [
     "Inspect_Run_Setting_Values",
     "Check_Run_Setting_Values",
     "Set_Run_Settings",
-    "Choose_Route",  # v1.4: small inputs go on to QC_and_Align as before
+    "Choose_Route",  # v1.3: small inputs go on to QC_and_Align as before
 ]
 
 
@@ -1463,7 +1463,7 @@ def test_the_checks_run_in_order_gate_profile_reference_then_run_settings(reques
     assert published_message(events)["ErrorDetails"]["Error"] == "ReferenceNotFound"
 
 
-# --- v1.4 Big inputs: Choose_Route, the large route, the per-run parallelism ----------------------------------
+# --- v1.3 Big inputs: Choose_Route, the large route, the per-run parallelism ----------------------------------
 
 LARGE_STATES = ("Large_QC_and_Align", "Preflight", "Read_Manifest", "Align_Chunks", "Align_Chunk", "Align_Merge")
 
@@ -1476,7 +1476,7 @@ def test_small_inputs_take_todays_path_unchanged(sfn, input_bytes):
     at = states.index("Set_Run_Settings")
     assert states[at + 1 : at + 3] == ["Choose_Route", "QC_and_Align"]
     assert not set(LARGE_STATES) & set(states)
-    assert set(batch_parameters(events)) == set(BATCH_TASKS)  # the same jobs as before v1.4
+    assert set(batch_parameters(events)) == set(BATCH_TASKS)  # the same jobs as before v1.3
 
 
 @pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])

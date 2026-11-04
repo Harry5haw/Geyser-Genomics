@@ -137,7 +137,7 @@ variable "job_disk_gb" {
 }
 
 variable "pipeline_timeout_hours" {
-  description = "Time limit for a whole pipeline run, queue waits included. A whole genome on the large route (v1.4) is ~4-4.5 h (pre-flight 2 h, chunks, merge 4 h limits), and v1.5's split DeepVariant adds ~3.7 h, so 24 h leaves room for retries and queueing. A run past it ends as TimedOut (no SNS message; it shows on the dashboard)."
+  description = "Time limit for a whole pipeline run, queue waits included. A whole genome on the large route (v1.3) is ~4-4.5 h (pre-flight 2 h, chunks, merge 4 h limits), and v1.5's split DeepVariant adds ~3.7 h, so 24 h leaves room for retries and queueing. A run past it ends as TimedOut (no SNS message; it shows on the dashboard)."
   type        = number
   default     = 24
 
@@ -280,7 +280,7 @@ variable "gate_mode" {
   }
 }
 
-# --- v1.4 Big inputs: the large route (genome_scale.tf, the state machine's Large_QC_and_Align) ------------
+# --- v1.3 Big inputs: the large route (genome_scale.tf, the state machine's Large_QC_and_Align) ------------
 
 variable "large_input_gb" {
   description = "Uploads at or above this size (GB, 10^9 bytes, both mates added up) take the large route: pre-flight, chunked alignment, a streaming merge. Smaller ones take today's path, unchanged. A manual start can pass input_bytes to choose (e.g. a chr20 canary on the large route)."
@@ -367,7 +367,7 @@ variable "genome_merge_threads" {
 }
 
 variable "raw_reads_tier_days" {
-  description = "Days before raw_reads/ moves to S3 Glacier Instant Retrieval (still readable at once, ~80% cheaper to store; a per-GB retrieval charge and a 90-day minimum apply). 30 keeps re-runs within a build window free of retrieval charges. 0 turns the rule off."
+  description = "Days before a raw_reads/ object of at least large_input_gb (5 GB: the large route's threshold, the user's decision) moves to S3 Glacier Instant Retrieval (still readable at once, ~80% cheaper to store; a per-GB retrieval charge and a 90-day minimum apply). Smaller uploads stay in Standard. 30 keeps re-runs within a build window free of retrieval charges. 0 turns the rule off."
   type        = number
   default     = 30
 

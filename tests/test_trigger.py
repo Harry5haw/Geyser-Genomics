@@ -138,7 +138,7 @@ def test_batch_job_names_still_fit(trigger):
         "QualityControl",
         "AlignGenome",
         "AlignGenome",
-        # v1.4 the large route: QC on the whole input, the pre-flight, the merge (the chunks are named by index).
+        # v1.3 the large route: QC on the whole input, the pre-flight, the merge (the chunks are named by index).
         "QualityControl",
         "Preflight",
         "AlignMerge",
@@ -343,7 +343,7 @@ def test_a_vanished_upload_keeps_the_default_reference(trigger, monkeypatch, s3)
     assert _start(trigger, monkeypatch)["reference_name"] == "chr20.fa"
 
 
-# --- v1.4: the upload's size (HeadObject ContentLength) as input_bytes, for Choose_Route -------------------
+# --- v1.3: the upload's size (HeadObject ContentLength) as input_bytes, for Choose_Route -------------------
 
 
 def _start_sized(trigger, monkeypatch, event_size=None):

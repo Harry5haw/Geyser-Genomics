@@ -136,6 +136,26 @@ def _lifecycle_prefixes():
     return rules
 
 
+def test_raw_reads_tier_only_large_objects_never_expire_and_match_the_route():
+    # v1.3 (the user's decision, 4 Nov 2026): only raw_reads/ objects of at least large_input_gb move to Glacier
+    # Instant Retrieval, after raw_reads_tier_days (30); smaller ones stay in Standard; none ever expire. The size
+    # is the large route's threshold: S3's object_size_greater_than is strict, so the filter is one byte under it.
+    with open(os.path.join(REPO_ROOT, "infrastructure", "storage_lifecycle.tf"), encoding="utf-8") as fh:
+        tf = fh.read()
+    (block,) = [b for b in tf.split("  rule {")[1:] if 'id     = "tier-raw-reads"' in b or '"tier-raw-reads"' in b]
+    assert re.search(r'and\s*\{[^}]*prefix\s*=\s*"raw_reads/"', block)
+    assert re.search(r"object_size_greater_than\s*=\s*local\.large_input_bytes\s*-\s*1\b", block)
+    assert re.search(r'storage_class\s*=\s*"GLACIER_IR"', block) and "max(var.raw_reads_tier_days, 1)" in block
+    assert "expiration" not in block and "noncurrent" not in block
+    with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
+        assert re.search(r"large_input_bytes\s*=\s*floor\(var\.large_input_gb \* 1000000000\)", fh.read())
+    with open(os.path.join(REPO_ROOT, "infrastructure", "variables.tf"), encoding="utf-8") as fh:
+        variables_tf = fh.read()
+    for name, default in (("large_input_gb", 5), ("raw_reads_tier_days", 30)):
+        block = variables_tf[variables_tf.index(f'variable "{name}"') :]
+        assert int(re.search(r"default\s*=\s*(\d+)", block).group(1)) == default, name
+
+
 def test_lifecycle_expires_the_apps_intermediate_prefix():
     # #62: parts are written under tasks.INTERMEDIATE_PREFIX; the rule that clears them must match it.
     rules = _lifecycle_prefixes()
@@ -265,7 +285,7 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     # are step_functions.tf's locals, and variables.tf's default window is inside them.
     states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
     rules = states["Run_Setting_Rules"]["Result"]
-    # Seven since v1.4: the size and window (#192), and the genome's parallelism (chunk_count, align_concurrency,
+    # Seven since v1.3: the size and window (#192), and the genome's parallelism (chunk_count, align_concurrency,
     # calling_concurrency, merge_threads).
     assert rules["setting_count"] == len(rules["defaults"]) == 7
     assert set(states["Set_Run_Settings"]["Parameters"]) == {f"{k}.$" for k in rules["defaults"]}

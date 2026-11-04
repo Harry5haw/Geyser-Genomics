@@ -85,7 +85,7 @@ class FakeS3:
 
     def __init__(self, objects, error=None, metadata=None):
         self.objects, self.error, self.heads, self.metadata = objects, error, [], metadata or {}
-        self.sizes = {}  # key -> ContentLength, when a test sets it (v1.4 input_bytes)
+        self.sizes = {}  # key -> ContentLength, when a test sets it (v1.3 input_bytes)
 
     def head_object(self, Bucket, Key):
         self.heads.append(Key)
@@ -266,7 +266,7 @@ def test_a_pair_without_reference_metadata_keeps_the_default(trigger, aws):
     assert run_input["reference_name"] == "chr20.fa" and run_input["gate_profile"] == "synthetic"
 
 
-# --- v1.4: the upload's size, both mates added up, for Choose_Route --------------------------------------
+# --- v1.3: the upload's size, both mates added up, for Choose_Route --------------------------------------
 
 
 def test_a_pairs_input_bytes_add_up_both_mates(trigger, aws):

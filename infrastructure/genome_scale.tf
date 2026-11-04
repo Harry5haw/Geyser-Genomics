@@ -1,4 +1,4 @@
-# infrastructure/genome_scale.tf: v1.4 Big inputs, the large route's job definition.
+# infrastructure/genome_scale.tf: v1.3 Big inputs, the large route's job definition.
 #
 # Whole genomes run on the existing Fargate Spot environments (no new compute environment): a pre-flight, the
 # chunks aligned in parallel, a streaming merge (state_machine.asl.json, Large_QC_and_Align). They need more disk
