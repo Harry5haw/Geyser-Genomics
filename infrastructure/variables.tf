@@ -271,14 +271,25 @@ variable "alphagenome_api_key_parameter" {
 }
 
 variable "annotate_source" {
-  description = "Where tasks.py annotate gets its scores in the cloud (its --source): atlas (precomputed scores under reference/alphagenome/) or api (the AlphaGenome API, with the key)."
+  description = <<-EOT
+    Where tasks.py annotate gets its scores in the cloud (its --source, #207's contract):
+    atlas: the AlphaGenome Atlas through the client and the key (top track, gene, RNA LFC; SNVs);
+    avi-file: a local lookup in reference/alphagenome/<reference>.avi.tsv.gz (AVI only; no key needed);
+    api: score_variant through the key (indels too; still TODO in the app).
+  EOT
   type        = string
-  default     = "api"
+  default     = "atlas"
 
   validation {
-    condition     = contains(["atlas", "api"], var.annotate_source)
-    error_message = "annotate_source must be atlas or api (fake is for offline tests only)."
+    condition     = contains(["atlas", "avi-file", "api"], var.annotate_source)
+    error_message = "annotate_source must be atlas, avi-file or api (fake is for offline tests only)."
   }
+}
+
+variable "annotate_image_version" {
+  description = "Tag of the geyser-annotate image (app-annotate/Dockerfile, #207: the app image plus the alphagenome client) the annotate job runs, like image_version for the app image."
+  type        = string
+  default     = "dev-local"
 }
 
 variable "annotate_resources" {

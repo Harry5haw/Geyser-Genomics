@@ -49,13 +49,34 @@ resource "aws_iam_role_policy" "geyser_annotate_read_api_key" {
   })
 }
 
+# Its own image (app-annotate/Dockerfile, #207): the geyser-app image plus the alphagenome client, ~500 MB of
+# dependencies kept out of the slim pipeline image. The same pattern as geyser-deepvariant.
+resource "aws_ecr_repository" "geyser_annotate" {
+  name         = "${var.project_name}-annotate"
+  force_delete = true
+  tags         = { Name = "${var.project_name}-annotate-ecr-repo" }
+}
+
+# ECR storage is $0.10/GB-month: keep the five newest images (a few rollbacks' worth).
+resource "aws_ecr_lifecycle_policy" "geyser_annotate" {
+  repository = aws_ecr_repository.geyser_annotate.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Keep the 5 most recent annotate images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 5 }
+      action       = { type = "expire" }
+    }]
+  })
+}
+
 resource "aws_batch_job_definition" "geyser_annotate_job_def" {
   name                  = "${var.project_name}-annotate-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
   container_properties = jsonencode({
-    # The app image: tasks.py annotate is one more stage of it.
-    image            = "${aws_ecr_repository.geyser_app.repository_url}:${var.image_version}"
+    # The annotate image (the app image plus the alphagenome client).
+    image            = "${aws_ecr_repository.geyser_annotate.repository_url}:${var.annotate_image_version}"
     executionRoleArn = aws_iam_role.geyser_annotate_execution_role.arn
     # The app's own role (S3 data lake, CloudWatch metrics), as for every stage.
     jobRoleArn                   = aws_iam_role.geyser_batch_task_role.arn
@@ -67,7 +88,7 @@ resource "aws_batch_job_definition" "geyser_annotate_job_def" {
     ]
     environment = [
       { name = "BUCKET_NAME", value = aws_s3_bucket.data_lake.bucket },
-      { name = "APP_VERSION", value = var.image_version }
+      { name = "APP_VERSION", value = var.annotate_image_version }
     ]
     # The API key, into the container's environment at start. Never in the job definition itself, the state
     # machine, tfvars or any output: only the parameter's ARN is.

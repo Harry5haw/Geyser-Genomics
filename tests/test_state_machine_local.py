@@ -67,7 +67,7 @@ TEMPLATE_VARS = {
     "gate_mode": "warn",
     # The optional annotation (3.0, alphagenome.tf): its job definition and variables.tf's defaults.
     "annotate_job_definition": "geyser-annotate-job",
-    "annotate_source": "api",
+    "annotate_source": "atlas",
     "annotate_vcpu": "0.25",
     "annotate_memory_mb": "512",
     "annotate_timeout_seconds": "1800",
@@ -1357,7 +1357,7 @@ def test_annotate_alphagenome_runs_after_the_gate_passes(request, machine):
     assert params["JobQueue"] == TEMPLATE_VARS["job_queue"]
     assert params["Timeout"] == {"AttemptDurationSeconds": 1800}
     overrides = params["ContainerOverrides"]
-    assert overrides["Command"] == ["python", "tasks.py", "annotate", "SAMPLE7", "chr20.fa", "--source", "api"]
+    assert overrides["Command"] == ["python", "tasks.py", "annotate", "SAMPLE7", "chr20.fa", "--source", "atlas"]
     assert overrides["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
     assert overrides["ResourceRequirements"] == [{"Type": "VCPU", "Value": "0.25"}, {"Type": "MEMORY", "Value": "512"}]
     assert params["JobName"] == f"Annotate-SAMPLE7-{desc['name']}"
