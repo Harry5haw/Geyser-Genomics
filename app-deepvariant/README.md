@@ -202,6 +202,8 @@ None of the AWS figures has been run on AWS yet.
 
 - **The GPU is not the bottleneck.** Even inside `call_variants` it is busy only about half the time, and over the whole stage it idles 92% of the time. A faster GPU would barely change the stage time. What matters is the vCPUs for `make_examples` and the CPU-side input pipeline of `call_variants`. With 4 vCPUs (g6.xlarge / g5.xlarge) the share of idle GPU time only grows. The cloud figures come from the run record's `gpu` entry of the next GPU checkpoint run.
 
+- **Batch size and shards, measured (#139, `docs/figures/dv-batch-shards.png`).** On the RTX 3080 with HG003 chr20, `make_examples` shards set the stage time: about 8 min at 16, 9-10 at 8, 13.5-16 at 4. `call_variants` takes 100-108 s at batch 128-512 but 124-131 s at Google's default 1,024. **Use `--call_variants_extra_args=batch_size=256` (or 512) on 10-16 GB cards.** Neither setting changes the calls beyond GPU run-to-run noise (at most 2 PASS records of 105,403).
+
 - **The current instance types are too small for `make_examples`.**
   - `gpu_env` offers `g4dn.xlarge`, `g5.xlarge` and `g5.2xlarge`, which have 4–8 vCPUs.
   - `make_examples` scales with vCPUs and is already the largest step on the GPU. On 4 vCPUs it would take about 20 minutes for chr20 [extrapolated], with the GPU idle the whole time.
