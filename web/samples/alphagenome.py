@@ -25,6 +25,7 @@ MAX_TSV_BYTES = 20 * 1024 * 1024  # capped at ALPHAGENOME_MAX_VARIANTS rows (500
 # TSV header -> field: the columns the page shows, read by name from the output contract (#207, TSV_COLUMNS:
 # rank chrom pos ref alt kind qual avi avi_raw top_track gene rna_lfc csq source). The rest are ignored.
 COLUMNS = {
+    "rank": "rank",  # not shown: the file's order (AVI, then |rna_lfc|, then QUAL), used to break AVI ties
     "chrom": "chrom",
     "pos": "pos",
     "ref": "ref",
@@ -57,6 +58,7 @@ class Scored:
     consequence: str = ""
     source: str = ""
     rna_lfc: float | None = None
+    rank: int | None = None  # the file's rank, if it has one
 
 
 @dataclass
@@ -123,15 +125,28 @@ def parse_tsv(text: str) -> tuple[list, str]:
                 consequence=values.get("consequence", ""),
                 source=values.get("source", ""),
                 rna_lfc=_float(values.get("rna_lfc")),
+                rank=int(values["rank"]) if values.get("rank", "").isdigit() else None,
             )
         )
     return rows, ""
 
 
 def sort_rows(rows, order: str = "desc") -> list:
-    """By AVI, highest first (or lowest with 'asc'); unscored rows last, then by position, so it's stable."""
+    """By AVI, highest first (or lowest with 'asc'); unscored rows last. Ties keep the file's rank (#207 breaks
+    them by |rna_lfc|, then QUAL), so the default order is the downloaded table's; then by position."""
     sign = 1 if order == "asc" else -1
-    return sorted(rows, key=lambda r: (r.avi is None, sign * (r.avi or 0.0), r.chrom, r.pos, r.ref, r.alt))
+    return sorted(
+        rows,
+        key=lambda r: (
+            r.avi is None,
+            sign * (r.avi or 0.0),
+            r.rank if r.rank is not None else math.inf,
+            r.chrom,
+            r.pos,
+            r.ref,
+            r.alt,
+        ),
+    )
 
 
 def read_annotation(storage, sample_id: str, record=None, order: str = "desc", limit: int = 500):

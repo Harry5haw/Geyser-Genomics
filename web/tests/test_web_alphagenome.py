@@ -256,3 +256,11 @@ def test_an_earlier_runs_annotation_is_not_offered(client, storage):
     sample_with(storage, fixture_text(), record())  # the latest run didn't annotate
     put(storage, "variants/S1.alphagenome.vcf.gz", b"x")
     assert "alphagenome_tsv" not in client.get("/samples/S1/").content.decode()
+
+
+def test_avi_ties_keep_the_files_rank():
+    # #207 ranks AVI ties by |rna_lfc|, then QUAL: the page keeps that order rather than re-deriving it.
+    text = "rank\tchrom\tpos\tref\talt\tavi\n2\tsynth1\t50\tC\tT\t20\n1\tsynth1\t900\tA\tG\t20\n"
+    rows, problem = parse_tsv(text)
+    assert problem == "" and [r.rank for r in rows] == [2, 1]
+    assert [r.pos for r in sort_rows(rows)] == [900, 50]  # rank 1 first, though it's further along the contig
