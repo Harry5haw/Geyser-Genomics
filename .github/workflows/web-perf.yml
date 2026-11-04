@@ -3,10 +3,16 @@ name: Web performance
 # Lighthouse CI on the web UI with performance budgets that fail the job (W4 of the web plan). Offline only:
 # no AWS credentials, no OIDC, nothing deployed. The UI runs on the runner against a local storage folder
 # that a real pipeline run (synthetic data, Docker) has just filled, so the pages carry real results.
+# Two sites are measured from that one folder: the live Django UI (port 8000), and the static site that
+# `manage.py publish` writes for hosting (port 8001: list, detail, figures and the upload page, which exists only
+# there), served by scripts/serve_site.py as S3 + CloudFront serve it: the publisher's Cache-Control, gzip, and the
+# hosted site's strict CSP from csp-hashes.json.
 #
 # Budgets, per page, on Lighthouse's mobile defaults (emulated phone, simulated slow 4G and CPU throttling):
 #   - HTML+CSS+JS <= 30 KB transferred (scripts/web_perf_budget.py; data downloads don't count);
-#   - LCP < 1 s, CLS 0, TBT < 50 ms (lighthouserc.json, asserted by lhci on the median of 3 runs).
+#   - LCP < 1 s, CLS 0, TBT < 50 ms (lighthouserc.json, asserted by lhci on the median of 3 runs);
+#   - no console errors in any run (lhci's errors-in-console): under the strict CSP an inline block without its
+#     hash, or a style="" attribute, is blocked and logged there.
 on:
   push:
     branches: [main]
@@ -14,6 +20,7 @@ on:
       - "web/**"
       - "lighthouserc.json"
       - "scripts/web_perf_budget.py"
+      - "scripts/serve_site.py"
       - ".github/workflows/web-perf.yml"
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -21,6 +28,7 @@ on:
       - "web/**"
       - "lighthouserc.json"
       - "scripts/web_perf_budget.py"
+      - "scripts/serve_site.py"
       - ".github/workflows/web-perf.yml"
   workflow_dispatch:
 
@@ -33,7 +41,7 @@ concurrency:
 
 jobs:
   lighthouse:
-    name: Lighthouse CI (list, detail and figures pages, mobile)
+    name: Lighthouse CI (the live UI and the published site, mobile)
     # Draft PRs too: measuring a UI change before it's ready is the point. The image build reads main's cache.
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -86,13 +94,32 @@ jobs:
             curl -fsS -o /dev/null "$url" || { cat web-server.log; exit 1; }
           done
 
+      # The hosted site as visitors get it: `publish --all` with a web API (so the upload page is published too),
+      # served on 8001 with a stub of the API's status call on the same origin. The data-lake origin in the CSP is
+      # a placeholder: nothing here talks to S3.
+      - name: Publish the static site and serve it as the hosted site does
+        env:
+          DJANGO_DEBUG: "0"
+          STORAGE_BACKEND: local
+          LOCAL_STORAGE_DIR: ${{ github.workspace }}/local_bucket
+        run: |
+          export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python web/manage.py publish --all --out "$RUNNER_TEMP/site" --api-base http://127.0.0.1:8001/api
+          nohup python scripts/serve_site.py "$RUNNER_TEMP/site" --port 8001 --api-prefix /api \
+            --connect https://data-lake.s3.eu-west-2.amazonaws.com > site-server.log 2>&1 &
+          for url in http://127.0.0.1:8001/ http://127.0.0.1:8001/samples/SYNTH001/ http://127.0.0.1:8001/figures/ \
+                     http://127.0.0.1:8001/uploads/; do
+            for i in $(seq 1 30); do curl -fsS -o /dev/null "$url" && break; sleep 1; done
+            curl -fsS -o /dev/null "$url" || { cat site-server.log; exit 1; }
+          done
+
       - name: Lighthouse (3 runs per page)
         id: collect
         run: npx --yes @lhci/cli@0.16.0 collect --config=lighthouserc.json
       - name: Page weight budget and summary
         if: always() && steps.collect.outcome == 'success'
         run: python scripts/web_perf_budget.py --dir .lighthouseci --budget-kb 30 --config lighthouserc.json
-      - name: Timing budgets (LCP, CLS, TBT)
+      - name: Timing budgets (LCP, CLS, TBT) and console errors
         if: always() && steps.collect.outcome == 'success'
         run: npx --yes @lhci/cli@0.16.0 assert --config=lighthouserc.json
       - name: Write the HTML reports
@@ -105,6 +132,7 @@ jobs:
           path: |
             .lighthouseci/
             web-server.log
+            site-server.log
           if-no-files-found: warn
           include-hidden-files: true  # .lighthouseci/ (upload-artifact skips dot-directories by default)
           retention-days: 30

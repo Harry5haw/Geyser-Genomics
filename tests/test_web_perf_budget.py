@@ -84,4 +84,22 @@ def test_the_workflow_measures_both_pages_with_pinned_tools():
     assert "manage.py runserver 127.0.0.1:8000 --noreload" in workflow
     with open(os.path.join(REPO_ROOT, "lighthouserc.json"), encoding="utf-8") as fh:
         urls = json.load(fh)["ci"]["collect"]["url"]
-    assert urls == [LIST, DETAIL, FIGURES]
+    site = "http://127.0.0.1:8001/"
+    # The live UI, and the published static site (the upload page exists only there).
+    assert urls == [LIST, DETAIL, FIGURES, site, site + "samples/SYNTH001/", site + "figures/", site + "uploads/"]
+
+
+def test_the_published_site_is_measured_as_the_hosted_site_serves_it():
+    with open(os.path.join(REPO_ROOT, ".github", "workflows", "web-perf.yml"), encoding="utf-8") as fh:
+        workflow = fh.read()
+    # Published with an API base (or there is no upload page), and served with the stub API on the same origin.
+    assert '--out "$RUNNER_TEMP/site" --api-base http://127.0.0.1:8001/api' in workflow
+    assert 'scripts/serve_site.py "$RUNNER_TEMP/site" --port 8001 --api-prefix /api' in workflow
+    assert workflow.count('"scripts/serve_site.py"') == 2  # a change to the server reruns the job (push and PR)
+
+
+def test_any_console_error_fails_the_job():
+    # Under the strict CSP a blocked inline block is a console error: one in any run fails.
+    with open(os.path.join(REPO_ROOT, "lighthouserc.json"), encoding="utf-8") as fh:
+        level, options = json.load(fh)["ci"]["assert"]["assertions"]["errors-in-console"]
+    assert level == "error" and options == {"minScore": 1, "aggregationMethod": "pessimistic"}
