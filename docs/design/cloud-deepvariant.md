@@ -18,9 +18,9 @@ flowchart LR
 
 | Piece | Today | After |
 | :--- | :--- | :--- |
-| GPU compute environment | private subnet: no route out with the NAT gateway off, so instances can't pull images or reach S3. Instance types `g4dn.xlarge`, `g5.xlarge`, `g5.2xlarge` | **public subnet** (public IPs, like the Fargate jobs; no NAT, no hourly cost). `gpu_instance_types` = `g6.xlarge`, `g5.xlarge`. ECS GPU AMI (`ECS_AL2023_NVIDIA`; Batch refuses new Amazon Linux 2 environments), launch template with a 100 GB gp3 root volume |
+| GPU compute environment | private subnet: no route out with the NAT gateway off, so instances can't pull images or reach S3. Instance types `g4dn.xlarge`, `g5.xlarge`, `g5.2xlarge` | **public subnet** (public IPs, like the Fargate jobs; no NAT, no hourly cost). `gpu_instance_types` = `g6.4xlarge`, `g5.4xlarge` since v1.5 (was `g6.xlarge`, `g5.xlarge`). ECS GPU AMI (`ECS_AL2023_NVIDIA`; Batch refuses new Amazon Linux 2 environments), launch template with a 300 GB gp3 root volume (was 100) |
 | DeepVariant image | local only | ECR repository `geyser-deepvariant` (keeps 2 images), pushed by hand (~9.8 GB) |
-| Job definition | none | `geyser-deepvariant-job`: EC2, 1 GPU, `deepvariant_resources` (4 vCPU / 14 GiB by default), `DEEPVARIANT_SHARDS` = vCPUs, the same infrastructure-only retry rule as the app job, logs in `/aws/batch/geyser-<env>` |
+| Job definition | none | `geyser-deepvariant-job`: EC2, 1 GPU, `deepvariant_resources` (16 vCPU / 56 GiB by default since v1.5; was 4 vCPU / 14 GiB), `DEEPVARIANT_SHARDS` = vCPUs, the same infrastructure-only retry rule as the app job, logs in `/aws/batch/geyser-<env>` |
 | State machine | QC ∥ align → bcftools | QC ∥ align → `Choose_Caller` → DeepVariant on the GPU queue, **falling back to bcftools** if it fails (the reason goes in `$.deepvariant_error`); bcftools only, as today, without a caller |
 | Trigger | `{srr_id, reference_name}` | adds `"caller"` when its `CALLER` environment variable is set (Terraform `default_caller`, default `bcftools`). The default switches to `deepvariant` only after a cloud run passes |
 
@@ -52,9 +52,9 @@ time = stage + ~6 min cold start: **~29 min on 4 vCPU, ~14 min on 16 vCPU** (est
 
 | Instance | GPU | vCPU / RAM | On-demand $/h | Spot $/h | Per run, on-demand | Per run, Spot |
 | :--- | :--- | :--- | ---: | ---: | ---: | ---: |
-| **g6.xlarge** (default) | L4 24 GB | 4 / 16 GiB | 1.022 | 0.382 | **$0.49** | $0.18 |
+| g6.xlarge (default until v1.5) | L4 24 GB | 4 / 16 GiB | 1.022 | 0.382 | $0.49 | $0.18 |
 | g5.xlarge | A10G 24 GB | 4 / 16 GiB | 1.277 | 0.468 | $0.62 | $0.23 |
-| g6.4xlarge | L4 24 GB | 16 / 64 GiB | 1.680 | 0.573 | $0.39 | $0.13 |
+| **g6.4xlarge** (default since v1.5) | L4 24 GB | 16 / 64 GiB | 1.680 | 0.573 | **$0.39** | $0.13 |
 | g5.4xlarge | A10G 24 GB | 16 / 64 GiB | 2.061 | 0.670 | $0.48 | $0.16 |
 | g4dn.xlarge (not offered) | T4 16 GB | 4 / 16 GiB | 0.615 | 0.184 | — | — |
 
@@ -68,7 +68,7 @@ time = stage + ~6 min cold start: **~29 min on 4 vCPU, ~14 min on 16 vCPU** (est
 
 | Guard | Today | Effect on G2 |
 | :--- | :--- | :--- |
-| `gpu_max_vcpus` (compute environment `max_vcpus`) | **4** | One 4-vCPU GPU instance at a time. The default `deepvariant_resources` fits; a precondition refuses a job size that can't fit. |
+| `gpu_max_vcpus` (compute environment `max_vcpus`) | **16** (v1.5; was 4) | One 16-vCPU GPU instance at a time. Preconditions refuse a cap above the smallest `gpu_instance_types`' vCPUs (which would allow several instances at once) and a `deepvariant_resources` that can't fit that type. |
 | Boundary `NoComputeEnvChangesOrStatefulDeletes` | `geyser-claude` cannot create, update or delete compute environments | **The GPU environment change (subnet, instance types, launch template) is yours to apply.** The rest (ECR, job definition, state machine, Lambda) `geyser-claude` can apply; the apply that includes `gpu_env` must be run by you. |
 | Boundary `NoDirectInstances` | no direct `RunInstances`/Spot/Fleet | Unchanged: instances only come from Batch, inside `max_vcpus`. (The boundary does **not** list instance types. The instance types are limited by the compute environment, which only you can change.) |
 | Hook `guard_aws.py` | refuses any Batch job on a GPU queue until #43 | After #43 is applied and checked, the hook needs updating. Claude can't edit its own hooks: it drafts the change, you copy it in. |
@@ -80,7 +80,7 @@ time = stage + ~6 min cold start: **~29 min on 4 vCPU, ~14 min on 16 vCPU** (est
 
 **Worst case under the caps:**
 - **Today's cap (4 vCPU):** one `g5.xlarge` at $1.28/h. A single run is bounded by the 1 h attempt limit: $1.28, or $3.83 if all three infrastructure retries happen. A queue kept busy around the clock would cost $30.6/day, which only the one-run-at-a-time hook and an empty queue prevent.
-- **Cap raised to 16** for the measured shape: limit `gpu_instance_types` to `g6.4xlarge`/`g5.4xlarge` at the same time. Otherwise 16 vCPU allows four `xlarge` instances at once, $5.11/h. With the 4xlarge types only, it's one at a time, at most $2.06/h.
+- **Cap raised to 16** for the measured shape (v1.5, the defaults now): `gpu_instance_types` is limited to `g6.4xlarge`/`g5.4xlarge` at the same time. Otherwise 16 vCPU allows four `xlarge` instances at once, $5.11/h; a precondition in batch_gpu.tf now refuses that. With the 4xlarge types only, it's one at a time, at most $2.06/h (+ ~$0.04/h for the 300 GB root): $2.10 per attempt-limited run, $6.30 with all three infrastructure retries.
 
 ## Rollout
 

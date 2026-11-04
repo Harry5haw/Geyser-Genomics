@@ -56,6 +56,20 @@ resource "aws_security_group" "batch_gpu_compute" {
   }
 }
 
+# The GPU instance types this config knows, with their vCPUs and memory (GiB), for the spend-rate checks below
+# and in deepvariant.tf. Add a type here before adding it to gpu_instance_types.
+locals {
+  gpu_instance_shapes = {
+    "g6.xlarge"  = { vcpu = 4, memory_gib = 16 }
+    "g5.xlarge"  = { vcpu = 4, memory_gib = 16 }
+    "g6.4xlarge" = { vcpu = 16, memory_gib = 64 }
+    "g5.4xlarge" = { vcpu = 16, memory_gib = 64 }
+  }
+  gpu_known_types       = length(var.gpu_instance_types) > 0 && alltrue([for t in var.gpu_instance_types : contains(keys(local.gpu_instance_shapes), t)])
+  gpu_min_instance_vcpu = local.gpu_known_types ? min([for t in var.gpu_instance_types : local.gpu_instance_shapes[t].vcpu]...) : 0
+  gpu_min_instance_mib  = local.gpu_known_types ? min([for t in var.gpu_instance_types : local.gpu_instance_shapes[t].memory_gib]...) * 1024 : 0
+}
+
 # The managed EC2 compute environment for running GPU jobs.
 resource "aws_batch_compute_environment" "gpu_env" {
   # name_prefix + create_before_destroy: changing the instance types, subnets or launch template replaces the
@@ -75,8 +89,8 @@ resource "aws_batch_compute_environment" "gpu_env" {
     # 24 GB-class GPUs only (G2): call_variants at its default batch size needs more than 10 GB.
     instance_type = var.gpu_instance_types
 
-    # Scales to zero between runs. Spend-rate cap (#73): with the default 4, at most one
-    # g6.xlarge/g5.xlarge runs at a time. Changes in place.
+    # Scales to zero between runs. Spend-rate cap (#73): with the default 16 and the 4xlarge types, at most one
+    # g6.4xlarge/g5.4xlarge runs at a time (the precondition below keeps it one instance). Changes in place.
     min_vcpus = 0
     max_vcpus = var.gpu_max_vcpus
 
@@ -106,6 +120,17 @@ resource "aws_batch_compute_environment" "gpu_env" {
 
   lifecycle {
     create_before_destroy = true
+
+    # One GPU instance at a time, whatever the types: a cap above the smallest type's vCPUs would let several
+    # small instances run at once (16 vCPU of xlarge types = four instances, $5.11/h).
+    precondition {
+      condition     = local.gpu_known_types
+      error_message = "gpu_instance_types must be non-empty, and every entry must be in local.gpu_instance_shapes (batch_gpu.tf)."
+    }
+    precondition {
+      condition     = var.gpu_max_vcpus <= local.gpu_min_instance_vcpu
+      error_message = "gpu_max_vcpus must not exceed the vCPUs of the smallest gpu_instance_types, or more than one GPU instance can run at once."
+    }
   }
 }
 
