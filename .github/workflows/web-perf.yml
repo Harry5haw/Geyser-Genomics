@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   lighthouse:
-    name: Lighthouse CI (list + detail pages, mobile)
+    name: Lighthouse CI (list, detail and figures pages, mobile)
     # Draft PRs too: measuring a UI change before it's ready is the point. The image build reads main's cache.
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -81,7 +81,7 @@ jobs:
             nohup python web/manage.py runserver 127.0.0.1:8000 --noreload > web-server.log 2>&1 &
           fi
           echo "Server: $mode" | tee -a "$GITHUB_STEP_SUMMARY"
-          for url in http://127.0.0.1:8000/ http://127.0.0.1:8000/samples/SYNTH001/; do
+          for url in http://127.0.0.1:8000/ http://127.0.0.1:8000/samples/SYNTH001/ http://127.0.0.1:8000/figures/; do
             for i in $(seq 1 30); do curl -fsS -o /dev/null "$url" && break; sleep 1; done
             curl -fsS -o /dev/null "$url" || { cat web-server.log; exit 1; }
           done

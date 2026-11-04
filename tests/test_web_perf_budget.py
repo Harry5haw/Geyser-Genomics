@@ -28,6 +28,7 @@ def lhr(url, requests, lcp=800.0, cls=0.0, tbt=10.0):
 
 LIST = "http://127.0.0.1:8000/"
 DETAIL = "http://127.0.0.1:8000/samples/SYNTH001/"
+FIGURES = "http://127.0.0.1:8000/figures/"  # W1b (#227): the 3D figures page
 LIGHT = [("Document", 9000), ("Stylesheet", 6000), ("Script", 2000), ("Image", 50000), ("Fetch", 9000)]
 HEAVY = [("Document", 12000), ("Stylesheet", 82000), ("Stylesheet", 21000), ("Script", 51000)]
 
@@ -83,4 +84,4 @@ def test_the_workflow_measures_both_pages_with_pinned_tools():
     assert "manage.py runserver 127.0.0.1:8000 --noreload" in workflow
     with open(os.path.join(REPO_ROOT, "lighthouserc.json"), encoding="utf-8") as fh:
         urls = json.load(fh)["ci"]["collect"]["url"]
-    assert urls == [LIST, DETAIL]
+    assert urls == [LIST, DETAIL, FIGURES]

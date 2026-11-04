@@ -1,7 +1,7 @@
 {
   "ci": {
     "collect": {
-      "url": ["http://127.0.0.1:8000/", "http://127.0.0.1:8000/samples/SYNTH001/"],
+      "url": ["http://127.0.0.1:8000/", "http://127.0.0.1:8000/samples/SYNTH001/", "http://127.0.0.1:8000/figures/"],
       "numberOfRuns": 3,
       "settings": {
         "chromeFlags": "--no-sandbox --headless=new"
