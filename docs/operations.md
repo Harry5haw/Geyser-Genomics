@@ -260,8 +260,11 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
   sample, about $0.16 for a DeepVariant run on the GPU (on-demand list prices).
 - **The automation role** has its own permissions boundary and a project budget that cuts it off by itself:
   [docs/design/claude-guardrails.md](design/claude-guardrails.md).
-- **Failure notifications:** `Notify_Failure` publishes to the SNS topic `geyser-PipelineStatus-<env>`. It has
-  no subscription by default, so subscribe yourself if you want failure emails.
+- **Failure notifications:** `Notify_Failure` publishes to the SNS topic `geyser-PipelineStatus-<env>`, and
+  Terraform subscribes the budget-alert address to it by email (`infrastructure/notifications.tf`, #122). AWS
+  first emails a confirmation link, and the subscription delivers nothing until it is clicked. To check:
+  `aws sns list-subscriptions-by-topic --topic-arn <topic-arn>`, where a confirmed subscription has an ARN
+  and an unconfirmed one shows `PendingConfirmation`.
 
 ## Common failures and what you see
 
