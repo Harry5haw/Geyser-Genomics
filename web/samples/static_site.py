@@ -9,7 +9,9 @@ with a StaticSite on the request (`request.geyser_static`). Then:
   `/status/<id>` and reloads the list when the run ends (the run's last step publishes its page);
 - the run log isn't shown (it can carry paths and commands);
 - the sample list and pages come from one storage listing and a preloaded VCF, so publishing needs no read
-  access to the raw reads or the alignments.
+  access to the raw reads or the alignments;
+- with an API base there is an upload page (/uploads/): the browser sends the reads straight to the data lake in
+  presigned multipart parts (the web API's /uploads), with the upload token kept in the page's memory only.
 """
 
 import posixpath
@@ -33,6 +35,24 @@ PUBLIC_KINDS = (
     "run_record",
 )
 
+# The quality gate's threshold profiles an upload may name (S3 metadata gate-profile): gate/thresholds/<name>.toml,
+# and the state machine's Check_Gate_Profile accepts exactly these (tests/test_consistency.py-style check in
+# web/tests/test_web_upload_page.py). The first is a run's default.
+GATE_PROFILES = (
+    ("default", "Default: human germline WGS at about 30x (checked on HG003 and HG005)"),
+    ("synthetic", "Synthetic: reads from scripts/make_test_data.py"),
+    ("smoke", "Smoke: the small cloud checkpoint samples (10,000 reads on chr20)"),
+)
+# reference/<name> objects that are a FASTA (not their .fai / aligner indexes): the run's reference choices.
+FASTA_SUFFIXES = (".fa", ".fasta", ".fna", ".fa.gz", ".fasta.gz", ".fna.gz")
+
+
+def reference_names(keys) -> list:
+    """The FASTA names directly under reference/ (the state machine refuses a name with a '/')."""
+    names = (k[len("reference/") :] for k in keys if k.startswith("reference/"))
+    return sorted(n for n in names if n and "/" not in n and n.lower().endswith(FASTA_SUFFIXES))
+
+
 # The web API names each caller's VCF by its own kind (lambda/web_api/index.py): `vcf` is always bcftools'
 # variants/<id>.vcf.gz, so a sample whose run record makes DeepVariant's or the pangenome caller's VCF its calls links
 # that one by its folder.
@@ -50,6 +70,7 @@ class StaticSite:
     max_pages: int = 20  # call pages published per sample (the first page and up to this many in all)
     samples: dict = field(default_factory=dict)  # sample_id -> SampleView, built from one listing
     variants: dict = field(default_factory=dict)  # VCF key -> VariantTable of its first max_pages pages
+    references: list = field(default_factory=list)  # reference/ FASTA names, for the upload page's choice
 
     def file_href(self, sample_id: str, kind: str, key: str) -> str:
         """Where a public file's link points: the API's presigned redirect, or the copy beside the pages."""

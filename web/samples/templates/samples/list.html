@@ -16,7 +16,8 @@
 
 {% if static %}
 <p class="note" role="note">A read-only showcase: each sample's calls, QC, quality gate and run record, as the pipeline left them.
-  The raw reads and alignments aren't published.</p>
+  The raw reads and alignments aren't published.{% if static.api_base %}
+  <a href="{% url 'samples:upload_page' %}">Upload reads</a> (needs the upload token).{% endif %}</p>
 {% else %}
 <section class="actions">
   <div class="card">

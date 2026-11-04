@@ -1,0 +1,63 @@
+{% extends "samples/base.html" %}
+{% load static %}
+{% block title %}Upload reads · Geyser Genomics{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>Upload reads</h1>
+  <p>Gzipped FASTQ goes straight from this browser to the pipeline's storage, in parts. Each part is retried if the
+    connection drops, and an interrupted upload carries on from where it stopped when you choose the same files
+    again, even after closing the tab. The run starts as soon as the reads are in.</p>
+  <p class="muted"><small>Uploading needs the upload token. It stays in this page and is sent only to the upload
+    service: it isn't saved anywhere.</small></p>
+
+  <noscript><p class="note">This page needs JavaScript to send the files.</p></noscript>
+  <div id="up-pending" class="note" hidden></div>
+
+  {# novalidate: upload.js checks every field itself (and says what's wrong in the status line). #}
+  <form id="upload-form" data-api="{{ api_base }}" data-existing="{{ existing|join:' ' }}" novalidate>
+    <label>
+      Upload token
+      <input type="password" id="up-token" autocomplete="off" spellcheck="false" required>
+    </label>
+    <fieldset>
+      <legend>Reads</legend>
+      <label class="radio"><input type="radio" name="layout" value="single" checked> Single-end (one file)</label>
+      <label class="radio"><input type="radio" name="layout" value="paired"> Paired-end (R1 and R2)</label>
+    </fieldset>
+    <label>
+      Gzipped FASTQ <span class="muted">(R1 for paired-end)</span>
+      <input type="file" id="up-r1" accept=".fastq.gz,.fq.gz" required>
+    </label>
+    <label id="up-r2-field" hidden>
+      Read 2 <span class="muted">(the R2 file of the pair)</span>
+      <input type="file" id="up-r2" accept=".fastq.gz,.fq.gz">
+    </label>
+    <label>
+      Sample ID
+      <input type="text" id="up-id" maxlength="30" pattern="[A-Za-z0-9][A-Za-z0-9_\-]{0,29}" required
+             placeholder="from the filename, e.g. SRR062634">
+      <small>1–30 letters, digits, '-' or '_'; not ending in _R1 or _R2.</small>
+    </label>
+    <label>
+      Quality gate profile
+      <select id="up-gate">
+        {% for name, label in gate_profiles %}<option value="{% if not forloop.first %}{{ name }}{% endif %}">{{ label }}</option>{% endfor %}
+      </select>
+      <small>The thresholds the run's quality gate checks against.</small>
+    </label>
+    <label>
+      Reference genome
+      <select id="up-reference">
+        <option value="">The default ({{ default_reference }})</option>
+        {% for name in references %}{% if name != default_reference %}<option value="{{ name }}">{{ name }}</option>{% endif %}{% endfor %}
+      </select>
+      <small>A FASTA in the pipeline's reference/ folder: the run aligns to it and calls against it.</small>
+    </label>
+    <button type="submit" class="upload">Upload</button>
+    <button type="button" id="up-cancel" hidden>Cancel</button>
+    <progress id="up-progress" max="1" value="0"></progress>
+    <p id="up-status" role="status" aria-live="polite"></p>
+  </form>
+</section>
+<script src="{% static 'samples/upload.js' %}" defer></script>
+{% endblock %}
