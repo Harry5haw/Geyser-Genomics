@@ -12,6 +12,7 @@ with a StaticSite on the request (`request.geyser_static`). Then:
   access to the raw reads or the alignments.
 """
 
+import posixpath
 from dataclasses import dataclass, field
 
 # The public showcase's downloads: the calls, the QC report and data, the gate verdict, the stats and the run
@@ -32,6 +33,16 @@ PUBLIC_KINDS = (
     "run_record",
 )
 
+# The web API names each caller's VCF by its own kind (lambda/web_api/index.py): `vcf` is always bcftools'
+# variants/<id>.vcf.gz, so a sample whose run record makes DeepVariant's or the pangenome caller's VCF its calls links
+# that one by its folder.
+API_KIND_BY_FOLDER = {
+    ("vcf", "variants_deepvariant"): "deepvariant_vcf",
+    ("tbi", "variants_deepvariant"): "deepvariant_tbi",
+    ("vcf", "variants_pangenome"): "pangenome_vcf",
+    ("tbi", "variants_pangenome"): "pangenome_tbi",
+}
+
 
 @dataclass
 class StaticSite:
@@ -40,11 +51,12 @@ class StaticSite:
     samples: dict = field(default_factory=dict)  # sample_id -> SampleView, built from one listing
     variants: dict = field(default_factory=dict)  # VCF key -> VariantTable of its first max_pages pages
 
-    def file_href(self, sample_id: str, kind: str, filename: str) -> str:
+    def file_href(self, sample_id: str, kind: str, key: str) -> str:
         """Where a public file's link points: the API's presigned redirect, or the copy beside the pages."""
         if self.api_base:
-            return f"{self.api_base}/files/{sample_id}/{kind}"
-        return f"/samples/{sample_id}/files/{filename}"
+            api_kind = API_KIND_BY_FOLDER.get((kind, key.split("/", 1)[0]), kind)
+            return f"{self.api_base}/files/{sample_id}/{api_kind}"
+        return f"/samples/{sample_id}/files/{posixpath.basename(key)}"
 
     def status_url(self, sample_id: str) -> str:
         """The API's run status for a sample, or "" with no API (the static site then doesn't poll)."""

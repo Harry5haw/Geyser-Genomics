@@ -13,6 +13,11 @@ Every page is the live UI's own view and template, rendered with a StaticSite on
 Clean URLs: links are folders (/samples/S1/), served as their index.html by any static server and by the hosted
 site's CloudFront function. Caching: hashed assets are immutable for a year; HTML and data are short-lived.
 Order: assets and data first, pages next, the list last, so no published page names a file not yet there.
+
+A site starts with `publish --all`; after that each run publishes its own sample (the list links every finished
+sample, so one never published would be a 404). Links are root-absolute: with `--out s3://bucket/prefix`, the
+CDN's origin path must be that prefix. After an image whose inline CSS or scripts changed, publish --all again
+(every page carries the new blocks) and update the CSP from the new csp-hashes.json.
 """
 
 import base64
@@ -22,6 +27,7 @@ import math
 import mimetypes
 import os
 import re
+import shutil
 import tempfile
 
 from django.conf import settings
@@ -81,6 +87,13 @@ class FolderWriter:
             fh.write(data)
         self.written.append(path)
 
+    def put_stream(self, path: str, source, cache_control: str) -> None:
+        full = os.path.join(self.root, *path.split("/"))
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "wb") as fh:
+            shutil.copyfileobj(source, fh, 1024 * 1024)
+        self.written.append(path)
+
     def describe(self) -> str:
         return self.root
 
@@ -104,6 +117,12 @@ class S3Writer:
             ContentType=content_type(path),
             CacheControl=cache_control,
         )
+        self.written.append(path)
+
+    def put_stream(self, path: str, source, cache_control: str) -> None:
+        """A large file (a whole-genome VCF is hundreds of MB): multipart in parts, never whole in memory."""
+        extra = {"ContentType": content_type(path), "CacheControl": cache_control}
+        self.client.upload_fileobj(source, self.bucket, self.prefix + path, ExtraArgs=extra)
         self.written.append(path)
 
     def describe(self) -> str:
@@ -151,9 +170,8 @@ def _copy_public_files(storage, writer, sample, site) -> int:
         key = views._file_key(sample.sample_id, kind, sample.keys)
         if not key or not storage.exists(key):
             continue
-        with storage.open_read(key) as fh:
-            data = fh.read()
-        writer.put(f"samples/{sample.sample_id}/files/{os.path.basename(key)}", data, DATA_CACHE)
+        with storage.open_read(key) as fh:  # streamed: the 1 GiB job can't hold a whole-genome VCF twice
+            writer.put_stream(f"samples/{sample.sample_id}/files/{os.path.basename(key)}", fh, DATA_CACHE)
         copied += 1
     return copied
 
@@ -237,13 +255,16 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
                     writer.put(f"figures/{name}.csv", fh.read(), DATA_CACHE)
             pages["figures/index.html"] = _render(views.figures_page, reverse("samples:figures"), site)
             figures_written = True
+        # The CSP covers the whole site, not only this call's pages: csp-hashes.json always has every page type's
+        # inline blocks (the figures page's own CSS too), so a one-sample publish doesn't drop the others' hashes.
+        figures_html = pages.get("figures/index.html") or _render(views.figures_page, reverse("samples:figures"), site)
 
         request = RequestFactory().get("/404.html")
         request.geyser_static = site
         pages["404.html"] = render_to_string("samples/404.html", {"static": site}, request=request)
         pages["index.html"] = _render(views.sample_list, reverse("samples:list"), site)
 
-    hashes = csp_hashes(pages)
+    hashes = csp_hashes({**pages, "figures/index.html": figures_html})
     writer.put("csp-hashes.json", json.dumps(hashes, indent=1).encode("utf-8"), DATA_CACHE)
     # 4. Pages last, the list after the sample pages it links to.
     for path in sorted(pages, key=lambda p: (p == "index.html", p)):
@@ -251,7 +272,8 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
 
     invalidated = []
     if distribution_id and isinstance(writer, S3Writer):
-        invalidated = ["/*"] if everything else ["/", "/index.html", *(f"/samples/{i}/*" for i in targets)]
+        changed = ["/", "/index.html", "/404.html", *(f"/samples/{i}/*" for i in targets)]
+        invalidated = ["/*"] if everything else changed
         _invalidate(distribution_id, invalidated)
     summary = {
         "out": writer.describe(),

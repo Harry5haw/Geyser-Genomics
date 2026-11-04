@@ -199,7 +199,10 @@ def build_sample(
     first_pending = ready[0] if ready else None
     # In the cloud there are no local metrics or worker records: a failed run shows only in its run record, which
     # the state machine closes with status "failed" (#155). Without this it would look "in progress" for ever.
-    record_failed = (record or {}).get("status") == "failed"
+    # Only without a worker record: locally, a re-run's record is the previous run's until its first stage writes a
+    # part, and the worker's own state (queued/running) is the truth. (A cloud re-run of a sample whose last run
+    # failed shows failed until its first stage finishes.)
+    record_failed = run is None and (record or {}).get("status") == "failed"
     if all(s.state == "done" for s in stages):
         state = "succeeded"
     elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded") or record_failed:

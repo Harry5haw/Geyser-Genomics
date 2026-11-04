@@ -314,8 +314,8 @@ def variants_key_of(storage, sample) -> str:
     return annotated or sample.keys["vcf"]
 
 
-def _file_href(static, sample_id, kind, filename) -> str:
-    return static.file_href(sample_id, kind, filename) if static else reverse("samples:file", args=[sample_id, kind])
+def _file_href(static, sample_id, kind, key) -> str:
+    return static.file_href(sample_id, kind, key) if static else reverse("samples:file", args=[sample_id, kind])
 
 
 @require_GET
@@ -356,13 +356,13 @@ def sample_detail(request, sample_id, page=None):
                     "label": label,
                     "description": description,
                     "filename": filename,
-                    "href": _file_href(static, sample_id, kind, filename),
+                    "href": _file_href(static, sample_id, kind, key),
                 }
             )
     qc_key = sample.keys["qc_html"]
     qc_report = storage.exists(qc_key)
     if static:
-        qc_href = static.file_href(sample_id, "qc_html", os.path.basename(qc_key))
+        qc_href = static.file_href(sample_id, "qc_html", qc_key)
     else:
         qc_href = reverse("samples:file", args=[sample_id, "qc_html"]) + "?inline=1"
     shown_calls = static.max_pages * size if static else None

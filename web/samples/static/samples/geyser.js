@@ -82,8 +82,12 @@
           if (r.status === 404) return; // no run of this sample: nothing to wait for
           const run = r.ok ? await r.json() : null;
           if (run && ENDED.has(run.status)) {
+            // Only for a run that ended just now: one that stopped long ago was published already (a page that
+            // still shows it running had no publish to wait for, so reloading would loop).
+            const stopped = Date.parse(run.stopped || "");
+            const recent = Number.isNaN(stopped) || Date.now() - stopped < 15 * 60 * 1000;
             const key = `geyser-reloads:${location.pathname}`, done = Number(sessionStorage.getItem(key) || 0);
-            if (done < 3) {
+            if (recent && done < 3) {
               sessionStorage.setItem(key, String(done + 1));
               setTimeout(() => location.reload(), 5000); // a moment for the CDN to drop its copy
             }

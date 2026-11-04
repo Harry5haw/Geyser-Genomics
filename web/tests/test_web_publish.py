@@ -127,6 +127,12 @@ def test_no_inline_style_attributes_and_every_inline_block_is_hashed(site):
     assert csp_hashes(published)["script"]  # the speculation rules at least
 
 
+def test_a_one_sample_publish_keeps_every_page_types_csp_hashes(storage, site, tmp_path):
+    whole = json.loads((run_publish(tmp_path / "whole", "--all") / "csp-hashes.json").read_text())
+    one = json.loads((run_publish(site, "S1") / "csp-hashes.json").read_text())
+    assert one == whole and len(one["style"]) == 2  # the site CSS, and the figures page's on top of it
+
+
 def test_the_call_pages_stop_at_max_pages_and_point_at_the_vcf(storage, site):
     finished_sample(storage, "BIG", calls=1500)
     root = run_publish(site, "BIG", "--max-pages", "3")
@@ -243,6 +249,9 @@ class FakeS3:
     def put_object(self, **kw):
         self.objects[kw["Key"]] = kw
 
+    def upload_fileobj(self, source, bucket, key, ExtraArgs):  # noqa: N803 - boto3's name
+        self.objects[key] = {"Key": key, "Body": source.read(), "streamed": True, **ExtraArgs}
+
 
 def test_s3_objects_get_their_type_and_cache_lifetime(site, monkeypatch):
     fake = FakeS3()
@@ -256,7 +265,9 @@ def test_s3_objects_get_their_type_and_cache_lifetime(site, monkeypatch):
     (js,) = [o for k, o in fake.objects.items() if re.search(r"/geyser\.[0-9a-f]{12}\.js$", k)]
     assert js["CacheControl"] == IMMUTABLE and js["ContentType"].startswith("text/javascript")
     assert list(fake.objects)[-1] == "pre/index.html"  # the list last, after the pages it links to
-    assert invalidations == [("E123", ["/", "/index.html", "/samples/S1/*"])]
+    vcf = fake.objects["pre/samples/S1/files/S1.vcf.gz"]
+    assert vcf["streamed"] and vcf["ContentType"] == "application/gzip"  # big files: multipart, not in memory
+    assert invalidations == [("E123", ["/", "/index.html", "/404.html", "/samples/S1/*"])]
 
 
 def test_out_defaults_to_the_site_bucket(site, monkeypatch):
@@ -303,3 +314,28 @@ def test_a_paired_sample_publishes_neither_mate(storage, site):
     assert files == ["P1.fastp.html", "P1.fastp.json", "P1.vcf.gz"]
     detail = (root / "samples/P1/index.html").read_text(encoding="utf-8")
     assert "P1_R1.fastq.gz" not in detail and "Raw reads" not in detail
+
+
+def test_a_local_rerun_of_a_failed_sample_shows_running_not_failed(storage):
+    """The record is the last run's until the re-run's first stage writes a part: the worker's state wins."""
+    from samples import status as status_mod
+
+    view = status_mod.build_sample(
+        "S1", set(), [], {"state": "running", "started": 1.0}, "single", {"status": "failed"}
+    )
+    assert view.state == "running" and view.active
+
+
+def test_a_deepvariant_called_sample_links_deepvariants_vcf(storage, tmp_path, settings):
+    """The run record makes DeepVariant's VCF the calls: the API link names its own kind, the copy is that file."""
+    from .test_web_views import dv_sample
+
+    settings.GEYSER_FIGURES_DIR = tmp_path / "no-figures-here"
+    dv_sample(storage)
+    api = "https://api.example.test"
+    with_api = run_publish(tmp_path / "api", "S1", "--api-base", api).joinpath("samples/S1/index.html")
+    detail = with_api.read_text(encoding="utf-8")
+    assert f'href="{api}/files/S1/deepvariant_vcf"' in detail and f"{api}/files/S1/vcf" not in detail
+    folder = run_publish(tmp_path / "folder", "S1")
+    copied = (folder / "samples/S1/files/S1.vcf.gz").read_bytes()
+    assert copied == Path(storage.describe("variants_deepvariant/S1.vcf.gz")).read_bytes()
