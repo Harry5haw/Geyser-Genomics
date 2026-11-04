@@ -49,11 +49,13 @@ class Figure:
     x_label: str
     x_unit: str
     rows_label: str
+    rows_plural: str  # how the caption counts the rows: "7 alignments"
     z_label: str
     z_unit: str
     clip_factor: float | None = None  # heights above factor × median are drawn at the cap (the readout is exact)
     zero_based: bool = True  # False: heights start at a stated baseline below the data (narrow-range values)
     pending: str = ""  # shown while the CSV doesn't exist yet
+    note: str = ""  # a caveat shown on the card (e.g. how far the calls can be compared)
 
 
 @dataclass
@@ -63,6 +65,7 @@ class Grid:
     rows: list  # row names, in the CSV's order
     values: list  # values[row][col]: float, or None where the CSV has no cell
     clip: float | None = None  # the height cap (None: no cap)
+    x_ticks: list = field(default_factory=list)  # [(position, label)] when x is a transform (log2 batch size)
     base: float = 0.0  # the value at zero height (stated on the axis, the legend and the caption)
     vmin: float = 0.0
     vmax: float = 0.0
@@ -80,6 +83,7 @@ FIGURES = {
         x_label="Position on chr20",
         x_unit="Mb",
         rows_label="Alignment",
+        rows_plural="alignments",
         z_label="Mean depth",
         z_unit="×",
         clip_factor=2.5,
@@ -93,9 +97,41 @@ FIGURES = {
         x_label="Sequencing cycle",
         x_unit="cycle",
         rows_label="Read file",
+        rows_plural="read files",
         z_label="Mean base quality",
         z_unit="Phred",
         zero_based=False,
+    ),
+    "dv-stage": Figure(
+        name="dv-stage",
+        title="DeepVariant: batch size × shards",
+        csv="dv-batch-shards.csv",
+        description="Wall time of the whole DeepVariant stage on HG003 chr20 35x (local RTX 3080), over call_variants' "
+        "batch size and the number of make_examples shards. Shards set the time; batch size hardly matters up to "
+        "512 (scripts/benchmark_dv_grid.py, #216).",
+        x_label="Batch size",
+        x_unit="log₂ scale",
+        rows_label="make_examples shards",
+        rows_plural="shard settings",
+        z_label="Stage time",
+        z_unit="min",
+        note="The calls differ by up to ±2 between cells (GPU nondeterminism in call_variants), so the cells are "
+        "compared on time only, not on calls.",
+    ),
+    "dv-call": Figure(
+        name="dv-call",
+        title="DeepVariant: call_variants alone",
+        csv="dv-batch-shards.csv",
+        description="The GPU step on its own: call_variants takes 100-108 s at batch 128-512 and about 20% longer at "
+        "1024 (Google's default), whatever the shards; the GPU stays only 26-33% busy.",
+        x_label="Batch size",
+        x_unit="log₂ scale",
+        rows_label="make_examples shards",
+        rows_plural="shard settings",
+        z_label="call_variants time",
+        z_unit="s",
+        note="The calls differ by up to ±2 between cells (GPU nondeterminism in call_variants), so the cells are "
+        "compared on time only, not on calls.",
     ),
     "cost": Figure(
         name="cost",
@@ -106,6 +142,7 @@ FIGURES = {
         x_label="Variant window",
         x_unit="Mb",
         rows_label="Align size",
+        rows_plural="align sizes",
         z_label="Cost per run",
         z_unit="US cents",
         pending="Waiting for the cost grid: the runs that measure it (#192's per-run overrides) haven't been made "
@@ -189,7 +226,29 @@ def _cost(figure, path):
     return _assemble(figure, cells)
 
 
-BUILDERS = {"coverage": _coverage, "quality": _quality, "cost": _cost}
+def _dv(figure, path, column, scale):
+    # dv_batch_shards.py's per-cell table (#216): batch_size, shards, ..., stage_s, call_variants_s, ...
+    cells, batches = [], set()
+    for r in _rows_of(path):
+        batch, shards, value = _float(r.get("batch_size")), _float(r.get("shards")), _float(r.get(column))
+        if not batch or batch <= 0 or shards is None:
+            continue
+        batches.add(int(batch))
+        cells.append(
+            (f"{int(shards)} shards", round(math.log2(batch), 4), None if value is None else round(value * scale, 3))
+        )
+    grid = _assemble(figure, cells)
+    grid.x_ticks = [(round(math.log2(b), 4), str(b)) for b in sorted(batches)]
+    return grid
+
+
+BUILDERS = {
+    "coverage": _coverage,
+    "quality": _quality,
+    "dv-stage": lambda figure, path: _dv(figure, path, "stage_s", 1 / 60),
+    "dv-call": lambda figure, path: _dv(figure, path, "call_variants_s", 1),
+    "cost": _cost,
+}
 
 
 @lru_cache(maxsize=16)
@@ -214,7 +273,7 @@ def grid_json(grid: Grid) -> str:
     return json.dumps(
         {
             "title": f.title,
-            "x": {"label": f.x_label, "unit": f.x_unit, "values": grid.x},
+            "x": {"label": f.x_label, "unit": f.x_unit, "values": grid.x, "ticks": grid.x_ticks},
             "rows": {"label": f.rows_label, "names": grid.rows},
             "z": {
                 "label": f.z_label,
@@ -267,11 +326,12 @@ def poster_svg(grid: Grid) -> str:
             f'stroke="{shade}" stroke-width="1.5"><title>{escape(name)}</title></path>'
         )
     ticks = []
-    for k in range(5):
-        value = x0 + (x1 - x0) * k / 4
-        px = MARGIN_L + plot_w * k / 4
-        anchor = "start" if k == 0 else "end" if k == 4 else "middle"
-        ticks.append(f'<text x="{px:.0f}" y="{POSTER_H - 8}" text-anchor="{anchor}">{value:.3g}</text>')
+    named = grid.x_ticks or [(x0 + (x1 - x0) * k / 4, f"{x0 + (x1 - x0) * k / 4:.3g}") for k in range(5)]
+    for value, text in named:
+        frac = (value - x0) / (x1 - x0)
+        px = MARGIN_L + plot_w * frac
+        anchor = "start" if frac <= 0.01 else "end" if frac >= 0.99 else "middle"
+        ticks.append(f'<text x="{px:.0f}" y="{POSTER_H - 8}" text-anchor="{anchor}">{escape(text)}</text>')
     label = escape(
         f"{f.title}: {f.z_label} ({f.z_unit}) by {f.x_label.lower()} ({f.x_unit}), one ridge per {f.rows_label.lower()}"
     )

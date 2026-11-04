@@ -32,13 +32,14 @@
         <small class="no3d-note">The 3D view needs WebGL, so this is the flat view; the CSV has every value.</small></p>
       <figcaption>{{ card.figure.description }}
         {% if card.grid.clip %}Heights above {{ card.grid.clip }} {{ card.figure.z_unit }} (2.5 × the median) are drawn at that cap; the readout and the CSV show the true value.{% endif %}
+        {% if card.figure.note %}<p class="note" role="note">{{ card.figure.note }}</p>{% endif %}
         {% if card.grid.base %}Heights start at {{ card.grid.base|floatformat:"-1" }} {{ card.figure.z_unit }}, not 0, so the small differences show; the axis is labelled from there.{% endif %}
         <br><a href="{% url 'samples:figure_csv' card.name %}" download>Data ({{ card.figure.csv }})</a>
-        <small class="muted">· {{ card.grid.rows|length }} {{ card.figure.rows_label|lower }}s × {{ card.grid.x|length }} points</small></figcaption>
+        <small class="muted">· {{ card.grid.rows|length }} {{ card.figure.rows_plural }} × {{ card.grid.x|length }} points</small></figcaption>
     {% elif card.error %}
       <p class="note" role="note">{{ card.error }}</p>
     {% else %}
-      <p class="note" role="note">{{ card.figure.pending }}</p>
+      <p class="note" role="note">{% if card.figure.pending %}{{ card.figure.pending }}{% else %}No data yet: {{ card.figure.csv }} isn&#x27;t in the figures folder.{% endif %}</p>
     {% endif %}
   </figure>
 {% endfor %}
