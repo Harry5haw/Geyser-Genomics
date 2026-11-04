@@ -358,8 +358,11 @@ def container_path(host_path, root):
     return host_path
 
 
-def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None):
+def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None, label=None):
+    """label: a docker label on the container (e.g. geyser.owner=t2), so a watchdog can stop exactly these."""
     full = ["docker", "run", "--rm"]
+    if label:
+        full += ["--label", label]
     if gpus:
         full += ["--gpus", "all"]
     if shm:
@@ -386,20 +389,20 @@ def run_env(sample_id, image):
     }
 
 
-def run_job(job, runner, root, dv_memory=None, env=None):
-    """env: extra variables for the stage (run_env), on top of the pass-through knobs."""
+def run_job(job, runner, root, dv_memory=None, env=None, memory=None, label=None):
+    """env: extra variables for the stage (run_env), on top of the pass-through knobs. memory: a hard cap for
+    the pipeline-stage containers (DeepVariant's is dv_memory); label: a docker label on every container."""
     if runner == "docker":
         # Pipeline and DeepVariant knobs are passed through to the container when set on the host
         # (the host runner inherits the whole environment anyway).
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
         extra.update(job.get("env") or {})
         extra.update(env or {})
-        memory = None
         if job["name"] in ("deepvariant", "pangenome"):
             extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
         return subprocess.run(
-            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"))
+            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"), label)
         ).returncode
     if job["name"] in ("deepvariant", "pangenome"):
         print("DeepVariant only runs in its container (use --runner docker).")
@@ -568,6 +571,16 @@ def main(argv=None):
         help="--shm-size for the pangenome container (default: %(default)s, as in Google's case studies)",
     )
     p.add_argument(
+        "--memory",
+        metavar="SIZE",
+        help="hard memory cap for every pipeline-stage container (docker --memory), e.g. 8g; DeepVariant's is --dv-memory",
+    )
+    p.add_argument(
+        "--docker-label",
+        metavar="KEY=VALUE",
+        help="a docker label on every container this run starts (e.g. geyser.owner=t2), so they can be found and stopped",
+    )
+    p.add_argument(
         "--dv-memory",
         metavar="SIZE",
         help="memory cap for the DeepVariant and pangenome containers, e.g. 12g. A whole chromosome can "
@@ -660,7 +673,7 @@ def main(argv=None):
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             env = {**run_env(sample_id, job["image"]), "RUN_NAME": run_name}
-            if run_job(job, a.runner, a.root, a.dv_memory, env) != 0:
+            if run_job(job, a.runner, a.root, a.dv_memory, env, a.memory, a.docker_label) != 0:
                 print(f"\nFAILED at stage '{job['name']}' for {sample_id} (in the cloud this goes to Notify_Failure)")
                 ok = False
                 break

@@ -385,3 +385,17 @@ def test_run_local_passes_the_streaming_switch():
     import run_local
 
     assert "GEYSER_STREAM_REGIONS" in run_local.PIPELINE_ENV_VARS
+
+
+def test_run_local_caps_memory_and_labels_every_container(monkeypatch, tmp_path):
+    import run_local
+
+    ran = []
+    monkeypatch.setattr(
+        run_local.subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0)
+    )
+    job = run_local.pipeline_jobs("S1", REF)[1]  # align
+    assert run_local.run_job(job, "docker", str(tmp_path), memory="8g", label="geyser.owner=t2") == 0
+    (cmd,) = ran
+    assert cmd[cmd.index("--memory") + 1] == "8g" and cmd[cmd.index("--memory-swap") + 1] == "8g"
+    assert cmd[cmd.index("--label") + 1] == "geyser.owner=t2"
