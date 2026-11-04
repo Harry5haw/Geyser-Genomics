@@ -1585,33 +1585,55 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
         scores = backend.score(selected)
         rows = ag.scored_rows(selected, scores)
         print(f"AlphaGenome: {len(rows)} scored, {len(selected) - len(rows)} not scored", flush=True)
+        unscored = [v for v in selected if v.key not in scores]
+        summary = {
+            "source": backend.name,
+            "model_version": backend.model_version,
+            "input": input_key,
+            "consequences": has_bcsq,
+            "max_variants": max_variants,
+            "selection": counts,
+            "scored": len(rows),
+            "not_scored": len(unscored),
+            # Why: indels a source doesn't take (atlas, avi-file), or variants the service answered NOT_FOUND /
+            # INVALID_ARGUMENT for (its messages, grouped, and a few examples), or that an AVI table lacks.
+            "not_scored_by_kind": {kind: sum(v.kind == kind for v in unscored) for kind in ("snv", "indel")},
+            "api_calls": backend.api_calls,
+            **(backend.diagnostics() if hasattr(backend, "diagnostics") else {}),
+            "vcf": "pending",
+        }
+        provenance.note(alphagenome=summary)
 
+        # The table and the record first: they don't need bcftools, so a missing htslib (a run outside the image)
+        # costs only the VCF.
+        tsv = os.path.join(wd, os.path.basename(keys["alphagenome_tsv"]))
+        with open(tsv, "w", encoding="utf-8") as fh:
+            fh.write(ag.tsv_text(rows))
+        upload_output(tsv, keys["alphagenome_tsv"])
+
+        if not shutil.which("bcftools"):
+            summary["vcf"] = "failed: bcftools not found"
+            raise RuntimeError(
+                "bcftools/bgzip not found: run inside the image or install htslib "
+                f"(the table {keys['alphagenome_tsv']} and the run record were written; the VCF was not)"
+            )
         plain = os.path.join(wd, "alphagenome.vcf")
         with open(plain, "w", encoding="utf-8") as fh:
             fh.write(ag.vcf_text(rows, header, contigs, reference_name, backend.name, backend.model_version))
         vcf = os.path.join(wd, os.path.basename(keys["alphagenome_vcf"]))
         tbi = os.path.join(wd, os.path.basename(keys["alphagenome_tbi"]))
-        tsv = os.path.join(wd, os.path.basename(keys["alphagenome_tsv"]))
-        run_shell(f"bcftools view -Oz -o {shlex.quote(vcf)} {shlex.quote(plain)}")
-        run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
-        with open(tsv, "w", encoding="utf-8") as fh:
-            fh.write(ag.tsv_text(rows))
-        provenance.note(
-            alphagenome={
-                "source": backend.name,
-                "model_version": backend.model_version,
-                "input": input_key,
-                "consequences": has_bcsq,
-                "max_variants": max_variants,
-                "selection": counts,
-                "scored": len(rows),
-                "not_scored": len(selected) - len(rows),
-                "api_calls": backend.api_calls,
-            }
-        )
-        upload_output(tsv, keys["alphagenome_tsv"])
+        try:
+            run_shell(f"bcftools view -Oz -o {shlex.quote(vcf)} {shlex.quote(plain)}")
+            run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
+        except subprocess.CalledProcessError as err:
+            summary["vcf"] = f"failed: bcftools exited {err.returncode}"
+            raise RuntimeError(
+                f"bcftools could not write the annotated VCF (exit {err.returncode}); "
+                f"the table {keys['alphagenome_tsv']} and the run record were written"
+            ) from None
         upload_output(tbi, keys["alphagenome_tbi"])
         upload_output(vcf, keys["alphagenome_vcf"])  # last, as elsewhere: the VCF marks the stage done
+        summary["vcf"] = "written"
     finally:
         shutil.rmtree(wd, ignore_errors=True)
         calls = getattr(backend, "api_calls", 0)

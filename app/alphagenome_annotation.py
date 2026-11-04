@@ -407,6 +407,7 @@ ATLAS_SCORERS = (
     "CHIP_TF",
     "CHIP_HISTONE",
 )
+NOT_FOUND_EXAMPLES = 5  # variants the service didn't have, kept in the run record to tell coverage from a bug
 ATLAS_WORKERS = 4  # concurrent lookups (the client's own default is 10; no published rate limit)
 CLIENT_HINT = "pip install -r requirements-alphagenome.txt"
 
@@ -503,6 +504,9 @@ class AtlasBackend(_KeyedBackend):
         self._make_variant = make_variant  # genome.Variant by default (tests pass their own: no client needed)
         self.workers = workers
         self.not_found = 0
+        self.empty_answers = 0
+        self.not_found_reasons = {}  # the service's message (digits as N) -> count
+        self.not_found_examples = []  # (variant key, message), the first NOT_FOUND_EXAMPLES
         self.model_version = f"alphagenome-client {_client_version()} (Atlas)"
 
     def _connect(self):
@@ -539,14 +543,38 @@ class AtlasBackend(_KeyedBackend):
                     make_variant(v.chrom, v.pos, v.ref, v.alt),
                     requested_scorers=list(ATLAS_SCORERS),
                 )
-            except NotInService:
+            except NotInService as err:
+                self._note_not_found(v.key, str(err))
                 return v.key, None
-            return v.key, reduce_atlas(result)
+            score = reduce_atlas(result)
+            if score is None:
+                with self._lock:
+                    self.empty_answers += 1
+            return v.key, score
 
         with ThreadPoolExecutor(max_workers=self.workers) as pool:
             answers = list(pool.map(one, snvs))
-        self.not_found = sum(score is None for _, score in answers)
         return {key: score for key, score in answers if score is not None}
+
+    def _note_not_found(self, key, message):
+        import re
+
+        with self._lock:
+            self.not_found += 1
+            reason = re.sub(r"\d+", "N", message)[:160]
+            self.not_found_reasons[reason] = self.not_found_reasons.get(reason, 0) + 1
+            if len(self.not_found_examples) < NOT_FOUND_EXAMPLES:
+                self.not_found_examples.append([key, message[:240]])
+
+    def diagnostics(self) -> dict:
+        """Why selected SNVs went unscored, for the run record (messages are already redacted)."""
+        reasons = sorted(self.not_found_reasons.items(), key=lambda kv: -kv[1])[:5]
+        return {
+            "not_in_service": self.not_found,
+            "empty_answers": self.empty_answers,
+            "not_in_service_reasons": dict(reasons),
+            "not_in_service_examples": self.not_found_examples,
+        }
 
 
 def _client_version():

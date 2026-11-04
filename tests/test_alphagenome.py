@@ -251,6 +251,12 @@ def test_the_atlas_backend_scores_snvs_and_leaves_missing_ones_unscored():
     assert sorted(v for v, _ in client.asked) == [("chr20", 100, "A", "G"), ("chr20", 300, "G", "C")]
     assert client.asked[0][1] == ag.ATLAS_SCORERS and not any(s.endswith("_ACTIVE") for s in client.asked[0][1])
     assert backend.api_calls == 2 and backend.not_found == 1
+    diagnostics = backend.diagnostics()
+    assert diagnostics["not_in_service"] == 1 and diagnostics["empty_answers"] == 0
+    assert diagnostics["not_in_service_reasons"] == {"atlas: Variant ('chrN', N, 'G', 'C') not found": 1}
+    assert diagnostics["not_in_service_examples"] == [
+        ["chr20:300:G:C", "atlas: Variant ('chr20', 300, 'G', 'C') not found"]
+    ]
     assert backend.model_version.startswith("alphagenome-client ")
 
 
@@ -393,6 +399,10 @@ def stage(local_env, monkeypatch):
             open(out, "wb").close()
 
     monkeypatch.setattr(tasks, "run_shell", fake_run_shell)
+    real_which = shutil.which
+    monkeypatch.setattr(
+        tasks.shutil, "which", lambda name: f"/usr/bin/{name}" if name == "bcftools" else real_which(name)
+    )
     store = tasks.storage()
 
     def put_vcf(key, lines, csq=False):
@@ -584,3 +594,35 @@ def test_run_local_carries_on_after_a_failed_optional_job(tmp_path, monkeypatch,
     args = ["--root", str(tmp_path), "--sample", "S1", "--reference", "ref.fa", "--annotate", "alphagenome"]
     assert run_local.main(args) == 0
     assert ran[-1] == "annotate" and "optional stage 'annotate' failed" in capsys.readouterr().out
+
+
+def test_without_bcftools_the_table_and_the_record_are_still_written(stage, monkeypatch, capsys):
+    # A run outside the image (T1's native run): scoring works, only the bgzipped VCF needs htslib.
+    stage["core_run"]()
+    stage["put_vcf"]("variants/S1.vcf.gz", LINES)
+    monkeypatch.setattr(tasks.shutil, "which", lambda name: None)
+    assert tasks.main(["annotate", "S1", "chr20.fa", "--source", "fake"]) == 0  # noted, never fatal
+    assert "bcftools/bgzip not found: run inside the image or install htslib" in capsys.readouterr().out
+    assert not stage["commands"]  # bcftools never tried
+    keys = tasks.keys_for("S1")
+    tsv = (stage["root"] / keys["alphagenome_tsv"]).read_text().splitlines()
+    assert len(tsv) == 8  # the terms line, the header and all 6 variants
+    assert not (stage["root"] / keys["alphagenome_vcf"]).exists()
+    part = provenance.read_part(stage["store"], "S1", "Annotate")
+    assert part["status"] == "Failure" and "bcftools/bgzip not found" in part["error"]
+    summary = part["alphagenome"]
+    assert summary["scored"] == 6 and summary["vcf"] == "failed: bcftools not found"
+    assert summary["not_scored_by_kind"] == {"snv": 0, "indel": 0}
+    assert keys["alphagenome_tsv"] in {o["key"] for o in part["outputs"]}
+    assert provenance.read_record(stage["store"], "S1")["status"] == "succeeded"
+
+
+def test_the_record_says_which_kinds_went_unscored(stage):
+    # avi-file takes SNVs only: the indel and the SNVs missing from the table show up by kind.
+    stage["core_run"]()
+    stage["put_vcf"]("variants/S1.vcf.gz", LINES)
+    (stage["root"] / "reference" / "alphagenome").mkdir(parents=True)
+    write_avi_table(stage["root"] / tasks.alphagenome_avi_key("chr20.fa"), [("chr20", 104, "A", "G", 2.0, 31.0)])
+    assert tasks.main(["annotate", "S1", "chr20.fa", "--source", "avi-file"]) == 0
+    summary = provenance.read_part(stage["store"], "S1", "Annotate")["alphagenome"]
+    assert summary["not_scored_by_kind"] == {"snv": 4, "indel": 1} and summary["vcf"] == "written"
