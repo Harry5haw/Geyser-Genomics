@@ -255,7 +255,7 @@ def sample_detail(request, sample_id):
     bcftools_calls = sample.keys["vcf"] == keys_for(sample_id)["vcf"]
     annotated = _current_annotated_vcf(storage, sample) if bcftools_calls else None
     variants_key = annotated or sample.keys["vcf"]
-    size = settings.GEYSER_TABLE_ROWS
+    size = max(1, settings.GEYSER_TABLE_ROWS)  # never 0: the page arithmetic divides by it
     variants = read_variants(storage, variants_key, size, _page_offset(request, "vpage", size))
     if variants is not None and variants.total and not variants.rows:  # past the end (a stale link): the last page
         variants = read_variants(storage, variants_key, size, (variants.total - 1) // size * size)
