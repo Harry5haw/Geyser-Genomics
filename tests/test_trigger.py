@@ -133,7 +133,16 @@ def test_batch_job_names_still_fit(trigger):
     with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
         asl = fh.read()
     prefixes = re.findall(r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", asl)
-    assert prefixes == ["QualityControl", "AlignGenome", "DeepVariant", "PlanRegions", "CallVariants", "QualityGate"]
+    # AlignGenome twice: bwa-mem2 and giraffe (#146) name their align job the same way.
+    assert prefixes == [
+        "QualityControl",
+        "AlignGenome",
+        "AlignGenome",
+        "DeepVariant",
+        "PlanRegions",
+        "CallVariants",
+        "QualityGate",
+    ]
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
     for prefix in prefixes:
