@@ -344,3 +344,138 @@ def test_gene_names_resolve_to_ensembl_ids(tmp_path):
     assert ev.gene_ids("PARAL1", table) == {"ENSG01"}
     assert ev.gene_ids("ENSG07.2", table) == {"ENSG07"}
     assert ev.gene_ids("UNKNOWN", table) == set()
+
+
+# --- DeLong's paired test and Holm --------------------------------------------------------------------------------
+
+
+def _delong_direct(pos_a, neg_a, pos_b, neg_b):
+    """DeLong 1988 written out with the O(m*n) kernel psi(x, y) = 1 if x > y, 1/2 if equal: an independent check."""
+
+    def psi(x, y):
+        return 1.0 if x > y else 0.5 if x == y else 0.0
+
+    def comps(pos, neg):
+        v10 = [sum(psi(x, y) for y in neg) / len(neg) for x in pos]
+        v01 = [sum(psi(x, y) for x in pos) / len(pos) for y in neg]
+        return sum(v10) / len(v10), v10, v01
+
+    def cov(a, b):
+        ma, mb = sum(a) / len(a), sum(b) / len(b)
+        return sum((x - ma) * (y - mb) for x, y in zip(a, b, strict=True)) / (len(a) - 1)
+
+    aa, v10a, v01a = comps(pos_a, neg_a)
+    ab, v10b, v01b = comps(pos_b, neg_b)
+    var = (cov(v10a, v10a) + cov(v10b, v10b) - 2 * cov(v10a, v10b)) / len(pos_a) + (
+        cov(v01a, v01a) + cov(v01b, v01b) - 2 * cov(v01a, v01b)
+    ) / len(neg_a)
+    return aa, ab, var
+
+
+def _paired_data(rng, m, n, shift_a, shift_b, rho=0.5, rounding=None):
+    """Positives shifted by shift_a/shift_b in scores A/B, controls not; A and B correlated (rho) through a shared
+    component. rounding creates ties."""
+
+    def draw(shift):
+        shared = rng.gauss(0, 1)
+        a = shift[0] + rho**0.5 * shared + (1 - rho) ** 0.5 * rng.gauss(0, 1)
+        b = shift[1] + rho**0.5 * shared + (1 - rho) ** 0.5 * rng.gauss(0, 1)
+        return (round(a, rounding), round(b, rounding)) if rounding is not None else (a, b)
+
+    pos = [draw((shift_a, shift_b)) for _ in range(m)]
+    neg = [draw((0.0, 0.0)) for _ in range(n)]
+    return [a for a, _ in pos], [a for a, _ in neg], [b for _, b in pos], [b for _, b in neg]
+
+
+def test_midranks_average_ties():
+    assert ev.midranks([10, 20, 20, 5]) == [2.0, 3.5, 3.5, 1.0]
+
+
+def test_delong_matches_the_direct_formula_with_ties():
+    rng = random.Random(11)
+    pa, na, pb, nb = _paired_data(rng, 40, 70, 0.8, 0.4, rounding=1)
+    res = ev.delong_paired(pa, na, pb, nb)
+    aa, ab, var = _delong_direct(pa, na, pb, nb)
+    assert res["auc_a"] == pytest.approx(aa) and res["auc_b"] == pytest.approx(ab)
+    assert res["auc_a"] == pytest.approx(ev.auroc(pa, na))
+    assert res["se"] ** 2 == pytest.approx(var)
+
+
+def test_delong_symmetry_and_degenerate_cases():
+    rng = random.Random(12)
+    pa, na, pb, nb = _paired_data(rng, 30, 30, 0.7, 0.3)
+    ab, ba = ev.delong_paired(pa, na, pb, nb), ev.delong_paired(pb, nb, pa, na)
+    assert ab["delta"] == pytest.approx(-ba["delta"]) and ab["p"] == pytest.approx(ba["p"])
+    same = ev.delong_paired(pa, na, pa, na)
+    assert same["delta"] == 0 and same["p"] == 1.0
+    monotone = ev.delong_paired(pa, na, [3 * x + 1 for x in pa], [3 * x + 1 for x in na])  # AUROC is rank-only
+    assert monotone["delta"] == pytest.approx(0) and monotone["p"] == pytest.approx(1.0)
+    with pytest.raises(ValueError):
+        ev.delong_paired(pa, na, pb[:-1], nb)
+    assert ev.delong_paired([1], [0, 1], [1], [0, 1]) is None
+
+
+def test_delong_is_calibrated_under_the_null_and_has_power():
+    rng = random.Random(13)
+    null_p = [ev.delong_paired(*_paired_data(rng, 60, 120, 0.6, 0.6))["p"] for _ in range(300)]
+    assert 0.02 <= sum(p < 0.05 for p in null_p) / len(null_p) <= 0.09
+    strong = ev.delong_paired(*_paired_data(rng, 200, 400, 1.5, 0.2))
+    assert strong["delta"] > 0.2 and strong["p"] < 1e-6
+
+
+def test_delong_se_agrees_with_the_bootstrap():
+    rng = random.Random(14)
+    pa, na, pb, nb = _paired_data(rng, 150, 300, 0.9, 0.5)
+    se = ev.delong_paired(pa, na, pb, nb)["se"]
+    boot = random.Random(15)
+    deltas = []
+    for _ in range(400):
+        ip = [boot.randrange(len(pa)) for _ in pa]
+        jn = [boot.randrange(len(na)) for _ in na]
+        deltas.append(
+            ev.auroc([pa[i] for i in ip], [na[j] for j in jn]) - ev.auroc([pb[i] for i in ip], [nb[j] for j in jn])
+        )
+    mean = sum(deltas) / len(deltas)
+    boot_se = (sum((d - mean) ** 2 for d in deltas) / (len(deltas) - 1)) ** 0.5
+    assert se == pytest.approx(boot_se, rel=0.15)
+    assert ev.delong_variance(pa, na) > 0
+
+
+def test_holm_worked_example():
+    assert ev.holm([0.01, 0.04, 0.03]) == pytest.approx([0.03, 0.06, 0.06])
+    assert ev.holm([0.5, None, 0.01]) == pytest.approx([0.5, None, 0.02])
+    assert ev.holm([0.6, 0.7]) == pytest.approx([1.0, 1.0])  # capped at 1
+
+
+def test_end_to_end_delong_with_the_tss_baseline_on_af_only_matching(synthetic, tmp_path):
+    result, md = run(
+        synthetic,
+        tmp_path,
+        "--tss",
+        synthetic["tss"],
+        "--af",
+        synthetic["af"],
+        "--match",
+        "af",
+        "--score",
+        "rna_lfc:abs",
+        "--score",
+        "neg_tss_distance",
+        "--score",
+        "avi",
+        "--delong",
+    )
+    assert result["match"] == "af" and result["matched_on"] == ["allele frequency"]
+    names = [c["b"] for c in result["comparisons"]]
+    assert names == ["neg_tss_distance", "avi"]
+    for c in result["comparisons"]:
+        assert c["a"] == "rna_lfc:abs" and c["positives"] == 60 and c["p_holm"] >= c["p"]
+        assert c["delta"] > 0  # the synthetic eQTLs are defined by |LFC|
+    assert "**Paired comparisons** (DeLong" in md
+
+
+def test_tss_baseline_and_tss_matching_need_a_tss_table(synthetic, tmp_path, capsys):
+    base = ["--annotated", synthetic["annotated"], "--eqtl", synthetic["eqtl"][0]]
+    assert ev.main([*base, "--score", "neg_tss_distance"]) == 1
+    assert ev.main([*base, "--match", "tss"]) == 1
+    assert "need --tss" in capsys.readouterr().err

@@ -36,9 +36,15 @@ interface contract (#207): for its TSV ``rna_lfc:abs`` then ``avi``; for its VCF
   controls are **not** matched on AF, and the report says so.
 - ``--run-record`` (optional): the annotate stage's run-record part (JSON), for API calls, time and cost.
 
+**Comparisons** (``--delong``): the primary score against each other score, by DeLong's paired test for correlated
+AUROCs (DeLong, DeLong & Clarke-Pearson 1988, Biometrics 44:837; fast form: Sun & Xu 2014, IEEE Signal Process Lett
+21:1389), on the positives and controls that have both scores, with Holm-adjusted p-values across the comparisons.
+``neg_tss_distance`` is a built-in baseline score (minus the distance to the nearest TSS; needs ``--tss``). To let it
+compete, match on allele frequency only: ``--match af``.
+
 **Controls**: the sample's calls that are in no credible set and are non-coding by bcftools csq (no protein-level
 consequence). Each positive gets up to ``--controls-per-case`` (default 5) controls from the same stratum
-(distance-to-TSS bin x AF bin, whichever are available), drawn without replacement with a fixed ``--seed``.
+(``--match``: distance-to-TSS bin x AF bin by default, whichever are available), drawn without replacement with a fixed ``--seed``.
 Positives with too few controls in their stratum are counted in the report.
 
 **Fetching the eQTL truth set** (not run by this script; do it only once the licence is confirmed, see the design
@@ -111,6 +117,8 @@ PROTEIN_LEVEL = {
     "stop_retained",
     "coding_sequence",
 }
+TSS_SCORE = "neg_tss_distance"  # built-in baseline: closer to a TSS ranks higher
+MATCH_CHOICES = ("auto", "tss+af", "tss", "af", "none")
 # Distance to the nearest TSS (bp) and allele frequency: bin upper bounds (the last bin is open-ended).
 TSS_BINS = [1_000, 5_000, 20_000, 100_000, 500_000]
 AF_BINS = [0.01, 0.05, 0.1, 0.25, 0.5]
@@ -367,6 +375,81 @@ def bootstrap_ci(pos_scores, neg_scores, n_boot, seed, level=0.95):
     return lo, hi
 
 
+def midranks(values):
+    """1-based ranks with ties given their average rank (the midrank)."""
+    order = sorted(range(len(values)), key=lambda i: values[i])
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    return ranks
+
+
+def _delong_components(pos, neg):
+    """AUROC and DeLong's structural components (V10 per positive, V01 per control), via midranks (Sun & Xu 2014)."""
+    m, n = len(pos), len(neg)
+    tz = midranks(list(pos) + list(neg))
+    tx, ty = midranks(list(pos)), midranks(list(neg))
+    auc = (sum(tz[:m]) / m - (m + 1) / 2) / n
+    v10 = [(tz[i] - tx[i]) / n for i in range(m)]  # P(positive i > a control), ties half
+    v01 = [1 - (tz[m + j] - ty[j]) / m for j in range(n)]  # P(control j < a positive), ties half
+    return auc, v10, v01
+
+
+def _cov(a, b):
+    k = len(a)
+    if k < 2:
+        return 0.0
+    ma, mb = sum(a) / k, sum(b) / k
+    return sum((x - ma) * (y - mb) for x, y in zip(a, b, strict=True)) / (k - 1)
+
+
+def delong_paired(pos_a, neg_a, pos_b, neg_b):
+    """DeLong's test for two correlated AUROCs: scores A and B on the same positives and the same controls (lists
+    aligned item by item). Returns auc_a, auc_b, delta (A - B), its standard error, z and the two-sided p-value."""
+    if len(pos_a) != len(pos_b) or len(neg_a) != len(neg_b):
+        raise ValueError("DeLong's paired test needs both scores on the same positives and controls")
+    if len(pos_a) < 2 or len(neg_a) < 2:
+        return None
+    auc_a, v10a, v01a = _delong_components(pos_a, neg_a)
+    auc_b, v10b, v01b = _delong_components(pos_b, neg_b)
+    m, n = len(pos_a), len(neg_a)
+    var = (_cov(v10a, v10a) + _cov(v10b, v10b) - 2 * _cov(v10a, v10b)) / m + (
+        _cov(v01a, v01a) + _cov(v01b, v01b) - 2 * _cov(v01a, v01b)
+    ) / n
+    delta = auc_a - auc_b
+    se = math.sqrt(var) if var > 0 else 0.0
+    if se == 0.0:
+        z, p = (0.0, 1.0) if delta == 0 else (math.copysign(math.inf, delta), 0.0)
+    else:
+        z = delta / se
+        p = math.erfc(abs(z) / math.sqrt(2))
+    return {"auc_a": auc_a, "auc_b": auc_b, "delta": delta, "se": se, "z": z, "p": p}
+
+
+def delong_variance(pos, neg):
+    """DeLong's variance of a single AUROC (for checks and CIs)."""
+    _, v10, v01 = _delong_components(pos, neg)
+    return _cov(v10, v10) / len(pos) + _cov(v01, v01) / len(neg)
+
+
+def holm(pvalues):
+    """Holm's step-down adjustment (monotone, capped at 1), in the input order. None entries stay None."""
+    idx = sorted((i for i, p in enumerate(pvalues) if p is not None), key=lambda i: pvalues[i])
+    k = len(idx)
+    out = [None] * len(pvalues)
+    running = 0.0
+    for rank, i in enumerate(idx):
+        running = max(running, min(1.0, (k - rank) * pvalues[i]))
+        out[i] = running
+    return out
+
+
 def match_controls(positives, candidates, stratum, per_case, seed):
     """Draw up to per_case controls per positive from candidates in the same stratum, without replacement.
     Returns (controls, positives short of controls)."""
@@ -441,6 +524,10 @@ def evaluate(args):
     args.flag = args.flag or defaults["flag"]
     flag = parse_flag(args.flag)
     names = sorted({n for n, _ in score_specs} | {flag[0]})
+    if args.match not in MATCH_CHOICES:
+        raise ValueError(f"--match must be one of {MATCH_CHOICES}")
+    if (TSS_SCORE in names or args.match in ("tss+af", "tss")) and not args.tss:
+        raise ValueError(f"{TSS_SCORE} and --match {args.match} need --tss")
 
     variants = read_annotated(args.annotated, columns, names)
     eqtls = read_eqtls(args.eqtl)
@@ -449,15 +536,23 @@ def evaluate(args):
     for v in variants:
         if v["af"] is None and v["key"] in af_table:
             v["af"] = af_table[v["key"]]
-        v["tss_bin"] = bin_of(tss_distance(tss, v["key"]), TSS_BINS) if tss else None
+        dist = tss_distance(tss, v["key"]) if tss else None
+        v["tss_bin"] = bin_of(dist, TSS_BINS)
         v["af_bin"] = bin_of(v["af"], AF_BINS)
+        if TSS_SCORE in names:
+            v["scores"][TSS_SCORE] = None if dist is None else -float(dist)
 
     positives = [v for v in variants if v["key"] in eqtls and eqtls[v["key"]][0] >= args.min_pip]
     candidates = [v for v in variants if v["key"] not in eqtls and not is_protein_level(v["csq"])]
     matched_on = []
-    if tss is not None:
+    match_tss = tss is not None and args.match in ("auto", "tss+af", "tss")
+    if match_tss:
         matched_on.append("distance to nearest TSS")
-    use_af = any(v["af"] is not None for v in positives) and any(v["af"] is not None for v in candidates)
+    use_af = (
+        args.match in ("auto", "tss+af", "af")
+        and any(v["af"] is not None for v in positives)
+        and any(v["af"] is not None for v in candidates)
+    )
     if use_af:
         matched_on.append("allele frequency")
         positives_af = [v for v in positives if v["af"] is not None]
@@ -468,7 +563,7 @@ def evaluate(args):
         dropped_no_af = 0
 
     def stratum(v):
-        return (v["tss_bin"] if tss is not None else None, v["af_bin"] if use_af else None)
+        return (v["tss_bin"] if match_tss else None, v["af_bin"] if use_af else None)
 
     controls, short = match_controls(positives, candidates, stratum, args.controls_per_case, args.seed)
 
@@ -495,6 +590,32 @@ def evaluate(args):
             entry["caveat"] = AVI_CONFOUND_MATCHED if use_af else AVI_CONFOUND
         scores.append(entry)
 
+    comparisons = []
+    if args.delong and len(score_specs) > 1:
+
+        def val(v, spec):
+            raw = v["scores"].get(spec[0])
+            return None if raw is None else (abs(raw) if spec[1] else raw)
+
+        primary = score_specs[0]
+        for other in score_specs[1:]:
+            pos = [(val(v, primary), val(v, other)) for v in positives]
+            neg = [(val(v, primary), val(v, other)) for v in controls]
+            pos = [x for x in pos if None not in x]
+            neg = [x for x in neg if None not in x]
+            res = delong_paired([a for a, _ in pos], [a for a, _ in neg], [b for _, b in pos], [b for _, b in neg])
+            comparisons.append(
+                {
+                    "a": scores[0]["score"],
+                    "b": other[0] + (":abs" if other[1] else ""),
+                    "positives": len(pos),
+                    "controls": len(neg),
+                    **(res or {"auc_a": None, "auc_b": None, "delta": None, "se": None, "z": None, "p": None}),
+                }
+            )
+        for c, adj in zip(comparisons, holm([c["p"] for c in comparisons]), strict=True):
+            c["p_holm"] = adj
+
     gene_agreement = None
     with_gene = [v for v in positives if v["gene"]]
     if with_gene:
@@ -520,6 +641,7 @@ def evaluate(args):
             "gene_names": args.gene_names,
         },
         "min_pip": args.min_pip,
+        "match": args.match,
         "matched_on": matched_on or ["nothing (no TSS table, no allele frequencies)"],
         "af_matched": use_af,
         "controls_per_case": args.controls_per_case,
@@ -534,6 +656,7 @@ def evaluate(args):
             "positives_short_of_controls": short,
         },
         "scores": scores,
+        "comparisons": comparisons,
         "gene_agreement": gene_agreement,
         "overlap": {"flag": args.flag, **overlap_table(variants, flag)},
         "coverage": {
@@ -573,6 +696,20 @@ def to_markdown(result):
             f"{s['positives_scored']} ({s['positives_missing']} missing) | "
             f"{s['controls_scored']} ({s['controls_missing']} missing) |"
         )
+    if result.get("comparisons"):
+        lines += [
+            "",
+            "**Paired comparisons** (DeLong; Holm-adjusted across the comparisons; same positives and controls):",
+            "",
+            "| Primary | vs | AUROC primary | AUROC other | Δ | SE | z | p | p (Holm) | n pos / ctrl |",
+            "| :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+        for cmp in result["comparisons"]:
+            lines.append(
+                f"| `{cmp['a']}` | `{cmp['b']}` | {fmt(cmp['auc_a'])} | {fmt(cmp['auc_b'])} | {fmt(cmp['delta'])} | "
+                f"{fmt(cmp['se'])} | {fmt(cmp['z'], 2)} | {fmt(cmp['p'], 4)} | {fmt(cmp['p_holm'], 4)} | "
+                f"{cmp['positives']} / {cmp['controls']} |"
+            )
     caveats = [s["caveat"] for s in result["scores"] if s.get("caveat")]
     if caveats:
         lines += ["", f"**Caveat:** {caveats[0]}"]
@@ -638,6 +775,17 @@ def main(argv=None):
     p.add_argument("--controls-per-case", type=int, default=5)
     p.add_argument("--bootstrap", type=int, default=1000)
     p.add_argument("--seed", type=int, default=20261104)
+    p.add_argument(
+        "--match",
+        default="auto",
+        choices=MATCH_CHOICES,
+        help="what controls are matched on (auto: TSS distance and AF, whichever are given)",
+    )
+    p.add_argument(
+        "--delong",
+        action="store_true",
+        help="compare the primary score with each other score (DeLong paired test, Holm-adjusted)",
+    )
     p.add_argument("--out-json")
     p.add_argument("--out-md")
     args = p.parse_args(argv)
