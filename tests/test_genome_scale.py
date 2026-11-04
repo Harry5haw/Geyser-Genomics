@@ -355,3 +355,33 @@ def test_the_large_route_stages_are_tasks():
         "align_chunk": True,
         "align_merge": True,
     }
+
+
+# --- run_local's large route ------------------------------------------------------------------------------------
+
+
+def test_run_local_runs_the_large_route_instead_of_align():
+    import run_local
+
+    jobs = run_local.pipeline_jobs("S1", REF, chunks=3, gate=True)
+    names = [j["name"] for j in jobs]
+    assert names == ["qc", "preflight", "align_chunk", "align_chunk", "align_chunk", "align_merge", "variants", "gate"]
+    assert jobs[1]["cmd"] == ["python", "tasks.py", "preflight", "S1", "--chunks", "3"]
+    assert [j["cmd"][-1] for j in jobs if j["name"] == "align_chunk"] == ["0", "1", "2"]
+    assert jobs[5]["cmd"] == ["python", "tasks.py", "align_merge", "S1", REF]
+    assert "align" not in names and [j["name"] for j in run_local.pipeline_jobs("S1", REF)][:2] == ["qc", "align"]
+
+
+@pytest.mark.parametrize("argv", [["--chunks", "0"], ["--chunks", "1000"], ["--chunks", "2", "--skip-to-variants"]])
+def test_run_local_rejects_bad_chunk_options(argv, tmp_path):
+    import run_local
+
+    with pytest.raises(SystemExit) as err:
+        run_local.main(["--root", str(tmp_path), *argv])
+    assert err.value.code == 2
+
+
+def test_run_local_passes_the_streaming_switch():
+    import run_local
+
+    assert "GEYSER_STREAM_REGIONS" in run_local.PIPELINE_ENV_VARS

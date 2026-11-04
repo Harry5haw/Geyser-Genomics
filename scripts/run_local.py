@@ -111,6 +111,7 @@ PIPELINE_ENV_VARS = (
     "ANNOTATE",
     "GATE_MODE",
     "GATE_CONFIG",
+    "GEYSER_STREAM_REGIONS",  # 0: calling shards download the CRAM instead of reading their region in place
 )
 ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
 # The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
@@ -186,6 +187,7 @@ def pipeline_jobs(
     gate_config=None,
     align_image=None,
     align_env=None,
+    chunks=None,
 ):
     """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome, env).
 
@@ -227,6 +229,9 @@ def pipeline_jobs(
             job["image"] = align_image or app_image
             if align_env:
                 job["env"] = dict(align_env)
+            if chunks:  # v1.4's large route, as the state machine runs it: check and split, align each chunk, merge
+                jobs += large_route_jobs(sample_id, reference_name, chunks, job["image"], job.get("env"))
+                continue
         jobs.append(job)
     # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
     # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
@@ -269,6 +274,20 @@ def pipeline_jobs(
             job["env"] = {"GATE_CONFIG": gate_config}
         jobs.append(job)
     return jobs
+
+
+def large_route_jobs(sample_id, reference_name, chunks, image, env=None):
+    """preflight --chunks N, align_chunk --chunk 0..N-1, align_merge: the large route's align (one RUN_NAME for all)."""
+
+    def job(name, cmd):
+        return {"name": name, "cmd": cmd, "image": image, "gpus": False, **({"env": dict(env)} if env else {})}
+
+    base = ["python", "tasks.py"]
+    jobs = [job("preflight", base + ["preflight", sample_id, "--chunks", str(chunks)])]
+    jobs += [
+        job("align_chunk", base + ["align_chunk", sample_id, reference_name, "--chunk", str(i)]) for i in range(chunks)
+    ]
+    return jobs + [job("align_merge", base + ["align_merge", sample_id, reference_name])]
 
 
 def reference_problem(root, reference_name):
@@ -566,6 +585,12 @@ def main(argv=None):
         help="scatter-gather variant calling: one bcftools job per region of BP bases, then a merge into the "
         "usual VCF (what the Map state will run; #108). Default: one variants job",
     )
+    p.add_argument(
+        "--chunks",
+        type=int,
+        metavar="N",
+        help="align through v1.4's large route: preflight into N chunks, align each, merge (default: one align job)",
+    )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     p.add_argument("--no-gate", action="store_true", help="skip the quality gate after variant calling")
     p.add_argument(
@@ -575,6 +600,10 @@ def main(argv=None):
         "default: synthetic for make_test_data.py samples, else the built-in human WGS thresholds",
     )
     a = p.parse_args(argv)
+    if a.chunks is not None and not 1 <= a.chunks <= 999:
+        p.error("--chunks must be 1-999")
+    if a.chunks and a.skip_to_variants:
+        p.error("--chunks aligns; it can't be combined with --skip-to-variants")
     if a.shard_window is not None and a.shard_window < 1:
         p.error("--shard-window must be >= 1")
 
@@ -625,6 +654,7 @@ def main(argv=None):
             gate_config=gate_config_for(a.root, sample_id, a.runner, a.gate_profile),
             align_image=align_image,
             align_env=align_env,
+            chunks=a.chunks,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:
