@@ -39,8 +39,41 @@
     };
     setTimeout(tick, every);
   };
-  const start = () => document.querySelectorAll("[data-poll]").forEach(poll);
-  // A page prerendered by the speculation rules doesn't poll until it is shown.
+  // 3D figures (/figures/): each shows its inline-SVG poster first. The renderer (surface.js, once) and the
+  // figure's grid load only when it scrolls into view or "Rotate in 3D" is pressed; on any failure (no WebGL,
+  // offline) the poster simply stays.
+  let renderer;
+  const surface = (fig) => {
+    if (fig.dataset.started) return;
+    fig.dataset.started = "1";
+    renderer = renderer || new Promise((ok, fail) => {
+      const s = document.createElement("script");
+      s.src = fig.dataset.surfaceJs;
+      s.onload = () => ok(window.GeyserSurface);
+      s.onerror = fail;
+      document.head.append(s);
+    });
+    Promise.all([renderer, fetch(fig.dataset.surface).then((r) => (r.ok ? r.json() : Promise.reject(r.status)))])
+      .then(([lib, data]) => lib.mount(fig, data))
+      .catch(() => fig.classList.add("no3d"));
+  };
+  const figures = () => {
+    const io = "IntersectionObserver" in window &&
+      new IntersectionObserver((entries) => entries.forEach((e) => {
+        if (e.isIntersecting) { io.unobserve(e.target); surface(e.target); }
+      }), { rootMargin: "120px" });
+    document.querySelectorAll("[data-surface]").forEach((fig) => {
+      if (io) io.observe(fig);
+      const button = fig.querySelector("[data-surface-start]");
+      if (button) button.addEventListener("click", () => surface(fig));
+    });
+  };
+
+  const start = () => {
+    document.querySelectorAll("[data-poll]").forEach(poll);
+    figures();
+  };
+  // A page prerendered by the speculation rules doesn't poll or load 3D until it is shown.
   if (document.prerendering) document.addEventListener("prerenderingchange", start, { once: true });
   else start();
 

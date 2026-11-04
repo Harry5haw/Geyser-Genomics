@@ -11,6 +11,7 @@
     {% for st in stages %}<b class="s-{{ st.name }}">{{ st.label }}</b><i>→</i>{% endfor %}
     <b>variants/*.vcf.gz</b>
   </p>
+  <p><a href="{% url 'samples:figures' %}">See the project's results in 3D →</a></p>
 </section>
 
 <section class="actions">
