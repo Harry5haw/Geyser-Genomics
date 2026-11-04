@@ -107,7 +107,12 @@ def test_the_poster_resamples_long_rows(figdir):
 def test_grid_json_is_what_the_renderer_reads(figdir):
     data = json.loads(figures.grid_json(figures.load("quality")))
     assert set(data) == {"title", "x", "rows", "z", "values"}
-    assert data["x"] == {"label": "Sequencing cycle", "unit": "cycle", "values": [1, 2, 3]}
+    assert data["x"] == {
+        "label": "Sequencing cycle",
+        "unit": "cycle",
+        "values": [1, 2, 3],
+        "ticks": [],
+    }  # evenly spaced
     assert data["rows"]["names"] == ["S1 R1", "S1 R2"]
     assert data["z"]["base"] == 32 and data["z"]["unit"] == "Phred" and data["z"]["clip"] is None
     assert data["values"][1] == [35.0, 34.8, 33.5]
@@ -185,3 +190,52 @@ def test_the_renderer_stays_small():
     assert "textContent" in text and "innerHTML" not in both.decode()  # labels from CSV headers are never HTML
     assert "Math.min(2, window.devicePixelRatio" in text  # DPR capped at 2
     assert "transferControlToOffscreen" in text and "WorkerGlobalScope" in webgl.decode()  # WebGL off the main thread
+
+
+# ------------------------------------------------------------------ DeepVariant batch × shards (#216)
+
+DV = (
+    "batch_size,shards,runs,succeeded,stage_s,make_examples_s,call_variants_s\n"
+    "128,4,1,1,807.6,657.2,102.0\n256,4,1,1,849.6,695.4,104.9\n1024,4,1,1,962.9,778.6,131.2\n"
+    "128,16,1,1,500.9,350.3,107.2\n256,16,2,2,479.4,333.4,104.8\n1024,16,1,1,493.3,326.8,127.8\n"
+)
+
+
+def test_dv_grids_put_batch_size_on_a_log2_axis_with_named_ticks(figdir):
+    (figdir / "dv-batch-shards.csv").write_bytes(DV.encode())
+    stage, call = figures.load("dv-stage"), figures.load("dv-call")
+    assert stage.rows == ["4 shards", "16 shards"]
+    assert stage.x == [7.0, 8.0, 10.0]  # log2(128, 256, 1024): evenly spaced doublings
+    assert stage.x_ticks == [(7.0, "128"), (8.0, "256"), (10.0, "1024")]
+    assert stage.values[0][0] == round(807.6 / 60, 3)  # minutes
+    assert call.values[1] == [107.2, 104.8, 127.8]  # seconds, the GPU step alone
+    data = json.loads(figures.grid_json(stage))
+    assert data["x"]["ticks"] == [[7.0, "128"], [8.0, "256"], [10.0, "1024"]]
+
+
+def test_dv_cards_state_the_gpu_nondeterminism(client, figdir):
+    (figdir / "dv-batch-shards.csv").write_bytes(DV.encode())
+    body = client.get("/figures/").content.decode()
+    assert body.count("differ by up to ±2 between cells (GPU nondeterminism") == 2
+    assert 'data-surface="/figures/dv-stage.json"' in body and 'data-surface="/figures/dv-call.json"' in body
+    assert ">1024</text>" in body  # the poster's ticks are the batch sizes, not log2 values
+    assert "2 shard settings × 3 points" in body and "shardss" not in body
+
+
+def test_a_missing_csv_without_a_pending_message_says_so(client, figdir):
+    body = client.get("/figures/").content.decode()
+    assert "No data yet: dv-batch-shards.csv" in body
+
+
+def test_the_committed_dv_grid_loads(settings):
+    settings.GEYSER_FIGURES_DIR = settings.REPO_ROOT / "docs" / "figures" / "csv"
+    figures._load.cache_clear()
+    grid = figures.load("dv-stage")
+    figures._load.cache_clear()
+    assert grid.rows == ["4 shards", "8 shards", "16 shards"] and [t[1] for t in grid.x_ticks] == [
+        "128",
+        "256",
+        "512",
+        "1024",
+    ]
+    assert all(v is not None for line in grid.values for v in line)  # 12 cells, all succeeded

@@ -85,7 +85,9 @@
     for (let k = 1; k < 4; k++) l([-1 + k / 2, 0, -D], [-1 + k / 2, 0, D]);
     for (let k = 1; k <= 2; k++) l([-1, (H * k) / 2, -D], [1, (H * k) / 2, -D]);
     const labels = [];
-    for (let k = 0; k <= 4; k++) labels.push({ p: [-1 + k / 2, 0, D + 0.14], text: `${+(x0 + ((x1 - x0) * k) / 4).toPrecision(3)}` });
+    const ticks = data.x.ticks && data.x.ticks.length ? data.x.ticks // named positions (batch sizes on a log2 axis)
+      : [0, 1, 2, 3, 4].map((k) => [x0 + ((x1 - x0) * k) / 4, `${+(x0 + ((x1 - x0) * k) / 4).toPrecision(3)}`]);
+    for (const [v, text] of ticks) labels.push({ p: [wx(v), 0, D + 0.14], text });
     labels.push({ p: [0, 0, D + 0.32], text: `${data.x.label} (${data.x.unit})`, cls: "axis" });
     for (let k = 0; k <= 2; k++) labels.push({ p: [-1.06, (H * k) / 2, -D], text: fmt(base + (span * k) / 2), cls: "z" });
     labels.push({ p: [-1, H + 0.12, -D], text: `${data.z.label} (${data.z.unit})`, cls: "axis" });
@@ -143,7 +145,7 @@
     const HOME = { yaw: -0.55, pitch: 0.5, dist: 3.3 };
     const view = { ...HOME };
     let matrix = null, frame = 0, cursor = null, W = 1, Hpx = 1; // the stage's size, read once per draw
-    const at = [0, H / 3, 0];
+    const at = [0, H * 0.2, 0.12]; // a little below and in front of the centre: the front floor edge and its ticks stay in the box
 
     const project = (p) => {
       const m = matrix, x = p[0], y = p[1], z = p[2];
@@ -185,11 +187,13 @@
       const strong = document.createElement("strong");
       strong.textContent = `${fmt(v)} ${data.z.unit}` + (v > g.top ? ` (drawn at the ${fmt(g.top)} cap)` : "");
       const small = document.createElement("span");
-      small.textContent = `${g.rows[pt.row]} · ${data.x.label} ${g.xs[pt.col]} ${data.x.unit}`;
+      const tick = (data.x.ticks || []).find((t) => t[0] === g.xs[pt.col]); // a named position reads as its name
+      small.textContent = `${g.rows[pt.row]} · ${data.x.label} ${tick ? tick[1] : `${g.xs[pt.col]} ${data.x.unit}`}`;
       readout.replaceChildren(strong, small);
     };
     const nearest = (mx, my) => {
-      let best = null, bestD = 24 * 24; // a 24 px hit radius: the reader only has to be closest
+      const r = g.points.length < 100 ? 64 : 24; // the reader only has to be closest; sparse grids get a wider reach
+      let best = null, bestD = r * r;
       for (const pt of g.points) {
         const [x, y] = project(pt.p), d = (x - mx) ** 2 + (y - my) ** 2;
         if (d < bestD) { bestD = d; best = pt; }
