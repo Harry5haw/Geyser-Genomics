@@ -114,7 +114,17 @@ batch 256 of RP-1's amendment A1 is for that study only.
   above, another run's examples never used, a failed GPU step named, the CLI and `run_local.py`.
 - **Docker** (`tests/test_e2e_deepvariant.py::test_split_deepvariant_matches_the_single_job`, opt-in): synthetic
   sample, 2 parts in the CPU image, then the GPU job. 10/10 planted SNPs, a complete run record, gate PASS.
-- **Local GPU, real data:** HG003 chr20 35x, 2 parts × 8 tasks, then the GPU job. Results in the PR.
+- **Local GPU, real data** (4 Nov 2026): HG003 chr20 35x, 2 parts × 8 tasks (16 in all), then the GPU job at DeepVariant's
+  defaults (batch 1,024), on an RTX 3080.
+  - **The same examples as the single job:** 39,978 + 39,781 = **79,759**, exactly the count of every 16-shard single
+    job in the batch × shards grid (#216).
+  - **Calls:** PASS 85,652 SNPs, 19,883 indels, 105,402 records. That's inside the single jobs' run-to-run range
+    (85,652-85,653 / 19,883-19,884 / 105,402-105,404), which comes from GPU inference noise.
+  - **Parts:** 268 s and 256 s (`make_examples` 241 s and 230 s), peak RSS about 1.1 GB each.
+  - **The GPU job:** 167.5 s (`call_variants` 130 s, `postprocess_variants` 21 s), GPU 28.8% busy in `call_variants`,
+    9.5 GB of VRAM.
+  - **Sizing:** the GPU job peaked at **11.4 GB of host memory** (TensorFlow at batch 1,024), so it needs a memory
+    limit of 14 GB or more. The parts fit in a few GB.
 
 ## Locally
 
