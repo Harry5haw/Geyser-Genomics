@@ -19,23 +19,14 @@ SPECULATION = re.compile(r'<script type="speculationrules">(.*?)</script>', re.S
 HEADER = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tsample\n"
 
 
-def big_sample(storage, calls=1500, scored=120):
-    """A finished sample with a long VCF and a long AlphaGenome table, as the slowest real page has."""
+def big_sample(storage, calls=1500):
+    """A finished sample with a long VCF, as the slowest real page has."""
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     put(storage, "qc_reports/S1.fastp.html", b"<html></html>")
     put(storage, "qc_reports/S1.fastp.json", json.dumps(FASTP_SINGLE))
     put(storage, "alignments/S1.cram", b"x")
     records = "".join(f"synth1\t{1000 + 37 * i}\t.\tA\tG\t99.5\t.\tDP=30\tGT\t0/1\n" for i in range(calls))
     put(storage, "variants/S1.vcf.gz", gz((HEADER + records).encode()))
-    rows = "".join(
-        f"{i + 1}\tsynth1\t{1000 + 37 * i}\tA\tG\tsnv\t99.5\t{40 - i * 0.2:.2f}\t0.5\tRNA_SEQ:liver\tSYNTHG{i}\t0.3\tupstream\tatlas\n"
-        for i in range(scored)
-    )
-    put(
-        storage,
-        "stats/S1/alphagenome.tsv",
-        "rank\tchrom\tpos\tref\talt\tkind\tqual\tavi\tavi_raw\ttop_track\tgene\trna_lfc\tcsq\tsource\n" + rows,
-    )
 
 
 def speculation_rules(body: str) -> dict:
@@ -153,20 +144,19 @@ def test_the_first_page_of_calls_is_inline_and_the_rest_are_links(client, storag
     big_sample(storage)
     body = client.get("/samples/S1/").content.decode()
     assert "1500 calls" in body and "1–50 of 1500 calls" in body
-    assert body.count("<td>synth1</td>") == 100  # 50 calls + 50 scored variants
+    assert body.count("<td>synth1</td>") == 50
     assert 'href="/samples/S1/?vpage=2#variants" rel="next"' in body
-    assert 'rel="prev"' not in body.split('id="alphagenome"')[0]
+    assert 'rel="prev"' not in body
 
 
 def test_a_later_page_and_its_neighbours(client, storage, settings):
     settings.GEYSER_TABLE_ROWS = 50
     big_sample(storage)
-    body = client.get("/samples/S1/?vpage=3&avi=asc").content.decode()
-    variants = body.split('id="alphagenome"')[0]
-    assert "101–150 of 1500 calls" in variants
-    assert f'<td class="num">{1000 + 37 * 100}</td>' in variants  # call 101 starts the page
-    assert 'href="/samples/S1/?vpage=2&amp;avi=asc#variants" rel="prev"' in variants  # other settings kept
-    assert 'href="/samples/S1/?vpage=4&amp;avi=asc#variants" rel="next"' in variants
+    body = client.get("/samples/S1/?vpage=3&view=x").content.decode()
+    assert "101–150 of 1500 calls" in body
+    assert f'<td class="num">{1000 + 37 * 100}</td>' in body  # call 101 starts the page
+    assert 'href="/samples/S1/?vpage=2&amp;view=x#variants" rel="prev"' in body  # other parameters kept
+    assert 'href="/samples/S1/?vpage=4&amp;view=x#variants" rel="next"' in body
 
 
 def test_page_two_links_back_to_the_plain_url(client, storage, settings):
@@ -185,21 +175,9 @@ def test_out_of_range_pages_show_a_real_page(client, storage, settings, page):
     assert expected in body
 
 
-def test_the_alphagenome_table_pages_on_its_own(client, storage, settings):
-    settings.GEYSER_TABLE_ROWS = 50
-    big_sample(storage)
-    body = client.get("/samples/S1/?agpage=2").content.decode()
-    scored = body.split('id="alphagenome"')[1]
-    assert "51–100 of 120 scored variants, by AVI" in scored
-    assert 'href="/samples/S1/?agpage=3#alphagenome" rel="next"' in scored
-    assert "1–50 of 1500 calls" in body  # the variant table stays on its first page
-    # Re-sorting starts from the first page.
-    assert 'href="/samples/S1/?avi=asc#alphagenome"' in scored
-
-
 def test_short_tables_have_no_pager(client, storage, settings):
     settings.GEYSER_TABLE_ROWS = 50
-    big_sample(storage, calls=10, scored=5)
+    big_sample(storage, calls=10)
     assert 'class="pager"' not in client.get("/samples/S1/").content.decode()
 
 
