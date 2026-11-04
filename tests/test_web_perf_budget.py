@@ -77,6 +77,10 @@ def test_the_workflow_measures_both_pages_with_pinned_tools():
         workflow = fh.read()
     assert "@lhci/cli@0.16.0" in workflow and "@lhci/cli@latest" not in workflow
     assert 'DJANGO_DEBUG: "0"' in workflow  # production mode, not the dev server's DEBUG
+    # As users get it once W1 is in (dev.py --production: collectstatic's hashed, compressed assets); before that,
+    # runserver with DEBUG off.
+    assert "web/dev.py --production --no-worker --root local_bucket --port 8000" in workflow
+    assert "manage.py runserver 127.0.0.1:8000 --noreload" in workflow
     with open(os.path.join(REPO_ROOT, "lighthouserc.json"), encoding="utf-8") as fh:
         urls = json.load(fh)["ci"]["collect"]["url"]
     assert urls == [LIST, DETAIL]

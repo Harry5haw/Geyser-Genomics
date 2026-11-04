@@ -63,8 +63,9 @@ jobs:
           python scripts/make_test_data.py --root local_bucket
           python scripts/run_local.py --root local_bucket --sample SYNTH001 --reference synthetic_ref.fa --check
 
-      # Production mode: DEBUG off (web/dev.py always turns it on), a throwaway secret key, static files from
-      # WhiteNoise, and no worker (nothing is uploaded). runserver is only the HTTP front end here.
+      # Production mode, as users get it: `web/dev.py --production` (W1, #214) turns DEBUG off and serves
+      # collectstatic's hashed, precompressed, immutable assets. Before it exists, the fallback is runserver with
+      # DEBUG off and WhiteNoise serving the plain static files. Either way a throwaway key and no worker.
       - name: Start the web UI (DEBUG off)
         env:
           DJANGO_DEBUG: "0"
@@ -72,7 +73,14 @@ jobs:
           LOCAL_STORAGE_DIR: ${{ github.workspace }}/local_bucket
         run: |
           export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
-          nohup python web/manage.py runserver 127.0.0.1:8000 --noreload > web-server.log 2>&1 &
+          if python web/dev.py --help | grep -q -- "--production"; then
+            mode="web/dev.py --production (collectstatic: hashed, compressed, immutable assets)"
+            nohup python web/dev.py --production --no-worker --root local_bucket --port 8000 > web-server.log 2>&1 &
+          else
+            mode="manage.py runserver, DEBUG off (plain static files; dev.py has no --production yet)"
+            nohup python web/manage.py runserver 127.0.0.1:8000 --noreload > web-server.log 2>&1 &
+          fi
+          echo "Server: $mode" | tee -a "$GITHUB_STEP_SUMMARY"
           for url in http://127.0.0.1:8000/ http://127.0.0.1:8000/samples/SYNTH001/; do
             for i in $(seq 1 30); do curl -fsS -o /dev/null "$url" && break; sleep 1; done
             curl -fsS -o /dev/null "$url" || { cat web-server.log; exit 1; }
