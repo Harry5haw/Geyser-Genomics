@@ -63,6 +63,32 @@ def test_a_static_root_without_collectstatic_still_serves_pages(client, storage,
     assert 'src="/static/samples/geyser.js"' in resp.content.decode()
 
 
+def test_a_file_missing_from_a_stale_manifest_is_served_plain(client, storage, tmp_path):
+    # Collected before geyser.js existed (simulated: its manifest entry removed). Hashing it on the fly would name a
+    # file collectstatic never wrote (a 404); the plain name loads from the app folders instead.
+    from django.test import override_settings
+
+    root = tmp_path / "static"
+    with override_settings(
+        DEBUG=False,
+        STATIC_ROOT=root,
+        STORAGES={"staticfiles": {"BACKEND": "geyser_web.static_storage.ForgivingManifestStaticFilesStorage"}},
+    ):
+        call_command("collectstatic", interactive=False, verbosity=0)
+        manifest = json.loads((root / "staticfiles.json").read_text(encoding="utf-8"))
+        del manifest["paths"]["samples/geyser.js"]
+        (root / "staticfiles.json").write_text(json.dumps(manifest), encoding="utf-8")
+        from django.contrib.staticfiles.storage import staticfiles_storage
+
+        staticfiles_storage.hashed_files, _ = staticfiles_storage.load_manifest()  # (paths, manifest hash)
+        body = client.get("/").content.decode()
+        assert 'src="/static/samples/geyser.js"' in body
+        assert re.search(r'src="/static/samples/geyser-mark\.[0-9a-f]{12}\.png"', body)  # the rest stay hashed
+        asset = client.get("/static/samples/geyser.js")
+        assert asset.status_code == 200
+        asset.close()
+
+
 def test_a_zero_page_size_is_treated_as_one(client, storage, settings):
     settings.GEYSER_TABLE_ROWS = 0
     big_sample(storage, calls=3)
