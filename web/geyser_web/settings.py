@@ -71,11 +71,16 @@ MESSAGE_STORAGE = "django.contrib.messages.storage.cookie.CookieStorage"
 STATIC_URL = "static/"
 STATIC_ROOT = os.environ.get("DJANGO_STATIC_ROOT") or None  # only needed for collectstatic
 WHITENOISE_USE_FINDERS = True  # serve app static files without a collectstatic step (development)
-# After collectstatic (DEBUG off): content-hashed names (geyser.<hash>.js), precompressed .gz/.br copies, and
-# WhiteNoise serves the hashed files with "Cache-Control: max-age=315360000, public, immutable". With DEBUG on,
-# the plain names are used, so no collectstatic is needed while developing.
+# With a STATIC_ROOT (set it, then run collectstatic once per release; dev.py --production does both):
+# content-hashed names (geyser.<hash>.js), precompressed .gz (and .br with the brotli package) copies, and
+# WhiteNoise serves the hashed files with "Cache-Control: max-age=315360000, public, immutable". Without one,
+# plain names straight from the app folders, so nothing needs collecting (development, a quick DEBUG-off run).
 STORAGES = {
-    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"
+        if STATIC_ROOT
+        else "django.contrib.staticfiles.storage.StaticFilesStorage"
+    },
 }
 
 LANGUAGE_CODE = "en-gb"

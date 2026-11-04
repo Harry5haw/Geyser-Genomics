@@ -76,7 +76,9 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert "1 unexpected call" in body
     assert body.count('class="planted"') == 2
     assert "Variants" in body and "3 calls" in body
-    assert 'href="/samples/S1/files/qc_html/?inline=1" target="_blank"' in body and "<iframe" not in body  # on request only
+    assert (
+        'href="/samples/S1/files/qc_html/?inline=1" target="_blank"' in body and "<iframe" not in body
+    )  # on request only
     assert "Bases ≥ Q30" in body and "93.4%" in body and "Duplication (fastp estimate)" in body
     for kind in (
         "raw",
