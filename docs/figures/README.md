@@ -15,7 +15,7 @@ Needs `pip install -r requirements-figures.txt` (matplotlib; included in `requir
 | Per-base quality surface | `quality_surface.py` | fastp JSON of the six overnight real-sample cloud runs (`qc_reports/REAL-*.fastp.json`) | `csv/quality-surface.csv` |
 | Variant density | `variant_density.py` | PASS (DeepVariant) or all (bcftools, unfiltered) records of the #51 benchmark VCFs (bcftools, DeepVariant, pangenome DeepVariant) | `csv/variant-density.csv` |
 | Cost x turnaround (hero) | `cost_surface.py` | `query_pipeline_duration.py --stages-csv` over a grid of cloud runs: **not run yet**, see [cost-surface-grid.md](cost-surface-grid.md) | (once run, with `--table`) `csv/cost-surface.csv` |
-| DeepVariant batch x shards | none | **not drawn**: the #51 runs all used one setting (`batch_size=256`; the only other data point is that batch 1024 runs out of memory on the 10 GB card), so there is no grid to draw | |
+| DeepVariant batch x shards | `dv_batch_shards.py` | `scripts/benchmark_dv_grid.py` on the local RTX 3080: linear DeepVariant 1.10.0 on Google's HG003 chr20 35x BAM, `call_variants` batch 128/256/512/1024 x `make_examples` shards 16/8/4, one run per cell plus a repeat of 256 x 16 (4 Nov 2026) | `csv/dv-batch-shards.csv` (per cell) and `csv/dv-batch-shards.runs.csv` (per run) |
 
 ## Regenerating
 
@@ -35,6 +35,11 @@ python scripts/figures/quality_surface.py --from-fastp "HG003 35x=$Q/REAL-HG003-
 # 4. Variant density ("SAMPLE|caller" labels group the rows)
 python scripts/figures/variant_density.py --from-vcf "HG003|bcftools=$G/variants/HG003_chr20.vcf.gz" ... \
     --csv docs/figures/csv/variant-density.csv --out docs/figures/variant-density
+
+# 5. DeepVariant batch x shards (local GPU; one container at a time, ~2.3 h for the 13 runs)
+python scripts/benchmark_dv_grid.py --root $G/dv-grid/bucket --sample HG003_chr20 --reference GRCh38_chr20.fa \n    --batch-sizes 128,256,512,1024 --shards 16,8,4 --repeat 256x16 --dv-image geyser-deepvariant --dv-memory 12g \n    --out $G/dv-grid/results
+cp $G/dv-grid/results/dv-grid.csv docs/figures/csv/dv-batch-shards.runs.csv
+python scripts/figures/dv_batch_shards.py --from-grid docs/figures/csv/dv-batch-shards.runs.csv \n    --csv docs/figures/csv/dv-batch-shards.csv --out docs/figures/dv-batch-shards \n    --title "DeepVariant on HG003 chr20 (RTX 3080): batch size x make_examples shards"
 
 # Redraw any figure from its committed CSV alone
 python scripts/figures/variant_density.py --csv docs/figures/csv/variant-density.csv --out docs/figures/variant-density
@@ -70,3 +75,20 @@ The exact label lists used are in the commit that added each CSV (and in the PR)
   ~25% more (132k vs 105k for HG003). Linear and pangenome DeepVariant are almost indistinguishable at this scale. The colour scale stops at
   the 98th percentile so the rest of the chromosome stays readable; the note on the figure says how
   many bins are above it.
+- **DeepVariant batch x shards.** Three panels on one grid: the whole stage, `call_variants` alone, and how
+  busy the GPU was during `call_variants`.
+  - **Shards set the time.** Going from 16 to 8 to 4 `make_examples` shards takes the stage from about
+    8 min to 9-10 to 13.5-16 (`make_examples` 324-350 s, 396-460 s, 657-779 s). The machine has 16 hardware
+    threads, so 16 shards is the most this measures.
+  - **Batch size hardly matters, up to 512.** `call_variants` takes 100-108 s at batch 128, 256 and 512, and
+    124-131 s at 1024 (Google's default) in every row, about 20% slower. The 10 GB card runs linear
+    DeepVariant at 1024: only pangenome-aware DeepVariant ran out of memory there.
+  - **The GPU stays mostly idle:** 26-33% busy during `call_variants` in every cell, with 9.5-9.8 GB
+    reserved (TensorFlow takes nearly all free VRAM whatever the batch).
+  - **Noise.** The repeat of 256 x 16 took 474 and 485 s. In the 4-shard row `make_examples` drifts upwards
+    from left to right (657 to 779 s), although batch size can't affect it. The host was shared with other
+    work during the grid, so read that spread as noise of about ±9%, not as an effect of batch size.
+  - **Calls.** Every run sent the same 79,759 examples to `call_variants`, but no two runs wrote byte-identical
+    records, not even the repeat. PASS counts vary by at most 2 of 105,403 (85,652-85,653 SNPs,
+    19,883-19,884 indels). GPU inference isn't bit-reproducible run to run, and the settings themselves
+    don't change the calls.
