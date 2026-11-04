@@ -16,6 +16,11 @@ resource "aws_ecr_repository" "geyser_giraffe" {
   name         = "${var.project_name}-giraffe"
   force_delete = true
   tags         = { Name = "${var.project_name}-giraffe-ecr-repo" }
+
+  # Basic scanning (free): known CVEs of every pushed image, in the ECR console (#64).
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
 # Each image is ~106 MB (no layers shared across repositories): five is ~0.5 GB, about $0.05/month.
@@ -32,6 +37,8 @@ resource "aws_ecr_lifecycle_policy" "geyser_giraffe" {
 }
 
 resource "aws_batch_job_definition" "geyser_giraffe_job_def" {
+  # The job's tags (Stage, per state) and the default tags reach the task: Cost Explorer by stage (#64).
+  propagate_tags        = true
   name                  = "${var.project_name}-giraffe-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
