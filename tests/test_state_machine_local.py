@@ -57,6 +57,8 @@ TEMPLATE_VARS = {
     "merge_memory_mb": "512",
     # Cloud DeepVariant (deepvariant.tf, batch_gpu.tf).
     "deepvariant_job_definition": "geyser-deepvariant-job",
+    # vg giraffe as the aligner (#146, giraffe.tf).
+    "giraffe_job_definition": "geyser-giraffe-job",
     "gpu_job_queue": "geyser-gpu-queue-dev",
     # Scatter-gather (#108): the data lake, and the defaults of variant_region_window / variants_max_concurrency.
     "bucket": "geyser-data-lake-local",
@@ -145,6 +147,8 @@ TEST_CASES = {
         "Notify_Failure": "Published",
     },
     "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
+    # aligner is neither bwa-mem2 nor giraffe: the align branch fails before submitting anything.
+    "AlignerUnknown": {"Notify_Failure": "Published"},
     "RegionsUnreadable": {"Read_Regions": "NoSuchKey", "Notify_Failure": "Published"},
     "ShardFails": {"Call_Shard": "ShardsFail", "Notify_Failure": "Published"},
     # The quality gate (#144). The warn machine and the fail machine get the same cases.
@@ -345,7 +349,15 @@ _UNSET = object()
 
 
 def run_case(
-    sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None, gate_profile=_UNSET, overrides=_UNSET
+    sfn,
+    case,
+    sample="S1",
+    reference="chr20.fa",
+    wait_seconds=60,
+    caller=None,
+    gate_profile=_UNSET,
+    overrides=_UNSET,
+    aligner=_UNSET,
 ):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
@@ -354,6 +366,8 @@ def run_case(
         run_input["reference_name"] = reference
     if caller:
         run_input["caller"] = caller
+    if aligner is not _UNSET:  # anything, even not a string: the state machine validates it
+        run_input["aligner"] = aligner
     if gate_profile is not _UNSET:  # anything, even not a string: the state machine validates it
         run_input["gate_profile"] = gate_profile
     if overrides is not _UNSET:  # likewise
@@ -483,7 +497,7 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
         for e in events
         if e.get("previousEventId") == started["id"] and "stateEnteredEventDetails" in e
     }
-    assert heads == {"Prepare_QC_Command", "Prepare_Align_Command"}
+    assert heads == {"Prepare_QC_Command", "Choose_Aligner"}  # the align branch picks its aligner first (#146)
     for task in ("Quality_Control", "Align_Genome", "Call_Variants"):
         assert ancestor(by_id, state_entered(events, task), "ParallelStateStarted") is not None
     variants = state_entered(events, "Call_Variants")
@@ -991,6 +1005,62 @@ def test_both_profiles_follow_the_gate_mode(request, profile, machine, case, out
     assert outcome in states
     assert desc["status"] == ("FAILED" if outcome == "Pipeline_Failed" else "SUCCEEDED")
     assert gate_environment(events)["GATE_CONFIG"] == f"$GATE_THRESHOLDS_DIR/{profile}.toml"
+
+
+# --- the aligner per run (#146) -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("aligner", [_UNSET, "bwa-mem2"])
+def test_without_giraffe_align_runs_in_the_app_job_definition(sfn, aligner):
+    desc, events = run_case(sfn, "HappyPath", aligner=aligner)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "Prepare_Align_Command" in states and "Prepare_Giraffe_Command" not in states
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["JobDefinition"] == TEMPLATE_VARS["job_definition"]
+
+
+def test_aligner_giraffe_runs_the_same_align_stage_in_the_giraffe_job_definition(sfn):
+    desc, events = run_case(sfn, "HappyPath", sample="SAMPLE7", reference="ref.fa", aligner="giraffe")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "Prepare_Giraffe_Command" in states and "Prepare_Align_Command" not in states
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["JobDefinition"] == TEMPLATE_VARS["giraffe_job_definition"]
+    # Everything else is the align stage's: queue, command, job name, run name, size and time limit, so the
+    # variants stage, the run record and the dashboards see an ordinary align job.
+    assert align["JobQueue"] == TEMPLATE_VARS["job_queue"]
+    assert align["ContainerOverrides"]["Command"] == ["python", "tasks.py", "align", "SAMPLE7", "ref.fa"]
+    assert re.fullmatch(r"AlignGenome-SAMPLE7-HappyPath-\w+", align["JobName"])
+    assert align["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
+    sizes = {r["Type"]: r["Value"] for r in align["ContainerOverrides"]["ResourceRequirements"]}
+    assert sizes == {"VCPU": TEMPLATE_VARS["align_vcpu"], "MEMORY": TEMPLATE_VARS["align_memory_mb"]}
+    assert align["Timeout"]["AttemptDurationSeconds"] == 14400
+    # Only align changes job definition.
+    for state, p in batch_parameters(events).items():
+        if state != "Align_Genome":
+            assert p["JobDefinition"] == TEMPLATE_VARS["job_definition"], state
+
+
+def test_giraffe_takes_the_runs_align_size_like_bwa_mem2(sfn):
+    # The run's settings (#192), overrides included, size align whichever aligner runs it.
+    overrides = {"align_vcpu": "2", "align_memory_mb": "8192", "variant_region_window": 17000000}
+    desc, events = run_case(sfn, "HappyPath", aligner="giraffe", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Set_Run_Settings") < states.index("Choose_Aligner") < states.index("Prepare_Giraffe_Command")
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["JobDefinition"] == TEMPLATE_VARS["giraffe_job_definition"]
+    assert run_sizes(events) == {"align": ("2", "8192"), "plan_window": "17000000", "merge_window": "17000000"}
+
+
+@pytest.mark.parametrize("aligner", ["Giraffe", "bwa", "", 7, None])
+def test_an_unknown_aligner_fails_the_run_without_aligning(sfn, aligner):
+    desc, events = run_case(sfn, "AlignerUnknown", aligner=aligner)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert "Unknown_Aligner" in states and "Align_Genome" not in states and "Call_Variants" not in states
+    assert_closed_before_notifying(desc, events, error="UnknownAligner")
 
 
 # --- the reference genome per upload: checked before any job ----------------------------------------
