@@ -305,8 +305,8 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
     rules = states["Run_Setting_Rules"]["Result"]
     # Seven since v1.3: the size and window (#192), and the genome's parallelism (chunk_count, align_concurrency,
-    # calling_concurrency, merge_threads).
-    assert rules["setting_count"] == len(rules["defaults"]) == 7
+    # calling_concurrency, merge_threads); eight since v1.5 (dv_parts, the DeepVariant split).
+    assert rules["setting_count"] == len(rules["defaults"]) == 8
     assert set(states["Set_Run_Settings"]["Parameters"]) == {f"{k}.$" for k in rules["defaults"]}
     with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
         sfn_tf = fh.read()
@@ -320,9 +320,55 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     for name in ("align_sizes", "variant_region_window_min", "variant_region_window_max"):
         assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=", sfn_tf), name
     # The parallelism maxima are derived in step_functions.tf (from the Fargate Spot cap) and rendered in.
-    for name in ("align_concurrency_max", "calling_concurrency_max", "merge_threads_max", "large_input_bytes"):
+    for name in (
+        "align_concurrency_max",
+        "calling_concurrency_max",
+        "merge_threads_max",
+        "large_input_bytes",
+        "dv_parts_max",
+        "dv_shards_by_parts",
+    ):
         assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=\s*\S", sfn_tf), name
     assert "fargate_spot_max_vcpus" in sfn_tf.split("align_concurrency_max")[1].split("\n")[0]
+
+
+def _tf(name):
+    with open(os.path.join(REPO_ROOT, "infrastructure", name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _without_comments(tf):
+    return "\n".join(line.split("#", 1)[0] for line in tf.splitlines())
+
+
+def test_the_dv_split_lookups_follow_the_part_size_and_the_spot_cap():
+    # v1.5: DEEPVARIANT_SHARDS for J parts is dv_shards_by_parts[J] = J x the part job's vCPUs (Step Functions
+    # can't multiply), and at most fargate_spot_max_vcpus / that many parts run at once.
+    sfn_tf = _without_comments(_tf("step_functions.tf"))
+    assert re.search(
+        r"dv_parts_max\s*=\s*floor\(var\.fargate_spot_max_vcpus\s*/\s*var\.dv_part_resources\.vcpu\)", sfn_tf
+    )
+    assert re.search(
+        r"dv_shards_by_parts\s*=\s*\[for (\w+) in range\(local\.dv_parts_max \+ 1\)\s*:\s*\1 \* var\.dv_part_resources\.vcpu\]",
+        sfn_tf,
+    )
+    cpu_tf = _without_comments(_tf("deepvariant_cpu.tf"))
+    assert re.search(r'type = "VCPU", value = tostring\(var\.dv_part_resources\.vcpu\)', cpu_tf)
+    assert re.search(r'type = "MEMORY", value = tostring\(var\.dv_part_resources\.memory_mb\)', cpu_tf)
+    # The CPU job definition takes no DEEPVARIANT_SHARDS of its own: the state machine passes every part the same.
+    assert "DEEPVARIANT_SHARDS" not in cpu_tf
+    asl = asl_text()
+    assert '{ "Name": "DEEPVARIANT_SHARDS", "Value.$": "$.shards" }' in asl
+    assert "States.ArrayGetItem($.run_rules.dv_shards_by_parts, $.run_settings.dv_parts)" in asl
+
+
+def test_neither_deepvariant_job_definition_sets_the_model_type_or_extra_args():
+    # The GPU job refuses examples made with another DEEPVARIANT_MODEL_TYPE or DEEPVARIANT_EXTRA_ARGS (#228), so
+    # the CPU parts and the GPU job must both run the image's defaults.
+    for name in ("deepvariant.tf", "deepvariant_cpu.tf"):
+        tf = _without_comments(_tf(name))
+        assert "DEEPVARIANT_MODEL_TYPE" not in tf and "DEEPVARIANT_EXTRA_ARGS" not in tf, name
+    assert "DEEPVARIANT_MODEL_TYPE" not in asl_text() and "DEEPVARIANT_EXTRA_ARGS" not in asl_text()
 
 
 def test_alignments_expire_by_break_even_and_nothing_else_shares_the_prefix():
