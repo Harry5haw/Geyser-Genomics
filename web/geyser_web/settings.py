@@ -70,7 +70,13 @@ MESSAGE_STORAGE = "django.contrib.messages.storage.cookie.CookieStorage"
 
 STATIC_URL = "static/"
 STATIC_ROOT = os.environ.get("DJANGO_STATIC_ROOT") or None  # only needed for collectstatic
-WHITENOISE_USE_FINDERS = True  # serve app static files without a collectstatic step
+WHITENOISE_USE_FINDERS = True  # serve app static files without a collectstatic step (development)
+# After collectstatic (DEBUG off): content-hashed names (geyser.<hash>.js), precompressed .gz/.br copies, and
+# WhiteNoise serves the hashed files with "Cache-Control: max-age=315360000, public, immutable". With DEBUG on,
+# the plain names are used, so no collectstatic is needed while developing.
+STORAGES = {
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"},
+}
 
 LANGUAGE_CODE = "en-gb"
 TIME_ZONE = "Europe/London"
@@ -109,7 +115,8 @@ GEYSER_S3_ENDPOINT_URL = next(
 GEYSER_S3_ADDRESSING_STYLE = os.environ.get("S3_ADDRESSING_STYLE", "")
 
 GEYSER_MAX_UPLOAD_MB = int(os.environ.get("GEYSER_MAX_UPLOAD_MB", "200"))
-GEYSER_VARIANT_ROWS = int(os.environ.get("GEYSER_VARIANT_ROWS", "500"))
+# Rows per page of the variant and AlphaGenome tables (the first page is inline; the rest are prerenderable links).
+GEYSER_TABLE_ROWS = int(os.environ.get("GEYSER_TABLE_ROWS", "50"))
 GEYSER_POLL_SECONDS = int(os.environ.get("GEYSER_POLL_SECONDS", "3"))
 
 # Local worker (python web/manage.py runworker): the offline stand-in for the S3 -> Lambda trigger.
