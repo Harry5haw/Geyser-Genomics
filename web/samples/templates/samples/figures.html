@@ -1,0 +1,46 @@
+{% extends "samples/base.html" %}
+{% load static geyser %}
+{% block page_css %}{% inline_css "samples/_figures.css" %}{% endblock %}
+{% block title %}Results in 3D · Geyser Genomics{% endblock %}
+{% block content %}
+<section>
+  <h1>Results in 3D</h1>
+  <p class="lead">The project's signature figures as terrains you can turn over: one ridge per sample or read file, height
+    and colour both showing the value. Each starts as a flat picture; the 3D view loads when you scroll to it.
+    The CSV under each one has every number.</p>
+</section>
+
+{% for card in cards %}
+  <figure class="panel fig" id="fig-{{ card.name }}"{% if card.grid %} data-surface="{% url 'samples:figure_data' card.name %}" data-surface-js="{% static 'samples/surface.js' %}" data-surface-gl="{% static 'samples/surface-gl.js' %}"{% endif %}>
+    <h2>{{ card.figure.title }}</h2>
+    {% if card.grid %}
+      <div class="stage">
+        {{ card.poster }}
+        <canvas hidden tabindex="0" role="img" aria-label="{{ card.figure.title }}, interactive 3D view. Arrow keys rotate, plus and minus zoom, 0 resets, Shift and arrow keys read the values cell by cell."></canvas>
+        <div class="labels" aria-hidden="true"></div>
+        <span class="marker" hidden></span>
+        <div class="readout" role="status" aria-live="polite" hidden></div>
+      </div>
+      <div class="legend">
+        <span>{{ card.figure.z_label }} ({{ card.figure.z_unit }})</span>
+        <span class="ramp"></span>
+        <span class="ends"><span>{{ card.grid.base|floatformat:"-1" }}</span><span>{% if card.grid.clip %}≥ {{ card.grid.clip }}{% else %}{{ card.grid.vmax|floatformat:"-1" }}{% endif %}</span></span>
+      </div>
+      <p class="howto"><button type="button" class="ghost" data-surface-start>Rotate in 3D</button>
+        <small class="muted">Drag to rotate · pinch, or click then scroll, to zoom · double-click to reset ·
+          keys: arrows rotate, + − zoom, 0 resets, Shift+arrows read values</small>
+        <small class="no3d-note">The 3D view needs WebGL, so this is the flat view; the CSV has every value.</small></p>
+      <figcaption>{{ card.figure.description }}
+        {% if card.grid.clip %}Heights above {{ card.grid.clip }} {{ card.figure.z_unit }} (2.5 × the median) are drawn at that cap; the readout and the CSV show the true value.{% endif %}
+        {% if card.figure.note %}<p class="note" role="note">{{ card.figure.note }}</p>{% endif %}
+        {% if card.grid.base %}Heights start at {{ card.grid.base|floatformat:"-1" }} {{ card.figure.z_unit }}, not 0, so the small differences show; the axis is labelled from there.{% endif %}
+        <br><a href="{% url 'samples:figure_csv' card.name %}" download>Data ({{ card.figure.csv }})</a>
+        <small class="muted">· {{ card.grid.rows|length }} {{ card.figure.rows_plural }} × {{ card.grid.x|length }} points</small></figcaption>
+    {% elif card.error %}
+      <p class="note" role="note">{{ card.error }}</p>
+    {% else %}
+      <p class="note" role="note">{% if card.figure.pending %}{{ card.figure.pending }}{% else %}No data yet: {{ card.figure.csv }} isn&#x27;t in the figures folder.{% endif %}</p>
+    {% endif %}
+  </figure>
+{% endfor %}
+{% endblock %}

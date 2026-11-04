@@ -58,6 +58,12 @@ def test_shard_stage_matches_tasks_py():
     assert "." not in tasks.SHARD_METRIC  # a timed stage (records failures), not a success-only sub-step
 
 
+def test_gate_stage_matches_tasks_py():
+    import tasks
+
+    assert [s.task_name for s in monitoring.STAGE_GROUPS["gate"]] == [tasks.GATE_METRIC]
+
+
 def test_deepvariant_stages_match_deepvariant_task():
     names = [s.task_name for s in monitoring.STAGE_GROUPS["deepvariant"]]
     assert names == ["DeepVariant", *deepvariant_task.STEP_METRICS.values()]
@@ -114,7 +120,8 @@ def test_dashboard_shape(schema, sfn_arn):
         if w["type"] == "log":
             props = w["properties"]
             assert props["region"] == "eu-west-2" and props["view"] in ("table", "timeSeries")
-            assert props["query"].startswith(f"SOURCE '{monitoring.BATCH_LOG_GROUP}' | ")
+            groups = (monitoring.BATCH_LOG_GROUP, monitoring.BATCH_EVENTS_LOG_GROUP)
+            assert any(props["query"].startswith(f"SOURCE '{g}' | ") for g in groups)
         if w["type"] == "metric":
             props = w["properties"]
             assert props["region"] == "eu-west-2" and props["metrics"]
@@ -535,16 +542,16 @@ def test_quality_trend_query_bins_by_day():
 
 
 def test_dashboard_quality_widgets_on_by_default_and_optional():
-    logs = [w for w in monitoring.build_dashboard()["widgets"] if w["type"] == "log"]
+    logs = [w for w in monitoring.build_dashboard(queue_wait=False)["widgets"] if w["type"] == "log"]
     assert [w["properties"]["view"] for w in logs] == ["table", "table", "timeSeries"]
     assert "outside quality thresholds" in logs[1]["properties"]["title"]
-    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod")
+    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod", queue_wait=False)
     assert all(
         w["properties"]["query"].startswith("SOURCE '/aws/batch/geyser-prod' | ")
         for w in custom["widgets"]
         if w["type"] == "log"
     )
-    assert not [w for w in monitoring.build_dashboard(quality=False)["widgets"] if w["type"] == "log"]
+    assert not [w for w in monitoring.build_dashboard(quality=False, queue_wait=False)["widgets"] if w["type"] == "log"]
 
 
 def test_dashboard_cli_quality_options(capsys, monkeypatch):
@@ -553,7 +560,12 @@ def test_dashboard_cli_quality_options(capsys, monkeypatch):
     body = json.loads(capsys.readouterr().out)
     assert any(w["type"] == "log" and "SOURCE '/aws/batch/other'" in w["properties"]["query"] for w in body["widgets"])
     deploy_dashboard.main(["--dry-run", "--no-quality"])
-    assert not [w for w in json.loads(capsys.readouterr().out)["widgets"] if w["type"] == "log"]
+    quality = [
+        w
+        for w in json.loads(capsys.readouterr().out)["widgets"]
+        if w["type"] == "log" and w["properties"]["query"].startswith(f"SOURCE '{monitoring.BATCH_LOG_GROUP}' | ")
+    ]
+    assert not quality  # the queue-wait widgets read the Batch event log group and stay
 
 
 def test_run_records_link_only_with_a_bucket():
@@ -600,3 +612,71 @@ def test_batch_log_link_follows_the_log_group(capsys, monkeypatch):
     deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/geyser-prod"])
     header = json.loads(capsys.readouterr().out)["widgets"][0]["properties"]["markdown"]
     assert "geyser-prod" in header and "geyser-dev" not in header.split("Batch job logs](")[1].split(")")[0]
+
+
+# ------------------------------------------------------------------ data lake storage (#62)
+
+
+def test_storage_widgets_only_with_a_bucket():
+    titles = lambda body: [w["properties"].get("title", "") for w in body["widgets"]]  # noqa: E731
+    assert not any("Data lake" in t for t in titles(monitoring.build_dashboard()))
+    body = monitoring.build_dashboard(bucket="my-bucket")
+    storage = [w for w in body["widgets"] if w["properties"].get("title", "").startswith("Data lake")]
+    assert [w["properties"]["title"] for w in storage] == ["Data lake size, GB (daily)", "Data lake objects (daily)"]
+    rows = [r for w in storage for r in w["properties"]["metrics"]]
+    assert ["AWS/S3", "BucketSizeBytes", "BucketName", "my-bucket", "StorageType", "StandardStorage"] == rows[0][:6]
+    assert ["AWS/S3", "NumberOfObjects", "BucketName", "my-bucket", "StorageType", "AllStorageTypes"] == rows[2][:6]
+    assert all(w["properties"]["period"] == 86400 for w in storage)  # S3 storage metrics are daily
+    ids = [row_options(r)["id"] for r in rows]
+    assert all(METRIC_ID_RE.match(i) for i in ids) and len(ids) == len(set(ids))
+
+
+def test_dashboard_cli_bucket_adds_storage_widgets(capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    deploy_dashboard.main(["--dry-run", "--bucket", "my-bucket"])
+    body = json.loads(capsys.readouterr().out)
+    assert any(w["properties"].get("title") == "Data lake size, GB (daily)" for w in body["widgets"])
+
+
+# ------------------------------------------------------------------ Batch queue wait (#138)
+
+
+def _insights_regex(line):
+    return re.compile(line.split("/", 1)[1].rsplit("/", 1)[0].replace("(?<", "(?P<"))
+
+
+@pytest.mark.parametrize(
+    "job_name, stage",
+    [
+        ("QualityControl-S1-S1-20261102T100000Z-abc", "QualityControl"),
+        ("AlignGenome-S1-S1-20261102T100000Z-abc", "AlignGenome"),
+        ("PlanRegions-S1-S1-20261102T100000Z-abc", "PlanRegions"),
+        ("CallVariantsShard-S1-S1-20261102T100000Z-abc", "CallVariantsShard"),
+        ("CallVariants-S1-S1-20261102T100000Z-abc", "CallVariants"),
+    ],
+)
+def test_queue_wait_stage_comes_from_the_job_name(job_name, stage):
+    assert _insights_regex(monitoring.QUEUE_WAIT_PARSE[0]).search(job_name).group("stage") == stage
+
+
+def test_queue_wait_queue_comes_from_the_queue_arn():
+    arn = "arn:aws:batch:eu-west-2:000000000000:job-queue/geyser-gpu-queue-dev"
+    assert _insights_regex(monitoring.QUEUE_WAIT_PARSE[1]).search(arn).group("queue") == "geyser-gpu-queue-dev"
+
+
+def test_queue_wait_widgets_follow_the_stage_durations():
+    widgets = monitoring.build_dashboard()["widgets"]
+    titles = [w["properties"].get("title", "") for w in widgets]
+    first_wait = next(i for i, t in enumerate(titles) if t.startswith("Batch wait"))
+    assert titles[first_wait - 1].startswith("Stage duration")
+    wait = [w for w in widgets if w["properties"].get("title", "").startswith("Batch wait")]
+    assert [w["properties"]["view"] for w in wait] == ["table", "timeSeries"]
+    assert all(w["properties"]["query"].startswith(f"SOURCE '{monitoring.BATCH_EVENTS_LOG_GROUP}' | ") for w in wait)
+    assert "(detail.startedAt - detail.createdAt) / 1000" in wait[0]["properties"]["query"]
+    assert not [w for w in monitoring.build_dashboard(queue_wait=False)["widgets"] if "Batch wait" in str(w)]
+
+
+def test_dashboard_cli_no_queue_wait(capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    deploy_dashboard.main(["--dry-run", "--no-queue-wait"])
+    assert "Batch wait" not in capsys.readouterr().out

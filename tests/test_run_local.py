@@ -2,6 +2,9 @@
 
 import gzip
 import json
+import os
+
+import pytest
 
 import run_local
 
@@ -11,10 +14,11 @@ def names(jobs):
 
 
 def test_default_caller_runs_exactly_the_state_machine_stages():
-    jobs = run_local.pipeline_jobs("S1", "ref.fa")
+    # The quality gate is the state machine's last step (#144); run_local's command line runs it by default.
+    jobs = run_local.pipeline_jobs("S1", "ref.fa", gate=True)
     assert [j["cmd"] for j in jobs] == [
         run_local.stage_command(stage, "S1", "ref.fa", needs_ref) for stage, needs_ref in run_local.STAGES
-    ]
+    ] + [run_local.stage_command("gate", "S1", None, False)]
     assert all(j["image"] == "geyser-app" and not j["gpus"] for j in jobs)
 
 
@@ -137,3 +141,152 @@ def test_every_job_of_a_run_gets_the_same_run_name(monkeypatch):
     names = {arg for cmd in seen for arg in cmd if arg.startswith("RUN_NAME=")}
     assert names == {f"RUN_NAME={env['RUN_NAME']}"} and env["RUN_NAME"].startswith("S1-")
     assert all("APP_VERSION=local:geyser-app" in cmd for cmd in seen)
+
+
+@pytest.mark.parametrize(
+    ("caller", "expected"),
+    [
+        ("deepvariant", {"deepvariant": {"PIPELINE_CALLER": "deepvariant"}}),
+        ("pangenome", {"pangenome": {"PIPELINE_CALLER": "pangenome"}}),
+        ("both", {"deepvariant": {}}),
+        ("all", {"deepvariant": {}, "pangenome": {}}),
+    ],
+)
+def test_deepvariant_owns_the_samples_stats_only_without_bcftools(caller, expected):
+    jobs = run_local.pipeline_jobs("S1", "ref.fa", caller=caller)
+    assert {j["name"]: j["env"] for j in jobs if "env" in j} == expected
+
+
+def test_a_caller_added_to_an_earlier_run_does_not_claim_its_stats():
+    jobs = run_local.pipeline_jobs("S1", "ref.fa", caller="deepvariant", skip_to_variants=True)
+    assert [(j["name"], j["env"]) for j in jobs] == [("deepvariant", {})]
+
+
+# --- quality gate (#144) ---------------------------------------------------------------------------
+
+
+def test_the_gate_runs_after_variant_calling_when_asked():
+    jobs = run_local.pipeline_jobs("S1", "r.fa", gate=True)
+    assert [j["name"] for j in jobs] == ["qc", "align", "variants", "gate"]
+    assert jobs[-1]["cmd"] == ["python", "tasks.py", "gate", "S1"] and jobs[-1]["image"] == "geyser-app"
+    assert "env" not in jobs[-1], "no gate_config: the host's GATE_CONFIG or the built-in thresholds"
+
+
+def test_the_gate_runs_last_after_the_merge_of_a_scattered_call_and_deepvariant():
+    jobs = run_local.pipeline_jobs("S1", "r.fa", "both", regions=["c:1-10"], shard_window=10, gate=True)
+    assert [j["name"] for j in jobs] == ["qc", "align", "variants-shard", "variants", "deepvariant", "gate"]
+
+
+def test_a_deepvariant_only_run_is_gated_but_an_added_caller_is_not():
+    # DeepVariant-only: its PASS-call stats are the sample's (#147), and the cloud gates that path too.
+    jobs = run_local.pipeline_jobs("S1", "r.fa", "deepvariant", gate=True)
+    assert [j["name"] for j in jobs] == ["qc", "align", "deepvariant", "gate"]
+    # --skip-to-variants adds a caller to an earlier run: the stats stay that run's, so no new verdict.
+    jobs = run_local.pipeline_jobs("S1", "r.fa", "deepvariant", gate=True, skip_to_variants=True)
+    assert "gate" not in [j["name"] for j in jobs]
+
+
+def test_pipeline_jobs_runs_the_gate_only_when_asked():
+    # The command line asks (unless --no-gate); callers of pipeline_jobs() choose explicitly.
+    assert "gate" not in [j["name"] for j in run_local.pipeline_jobs("S1", "r.fa")]
+
+
+def test_synthetic_samples_get_the_synthetic_thresholds(tmp_path, monkeypatch):
+    monkeypatch.delenv("GATE_CONFIG", raising=False)
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") is None, "real data: built-in thresholds"
+    (tmp_path / "truth").mkdir()
+    (tmp_path / "truth" / "S1.json").write_text("{}")
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/synthetic.toml"
+    assert run_local.gate_config_for(str(tmp_path), "S1", "host").endswith(
+        os.path.join("gate", "thresholds", "synthetic.toml")
+    )
+    monkeypatch.setenv("GATE_CONFIG", "/opt/geyser-gate/thresholds/default.toml")  # a container path already
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/default.toml"
+    assert run_local.gate_config_for(str(tmp_path), "S1", "host") is None, "the host runner inherits it"
+
+
+def test_host_gate_configs_become_container_paths(tmp_path, monkeypatch):
+    repo_file = os.path.join(run_local.REPO_ROOT, "gate", "thresholds", "default.toml")
+    monkeypatch.setenv("GATE_CONFIG", repo_file)
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/opt/geyser-gate/thresholds/default.toml"
+    mine = tmp_path / "configs" / "strict.toml"
+    mine.parent.mkdir()
+    mine.write_text("[checks]\nsnps = { min = 1 }\n")
+    monkeypatch.setenv("GATE_CONFIG", str(mine))
+    assert run_local.gate_config_for(str(tmp_path), "S1", "docker") == "/data/configs/strict.toml", "under the root"
+
+
+def test_gate_settings_reach_the_gate_container(monkeypatch):
+    seen = []
+    monkeypatch.setattr(run_local.subprocess, "run", lambda cmd: seen.append(cmd) or type("R", (), {"returncode": 0}))
+    monkeypatch.setenv("GATE_MODE", "fail")
+    (job,) = [j for j in run_local.pipeline_jobs("S1", "r", gate=True, gate_config="/c.toml") if j["name"] == "gate"]
+    run_local.run_job(job, "docker", "root", env=run_local.run_env("S1", "geyser-app"))
+    assert "GATE_MODE=fail" in seen[0] and "GATE_CONFIG=/c.toml" in seen[0]
+
+
+def _local_inputs(root, reference="r.fa"):
+    """An upload and its reference under a local storage root (main() checks the reference first)."""
+    (root / "raw_reads").mkdir()
+    (root / "raw_reads" / "S1.fastq.gz").write_bytes(b"")
+    (root / "reference").mkdir()
+    (root / "reference" / reference).write_text(">r\nACGT\n")
+
+
+def test_main_runs_the_gate_unless_no_gate(tmp_path, monkeypatch):
+    _local_inputs(tmp_path)
+    ran = []
+    monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: ran.append(job["name"]) or 0)
+    assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa"]) == 0
+    assert ran == ["qc", "align", "variants", "gate"]
+    ran.clear()
+    assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa", "--no-gate"]) == 0
+    assert ran == ["qc", "align", "variants"]
+
+
+def test_gate_profile_picks_the_thresholds_file_and_wins_over_the_rest(tmp_path, monkeypatch):
+    (tmp_path / "truth").mkdir()
+    (tmp_path / "truth" / "S1.json").write_text("{}")  # would mean synthetic
+    monkeypatch.setenv("GATE_CONFIG", "/opt/geyser-gate/thresholds/synthetic.toml")
+    assert (
+        run_local.gate_config_for(str(tmp_path), "S1", "docker", "default")
+        == "/opt/geyser-gate/thresholds/default.toml"
+    )
+    host = run_local.gate_config_for(str(tmp_path), "S1", "host", "synthetic")
+    assert host == os.path.join(run_local.REPO_ROOT, "gate", "thresholds", "synthetic.toml") and os.path.isfile(host)
+    with pytest.raises(ValueError, match="gate profile must be one of"):
+        run_local.gate_profile_config("strict", "docker")
+
+
+def test_main_passes_the_gate_profile_to_the_gate_job(tmp_path, monkeypatch):
+    _local_inputs(tmp_path)
+    jobs = []
+    monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: jobs.append(job) or 0)
+    args = ["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa", "--gate-profile", "synthetic"]
+    assert run_local.main(args) == 0
+    (gate,) = [j for j in jobs if j["name"] == "gate"]
+    assert gate["env"] == {"GATE_CONFIG": "/opt/geyser-gate/thresholds/synthetic.toml"}
+    with pytest.raises(SystemExit):
+        run_local.main(args[:-1] + ["strict"])
+
+
+# --- the reference: checked before any job, as the state machine's Check_Reference_Name / Check_Reference
+
+
+@pytest.mark.parametrize("name", ["", "sub/r.fa", "/r.fa", None, 42, ["r.fa"]])
+def test_a_reference_that_is_not_a_file_name_is_refused(tmp_path, name):
+    assert "is not a file name under reference/" in run_local.reference_problem(str(tmp_path), name)
+
+
+def test_a_reference_must_exist_under_the_root(tmp_path):
+    _local_inputs(tmp_path)
+    assert run_local.reference_problem(str(tmp_path), "r.fa") is None
+    assert "reference/GRCh37.fa is not under" in run_local.reference_problem(str(tmp_path), "GRCh37.fa")
+
+
+def test_main_fails_a_missing_reference_before_any_job(tmp_path, monkeypatch, capsys):
+    _local_inputs(tmp_path)
+    ran = []
+    monkeypatch.setattr(run_local, "run_job", lambda job, *a, **k: ran.append(job["name"]) or 0)
+    assert run_local.main(["--root", str(tmp_path), "--sample", "S1", "--reference", "GRCh37.fa"]) == 1
+    assert ran == [] and "FAILED before any job for S1" in capsys.readouterr().out

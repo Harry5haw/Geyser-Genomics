@@ -86,6 +86,11 @@ prototypes/
 
 # Ignore temporary data exports (e.g., from CloudWatch)
 *.csv
+# ...except the benchmark history and its figure CSV (aggregate hap.py numbers, no genomic data; #58)
+!docs/benchmarks/*.csv
+# ...and the signature figures' derived CSVs (per-window/per-bin summaries, no reads or calls) and test fixtures
+!docs/figures/csv/*.csv
+!tests/fixtures/figures/*.csv
 
 # -----------------------------------------------------------------------------
 # Local utility scripts / prototypes (not tracked in Git)

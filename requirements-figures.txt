@@ -1,0 +1,2 @@
+# The signature figures (scripts/figures/); the unit tests render them, so CI needs it too.
+matplotlib==3.11.2

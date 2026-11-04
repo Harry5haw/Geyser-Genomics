@@ -1,0 +1,7 @@
+cell,batch_size,shards,repeat,status,error,stage_s,make_examples_s,call_variants_s,postprocess_variants_s,examples,small_model_calls,gpu_model,gpu_util_mean_pct,gpu_util_peak_pct,gpu_memory_peak_mib,call_variants_gpu_util_mean_pct,call_variants_gpu_memory_peak_mib,cpu_seconds,pass_snps,pass_indels,pass_records,records_md5
+b256-s16,256,16,1,Success,,600,400,150,20,1000,5000,GPU,8.0,100,9500,30.0,9500,5000,70,10,80,aaa
+b1024-s16,1024,16,1,Success,,560,400,110,20,1000,5000,GPU,9.0,100,9600,40.0,9600,4900,70,10,80,aaa
+b2048-s16,2048,16,1,Failure,WrapperStopped: ResourceExhaustedError after 120 s,,400,,,,,GPU,5.0,100,9900,,9900,,,,,
+b256-s4,256,4,1,Success,,1400,1200,150,20,1000,5000,GPU,3.0,100,9500,30.0,9500,5000,70,10,80,aaa
+b1024-s4,1024,4,1,Success,,1360,1200,110,20,1000,5000,GPU,4.0,100,9600,40.0,9600,4900,70,10,80,aaa
+b256-s16-r2,256,16,2,Success,,620,410,160,20,1000,5000,GPU,8.0,100,9500,28.0,9500,5000,70,10,80,aaa

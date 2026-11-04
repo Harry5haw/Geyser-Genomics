@@ -77,7 +77,7 @@ def parse_args(argv=None):
     p.add_argument(
         "--bucket",
         default=os.environ.get("BUCKET_NAME"),
-        help="Data lake bucket for the S3 link (default: $BUCKET_NAME; link left out if unset)",
+        help="Data lake bucket for the S3 links and the storage widgets (default: $BUCKET_NAME; left out if unset)",
     )
     p.add_argument(
         "--trigger-function-name",
@@ -93,6 +93,11 @@ def parse_args(argv=None):
         "--batch-log-group",
         default=monitoring.BATCH_LOG_GROUP,
         help=f"Batch job log group the quality widgets query (default: {monitoring.BATCH_LOG_GROUP})",
+    )
+    p.add_argument(
+        "--no-queue-wait",
+        action="store_true",
+        help="Leave out the Batch wait widgets (Logs Insights over the Batch job-event log group, #138)",
     )
     p.add_argument(
         "--no-quality",
@@ -166,7 +171,9 @@ def main(argv=None, client=None, sts_client=None) -> int:
                 batch_log_group=args.batch_log_group,
             ),
             quality=not args.no_quality,
+            bucket=args.bucket,
             batch_log_group=args.batch_log_group,
+            queue_wait=not args.no_queue_wait,
         )
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}") from err

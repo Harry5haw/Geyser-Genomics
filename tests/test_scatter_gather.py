@@ -265,10 +265,25 @@ def test_run_local_plans_regions_only_for_a_bcftools_stage(tmp_path, monkeypatch
     monkeypatch.setattr(run_local, "local_regions", lambda *a: planned.append(a) or ["c:1-10"])
     monkeypatch.setattr(run_local, "run_job", lambda *a, **k: 0)
     monkeypatch.setattr(run_local, "sample_keys", lambda *a: ["raw_reads/S1.fastq.gz"])
+    monkeypatch.setattr(run_local, "reference_problem", lambda *a: None)  # no reference/ under tmp_path
     run_local.main(["--root", str(tmp_path), "--sample", "S1", "--caller", "deepvariant", "--shard-window", "10"])
     assert planned == []  # no bcftools stage: nothing to shard, the local reference isn't read
     run_local.main(["--root", str(tmp_path), "--sample", "S1", "--shard-window", "10"])
     assert len(planned) == 1
+
+
+def test_cli_regions_stores_the_list_for_the_state_machine(local_env, tool_calls, capsys):
+    # The Map's planner: a Batch job can't return output, so Read_Regions reads this key from S3.
+    put_reference(local_env)
+    key = "intermediate/variant-regions/S1/S1-20261102T100000Z-abc.json"
+    assert tasks.main(["regions", REF, "--window", "600", "--output-key", key]) == 0
+    assert json.loads((local_env / key).read_text()) == ["c:1-600", "c:601-1004"]
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1]) == ["c:1-600", "c:601-1004"]
+
+
+def test_cli_regions_rejects_a_zero_window(local_env, tool_calls):
+    with pytest.raises(SystemExit):
+        tasks.main(["regions", REF, "--window", "0"])
 
 
 def test_parts_are_intermediate_and_never_under_an_output_prefix():

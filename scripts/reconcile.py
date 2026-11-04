@@ -248,6 +248,11 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
         output_layout = layout or (PAIRED if any(k in keys for k in legacy_qc_keys(sample_id, PAIRED)) else SINGLE)
         forms = {name: output_keys(keys_for(sample_id, output_layout), name) for name, _ in STAGE_OUTPUTS}
         forms["qc_html"].append(legacy_qc_keys(sample_id, output_layout))  # QC done by FastQC before #100
+        record = records.get(sample_id)
+        # The sample's calls are the run record's VCF: DeepVariant's when it was the run's caller (#125),
+        # bcftools' otherwise (and without a record).
+        vcf_key = provenance.sample_vcf_key(record, sample_id)
+        forms["vcf"] = [[vcf_key]]
         # A multi-key form (paired-end FastQC: one report per mate) only counts once it is complete.
         outputs = {name: any(all(k in keys for k in form) for form in forms[name]) for name, _ in STAGE_OUTPUTS}
         extra = {label: fn(sample_id) in keys for label, fn in extras.items()}
@@ -275,7 +280,6 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
         if open_count > 1:
             note = f"{open_count} runs at once: they overwrite each other's outputs"
             problem = "concurrent runs"
-        record = records.get(sample_id)
         failed_stages = [t for t, st in (record or {}).get("stages", {}).items() if st != "Success"]
         if failed_stages:
             # Each failed stage with its own run (an inherited upstream stage can come from an older run).
@@ -284,10 +288,15 @@ def reconcile(keys, running: Counter = None, records: dict = None) -> dict:
                 t + (f" in {r}" if (r := runs.get(t) or record.get("run_name")) else "") for t in failed_stages
             )
             note = "; ".join(n for n in (note, f"run record: {failures} failed") if n)
-            # A core stage failing in the latest run is a problem even if an earlier run's outputs are all
-            # there; not while a retry is open, and not for an extra caller (DeepVariant) alone.
-            if record["status"] == "failed" and not open_count:
-                problem = problem or "run failed"
+        elif (record or {}).get("status") == "failed":
+            # Closed as failed with no failed stage entry: a step it couldn't name (an S3 error, a timeout), or a
+            # named stage whose job had already written Success (the task failed after it, e.g. polling the job).
+            at = record.get("failed_stage") or "step unknown"
+            note = "; ".join(n for n in (note, f"run record: run failed ({at})") if n)
+        # A core stage failing in the latest run (or the run closed as failed) is a problem even if an earlier
+        # run's outputs are all there; not while a retry is open, and not for an extra caller (DeepVariant) alone.
+        if (record or {}).get("status") == "failed" and not open_count:
+            problem = problem or "run failed"
         rows.append(
             {
                 "sample_id": sample_id,

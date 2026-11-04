@@ -7,7 +7,7 @@ about 10 GB.
 | | |
 |---|---|
 | Reads | `alignments/{id}.cram` + `.crai` (or `alignments/{id}.bam`, for imported data), `reference/{name}` (+ `.fai` if stored) |
-| Writes | `variants_deepvariant/{id}.vcf.gz`, beside the bcftools `variants/{id}.vcf.gz` |
+| Writes | `variants_deepvariant/{id}.vcf.gz`, beside the bcftools `variants/{id}.vcf.gz`; `stats/{id}/bcftools.stats.deepvariant.txt` (`bcftools stats -f PASS`: RefCall candidates excluded), also as the sample's `stats/{id}/bcftools.stats.txt` when DeepVariant is the run's caller (`PIPELINE_CALLER=deepvariant`) |
 | Command | `/opt/geyser-venv/bin/python deepvariant_task.py <id> <reference_name>` |
 | Metrics | `DeepVariant` (whole stage) plus `DeepVariant.MakeExamples`, `DeepVariant.CallVariants` and `DeepVariant.PostprocessVariants` |
 
@@ -48,11 +48,33 @@ Settings you can change. Set these on the host; `run_local.py` passes them into 
 |---|---|---|
 | `DEEPVARIANT_EXTRA_ARGS` | (none) | extra `run_deepvariant` flags, for example `--disable_small_model=true` |
 | `DEEPVARIANT_SHARDS` | CPUs in the container | `make_examples` parallelism |
+| `DEEPVARIANT_TIMEOUT_SECONDS` | no limit | stop the wrapper and fail the stage after this long |
+| `DEEPVARIANT_IDLE_TIMEOUT_SECONDS` | no limit | stop it after this long with no output at all (it looks hung) |
+| `DEEPVARIANT_FATAL_GRACE_SECONDS` | 120 | after a fatal error line (`ResourceExhaustedError` / `RESOURCE_EXHAUSTED`, usually out of GPU memory), stop it once it has been silent this long without exiting |
 | `DEEPVARIANT_MODEL_TYPE` | `WGS` | |
+| `DEEPVARIANT_CHECKPOINT` | on | `0` turns off keeping `make_examples` output for a retry (below) |
+| `DEEPVARIANT_GPU_SAMPLE_SECONDS` | 2 | seconds between GPU utilisation/memory samples (below); `0` turns sampling off |
+
+**A hung wrapper no longer blocks the stage.** On 1 Nov 2026, `call_variants` ran out of GPU memory and `run_pangenome_aware_deepvariant` never exited. The stage now runs the wrapper in its own process group and watches its output. When a limit is reached, it stops the wrapper's whole group (including steps that outlive the wrapper) and fails with the reason (`WrapperStopped`).
+- **Fatal errors:** a wrapper still printing after a fatal line counts as alive. TensorFlow's `Allocator (GPU_0_bfc) ran out of memory trying to allocate ...` lines are warnings that also appear in successful runs, so they don't count.
+- **Defaults:** the overall and idle limits are off by default, because whole-genome steps can be long and silent. The cloud job sets `DEEPVARIANT_TIMEOUT_SECONDS=3300` (below its 3600 s Batch attempt timeout) and `DEEPVARIANT_IDLE_TIMEOUT_SECONDS=900`.
+- **Settings:** a value that isn't a non-negative number fails the stage before any download. `run_local.py` passes all three variables through.
+
+**A retry skips `make_examples`.** `make_examples` is most of the run: 936 of 1,241 s for pangenome-aware DeepVariant on HG003 chr20. Neither Google wrapper can skip a step, so the stage keeps what it needs for a retry itself:
+- **When:** the wrapper fails or is stopped after `make_examples` has finished, i.e. after the wrapper has started `call_variants`.
+- **What is kept:** `make_examples`' output files and the remaining step commands, exactly as the wrapper printed them, under `intermediate/deepvariant-checkpoints/<sample>/<caller>/`. The data lake's lifecycle rule expires that prefix.
+- **On the next run:** if the inputs and settings match, the stage downloads those files and runs only `call_variants` and `postprocess_variants` (moved to the new work directory), each under the same stop limits. Matching means the same DeepVariant version, alignment and reference (name and size), graph, shard count, model type and `DEEPVARIANT_EXTRA_ARGS`. The stop limits are not part of the match.
+- **After use:** a used checkpoint is marked consumed by overwriting its manifest, because the cloud role cannot delete objects. A checkpoint made with other settings is ignored, and the stage runs in full.
+- **Off switch:** `DEEPVARIANT_CHECKPOINT=0`.
 
 There is no GPU? Build the CPU variant (`--build-arg DV_TAG=1.10.0 -t geyser-deepvariant-cpu`) and pass `--dv-image geyser-deepvariant-cpu --no-gpu`.
 
 **Where the GPU actually helps.** Of DeepVariant's three steps, only `call_variants` uses the GPU. `make_examples` and `postprocess_variants` run on the CPU. Since 1.8, a "small model" inside `make_examples` also calls the easy sites on the CPU, so `call_variants` only sees the harder ones. The stage records each step separately.
+
+**GPU utilisation and memory (#139).** While the wrapper runs, the stage samples the GPU with `nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total -lms <ms>` every `DEEPVARIANT_GPU_SAMPLE_SECONDS`. The DeepVariant part of the run record (`runs/<id>.provenance/DeepVariant.json`) gets a `gpu` entry: the model, the mean and peak utilisation and the peak memory over the whole run and per step (`steps.call_variants` ...). Each step's metric (`DeepVariant.CallVariants` ...) carries the same figures as `GpuUtilization`, `GpuUtilizationPeak` (Percent) and `GpuPeakMemory` (Megabytes). The stage also prints them after its step timings. How to read the figures:
+- **Utilisation** is nvidia-smi's: the share of each sample period in which any kernel ran. It says the GPU was busy, not how much of it was used.
+- **Memory** is the whole device's. TensorFlow reserves nearly all free memory when `call_variants` starts, so the peak shows what was *reserved*, not what the model needed. On a desktop it also includes the display's own use (about 1.7 GB here).
+- **Without a GPU** (the CPU image, CI, `--no-gpu`) there is no `nvidia-smi`: nothing is sampled or recorded. Measuring never fails the stage, and a run stopped by the limits above still records what was sampled (useful after an out-of-memory hang).
 
 Measured results (full tables in the main README):
 
@@ -118,6 +140,7 @@ is, and so are the pipeline's own BAMs: the `align` stage marks duplicates with 
   - `GEYSER_GPU_E2E=1` uses the GPU image;
   - `GEYSER_DV_E2E=1` uses the CPU image;
   - `GEYSER_DV_TESTDATA=<root>` also runs the real-data slice.
+- `tests/test_e2e_pangenome.py` is opt-in (`GEYSER_PG_E2E=1`): the real pangenome-aware image on synthetic data. `make_test_data.py --pangenome` builds a small graph of the synthetic reference (vg in Docker): the reference as the `GRCh38` path, plus six panel haplotypes. Most of them carry each planted SNP, and half of them carry five decoy SNPs the sample does not have. The test requires exactly the 10 planted SNPs, so a decoy called from the graph alone fails it. It takes about a minute on an RTX 3080. The image is 38 GB, so it is not run in CI.
 - In CI, the CPU-image E2E runs only on pull requests and when started manually. GitHub runners have no GPU. The CPU image runs the same commands and wiring, so CI still catches integration breakage. The GPU path is tested locally before merging.
 
 ## Cloud: what the infrastructure work will need (not done here)
@@ -134,7 +157,7 @@ is, and so are the pipeline's own BAMs: the `align` stage marks duplicates with 
 3. **Disk.** The default ECS GPU AMI root volume is far too small. The image is 9.8 GB compressed and 28 GB unpacked, and the stage copies the BAM to local disk. The compute environment needs a launch template with gp3 sized as below: about 100 GB for chromosome-scale inputs, 250 GB or more for a whole genome.
 4. **IAM.** The job role needs:
    - `s3:GetObject` on `alignments/*` and `reference/*`;
-   - `s3:PutObject` on `variants_deepvariant/*`;
+   - `s3:PutObject` on `variants_deepvariant/*` and `stats/*`;
    - `cloudwatch:PutMetricData`.
 5. **Networking.** `gpu_env` currently uses the private subnet. With the NAT gateway off by default (the cost-safe plan), it has no route to ECR or S3. Either move it to the public subnet with public IPs on launch, or add VPC endpoints (S3 gateway; ECR api/dkr interface endpoints, which also cost money).
 6. **Step Functions.** After `Align`, add a `Parallel` state with two branches:
@@ -170,11 +193,16 @@ None of the AWS figures has been run on AWS yet.
 | `postprocess_variants` | 17–22 s, CPU | [measured] |
 | Whole stage | **7.8 min on GPU, 12.9 min CPU-only** (defaults) | [measured] |
 | Memory | 16 shards thrashed and failed under an 8 GB cap but ran fine at 12 GB. Uncapped, the CPU-only run peaked at about 11.6 GB (batch 1024). Plan on about **0.6 GB per shard plus 2 GB**. That fits both results: 11.6 GB for 16 shards, and over 8 GB needed. | [measured] |
-| GPU memory | TensorFlow reserves all free VRAM. The run fitted in the roughly 6 GB the desktop left free on the 10 GB card. | [measured] |
+| GPU memory | TensorFlow reserves all free VRAM: 9.5 of 10 GB in use during `call_variants` (1.8 GB before it, the desktop's own). Reserved, not needed: the earlier run fitted in the roughly 6 GB the desktop left free. | [measured] |
+| GPU utilisation | Sampled every second (#139; HG003 chr20, 16 shards, 3 Nov 2026, 570 s stage, `call_variants` 132.5 s): **8% mean over the whole stage**. `make_examples` and `postprocess_variants` 1-1.4% (idle). `call_variants` 29% mean: about 21 s of CUDA/model start-up with the memory reserved but idle, then about 98 s at 47% mean, swinging between 10% and 100% as the GPU waits for the CPU to feed it examples. | [measured] |
 | Input | 1.1 GB BAM, 65 MB reference | [measured] |
 | Intermediate files | **not measured.** Run `du` on the intermediate directory before sizing whole-genome volumes. | — |
 
 ### What that means for the compute environment
+
+- **The GPU is not the bottleneck.** Even inside `call_variants` it is busy only about half the time, and over the whole stage it idles 92% of the time. A faster GPU would barely change the stage time. What matters is the vCPUs for `make_examples` and the CPU-side input pipeline of `call_variants`. With 4 vCPUs (g6.xlarge / g5.xlarge) the share of idle GPU time only grows. The cloud figures come from the run record's `gpu` entry of the next GPU checkpoint run.
+
+- **Batch size and shards, measured (#139, `docs/figures/dv-batch-shards.png`).** On the RTX 3080 with HG003 chr20, `make_examples` shards set the stage time: about 8 min at 16, 9-10 at 8, 13.5-16 at 4. `call_variants` takes 100-108 s at batch 128-512 but 124-131 s at Google's default 1,024. **Use `--call_variants_extra_args=batch_size=256` (or 512) on 10-16 GB cards.** Neither setting changes the calls beyond GPU run-to-run noise (at most 2 PASS records of 105,403).
 
 - **The current instance types are too small for `make_examples`.**
   - `gpu_env` offers `g4dn.xlarge`, `g5.xlarge` and `g5.2xlarge`, which have 4–8 vCPUs.

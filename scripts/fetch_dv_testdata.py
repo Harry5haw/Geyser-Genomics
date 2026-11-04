@@ -18,6 +18,10 @@ Datasets (from DeepVariant's public bucket, https://storage.googleapis.com/deepv
   hg003-30x-chr20          HG003 from the same 30x set and pipeline as hg005-chr20, with the same truth as
                            hg003-chr20. Sample HG003_30x_chr20. The control for HG005: same sequencing, coverage,
                            aligner and reference, so ancestry is what differs.
+  hg003-chr20-vg           The same HG003 35x reads as hg003-chr20, aligned by Google with vg giraffe 1.55.0 to the
+                           whole-genome HPRC v1.1 graph (haplotype sampling, surjected to GRCh38), then cut to chr20
+                           (DeepVariant's pangenome-aware VG case study). 947 MB BAM, same truth as hg003-chr20.
+                           Sample HG003_chr20_vg. Unlike the BWA BAM it has no duplicate marking, as published.
 
 Written with the pipeline's key layout, so the DeepVariant stage runs on it directly:
 
@@ -62,6 +66,10 @@ HPRC_GRCH38 = (
     "https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/freeze1/minigraph-cactus/"
     "hprc-v1.1-mc-grch38/"
 )
+HPRC_GRCH38_R2_EVAL = (
+    "https://s3-us-west-2.amazonaws.com/human-pangenomics/pangenomes/freeze/release2/minigraph-cactus/v2.0/"
+    "benchmark-graphs/hprc-v2.0-mc-grch38-eval/"
+)
 PANGENOMES = {
     "chr20": {
         "url": HPRC_GRCH38 + "hprc-v1.1-mc-grch38.chroms/chr20.vg",
@@ -74,8 +82,31 @@ PANGENOMES = {
         "size": 3289083600,
         "key": "pangenome/hprc-v1.1-mc-grch38.gbz",
     },
+    # HPRC release 2 (v2.0), the benchmark ("-eval") build: HG002, HG005 and NA19240 are held out (HPRC README), so
+    # it is the one to score GIAB samples against. HG002 is HG003's son: the main r2 graph holds one of HG003's own
+    # haplotypes. Its published chroms/chr20.vg is 11 GB (464 haplotypes) and needs ~22 GB to convert, so chr20 is cut
+    # out of the whole-genome GBZ instead (vg chunk -C on the GRCh38 chr20 path, then vg gbwt), see gbz_chunk_command.
+    "r2-chr20": {
+        "url": HPRC_GRCH38_R2_EVAL + "hprc-v2.0-mc-grch38-eval.gbz",
+        "size": 5386150200,
+        "key": "pangenome/hprc-v2.0-mc-grch38-eval.gbz",
+        "build": "pangenome/hprc-v2.0-mc-grch38-eval.chr20.gbz",
+        "from": "gbz",
+        "path": "GRCh38#0#chr20",
+    },
+    # A FIRST LOOK, NOT THE SAME KIND OF GRAPH: chr20 built from the r2 benchmark build's VCF (vg construct + vg gbwt)
+    # instead of cut from its Minigraph-Cactus GBZ, because cutting needs ~18-20 GB of memory (see "r2-chr20").
+    # Top-level sites only (INFO/LV=0); overlapping variants are dropped per haplotype (--discard-overlaps); same
+    # 229 samples (HG002, HG005, NA19240 held out). An r1.1-vs-this difference can partly be the construction method.
+    "r2-chr20-vcf": {
+        "url": HPRC_GRCH38_R2_EVAL + "hprc-v2.0-mc-grch38-eval.vcf.gz",
+        "build": "pangenome/hprc-v2.0-mc-grch38-eval.chr20.vcf-construct.gbz",
+        "from": "vcf",
+        "contig": "chr20",
+        "path": "GRCh38#0#chr20",
+    },
 }
-GRCH38_DATASETS = {"hg003-chr20", "hg003-30x-chr20", "hg005-chr20"}
+GRCH38_DATASETS = {"hg003-chr20", "hg003-chr20-vg", "hg003-30x-chr20", "hg005-chr20"}
 # vg release used by Google's pangenome-aware VG case study.
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"
 # The whole-genome graph marks both references; keep them as references in the chr20 graph too.
@@ -152,6 +183,31 @@ DATASETS = {
                 "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed",
                 13219856,
                 "truth/HG003_chr20.bed",
+                "only:chr20",
+            ),
+        ],
+    },
+    "hg003-chr20-vg": {
+        "sample": "HG003_chr20_vg",
+        "reference": "GRCh38_chr20.fa",
+        "files": [
+            (
+                "vg-case-study/HG003.novaseq.pcr-free.35x.vg-1.55.0.chr20.bam",
+                947058313,
+                "alignments/HG003_chr20_vg.bam",
+                "copy",
+            ),
+            (GRCH38, None, "reference/GRCh38_chr20.fa", "fasta:chr20"),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark.vcf.gz",
+                147212428,
+                "truth/HG003_chr20_vg.vcf.gz",
+                "only:chr20",
+            ),
+            (
+                "case-study-testdata/HG003_GRCh38_1_22_v4.2.1_benchmark_noinconsistent.bed",
+                13219856,
+                "truth/HG003_chr20_vg.bed",
                 "only:chr20",
             ),
         ],
@@ -355,7 +411,8 @@ def dataset_files(name, pangenome=None, stratifications=False, annotation=False)
         )
     if pangenome:
         graph = PANGENOMES[pangenome]
-        files.append((graph["url"], graph["size"], graph["key"], "copy"))
+        if "key" in graph:  # a VCF-built graph reads its VCF remotely while building: nothing to download first
+            files.append((graph["url"], graph["size"], graph["key"], "copy"))
     if stratifications:
         files += stratification_files(dataset_contig(name))
     if annotation:
@@ -416,14 +473,91 @@ def vg_build_command(root, vg_key, gbz_key, memory="8g"):
     ]
 
 
-def build_chr20_gbz(root, force=False):
-    graph = PANGENOMES["chr20"]
+def gbz_chunk_command(root, gbz_key, out_key, path, memory="20g"):
+    """docker run that cuts one chromosome out of a whole-genome GBZ, haplotypes included, into its own GBZ.
+
+    vg chunk -C writes the connected component holding the reference path (Minigraph-Cactus graphs have one
+    component per chromosome) as GFA with every haplotype in it; vg gbwt -G indexes those walks into a GBZ, keeping
+    the HPRC reference samples as references, as vg_build_command does for a .vg. The GFA is removed afterwards.
+    """
+    gbz, out = f"/data/{gbz_key}", f"/data/{out_key}"
+    gfa = out + ".gfa"
+    refs = " ".join(f"--set-reference {s}" for s in REFERENCE_SAMPLES)
+    script = (
+        f"set -e; vg chunk -x {gbz} -p {path} -C -O gfa > {gfa}; "
+        f"vg gbwt -G {gfa} --gbz-format -g {out}.part {refs}; mv {out}.part {out}; rm -f {gfa}"
+    )
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "--memory",
+        memory,
+        "--mount",
+        f"type=bind,source={os.path.abspath(root)},target=/data",
+        VG_IMAGE,
+        "bash",
+        "-c",
+        script,
+    ]
+
+
+def vcf_graph_commands(root, graph, reference_key, app_image=APP_IMAGE, memory="12g"):
+    """Two docker runs that build a chromosome graph from a pangenome VCF ("from": "vcf" entries).
+
+    1. geyser-app (bcftools, samtools): the contig's top-level sites (INFO/LV=0) read remotely by index, with the
+       contig renamed to the reference path name (GRCh38#0#chr20, what pangenome-aware DeepVariant looks for), and
+       the reference FASTA renamed the same way.
+    2. vg: vg construct (with alt paths), the VCF haplotypes (vg gbwt -v, --discard-overlaps) merged with the
+       reference path (vg gbwt -E), then the GBZ with GRCh38 as the reference sample.
+    Work files stay in pangenome/<build stem>.work/ next to the GBZ.
+    """
+    contig, path = graph["contig"], graph["path"]
+    gbz = f"/data/{graph['build']}"
+    work = gbz[: -len(".gbz")] + ".work"
+    prep = (
+        f"set -e -o pipefail; mkdir -p {work}; cd {work}; "
+        f"samtools faidx /data/{reference_key} {contig} | sed '1s/.*/>{path}/' > ref.fa; samtools faidx ref.fa; "
+        f"bcftools view -i 'INFO/LV=0' -r {contig} {graph['url']} "
+        f'| awk \'BEGIN{{OFS="\\t"}} /^##contig/{{next}} '
+        f'/^#CHROM/{{print "##contig=<ID={path}>"; print; next}} /^#/{{print; next}} {{$1="{path}"; print}}\' '
+        f"| bcftools view -Oz -o vars.vcf.gz -; bcftools index -t vars.vcf.gz"
+    )
+    build = (
+        f"set -e; cd {work}; trap 'rm -f {gbz}.part' ERR; "
+        f"vg construct -r ref.fa -v vars.vcf.gz -a -m 1024 -t 8 > graph.vg; "
+        f"vg gbwt -x graph.vg -o haplotypes.gbwt -v vars.vcf.gz --discard-overlaps; "
+        f"vg gbwt -x graph.vg -o reference.gbwt -E; "
+        f"vg gbwt -m -o all.gbwt haplotypes.gbwt reference.gbwt; "
+        f"vg gbwt -x graph.vg all.gbwt --gbz-format -g {gbz}.part --set-reference GRCh38; mv {gbz}.part {gbz}"
+    )
+    mount = ["--mount", f"type=bind,source={os.path.abspath(root)},target=/data"]
+    return [
+        ["docker", "run", "--rm", "--memory", "4g", "-w", "/tmp", *mount, app_image, "bash", "-c", prep],
+        ["docker", "run", "--rm", "--memory", memory, *mount, VG_IMAGE, "bash", "-c", build],
+    ]
+
+
+def build_chr20_gbz(root, force=False, pangenome="chr20", reference_key="reference/GRCh38_chr20.fa"):
+    """Build the chromosome GBZ a graph entry names in "build": from a .vg (r1.1) or cut from a whole GBZ (r2)."""
+    graph = PANGENOMES[pangenome]
     dest = os.path.join(root, *graph["build"].split("/"))
     if os.path.exists(dest) and not force:
         print(f"  exists   {dest}")
         return
-    print(f"  building {graph['build']} with {VG_IMAGE} (about 4 minutes, under 3 GB of memory)", flush=True)
-    subprocess.run(vg_build_command(root, graph["key"], graph["build"]), check=True)
+    if graph.get("from") == "vcf":
+        print(f"  building {graph['build']} from the {graph['contig']} sites of {graph['url']} (VCF construction)")
+        for cmd in vcf_graph_commands(root, graph, reference_key):
+            subprocess.run(cmd, check=True)
+        print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
+        return
+    if graph.get("from") == "gbz":
+        print(f"  building {graph['build']} from {graph['key']} with {VG_IMAGE} (vg chunk + vg gbwt)", flush=True)
+        cmd = gbz_chunk_command(root, graph["key"], graph["build"], graph["path"])
+    else:
+        print(f"  building {graph['build']} with {VG_IMAGE} (about 4 minutes, under 3 GB of memory)", flush=True)
+        cmd = vg_build_command(root, graph["key"], graph["build"])
+    subprocess.run(cmd, check=True)
     print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
 
 
@@ -480,7 +614,7 @@ def fetch_dataset(
                 raise ValueError(how)
         print(f"  wrote    {dest} ({os.path.getsize(dest):,} bytes)", flush=True)
     if pangenome and "build" in PANGENOMES[pangenome]:
-        build_chr20_gbz(root, force)
+        build_chr20_gbz(root, force, pangenome)
     if stratifications:
         tsv_key, text = stratification_tsv(dataset_contig(name))
         with open(os.path.join(root, *tsv_key.split("/")), "w", encoding="utf-8", newline="\n") as fh:
@@ -499,8 +633,9 @@ def main(argv=None):
         nargs="?",
         const="chr20",
         choices=sorted(PANGENOMES),
-        help="also get the HPRC v1.1 GRCh38 pangenome graph for --caller pangenome: chr20 (default; "
-        "built locally with vg, 72 MB) or full (3.29 GB, needs ~11 GB of shared memory)",
+        help="also get an HPRC GRCh38 pangenome graph for --caller pangenome: chr20 (default; v1.1, built "
+        "locally with vg, 72 MB), full (v1.1, 3.29 GB, needs ~11 GB of shared memory) or r2-chr20 (release 2 "
+        "benchmark graph without HG002/HG005, 5.4 GB download, chr20 cut out locally)",
     )
     p.add_argument(
         "--stratifications",

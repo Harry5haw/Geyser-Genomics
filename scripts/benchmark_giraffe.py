@@ -24,7 +24,6 @@ Steps (each skipped when its output exists, so an interrupted run resumes; timin
 """
 
 import argparse
-import csv
 import os
 import shutil
 import sys
@@ -32,8 +31,13 @@ import time
 
 import benchmark_aligners as ba
 import benchmark_happy
+import benchmark_history
 import run_local
 
+# Benchmark aligner keys -> the aligner's name in the benchmark history.
+ALIGNER_NAMES = {"giraffe": "vg giraffe"}
+# score_config(history=...) keys: benchmark_happy's history flags.
+HISTORY_FLAGS = ("aligner", "alignment", "coverage", "graph")
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"  # the vg release Google's VG case study uses
 KMC_IMAGE = "quay.io/biocontainers/kmc:3.2.4--h5814d7d_6"
 KMER_LENGTH = 29  # vg haplotypes' default minimizer k; the KFF counts must use the same k
@@ -225,7 +229,111 @@ def caller_settings(caller, env, dv_memory, pg_shards, pg_memory):
     """
     if caller != "pangenome":
         return env, dv_memory
-    return {**env, "DEEPVARIANT_SHARDS": str(pg_shards)}, pg_memory
+    return {**env, "DEEPVARIANT_SHARDS": str(pg_shards)}, pg_memory or dv_memory
+
+
+def file_identity(path):
+    """(size, mtime) of a file, to tell when an input was replaced since an output was made from it."""
+    st = os.stat(path)
+    return [st.st_size, st.st_mtime_ns]
+
+
+def call_settings(caller, env, pangenome=None):
+    """What decides a caller's output: the caller, its DeepVariant flags (shard count only changes speed) and, when
+    one is chosen, the pangenome graph. The default graph is left out so records made before graphs could be chosen
+    still match."""
+    settings = {"caller": caller, **{k: v for k, v in sorted(env.items()) if k != "DEEPVARIANT_SHARDS"}}
+    return {**settings, "graph": pangenome} if pangenome else settings
+
+
+def remove_caller_outputs(root, sid, caller):
+    """Delete one caller's VCF and hap.py files for a sample (other callers' results stay)."""
+    vcf = run_local.vcf_path(root, caller, sid)
+    if os.path.exists(vcf):
+        os.remove(vcf)
+    happy_dir = ba.path_of(root, f"benchmarks/{sid}")
+    if os.path.isdir(happy_dir):
+        for name in os.listdir(happy_dir):
+            if name.startswith(f"{caller}."):
+                os.remove(os.path.join(happy_dir, name))
+
+
+def score_config(
+    root,
+    out_dir,
+    cpath,
+    label,
+    sid,
+    caller,
+    env,
+    dv_memory,
+    reference,
+    base,
+    region=None,
+    stratification=None,
+    subsets=("*",),
+    *,
+    history=None,
+    pangenome=None,
+):
+    """Calls and hap.py for one configuration, each redone only when missing or stale. Returns
+    (summary, extended, calls info) or None if a step failed.
+
+    history: what produced the calls, for the benchmark history: HISTORY_FLAGS keys (benchmark_happy's history
+    flags; "graph" is the pangenome caller's graph). Keyword-only, so a new positional parameter can't land in it.
+
+    Calls are redone when the alignment file or the caller settings differ from those recorded in cpath. A VCF with
+    no record is reused and reported as calls_provenance 'unrecorded' ('legacy' for records from before settings were
+    kept). hap.py is redone when the VCF, region or stratification differ from its own record.
+    """
+    unknown = set(history or {}) - set(HISTORY_FLAGS)
+    if unknown:
+        raise ValueError(f"not benchmark history fields: {sorted(unknown)}")
+    aln = ba.alignment_path(root, sid)
+    vcf = run_local.vcf_path(root, caller, sid)
+    saved = ba.load_json(cpath)
+    want = {"settings": call_settings(caller, env, pangenome), "alignment": file_identity(aln)}
+    stale = saved is not None and "settings" in saved and {k: saved.get(k) for k in want} != want
+    if not os.path.exists(vcf) or stale:
+        print(f">>> calls: {label}" + (" (alignment or settings changed: calling again)" if stale else ""), flush=True)
+        remove_caller_outputs(root, sid, caller)
+        started = time.monotonic()
+        if run_caller(root, sid, reference, caller, env, dv_memory, pangenome) != 0:
+            return None
+        saved = {
+            "calls_wall_s": round(time.monotonic() - started, 1),
+            "calls_shards": env.get("DEEPVARIANT_SHARDS", "default"),
+            **want,
+        }
+        ba.save_json(cpath, saved)
+    provenance = "unrecorded" if saved is None else ("recorded" if "settings" in saved else "legacy")
+    if sid != base:
+        ba.ensure_truth(root, base, sid)
+    prefix = ba.path_of(root, f"benchmarks/{sid}/{caller}")
+    hpath = os.path.join(out_dir, f"happy_{sid}_{caller}.json")
+    hwant = {"vcf": file_identity(vcf), "region": region, "stratification": stratification}
+    extended_csv = prefix + ".extended.csv"
+    if (
+        not os.path.exists(extended_csv)
+        or ba.load_json(hpath) != hwant
+        or (stratification and not benchmark_happy.has_subsets(extended_csv, subsets))
+    ):
+        args = ["--root", root, "--sample", sid, "--reference", reference, "--callers", caller]
+        args += ["--caller-settings", benchmark_history.settings_tag(env.get("DEEPVARIANT_EXTRA_ARGS", ""))]
+        for field, value in (history or {}).items():
+            args += [f"--{field.replace('_', '-')}", value] if value else []
+        args += ["--region", region] if region else []
+        args += ["--stratification", stratification] if stratification else []
+        if benchmark_happy.main(args) != 0:
+            return None
+        ba.save_json(hpath, hwant)
+    info = {"calls_provenance": provenance}
+    info.update({k: saved[k] for k in ("calls_wall_s", "calls_shards") if saved and k in saved})
+    return (
+        benchmark_happy.read_summary(prefix + ".summary.csv"),
+        benchmark_happy.read_extended(extended_csv, subsets),
+        info,
+    )
 
 
 def link_or_copy(src, dest):
@@ -250,8 +358,11 @@ def remove_downstream(root, sid, callers=("deepvariant", "pangenome")):
     shutil.rmtree(ba.path_of(root, f"benchmarks/{sid}"), ignore_errors=True)
 
 
-def run_caller(root, sid, reference, caller, env, dv_memory):
-    """run_local.py --skip-to-variants for one caller, with DeepVariant settings passed through the environment."""
+def run_caller(root, sid, reference, caller, env, dv_memory, pangenome=None):
+    """run_local.py --skip-to-variants for one caller, with DeepVariant settings passed through the environment.
+
+    pangenome: graph under pangenome/ for the pangenome caller (default: run_local's, the HPRC v1.1 chr20 graph).
+    """
     saved = {k: os.environ.get(k) for k in run_local.DEEPVARIANT_ENV_VARS}
     try:
         for k in run_local.DEEPVARIANT_ENV_VARS:
@@ -271,6 +382,7 @@ def run_caller(root, sid, reference, caller, env, dv_memory):
                 "--dv-memory",
                 dv_memory,
             ]
+            + (["--pangenome", pangenome] if pangenome else [])
         )
     finally:
         for k, v in saved.items():
@@ -334,7 +446,7 @@ def main(argv=None):
         default=6,
         help="make_examples workers for pangenome DV (6 = earlier benchmarks; the chr20 graph fits more)",
     )
-    p.add_argument("--pg-memory", default="14g", help="memory cap for the pangenome DV container")
+    p.add_argument("--pg-memory", help="memory cap for pangenome DV (default: each configuration's own, 14g)")
     p.add_argument("--image", default="geyser-app")
     a = p.parse_args(argv)
 
@@ -417,30 +529,31 @@ def main(argv=None):
             link_or_copy(source, ba.path_of(root, f"alignments/{sid}.{source.rsplit('.', 1)[-1]}"))
         env, dv_memory = caller_settings(caller, env, dv_memory, a.pg_shards, a.pg_memory)
         cpath = os.path.join(out_dir, f"calls_{suffix}_{caller}.json")
-        if not os.path.exists(run_local.vcf_path(root, caller, sid)):
-            print(f">>> calls: {label}", flush=True)
-            started = time.monotonic()
-            if run_caller(root, sid, a.reference, caller, env, dv_memory) != 0:
-                return 1
-            ba.save_json(
-                cpath,
-                {
-                    "calls_wall_s": round(time.monotonic() - started, 1),
-                    "calls_shards": env.get("DEEPVARIANT_SHARDS", "default"),
-                },
-            )
-        ba.ensure_truth(root, a.base, sid)
-        prefix = ba.path_of(root, f"benchmarks/{sid}/{caller}")
-        if not os.path.exists(prefix + ".extended.csv") or (a.stratification and not _has_subsets(prefix, subsets)):
-            args = ["--root", root, "--sample", sid, "--reference", a.reference, "--callers", caller]
-            args += ["--region", a.region] if a.region else []
-            args += ["--stratification", a.stratification] if a.stratification else []
-            if benchmark_happy.main(args) != 0:
-                return 1
-        summary = benchmark_happy.read_summary(prefix + ".summary.csv")
-        extended = benchmark_happy.read_extended(prefix + ".extended.csv", subsets)
+        scored = score_config(
+            root,
+            out_dir,
+            cpath,
+            label,
+            sid,
+            caller,
+            env,
+            dv_memory,
+            a.reference,
+            a.base,
+            a.region,
+            a.stratification,
+            subsets,
+            history={
+                "aligner": ALIGNER_NAMES.get(aligner, aligner),
+                # the graph giraffe aligned to (the pangenome caller's own graph is run_local's default)
+                **({"alignment": f"vg giraffe to pangenome/{a.graph}"} if aligner == "giraffe" else {}),
+            },
+        )
+        if scored is None:
+            return 1
+        summary, extended, info = scored
         cost = giraffe_cost(costs) if aligner == "giraffe" else bwa_mem2_cost(bwamem2)
-        cost.update(ba.load_json(cpath) or {})
+        cost.update(info)
         rows.append(result_row(label, aligner, sid, caller, summary, extended, cost))
 
     csv_path = ba.path_of(root, f"benchmarks/giraffe_{a.base}.csv")
@@ -450,13 +563,6 @@ def main(argv=None):
         fh.write(text)
     print(f"\n{text}\nWritten to {csv_path}")
     return 0
-
-
-def _has_subsets(prefix, subsets):
-    """True if an existing hap.py extended.csv already has rows for every stratification region."""
-    with open(prefix + ".extended.csv", newline="", encoding="utf-8") as fh:
-        found = {row["Subset"] for row in csv.DictReader(fh)}
-    return all(s in found for s in subsets)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,11 @@ This plays the part of the cloud orchestration:
   * AWS Batch       -> each stage runs in a fresh container from the same image.
   * S3              -> a local folder (default ./local_bucket) mounted at /data.
 
+After variant calling, the quality gate (tasks.py gate, #144) checks the run's QC statistics and
+writes qc_reports/<id>.gate.json, as the state machine's last step does in the cloud. GATE_MODE=warn
+(default) only warns on a failed verdict, GATE_MODE=fail stops the run. For make_test_data.py samples (truth/<id>.json)
+it uses the synthetic thresholds unless GATE_CONFIG is set; --no-gate skips it.
+
 Typical use:
     docker build -f Dockerfile -t geyser-app .
     python scripts/make_test_data.py
@@ -30,6 +35,14 @@ Variant caller (--caller):
     python scripts/fetch_dv_testdata.py --dataset hg003-chr20 --pangenome        # chr20 graph (72 MB)
     python scripts/run_local.py --sample HG003_chr20 --reference GRCh38_chr20.fa --caller pangenome \
         --skip-to-variants --check --dv-memory 14g
+
+Aligner (--aligner): bwa-mem2 (default), bwa, or giraffe: vg giraffe on a pangenome graph (#146), in its own
+image (app-giraffe/, built on geyser-app). The graph is pangenome/<--pangenome> (default: <reference stem>.gbz,
+what make_test_data.py --pangenome writes); GIRAFFE_SAMPLING=off maps to the whole graph instead of a sampled one.
+
+    docker build -f app-giraffe/Dockerfile -t geyser-giraffe .
+    python scripts/make_test_data.py --pangenome
+    python scripts/run_local.py --sample SYNTH001 --reference synthetic_ref.fa --aligner giraffe --check
 
 --check compares each VCF against truth/<sample>.json (from make_test_data.py), or against
 truth/<sample>.vcf.gz + truth/<sample>.bed (from fetch_dv_testdata.py) as a counts-only report.
@@ -76,10 +89,48 @@ DEFAULT_PANGENOME = "hprc-v1.1-mc-grch38.chr20.gbz"
 # Google's case studies run the pangenome container with --shm-size 12gb.
 DEFAULT_PANGENOME_SHM = "12g"
 DEEPVARIANT_PYTHON = "/opt/geyser-venv/bin/python"
-DEEPVARIANT_ENV_VARS = ("DEEPVARIANT_EXTRA_ARGS", "DEEPVARIANT_SHARDS", "DEEPVARIANT_MODEL_TYPE")
-# Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2;
-# ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz).
-PIPELINE_ENV_VARS = ("ALIGNER", "ANNOTATE")
+DEEPVARIANT_ENV_VARS = (
+    "DEEPVARIANT_EXTRA_ARGS",
+    "DEEPVARIANT_SHARDS",
+    "DEEPVARIANT_MODEL_TYPE",
+    "DEEPVARIANT_TIMEOUT_SECONDS",
+    "DEEPVARIANT_IDLE_TIMEOUT_SECONDS",
+    "DEEPVARIANT_FATAL_GRACE_SECONDS",
+    "DEEPVARIANT_CHECKPOINT",
+    "DEEPVARIANT_GPU_SAMPLE_SECONDS",
+)
+# Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2
+# (--aligner sets it too); GIRAFFE_GRAPH, GIRAFFE_SAMPLING and KMC_MEMORY_GB tune ALIGNER=giraffe (tasks.py);
+# ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz);
+# GATE_MODE (warn | fail) and GATE_CONFIG (a thresholds file) set up the quality gate.
+PIPELINE_ENV_VARS = (
+    "ALIGNER",
+    "GIRAFFE_GRAPH",
+    "GIRAFFE_SAMPLING",
+    "KMC_MEMORY_GB",
+    "ANNOTATE",
+    "GATE_MODE",
+    "GATE_CONFIG",
+    "GEYSER_STREAM_REGIONS",  # 0: calling shards download the CRAM instead of reading their region in place
+)
+ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
+# The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
+# The gate's threshold profiles (gate/thresholds/<profile>.toml), as the state machine's gate_profile
+# input names them (Check_Gate_Profile; tests/test_consistency.py keeps the three in step).
+GATE_PROFILES = ("default", "synthetic", "smoke")
+# Where the image has gate/thresholds/ (Dockerfile: $GATE_THRESHOLDS_DIR).
+IMAGE_THRESHOLDS_DIR = "/opt/geyser-gate/thresholds"
+
+
+def gate_profile_config(profile, runner):
+    """GATE_CONFIG for a threshold profile: its file in the image, or in the repo for --runner host."""
+    if profile not in GATE_PROFILES:
+        raise ValueError(f"gate profile must be one of {GATE_PROFILES}, got {profile!r}")
+    if runner == "docker":
+        return f"{IMAGE_THRESHOLDS_DIR}/{profile}.toml"
+    return os.path.join(REPO_ROOT, "gate", "thresholds", f"{profile}.toml")
+
+
 # ALTs that are not real variants (gVCF-style placeholders, DeepVariant RefCall rows).
 NON_VARIANT_ALTS = {".", "<*>", "<NON_REF>"}
 
@@ -132,11 +183,22 @@ def pipeline_jobs(
     pg_shm=DEFAULT_PANGENOME_SHM,
     regions=None,
     shard_window=None,
+    gate=False,
+    gate_config=None,
+    align_image=None,
+    align_env=None,
+    chunks=None,
 ):
-    """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome).
+    """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome, env).
+
+    align_image / align_env: the align job's image and extra environment (--aligner giraffe: geyser-giraffe,
+    ALIGNER=giraffe and the graph); default app_image and nothing.
 
     regions + shard_window: scatter-gather variant calling, as the Map state will run it (#108): one
     'variants --region' job per region, then 'variants --window' merging them into the usual VCF.
+    gate: the quality gate, last, when the run made the sample's stats (bcftools, or a DeepVariant-only
+    run's PASS-call stats, #147; not a caller added with skip_to_variants); gate_config: its
+    GATE_CONFIG for this sample (None: the host's GATE_CONFIG, else the built-in thresholds).
     """
     if caller not in CALLERS:
         raise ValueError(f"unknown caller {caller!r}")
@@ -157,14 +219,24 @@ def pipeline_jobs(
                 {"name": stage, "cmd": cmd + ["--window", str(shard_window)], "image": app_image, "gpus": False}
             )
             continue
-        jobs.append(
-            {
-                "name": stage,
-                "cmd": stage_command(stage, sample_id, reference_name, needs_ref),
-                "image": app_image,
-                "gpus": False,
-            }
-        )
+        job = {
+            "name": stage,
+            "cmd": stage_command(stage, sample_id, reference_name, needs_ref),
+            "image": app_image,
+            "gpus": False,
+        }
+        if stage == "align":
+            job["image"] = align_image or app_image
+            if align_env:
+                job["env"] = dict(align_env)
+            if chunks:  # v1.3's large route, as the state machine runs it: check and split, align each chunk, merge
+                jobs += large_route_jobs(sample_id, reference_name, chunks, job["image"], job.get("env"))
+                continue
+        jobs.append(job)
+    # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
+    # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
+    caller_owns_stats = "bcftools" not in sets and not skip_to_variants
+    caller_env = {"PIPELINE_CALLER": sets[0]} if caller_owns_stats else {}
     if "deepvariant" in sets:
         jobs.append(
             {
@@ -172,6 +244,7 @@ def pipeline_jobs(
                 "cmd": deepvariant_command(sample_id, reference_name),
                 "image": dv_image,
                 "gpus": gpus,
+                "env": caller_env if sets == ["deepvariant"] else {},
             }
         )
     if "pangenome" in sets:
@@ -184,9 +257,63 @@ def pipeline_jobs(
                 "image": pg_image,
                 "gpus": gpus,
                 "shm": pg_shm,
+                "env": caller_env if sets == ["pangenome"] else {},
             }
         )
+    # The gate judges the sample's stats: bcftools', or a DeepVariant-only run's (#147), as in the cloud. Not
+    # an add-on caller (--skip-to-variants without bcftools): the stats it would judge are an earlier run's.
+    if gate and ("bcftools" in sets or caller_owns_stats):
+        # Last, so a failed gate (GATE_MODE=fail) can't keep DeepVariant or --check from running.
+        job = {
+            "name": "gate",
+            "cmd": stage_command("gate", sample_id, None, False),
+            "image": app_image,
+            "gpus": False,
+        }
+        if gate_config:
+            job["env"] = {"GATE_CONFIG": gate_config}
+        jobs.append(job)
     return jobs
+
+
+def large_route_jobs(sample_id, reference_name, chunks, image, env=None):
+    """preflight --chunks N, align_chunk --chunk 0..N-1, align_merge: the large route's align (one RUN_NAME for all)."""
+
+    def job(name, cmd):
+        return {"name": name, "cmd": cmd, "image": image, "gpus": False, **({"env": dict(env)} if env else {})}
+
+    base = ["python", "tasks.py"]
+    jobs = [job("preflight", base + ["preflight", sample_id, "--chunks", str(chunks)])]
+    jobs += [
+        job("align_chunk", base + ["align_chunk", sample_id, reference_name, "--chunk", str(i)]) for i in range(chunks)
+    ]
+    return jobs + [job("align_merge", base + ["align_merge", sample_id, reference_name])]
+
+
+def reference_problem(root, reference_name):
+    """Why this reference can't be used, or None: the state machine's two checks before any job.
+
+    Check_Reference_Name: a non-empty string without a slash (a file name under reference/).
+    Check_Reference: reference/<name> exists (locally, under --root). tests/test_consistency.py keeps
+    the rules in step with the state machine.
+    """
+    if not isinstance(reference_name, str) or not reference_name or "/" in reference_name:
+        return f"reference {reference_name!r} is not a file name under reference/ (a non-empty string without a slash)"
+    path = os.path.join(root, "reference", reference_name)
+    if not os.path.isfile(path):
+        return f"reference/{reference_name} is not under {root} (in the cloud: ReferenceNotFound before any job)"
+    return None
+
+
+def align_settings(aligner, pangenome, giraffe_image):
+    """(align image, align env) for --aligner: giraffe runs in its own image with ALIGNER=giraffe and, when
+    --pangenome was given, GIRAFFE_GRAPH; any other aligner in the pipeline image (None) with ALIGNER set."""
+    if not aligner:
+        return None, {}
+    env = {"ALIGNER": aligner}
+    if aligner != "giraffe":
+        return None, env
+    return giraffe_image, {**env, **({"GIRAFFE_GRAPH": pangenome} if pangenome else {})}
 
 
 def local_regions(root, reference_name, window):
@@ -199,8 +326,43 @@ def local_regions(root, reference_name, window):
     return tasks.reference_regions(os.path.join(root, "reference", reference_name), window)
 
 
-def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None):
+def gate_config_for(root, sample_id, runner, profile=None):
+    """GATE_CONFIG for the gate job: an explicit --gate-profile's file, else the host's GATE_CONFIG if set
+    (for docker, a host file in the repo's gate/thresholds/ or under the storage root becomes its path
+    in the container), else the synthetic thresholds for a make_test_data.py sample (it has
+    truth/<id>.json), else None (built-in thresholds)."""
+    if profile:
+        return gate_profile_config(profile, runner)
+    host = os.environ.get("GATE_CONFIG")
+    if host:
+        return container_path(host, root) if runner == "docker" else None
+    if os.path.exists(os.path.join(root, "truth", f"{sample_id}.json")):
+        return gate_profile_config("synthetic", runner)
+    return None
+
+
+def container_path(host_path, root):
+    """Where a host file is inside the stage container: the repo's gate/thresholds/ files are in the
+    image, the storage root is mounted at /data. Anything else (a container path already) as it is."""
+    if not os.path.isfile(host_path):
+        return host_path
+    path = os.path.abspath(host_path)
+    bases = (
+        (os.path.join(REPO_ROOT, "gate", "thresholds"), IMAGE_THRESHOLDS_DIR),
+        (root, "/data"),
+    )
+    for base, target in bases:
+        base = os.path.abspath(base)
+        if os.path.commonpath([path, base]) == base:
+            return target + "/" + os.path.relpath(path, base).replace(os.sep, "/")
+    return host_path
+
+
+def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None, label=None):
+    """label: a docker label on the container (e.g. geyser.owner=t2), so a watchdog can stop exactly these."""
     full = ["docker", "run", "--rm"]
+    if label:
+        full += ["--label", label]
     if gpus:
         full += ["--gpus", "all"]
     if shm:
@@ -227,19 +389,20 @@ def run_env(sample_id, image):
     }
 
 
-def run_job(job, runner, root, dv_memory=None, env=None):
-    """env: extra variables for the stage (run_env), on top of the pass-through knobs."""
+def run_job(job, runner, root, dv_memory=None, env=None, memory=None, label=None):
+    """env: extra variables for the stage (run_env), on top of the pass-through knobs. memory: a hard cap for
+    the pipeline-stage containers (DeepVariant's is dv_memory); label: a docker label on every container."""
     if runner == "docker":
         # Pipeline and DeepVariant knobs are passed through to the container when set on the host
         # (the host runner inherits the whole environment anyway).
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
+        extra.update(job.get("env") or {})
         extra.update(env or {})
-        memory = None
         if job["name"] in ("deepvariant", "pangenome"):
             extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
         return subprocess.run(
-            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"))
+            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"), label)
         ).returncode
     if job["name"] in ("deepvariant", "pangenome"):
         print("DeepVariant only runs in its container (use --runner docker).")
@@ -249,6 +412,7 @@ def run_job(job, runner, root, dv_memory=None, env=None):
     host_env = {
         **os.environ,
         **(env or {}),
+        **(job.get("env") or {}),
         "STORAGE_BACKEND": "local",
         "METRICS_BACKEND": "local",
         "LOCAL_STORAGE_DIR": os.path.abspath(root),
@@ -367,7 +531,11 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--root", default=os.path.join(REPO_ROOT, "local_bucket"), help="local storage root")
     p.add_argument("--sample", help="sample ID; default: every raw_reads/*.fastq.gz under --root")
-    p.add_argument("--reference", help="reference name under reference/ (default: same as the Lambda)")
+    p.add_argument(
+        "--reference",
+        help="reference name under reference/, as the cloud's S3 upload metadata reference names it "
+        "(default: same as the Lambda); checked to exist before any job, like the state machine",
+    )
     p.add_argument("--runner", choices=["docker", "host"], default="docker")
     p.add_argument("--image", default="geyser-app")
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
@@ -385,15 +553,32 @@ def main(argv=None):
     )
     p.add_argument(
         "--pangenome",
-        default=DEFAULT_PANGENOME,
         metavar="GBZ",
-        help="pangenome graph under pangenome/ (default: %(default)s)",
+        help=f"pangenome graph under pangenome/, for --caller pangenome (default: {DEFAULT_PANGENOME}) and "
+        "--aligner giraffe (default: <reference stem>.gbz)",
     )
+    p.add_argument(
+        "--aligner",
+        choices=ALIGNERS,
+        help="align stage's aligner (sets ALIGNER for it; default: $ALIGNER, else bwa-mem2). giraffe runs in "
+        "--giraffe-image",
+    )
+    p.add_argument("--giraffe-image", default="geyser-giraffe", help="image for --aligner giraffe (app-giraffe/)")
     p.add_argument(
         "--pg-shm-size",
         default=DEFAULT_PANGENOME_SHM,
         metavar="SIZE",
         help="--shm-size for the pangenome container (default: %(default)s, as in Google's case studies)",
+    )
+    p.add_argument(
+        "--memory",
+        metavar="SIZE",
+        help="hard memory cap for every pipeline-stage container (docker --memory), e.g. 8g; DeepVariant's is --dv-memory",
+    )
+    p.add_argument(
+        "--docker-label",
+        metavar="KEY=VALUE",
+        help="a docker label on every container this run starts (e.g. geyser.owner=t2), so they can be found and stopped",
     )
     p.add_argument(
         "--dv-memory",
@@ -413,8 +598,25 @@ def main(argv=None):
         help="scatter-gather variant calling: one bcftools job per region of BP bases, then a merge into the "
         "usual VCF (what the Map state will run; #108). Default: one variants job",
     )
+    p.add_argument(
+        "--chunks",
+        type=int,
+        metavar="N",
+        help="align through v1.3's large route: preflight into N chunks, align each, merge (default: one align job)",
+    )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
+    p.add_argument("--no-gate", action="store_true", help="skip the quality gate after variant calling")
+    p.add_argument(
+        "--gate-profile",
+        choices=GATE_PROFILES,
+        help="the gate's thresholds, as the cloud's gate_profile input (S3 metadata gate-profile) names them; "
+        "default: synthetic for make_test_data.py samples, else the built-in human WGS thresholds",
+    )
     a = p.parse_args(argv)
+    if a.chunks is not None and not 1 <= a.chunks <= 999:
+        p.error("--chunks must be 1-999")
+    if a.chunks and a.skip_to_variants:
+        p.error("--chunks aligns; it can't be combined with --skip-to-variants")
     if a.shard_window is not None and a.shard_window < 1:
         p.error("--shard-window must be >= 1")
 
@@ -425,11 +627,25 @@ def main(argv=None):
         return 1
 
     callers = CALLER_SETS[a.caller]
+    # $ALIGNER=giraffe without --aligner must still pick the giraffe image: geyser-app has no vg.
+    # One graph per run: --pangenome, else a GIRAFFE_GRAPH set on the host, names it for both the aligner and
+    # the pangenome caller; without either, giraffe aligns to the caller's default graph when that caller runs
+    # (and to <reference stem>.gbz, tasks.py's default, when it doesn't).
+    graph = a.pangenome or os.environ.get("GIRAFFE_GRAPH", "").strip() or None
+    giraffe_graph = graph or (DEFAULT_PANGENOME if "pangenome" in callers else None)
+    align_image, align_env = align_settings(
+        a.aligner or os.environ.get("ALIGNER", "").strip() or None, giraffe_graph, a.giraffe_image
+    )
     ok = True
     for key in keys:
         payload = trigger.build_pipeline_input(key, a.reference)
         sample_id, reference = payload["srr_id"], payload["reference_name"]
         print(f"\n=== Pipeline input: {json.dumps(payload)} ===")
+        problem = reference_problem(a.root, reference)
+        if problem:  # as the state machine does: before any job
+            print(f"\nFAILED before any job for {sample_id}: {problem}")
+            ok = False
+            continue
         started = time.time()
         jobs = pipeline_jobs(
             sample_id,
@@ -440,19 +656,24 @@ def main(argv=None):
             gpus=not a.no_gpu,
             skip_to_variants=a.skip_to_variants,
             pg_image=a.pg_image,
-            pangenome=a.pangenome,
+            pangenome=graph or DEFAULT_PANGENOME,
             pg_shm=a.pg_shm_size,
             # Only when there is a bcftools stage to shard (not --caller deepvariant/pangenome).
             regions=local_regions(a.root, reference, a.shard_window)
             if a.shard_window and "bcftools" in CALLER_SETS[a.caller]
             else None,
             shard_window=a.shard_window,
+            gate=not a.no_gate,
+            gate_config=gate_config_for(a.root, sample_id, a.runner, a.gate_profile),
+            align_image=align_image,
+            align_env=align_env,
+            chunks=a.chunks,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             env = {**run_env(sample_id, job["image"]), "RUN_NAME": run_name}
-            if run_job(job, a.runner, a.root, a.dv_memory, env) != 0:
+            if run_job(job, a.runner, a.root, a.dv_memory, env, a.memory, a.docker_label) != 0:
                 print(f"\nFAILED at stage '{job['name']}' for {sample_id} (in the cloud this goes to Notify_Failure)")
                 ok = False
                 break

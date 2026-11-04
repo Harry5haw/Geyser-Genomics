@@ -3,6 +3,28 @@ import json
 import pytest
 
 
+class FakeS3:
+    """HeadObject for any key: the single-end trigger reads the upload's metadata (the gate profile)."""
+
+    def __init__(self, metadata=None, missing=False):
+        self.metadata, self.missing, self.heads = metadata or {}, missing, []
+
+    def head_object(self, Bucket, Key):
+        self.heads.append(Key)
+        if self.missing:
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+        return {"ETag": '"e"', "LastModified": "2026-11-01 20:00:00+00:00", "Metadata": dict(self.metadata)}
+
+
+@pytest.fixture(autouse=True)
+def s3(trigger, monkeypatch):
+    fake = FakeS3()
+    monkeypatch.setattr(trigger, "_s3_client", fake)
+    return fake
+
+
 @pytest.mark.parametrize(
     "key,expected",
     [
@@ -109,15 +131,28 @@ def test_execution_name_is_always_valid(trigger, sample_id):
 def test_batch_job_names_still_fit(trigger):
     """The state machine builds job names as '<Prefix>-<srr_id>-<execution name>'; Batch allows 128 chars."""
     with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
-        prefixes = re.findall(
-            r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", fh.read()
-        )
-    assert prefixes == ["QualityControl", "AlignGenome", "CallVariants"]
+        asl = fh.read()
+    prefixes = re.findall(r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", asl)
+    # AlignGenome twice: bwa-mem2 and giraffe (#146) name their align job the same way.
+    assert prefixes == [
+        "QualityControl",
+        "AlignGenome",
+        "AlignGenome",
+        "DeepVariant",
+        "PlanRegions",
+        "CallVariants",
+        "QualityGate",
+    ]
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
     for prefix in prefixes:
         job_name = f"{prefix}-{sample_id}-{name}"
         assert len(job_name) <= 128 and re.fullmatch(r"[A-Za-z0-9_-]+", job_name)
+    # The variant-calling shards (Map iterations) name the region's index instead of the sample, which the
+    # execution name already contains: with the sample too, 131 characters at worst.
+    assert "States.Format('CallVariantsShard-{}-{}', $.index, $$.Execution.Name)" in asl
+    shard = f"CallVariantsShard-{99999}-{name}"
+    assert len(shard) <= 128 and re.fullmatch(r"[A-Za-z0-9_-]+", shard)
 
 
 def test_handler_names_the_execution_after_the_sample(trigger, monkeypatch):
@@ -155,3 +190,150 @@ def test_handler_reraises_other_errors(trigger, monkeypatch):
     monkeypatch.setattr(trigger, "_sfn_client", RecordingSfn(RuntimeError("AccessDenied")))
     with pytest.raises(RuntimeError):
         trigger.handler(s3_event("raw_reads/S1.fastq.gz"), None)
+
+
+def test_caller_comes_from_the_environment_only_when_set(trigger, monkeypatch):
+    monkeypatch.delenv("REFERENCE_NAME", raising=False)
+    monkeypatch.delenv("CALLER", raising=False)
+    assert "caller" not in trigger.build_pipeline_input("raw_reads/S1.fastq.gz")
+    monkeypatch.setenv("CALLER", "deepvariant")
+    assert trigger.build_pipeline_input("raw_reads/S1.fastq.gz")["caller"] == "deepvariant"
+    monkeypatch.setenv("CALLER", "gatk")
+    with pytest.raises(ValueError, match="CALLER must be one of"):
+        trigger.build_pipeline_input("raw_reads/S1.fastq.gz")
+
+
+def test_trigger_callers_match_the_state_machine_choice(trigger):
+    with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
+        asl = fh.read()
+    assert '"StringEquals": "deepvariant"' in asl
+    assert set(trigger.CALLERS) == {"bcftools", "deepvariant"}
+
+
+# --- the gate threshold profile (#157): S3 user metadata gate-profile -> the input's gate_profile ------
+
+
+def _start(trigger, monkeypatch, key="raw_reads/S1.fastq.gz"):
+    calls = []
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            calls.append(kwargs)
+            return {"executionArn": "arn:fake"}
+
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.delenv("REFERENCE_NAME", raising=False)
+    monkeypatch.delenv("CALLER", raising=False)
+    monkeypatch.setattr(trigger, "_sfn_client", FakeSfn())
+    trigger.handler({"Records": [{"s3": {"bucket": {"name": "b"}, "object": {"key": key}}}]}, None)
+    return json.loads(calls[0]["input"])
+
+
+@pytest.mark.parametrize("key", ["gate-profile", "gate_profile"])
+def test_an_uploads_gate_profile_metadata_reaches_the_input(trigger, monkeypatch, s3, key):
+    s3.metadata = {key: "synthetic"}
+    assert _start(trigger, monkeypatch)["gate_profile"] == "synthetic"
+    assert s3.heads == ["raw_reads/S1.fastq.gz"]
+
+
+def test_the_value_goes_on_exactly_as_uploaded(trigger, monkeypatch, s3):
+    # No normalising here: the state machine is the one validator, for uploads and manual starts alike.
+    s3.metadata = {"gate-profile": " Synthetic "}
+    assert _start(trigger, monkeypatch)["gate_profile"] == " Synthetic "
+
+
+def test_a_misspelled_key_goes_on_flagged_not_ignored(trigger, monkeypatch, s3):
+    s3.metadata = {"gateprofile": "synthetic"}
+    assert _start(trigger, monkeypatch)["gate_profile"] == {"unrecognised metadata key": "gateprofile"}
+
+
+def test_without_the_metadata_the_input_has_no_profile(trigger, monkeypatch, s3):
+    s3.metadata = {"other": "x"}
+    assert "gate_profile" not in _start(trigger, monkeypatch)  # the state machine's default
+
+
+def test_an_unknown_profile_is_passed_on_for_the_state_machine_to_refuse(trigger, monkeypatch, s3):
+    # One place validates (Check_Gate_Profile): the run fails there with UnknownGateProfile.
+    s3.metadata = {"gate-profile": "strict"}
+    assert _start(trigger, monkeypatch)["gate_profile"] == "strict"
+
+
+def test_a_vanished_upload_still_starts_its_run(trigger, monkeypatch, s3):
+    # As before the profile: the run starts and QC fails on the missing upload, visibly.
+    s3.missing = True
+    assert "gate_profile" not in _start(trigger, monkeypatch)
+
+
+def test_unreadable_metadata_goes_on_flagged_so_the_run_fails_visibly(trigger, monkeypatch, s3):
+    from botocore.exceptions import ClientError
+
+    def denied(Bucket, Key):
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "HeadObject")
+
+    s3.head_object = denied
+    assert _start(trigger, monkeypatch)["gate_profile"] == {"metadata unreadable": "AccessDenied"}
+
+
+# --- the reference genome per upload: S3 user metadata reference -> the input's reference_name ------
+
+
+@pytest.mark.parametrize("key", ["reference", "reference-name", "reference_name"])
+def test_an_uploads_reference_metadata_replaces_the_default(trigger, monkeypatch, s3, key):
+    s3.metadata = {key: "GRCh38.fa"}
+    assert _start(trigger, monkeypatch)["reference_name"] == "GRCh38.fa"
+    assert s3.heads == ["raw_reads/S1.fastq.gz"]  # the same one HeadObject as the gate profile
+
+
+def test_without_reference_metadata_the_default_stays(trigger, monkeypatch, s3):
+    s3.metadata = {"gate-profile": "synthetic"}
+    run_input = _start(trigger, monkeypatch)
+    assert run_input["reference_name"] == "chr20.fa" and run_input["gate_profile"] == "synthetic"
+
+
+def test_reference_metadata_wins_over_reference_name(trigger, monkeypatch, s3):
+    # REFERENCE_NAME is the deployment's default; the upload's own metadata is more specific.
+    calls = []
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            calls.append(json.loads(kwargs["input"]))
+            return {"executionArn": "arn:fake"}
+
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.setenv("REFERENCE_NAME", "other.fa")
+    monkeypatch.setattr(trigger, "_sfn_client", FakeSfn())
+    event = {"Records": [{"s3": {"bucket": {"name": "b"}, "object": {"key": "raw_reads/S1.fastq.gz"}}}]}
+    trigger.handler(event, None)
+    s3.metadata = {"reference": "GRCh38.fa"}
+    trigger.handler(event, None)
+    assert [c["reference_name"] for c in calls] == ["other.fa", "GRCh38.fa"]
+
+
+@pytest.mark.parametrize("value", ["missing.fa", " GRCh38.fa", "sub/dir.fa", ""])
+def test_a_reference_goes_on_exactly_as_uploaded_for_the_state_machine_to_check(trigger, monkeypatch, s3, value):
+    # Check_Reference_Name / Check_Reference are the one validator: even an empty value is not defaulted.
+    s3.metadata = {"reference": value}
+    assert _start(trigger, monkeypatch)["reference_name"] == value
+
+
+@pytest.mark.parametrize("key", ["ref", "refernce", "genome-ref"])
+def test_a_misspelled_reference_key_goes_on_flagged_not_ignored(trigger, monkeypatch, s3, key):
+    s3.metadata = {key: "GRCh38.fa"}
+    assert _start(trigger, monkeypatch)["reference_name"] == {"unrecognised metadata key": key}
+
+
+def test_unreadable_metadata_flags_the_reference_too(trigger, monkeypatch, s3):
+    # Neither setting falls back to its default when the metadata couldn't be read.
+    from botocore.exceptions import ClientError
+
+    def denied(Bucket, Key):
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "HeadObject")
+
+    s3.head_object = denied
+    run_input = _start(trigger, monkeypatch)
+    assert run_input["reference_name"] == run_input["gate_profile"] == {"metadata unreadable": "AccessDenied"}
+
+
+def test_a_vanished_upload_keeps_the_default_reference(trigger, monkeypatch, s3):
+    s3.missing = True
+    assert _start(trigger, monkeypatch)["reference_name"] == "chr20.fa"

@@ -10,19 +10,82 @@ S3 storage on AWS reports to CloudWatch, S3 storage on an S3-compatible service 
 AWS_REGION: AWS, unless boto3's generic AWS_ENDPOINT_URL redirects every client.
 
 Publishing is best effort: a metrics outage must never fail a pipeline stage.
+
+Resource use per stage (#59): ``usage_snapshot()`` before a stage and ``usage_since()`` after it give
+* ``cpu_seconds``: user + system CPU of this process and every tool it ran and waited for;
+* ``peak_memory_mib``: the peak RSS of the largest single process (this one or one tool). Piped tools
+  run at the same time, so the container can peak higher, up to their sum.
+The container's cgroup peak (``memory.peak``) is deliberately not used: it counts the page cache, which
+the stages fill with every file they stream, so it would show I/O-heavy stages near their memory limit
+however little they needed. Peaks are high-water marks of the process, so they are exact when the
+process runs one stage (always in Batch and run_local.py). A stage killed from outside (out of memory,
+the Batch attempt timeout) never reaches the measurement and logs no usage; Batch's own status reason
+says why it stopped. ``getrusage`` is Unix-only: on Windows there is no usage, only Duration.
+
+DeepVariant's step metrics (``DeepVariant.CallVariants`` ...) also carry GPU utilisation and peak GPU memory
+when the job had a GPU (#139; see deepvariant_task.py).
 """
 
 import json
 import os
+import sys
 import time
 
 from storage import is_aws_endpoint, s3_endpoint_from_env
 
+try:
+    import resource
+except ImportError:  # Windows: no getrusage (the unit tests still run there)
+    resource = None
+
 METRIC_NAMESPACE = "GeyserGenomics"
+# The job log line query_pipeline_duration.py --stages reads back (scripts/stage_breakdown.py).
+USAGE_LOG_PREFIX = "stage-usage: "
+# usage key -> (CloudWatch metric name, unit)
+USAGE_METRICS = {
+    "cpu_seconds": ("CpuSeconds", "Seconds"),
+    "peak_memory_mib": ("PeakMemory", "Megabytes"),
+    # DeepVariant's steps on a GPU (#139, deepvariant_task.gpu_metric_usage): nvidia-smi's utilisation (share of
+    # time a kernel ran) and the device's peak memory in use, sampled while the step ran.
+    "gpu_utilization_mean_pct": ("GpuUtilization", "Percent"),
+    "gpu_utilization_peak_pct": ("GpuUtilizationPeak", "Percent"),
+    "gpu_memory_peak_mib": ("GpuPeakMemory", "Megabytes"),
+}
+
+
+def _cpu_seconds() -> float:
+    total = 0.0
+    for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN):
+        ru = resource.getrusage(who)
+        total += ru.ru_utime + ru.ru_stime
+    return total
+
+
+def _maxrss_mib(ru) -> float:
+    # Linux reports KiB, macOS bytes.
+    return ru.ru_maxrss / 2**20 if sys.platform == "darwin" else ru.ru_maxrss / 1024
+
+
+def usage_snapshot():
+    """The CPU time so far, to pass to usage_since(); None where getrusage doesn't exist."""
+    if resource is None:
+        return None
+    return {"cpu_seconds": _cpu_seconds()}
+
+
+def usage_since(snapshot):
+    """Resource use since usage_snapshot() (see the module docstring), or None without getrusage."""
+    if snapshot is None or resource is None:
+        return None
+    peak = max(_maxrss_mib(resource.getrusage(who)) for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN))
+    return {
+        "cpu_seconds": round(_cpu_seconds() - snapshot["cpu_seconds"], 2),
+        "peak_memory_mib": round(peak, 1),
+    }
 
 
 class NullMetrics:
-    def record(self, task_name: str, sample_id: str, status: str, duration_seconds: float) -> None:
+    def record(self, task_name: str, sample_id: str, status: str, duration_seconds: float, usage=None) -> None:
         pass
 
 
@@ -30,7 +93,7 @@ class LocalMetrics:
     def __init__(self, path: str):
         self.path = path
 
-    def record(self, task_name, sample_id, status, duration_seconds):
+    def record(self, task_name, sample_id, status, duration_seconds, usage=None):
         os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         entry = {
             "timestamp": time.time(),
@@ -39,6 +102,7 @@ class LocalMetrics:
             "status": status,
             "duration_seconds": round(duration_seconds, 3),
         }
+        entry.update({k: v for k, v in (usage or {}).items() if k in USAGE_METRICS})
         with open(self.path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry) + "\n")
 
@@ -51,19 +115,16 @@ class CloudWatchMetrics:
 
         self._client = boto3.client("cloudwatch", region_name=region)
 
-    def record(self, task_name, sample_id, status, duration_seconds):
-        data = [
-            {
-                "MetricName": "Duration",
-                "Dimensions": [
-                    {"Name": "TaskName", "Value": task_name},
-                    {"Name": "SampleId", "Value": sample_id},
-                    {"Name": "Status", "Value": status},
-                ],
-                "Value": duration_seconds,
-                "Unit": "Seconds",
-            }
+    def record(self, task_name, sample_id, status, duration_seconds, usage=None):
+        dimensions = [
+            {"Name": "TaskName", "Value": task_name},
+            {"Name": "SampleId", "Value": sample_id},
+            {"Name": "Status", "Value": status},
         ]
+        data = [{"MetricName": "Duration", "Dimensions": dimensions, "Value": duration_seconds, "Unit": "Seconds"}]
+        for key, (name, unit) in USAGE_METRICS.items():
+            if (usage or {}).get(key) is not None:
+                data.append({"MetricName": name, "Dimensions": dimensions, "Value": usage[key], "Unit": unit})
         if status == "Failure":
             data.append(
                 {

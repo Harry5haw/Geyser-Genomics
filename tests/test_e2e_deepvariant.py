@@ -7,12 +7,14 @@ Both need geyser-app too (docker build -f Dockerfile -t geyser-app .) for the st
 GEYSER_DV_IMAGE overrides the DeepVariant image name.
 """
 
+import json
 import os
 
 import pytest
 
 import make_test_data
 import run_local
+import tasks
 
 GPU = os.environ.get("GEYSER_GPU_E2E") == "1"
 CPU = os.environ.get("GEYSER_DV_E2E") == "1"
@@ -51,6 +53,68 @@ def test_deepvariant_on_synthetic_data(tmp_path):
     counts = run_local.truth_counts(str(root), "SYNTH001", "deepvariant")
     assert counts["tp"] == counts["truth"], f"missed planted SNPs: {counts['missed']}"
     assert not counts["extra"], f"unexpected calls: {counts['extra']}"
+    # PASS-call stats: exactly the planted SNPs, whatever RefCall candidates the VCF also holds. With
+    # bcftools in the run, the sample's bcftools.stats.txt stays the bcftools stage's.
+    stats_dir = root / "stats" / "SYNTH001"
+    dv_stats = tasks.parse_bcftools_stats((stats_dir / "bcftools.stats.deepvariant.txt").read_text())
+    assert dv_stats["snps"] == counts["truth"], dv_stats
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert "stats/SYNTH001/bcftools.stats.deepvariant.txt" in {o["key"] for o in record["outputs"]}
+
+
+def test_a_deepvariant_only_run_is_complete(tmp_path):
+    # #158: no bcftools stage, so no CallVariants; DeepVariant is the run's caller (PIPELINE_CALLER) and
+    # completes the record. The quality gate then judges DeepVariant's PASS-call stats.
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root)])
+    exit_code = run_local.main(
+        [
+            "--root",
+            str(root),
+            "--sample",
+            "SYNTH001",
+            "--reference",
+            "synthetic_ref.fa",
+            "--caller",
+            "deepvariant",
+            "--image",
+            os.environ.get("GEYSER_IMAGE", "geyser-app"),
+        ]
+        + dv_args()
+    )
+    assert exit_code == 0
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert (record["status"], record["complete"], record["caller"]) == ("succeeded", True, "deepvariant")
+    assert "CallVariants" not in record["stages"] and record["stages"]["DeepVariant"]["status"] == "Success"
+    verdict = json.loads((root / "qc_reports" / "SYNTH001.gate.json").read_text())
+    run_status = next(c for c in verdict["checks"] if c["name"] == "run_status")
+    assert run_status["status"] == "pass", run_status
+    # DeepVariant's PASS calls are the 10 planted SNPs: the synthetic thresholds pass the whole run.
+    assert verdict["verdict"] == "pass", verdict["reasons"]
+
+
+def test_image_bcftools_counts_pass_calls_only(tmp_path):
+    """The DeepVariant image's own bcftools (Ubuntu's) on a VCF with RefCall candidates, using the stage's
+    exact command: 5 PASS records (4 SNPs, Ti/Tv 3.0), while all 10 records would give Ti/Tv 0.5."""
+    import shutil
+    import subprocess
+
+    import deepvariant_task as dv
+
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures", "deepvariant")
+    for name in ("ref.fa", "refcall.vcf"):
+        shutil.copy(os.path.join(fixtures, name), tmp_path / name)
+    image = dv_args()[1]
+
+    def stats(command):
+        docker = ["docker", "run", "--rm", "--mount", f"type=bind,source={tmp_path},target=/f", image]
+        out = subprocess.run(docker + ["bash", "-c", command], check=True, capture_output=True, text=True)
+        return tasks.parse_bcftools_stats(out.stdout)
+
+    passed = stats(dv.pass_stats_command("/f/ref.fa", "/f/refcall.vcf", "/dev/stdout"))
+    assert passed == {"records": 5, "snps": 4, "indels": 1, "tstv": 3.0}
+    everything = stats("bcftools stats -F /f/ref.fa -s - /f/refcall.vcf")
+    assert everything["records"] == 10 and everything["tstv"] == 0.5
 
 
 DV_TESTDATA = os.environ.get("GEYSER_DV_TESTDATA")  # a --root that scripts/fetch_dv_testdata.py filled
@@ -76,3 +140,27 @@ def test_deepvariant_on_real_slice():
     counts = run_local.truth_counts(DV_TESTDATA, "NA12878_S1", "deepvariant")
     assert counts["truth"] > 0
     assert counts["tp"] / counts["truth"] >= 0.9, counts
+
+
+def test_deepvariant_as_the_runs_caller_owns_the_samples_calls(tmp_path):
+    """--caller deepvariant: no bcftools VCF, and the run record, reconcile and the stats all take
+    DeepVariant's calls as the sample's (the cloud's caller=deepvariant path, #125)."""
+    import reconcile
+    from storage import LocalStorage
+
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root)])
+    args = ["--root", str(root), "--sample", "SYNTH001", "--reference", "synthetic_ref.fa", "--caller", "deepvariant"]
+    args += ["--image", os.environ.get("GEYSER_IMAGE", "geyser-app")] + dv_args()
+    assert run_local.main(args) == 0
+    assert not (root / "variants" / "SYNTH001.vcf.gz").exists()
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert (record["caller"], record["variant_stage"], record["status"]) == ("deepvariant", "DeepVariant", "succeeded")
+    assert record["vcf"] == "variants_deepvariant/SYNTH001.vcf.gz"
+    stats = tasks.parse_bcftools_stats((root / "stats" / "SYNTH001" / "bcftools.stats.txt").read_text())
+    counts = run_local.truth_counts(str(root), "SYNTH001", "deepvariant")
+    assert stats["snps"] == counts["truth"] == counts["tp"]
+    store = LocalStorage(str(root))
+    keys = list(store.list_keys(""))
+    row = {r["sample_id"]: r for r in reconcile.reconcile(keys, records=reconcile.run_records(store, keys))["samples"]}
+    assert (row["SYNTH001"]["status"], row["SYNTH001"]["problem"]) == ("complete", None)

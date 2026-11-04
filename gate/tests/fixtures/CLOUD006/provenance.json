@@ -1,0 +1,131 @@
+{
+  "aligner": "bwa-mem2",
+  "app_version": "dev-local",
+  "complete": true,
+  "inputs": [
+    {
+      "bytes": 42813,
+      "key": "alignments/CLOUD006.cram"
+    },
+    {
+      "bytes": 225043,
+      "key": "raw_reads/CLOUD006_R1.fastq.gz"
+    },
+    {
+      "bytes": 225259,
+      "key": "raw_reads/CLOUD006_R2.fastq.gz"
+    }
+  ],
+  "layout": "paired",
+  "outputs": [
+    {
+      "bytes": 42813,
+      "key": "alignments/CLOUD006.cram"
+    },
+    {
+      "bytes": 50,
+      "key": "alignments/CLOUD006.cram.crai"
+    },
+    {
+      "bytes": 445457,
+      "key": "qc_reports/CLOUD006.fastp.html"
+    },
+    {
+      "bytes": 96371,
+      "key": "qc_reports/CLOUD006.fastp.json"
+    },
+    {
+      "bytes": 5592,
+      "key": "stats/CLOUD006/bcftools.stats.txt"
+    },
+    {
+      "bytes": 491,
+      "key": "stats/CLOUD006/flagstat.txt"
+    },
+    {
+      "bytes": 1044,
+      "key": "stats/CLOUD006/mosdepth.global.dist.txt"
+    },
+    {
+      "bytes": 98,
+      "key": "stats/CLOUD006/mosdepth.summary.txt"
+    },
+    {
+      "bytes": 1362,
+      "key": "variants/CLOUD006.vcf.gz"
+    },
+    {
+      "bytes": 178,
+      "key": "variants/CLOUD006.vcf.gz.tbi"
+    }
+  ],
+  "reference": {
+    "bytes": 65733058,
+    "md5": "cbfd7d9a7892061d9347a3d101298141",
+    "name": "chr20.fa"
+  },
+  "run_name": null,
+  "sample_id": "CLOUD006",
+  "schema": 1,
+  "stages": {
+    "Align": {
+      "duration_seconds": 42.51,
+      "error": null,
+      "finished": "2026-11-02T15:17:14Z",
+      "run_name": null,
+      "started": "2026-11-02T15:16:31Z",
+      "status": "Success"
+    },
+    "CallVariants": {
+      "duration_seconds": 1.21,
+      "error": null,
+      "finished": "2026-11-02T15:18:04Z",
+      "run_name": null,
+      "started": "2026-11-02T15:18:02Z",
+      "status": "Success"
+    },
+    "QualityControl": {
+      "duration_seconds": 1.51,
+      "error": null,
+      "finished": "2026-11-02T15:16:23Z",
+      "run_name": null,
+      "started": "2026-11-02T15:16:21Z",
+      "status": "Success"
+    }
+  },
+  "stats": {
+    "bcftools_stats": {
+      "indels": 0,
+      "records": 10,
+      "snps": 10,
+      "tstv": 0.25
+    },
+    "flagstat": {
+      "duplicates": 0,
+      "in_total": 10000,
+      "mapped": 10000,
+      "mapped_pct": 100.0,
+      "paired_in_sequencing": 10000,
+      "primary_mapped": 10000,
+      "primary_mapped_pct": 100.0,
+      "properly_paired": 10000,
+      "properly_paired_pct": 100.0
+    },
+    "mosdepth": {
+      "bases": 1496716,
+      "length": 64444167,
+      "mean_depth": 0.02
+    }
+  },
+  "status": "succeeded",
+  "tools": {
+    "bcftools": "1.21",
+    "bwa-mem2": "2.2.1",
+    "bwa-mem2 release": "2.3",
+    "fastp": "0.24.0",
+    "mosdepth": "0.3.15",
+    "mosdepth release": "0.3.15",
+    "samtools": "1.21"
+  },
+  "updated": "2026-11-02T15:18:04Z"
+}
