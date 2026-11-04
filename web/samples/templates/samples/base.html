@@ -1,44 +1,37 @@
-{% load static %}<!doctype html>
-<html lang="en" data-theme="dark">
+{% load static geyser %}<!doctype html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#06382a">
-  <link rel="icon" type="image/svg+xml" href="{% static 'samples/logo.svg' %}">
   <title>{% block title %}Geyser Genomics{% endblock %}</title>
-  <link rel="stylesheet" href="{% static 'vendor/pico.min.css' %}">
-  <link rel="stylesheet" href="{% static 'samples/site.css' %}">
-  <script src="{% static 'vendor/htmx.min.js' %}" defer></script>
+  <link rel="icon" type="image/png" sizes="32x32" href="{% static 'samples/favicon-32.png' %}">
+  <link rel="apple-touch-icon" href="{% static 'samples/apple-touch-icon.png' %}">
+  <style>{% inline_css "samples/_site.css" %}</style>
+  <script src="{% static 'samples/geyser.js' %}" defer></script>
+  {# Chromium prerenders a same-site page on hover (moderate eagerness), so the click shows it at once. #}
+  {# Never a download, an upload/demo POST target, the fastp report or a status/rows fragment. #}
+  <script type="speculationrules">{"prerender":[{"where":{"and":[{"or":[{"href_matches":"/*"},{"href_matches":"/*\\?*"}]},{"not":{"href_matches":"/samples/*/files/*"}},{"not":{"href_matches":"/samples/*/status/*"}},{"not":{"href_matches":"/samples/rows/*"}},{"not":{"href_matches":"/upload/*"}},{"not":{"href_matches":"/demo/*"}},{"not":{"selector_matches":"[download], [rel~=nofollow], [target=_blank]"}}]},"eagerness":"moderate"}]}</script>
 </head>
 <body>
-  <header class="site">
-    <nav class="container">
-      <ul><li><a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/logo.svg' %}" alt="">
-        <span class="brand-text"><span class="brand-name">Geyser Genomics</span><span class="brand-tag">FASTQ → VCF pipeline</span></span></a></li></ul>
-      <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span class="bp" style="--i: {{ i }}"><i></i></span>{% endfor %}</div>
-      <ul><li><a class="tube-btn" href="{% url 'samples:list' %}#samples"><span>Samples</span></a></li></ul>
+  <header class="site-head">
+    <nav class="wrap" aria-label="Site">
+      <a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/geyser-mark.png' %}" width="62" height="72" alt="">
+        <span><b>Geyser Genomics</b><i>FASTQ → VCF pipeline</i></span></a>
+      <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span style="--i:{{ i }}"><i></i></span>{% endfor %}</div>
+      <a class="tube" href="{% url 'samples:list' %}#samples">Samples</a>
     </nav>
   </header>
-  <main class="container">
+  <main class="wrap">
     {% for message in messages %}
-      <article role="alert" class="message {{ message.tags }}"><small>{{ message }}</small></article>
+      <p role="alert" class="msg {{ message.tags }}"><small>{{ message }}</small></p>
     {% endfor %}
     {% block content %}{% endblock %}
   </main>
-  <footer class="site container">
+  <footer class="wrap">
     Each upload runs fastp and BWA-MEM on the gzipped reads, then bcftools, the same containers AWS Batch runs in the cloud.
     Storage: <code>{{ storage_backend }}</code>.
   </footer>
-  <script>
-    // Catch oversized files before the upload starts; the server checks again.
-    document.addEventListener("change", function (e) {
-      var input = e.target;
-      if (!input.dataset || !input.dataset.maxBytes || !input.files || !input.files[0]) return;
-      var tooBig = input.files[0].size > Number(input.dataset.maxBytes);
-      input.setCustomValidity(tooBig ? "This file is larger than the upload limit." : "");
-      input.setAttribute("aria-invalid", tooBig ? "true" : "false");
-    });
-  </script>
 </body>
 </html>
