@@ -44,7 +44,9 @@ GATE_PROFILES = (
     ("smoke", "Smoke: the small cloud checkpoint samples (10,000 reads on chr20)"),
 )
 # reference/<name> objects that are a FASTA (not their .fai / aligner indexes): the run's reference choices.
-FASTA_SUFFIXES = (".fa", ".fasta", ".fna", ".fa.gz", ".fasta.gz", ".fna.gz")
+# Plain FASTA only: the stages index the reference with samtools faidx and the aligners, which refuse a plain-gzip
+# FASTA (and the pipeline doesn't decompress one).
+FASTA_SUFFIXES = (".fa", ".fasta", ".fna")
 
 
 def reference_names(keys) -> list:

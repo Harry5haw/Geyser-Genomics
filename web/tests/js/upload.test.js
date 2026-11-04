@@ -199,3 +199,43 @@ test("the API client sends the token as a bearer header and reports the API's me
   });
   await assert.rejects(offline("/uploads", {}), (err) => err.status === 0 && /can't be reached/.test(err.message));
 });
+
+test("sendParts sends the parts but leaves completing to the caller (a pair's mates complete together)", async () => {
+  const { io, calls, puts } = harness();
+  const parts = await U.sendParts(io, fakeFile(10 * MiB), upload(10 * MiB, 5 * MiB), new Map(), () => {});
+  assert.equal(puts.length, 2);
+  assert.equal(calls.length, 0);
+  assert.deepEqual(Array.from(parts, (p) => p.etag), ['"etag-1"', '"etag-2"']);
+});
+
+test("an error retrying can't fix (the upload is gone) isn't retried and stops the other workers", async () => {
+  const gone = { 1: [Object.assign(new Error("no such upload"), { status: 404 })] };
+  const { io, calls, puts, sleeps } = harness({ fail: gone });
+  await assert.rejects(U.sendParts(io, fakeFile(40 * MiB), upload(40 * MiB, 5 * MiB), new Map(), () => {}), /no such/);
+  assert.equal(sleeps.length, 0);
+  assert.ok(puts.length <= 4, `${puts.length} parts sent after the failure`); // only the first batch in flight
+  assert.equal(calls.length, 0);
+});
+
+test("a failed URL renewal is retried like a failed part", async () => {
+  const { io, calls, puts, sleeps } = harness();
+  const api = io.api;
+  let failures = 1;
+  io.api = async (route, body) => {
+    if (route === "/uploads/parts" && failures-- > 0) throw Object.assign(new Error("503"), { status: 503 });
+    return api(route, body);
+  };
+  const noUrls = { key: "raw_reads/S1.fastq.gz", upload_id: "U1", part_size: 5 * MiB, parts: [], expires_at: 0 };
+  await U.sendFile(io, fakeFile(5 * MiB), noUrls, new Map(), () => {});
+  assert.deepEqual(sleeps, [1000]);
+  assert.equal(puts.length, 1);
+  assert.equal(calls.at(-1).route, "/uploads/complete");
+});
+
+test("the status after an upload is that upload's run, not an earlier run of the sample", () => {
+  const since = Date.parse("2026-11-04T12:00:00Z");
+  assert.ok(U.runOfUpload({ started: "2026-11-04T12:00:05+00:00" }, since));
+  assert.ok(U.runOfUpload({ started: "2026-11-04T11:59:30+00:00" }, since)); // within the clock allowance
+  assert.ok(!U.runOfUpload({ started: "2026-11-04T09:00:00+00:00" }, since));
+  assert.ok(!U.runOfUpload({ status: "NOT_FOUND" }, since));
+});

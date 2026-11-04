@@ -64,7 +64,7 @@ def test_the_page_offers_the_pipelines_choices(site):
 def test_reference_names_are_the_fastas_directly_under_reference():
     keys = ["reference/a.fa", "reference/a.fa.fai", "reference/b.fasta.gz", "reference/b.fasta.gz.gzi",
             "reference/x/c.fa", "reference/README", "reference/", "other/d.fa"]  # fmt: skip
-    assert reference_names(keys) == ["a.fa", "b.fasta.gz"]
+    assert reference_names(keys) == ["a.fa"]  # a gzipped FASTA isn't one the stages can index
 
 
 def test_the_gate_profiles_are_the_gates_and_the_state_machines():

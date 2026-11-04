@@ -17,7 +17,8 @@
   <form id="upload-form" data-api="{{ api_base }}" data-existing="{{ existing|join:' ' }}" novalidate>
     <label>
       Upload token
-      <input type="password" id="up-token" autocomplete="off" spellcheck="false" required>
+      {# one-time-code: browsers otherwise offer to save a password field (the token must not be stored). #}
+      <input type="password" id="up-token" autocomplete="one-time-code" spellcheck="false" required>
     </label>
     <fieldset>
       <legend>Reads</legend>
@@ -55,7 +56,7 @@
     </label>
     <button type="submit" class="upload">Upload</button>
     <button type="button" id="up-cancel" hidden>Cancel</button>
-    <progress id="up-progress" max="1" value="0"></progress>
+    <progress id="up-progress" max="1" value="0" aria-label="Upload progress"></progress>
     <p id="up-status" role="status" aria-live="polite"></p>
   </form>
 </section>
