@@ -683,6 +683,17 @@ python web/dev.py                                   # UI + local worker on http:
 
 There is no database. Status is worked out from which outputs exist, the local metrics file and the worker's run records (`runs/<id>.json` and `.log`). The same UI could therefore run against the S3 bucket with no worker.
 
+**Publishing it as a static site.** `manage.py publish` renders the same pages to plain files, for a host with no server (S3 + CloudFront):
+
+```bash
+cd web
+python manage.py publish --all --out ../site                 # every sample + the 3D figures, into a folder
+python -m http.server -d ../site                             # browse it: folders serve their index.html
+python manage.py publish SRR062634 --out s3://<site bucket>  # one sample's pages and the list (a run's last step)
+```
+
+Each page is the live view rendered with a read-only flag, so the two can't drift apart. Only the public outputs are published (the VCF and its index, the QC report, the quality gate, the stats and the run record), never the reads or alignments. A sample's calls are published 50 per page, up to 20 pages; the VCF has the rest. Assets keep their content-hashed names (cached for a year), pages are cached for a minute, and `csp-hashes.json` lists the hashes of the inline script and styles for a strict Content-Security-Policy (no inline style attributes anywhere). With `--api-base` (or `GEYSER_API_BASE`), the downloads point at the web API's `/files/<id>/<kind>` and a running sample's row polls `/status/<id>`; without one the public files are copied next to the pages. The `geyser-publish` image (`app-publish/Dockerfile`, geyser-app plus the UI) runs it in the cloud.
+
 <details>
 <summary><b>Settings, safety and tests</b></summary>
 
@@ -692,7 +703,7 @@ There is no database. Status is worked out from which outputs exist, the local m
 
 **Safety.** CSRF protection is on. Sample IDs are restricted to `[A-Za-z0-9_-]` because they become storage keys. Uploads must be gzip and within the size limit, and a sample can't be overwritten. Downloads are limited to a fixed list of file types. The fastp report is shown in a sandboxed iframe with scripts blocked, so its charts are blank there (they load a script from opengene.org over plain HTTP); the downloaded report has them.
 
-**Tests:** `pytest` runs the web tests too (`web/tests/`, Django test client, temporary storage folder, no Docker).
+**Tests:** `pytest` runs the web tests too (`web/tests/`, Django test client, temporary storage folder, no Docker), including the publisher's: a published folder, served over HTTP, must read the same as the Django pages, and every link in it must resolve. `GEYSER_PUBLISH_E2E=1 pytest tests/test_e2e_publish.py` checks the image.
 
 </details>
 
