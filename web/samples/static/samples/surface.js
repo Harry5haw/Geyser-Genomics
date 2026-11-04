@@ -100,19 +100,32 @@
 
   // The GL half (surface-gl.js): in a Worker on an OffscreenCanvas where the browser can (context creation and
   // drawing off the main thread), else the same file as a plain script drawing here.
+  // geometry(): the typed arrays to upload. Called again for the main-thread fallback, because the worker path
+  // transfers (detaches) the first set. Returns {canvas, draw}: the canvas is a fresh element after a fallback.
   async function renderer(fig, canvas, geometry) {
     const url = fig.dataset.surfaceGl;
     if (canvas.transferControlToOffscreen && window.Worker) {
-      const worker = new Worker(url);
-      const offscreen = canvas.transferControlToOffscreen();
-      const transfer = [offscreen, geometry.pos.buffer, geometry.col.buffer, geometry.lines.buffer, geometry.lineCol.buffer];
-      const ready = new Promise((ok, fail) => {
-        worker.onmessage = (e) => (e.data.type === "ready" ? ok() : fail(new Error(e.data.reason)));
-        worker.onerror = () => fail(new Error("renderer worker failed"));
-      });
-      worker.postMessage({ type: "init", canvas: offscreen, geometry }, transfer);
-      await ready;
-      return { draw: (view) => worker.postMessage({ type: "draw", view }) };
+      let worker;
+      try {
+        worker = new Worker(url);
+        const geo = geometry();
+        const offscreen = canvas.transferControlToOffscreen();
+        const transfer = [offscreen, geo.pos.buffer, geo.col.buffer, geo.lines.buffer, geo.lineCol.buffer];
+        const ready = new Promise((ok, fail) => {
+          worker.onmessage = (e) => (e.data.type === "ready" ? ok() : fail(new Error(e.data.reason)));
+          worker.onerror = () => fail(new Error("renderer worker failed"));
+        });
+        worker.postMessage({ type: "init", canvas: offscreen, geometry: geo }, transfer);
+        await ready;
+        return { canvas, draw: (view) => worker.postMessage({ type: "draw", view }) };
+      } catch (_) {
+        // No WebGL in a worker here (e.g. Safari before 17, which has OffscreenCanvas but not its WebGL), or the
+        // worker failed: stop it, and draw on the main thread on a fresh canvas (the old one now belongs to the worker).
+        if (worker) worker.terminate();
+        const fresh = canvas.cloneNode(false);
+        canvas.replaceWith(fresh);
+        canvas = fresh;
+      }
     }
     if (!window.GeyserGL) {
       await new Promise((ok, fail) => {
@@ -124,17 +137,24 @@
       });
     }
     const gl = window.GeyserGL(canvas);
-    gl.load(geometry);
-    return gl;
+    gl.load(geometry());
+    return { canvas, draw: gl.draw };
   }
 
   async function mount(fig, data) {
-    const stage = fig.querySelector(".stage"), canvas = stage.querySelector("canvas");
+    const stage = fig.querySelector(".stage");
     const g = build(data);
-    const lineCol = new Float32Array(g.lines.length);
-    for (let k = 0; k < lineCol.length; k += 3) lineCol.set(LINE, k);
+    let built = false;
+    const geometry = () => { // the first call reuses g's arrays; a later one (the fallback) builds new ones
+      const src = built ? build(data) : g;
+      built = true;
+      const lineCol = new Float32Array(src.lines.length);
+      for (let k = 0; k < lineCol.length; k += 3) lineCol.set(LINE, k);
+      return { pos: src.pos, col: src.col, lines: src.lines, lineCol };
+    };
     await breathe();
-    const gl = await renderer(fig, canvas, { pos: g.pos, col: g.col, lines: g.lines, lineCol });
+    const live = await renderer(fig, stage.querySelector("canvas"), geometry);
+    const canvas = live.canvas, gl = live;
     const overlay = stage.querySelector(".labels"), readout = stage.querySelector(".readout"), marker = stage.querySelector(".marker");
     overlay.replaceChildren(...g.labels.map((lb) => {
       const s = document.createElement("span");

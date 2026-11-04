@@ -63,16 +63,48 @@ def test_missing_cells_are_gaps_not_zeros(figdir):
 
 
 def test_a_figure_without_its_csv_is_pending(figdir):
-    assert figures.load("cost") is None  # the cost grid hasn't been run
+    assert figures.load("cost") is None  # this folder has no cost-surface.csv
 
 
-def test_the_cost_grid_builds_from_cost_surface_tables(figdir):
-    (figdir / "cost-surface.csv").write_bytes(
-        b"align_vcpu,align_memory_mb,window_mb,median_cost_usd\n2,4096,17,0.071\n2,4096,33,0.065\n4,8192,17,0.079\n4,8192,33,0.07\n"
-    )
-    grid = figures.load("cost")
-    assert grid.rows == ["2 vCPU / 4 GiB", "4 vCPU / 8 GiB"] and grid.x == [17, 33]
-    assert grid.values == [[7.1, 6.5], [7.9, 7.0]]  # cents
+COST = (
+    b"align_vcpus,shards,runs,median_cost_usd,median_turnaround_s\n"
+    b"1,1,2,0.087747,4786.9\n1,8,2,0.102490,5084.0\n4,1,3,0.085664,2067.8\n4,8,2,0.079422,1474.2\n"
+)
+
+
+def test_the_cost_grid_reads_cost_surface_tables_as_committed(figdir):
+    # cost_surface.py --table (#221): rows = align vCPUs, x = shards on a log2 axis, cents and minutes.
+    (figdir / "cost-surface.csv").write_bytes(COST)
+    cost, turnaround = figures.load("cost"), figures.load("turnaround")
+    assert cost.rows == ["1 vCPU", "4 vCPUs"] and cost.x == [0.0, 3.0]
+    assert cost.x_ticks == [(0.0, "1"), (3.0, "8")]
+    assert cost.values == [[8.775, 10.249], [8.566, 7.942]]  # cents
+    assert turnaround.values[1] == [round(2067.8 / 60, 3), round(1474.2 / 60, 3)]  # minutes
+
+
+def test_a_flat_grid_draws_instead_of_failing(client, figdir):
+    # Every value the same whole number: a stated baseline would equal the top (a division by zero before).
+    flat = "label,read,cycle,mean,A,C,G,T\n" + "".join(f"S1,R1,{c},36,36,36,36,36\n" for c in range(1, 4))
+    (figdir / "quality-surface.csv").write_bytes(flat.encode())
+    assert figures.poster_svg(figures.load("quality")).count("<path ") == 1
+    assert client.get("/figures/").status_code == 200
+
+
+def test_a_short_row_is_skipped_not_a_crash(client, figdir):
+    # csv gives None for missing trailing fields: a row without its label is left out.
+    short = "chrom,start,end,mean_depth,label\nchr20,0,500000,30,A\nchr20,500000,1000000,31\n"
+    (figdir / "coverage-terrain.csv").write_bytes(short.encode())
+    assert figures.load("coverage").rows == ["A"]
+    assert client.get("/figures/").status_code == 200
+
+
+def test_an_unreadable_csv_never_shows_a_server_path(client, figdir):
+    (figdir / "quality-surface.csv").unlink()
+    (figdir / "quality-surface.csv").mkdir()  # exists, but can't be opened as a file
+    resp = client.get("/figures/")
+    body = resp.content.decode()
+    assert resp.status_code == 200 and "quality-surface.csv can" in body
+    assert str(figdir) not in body and "Error)" in body  # the error's type only, never its message
 
 
 def test_the_committed_figure_data_loads(settings):
@@ -82,6 +114,11 @@ def test_the_committed_figure_data_loads(settings):
     coverage, quality = figures.load("coverage"), figures.load("quality")
     assert (len(coverage.rows), len(coverage.x)) == (7, 129)
     assert (len(quality.rows), len(quality.x)) == (10, 151)
+    # #221's cost grid: 3 align sizes × 4 shard counts, every cell measured, cost and turnaround.
+    for name in ("cost", "turnaround"):
+        grid = figures.load(name)
+        assert grid.rows == ["1 vCPU", "2 vCPUs", "4 vCPUs"] and [t[1] for t in grid.x_ticks] == ["1", "2", "4", "8"]
+        assert all(v is not None for line in grid.values for v in line)
     figures._load.cache_clear()
 
 
@@ -123,12 +160,12 @@ def test_grid_json_is_what_the_renderer_reads(figdir):
 
 def test_the_page_shows_posters_and_defers_the_3d(client, figdir):
     body = client.get("/figures/").content.decode()
-    assert body.count('<svg class="poster"') == 2  # coverage and quality; cost is pending
+    assert body.count('<svg class="poster"') == 2  # coverage and quality: this folder has only those two CSVs
     assert 'data-surface="/figures/coverage.json"' in body and 'data-surface="/figures/quality.json"' in body
     assert re.search(r'data-surface-js="/static/samples/surface[^"]*\.js"', body)
     assert re.search(r'data-surface-gl="/static/samples/surface-gl[^"]*\.js"', body)  # the WebGL half, for the worker
     assert "<script src=" in body and body.count("<script src=") == 1  # surface.js is not loaded with the page
-    assert "Waiting for the cost grid" in body
+    assert "No data yet: cost-surface.csv" in body  # the grid's CSV isn't in this test folder
     assert 'href="/figures/coverage.csv" download' in body
     assert "Heights start at 32 Phred, not 0" in body and "drawn at that cap" in body
 
@@ -147,7 +184,7 @@ def test_data_endpoints(client, figdir):
     csv_resp = client.get("/figures/coverage.csv")
     assert csv_resp.status_code == 200 and "attachment" in csv_resp["Content-Disposition"]
     assert b"".join(csv_resp.streaming_content).decode() == COVERAGE
-    assert client.get("/figures/cost.json").status_code == 404  # pending
+    assert client.get("/figures/cost.json").status_code == 404  # no CSV in this folder
     assert client.get("/figures/nope.json").status_code == 404
 
 

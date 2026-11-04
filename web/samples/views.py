@@ -165,11 +165,15 @@ def figures_page(request):
         card = {"name": name, "figure": figure, "grid": None, "poster": None, "error": ""}
         try:
             grid = figures_mod.load(name)
-        except (OSError, ValueError, KeyError) as err:  # a broken CSV: say so on its card, never fail the page
-            card["error"] = f"{figure.csv} can't be read: {err}"
-            grid = None
+            poster = figures_mod.poster_svg(grid) if grid is not None else None
+        except Exception as err:  # noqa: BLE001 - a broken CSV is said on its card; the page never fails over it
+            # Our own ValueErrors name the problem; anything else (OSError, csv.Error, ...) only by type, since its
+            # message can carry a server path.
+            reason = str(err) if type(err) is ValueError else type(err).__name__
+            card["error"] = f"{figure.csv} can't be read ({reason})"
+            grid = poster = None
         if grid is not None:
-            card.update(grid=grid, poster=mark_safe(figures_mod.poster_svg(grid)))  # noqa: S308 - labels escaped
+            card.update(grid=grid, poster=mark_safe(poster))  # noqa: S308 - labels escaped in poster_svg
         cards.append(card)
     return render(request, "samples/figures.html", {"cards": cards})
 
@@ -179,7 +183,7 @@ def _grid_or_404(name):
         raise Http404("No such figure")
     try:
         grid = figures_mod.load(name)
-    except (OSError, ValueError, KeyError):
+    except Exception:  # noqa: BLE001 - unreadable data is "no data", never a 500
         grid = None
     if grid is None:
         raise Http404("No data for this figure yet")

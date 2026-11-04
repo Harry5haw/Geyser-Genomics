@@ -135,18 +135,32 @@ FIGURES = {
     ),
     "cost": Figure(
         name="cost",
-        title="Cost × turnaround",
+        title="Cloud cost per run",
         csv="cost-surface.csv",
-        description="On-demand cost per run over align size and variant-calling window, from the cloud grid "
-        "(docs/figures/cost-surface-grid.md).",
-        x_label="Variant window",
-        x_unit="Mb",
-        rows_label="Align size",
+        description="Median cost of one pipeline run of HG003 30x chr20 on Fargate, over the align stage's vCPUs and "
+        "the number of variant-calling shards (25 runs, 2-3 per cell; docs/figures/cost-surface-grid.md). 1 vCPU is "
+        "the dearest as well as the slowest: the task holds its memory about four times as long.",
+        x_label="Calling shards",
+        x_unit="log₂ scale",
+        rows_label="Align vCPUs",
         rows_plural="align sizes",
         z_label="Cost per run",
         z_unit="US cents",
-        pending="Waiting for the cost grid: the runs that measure it (#192's per-run overrides) haven't been made "
-        "yet. This chart appears here as soon as docs/figures/csv/cost-surface.csv exists.",
+        note="Costs are at Fargate on-demand list prices: an upper bound, since the job queue tries Fargate Spot "
+        "first.",
+    ),
+    "turnaround": Figure(
+        name="turnaround",
+        title="Cloud turnaround",
+        csv="cost-surface.csv",
+        description="Median wall time of the same runs, upload to verdict. The align vCPUs set it: about 85, 45 and "
+        "25 min at 1, 2 and 4 vCPUs; more shards help a little at 2 and 4 vCPUs and not at all at 1.",
+        x_label="Calling shards",
+        x_unit="log₂ scale",
+        rows_label="Align vCPUs",
+        rows_plural="align sizes",
+        z_label="Turnaround",
+        z_unit="min",
     ),
 }
 
@@ -194,13 +208,18 @@ def _assemble(figure, cells):
     return Grid(figure, x, rows, values, clip=clip, base=base, vmin=vmin, vmax=vmax)
 
 
+def _text(r, name):
+    """A text cell; "" when the row is short (csv gives None for missing trailing fields)."""
+    return (r.get(name) or "").strip()
+
+
 def _coverage(figure, path):
     cells = []
     for r in _rows_of(path):
         start, end, depth = _float(r.get("start")), _float(r.get("end")), _float(r.get("mean_depth"))
-        if start is None or end is None:
+        if start is None or end is None or not _text(r, "label"):
             continue
-        cells.append((r["label"], round((start + end) / 2 / 1e6, 3), depth))
+        cells.append((_text(r, "label"), round((start + end) / 2 / 1e6, 3), depth))
     return _assemble(figure, cells)
 
 
@@ -208,22 +227,25 @@ def _quality(figure, path):
     cells = []
     for r in _rows_of(path):
         cycle = _float(r.get("cycle"))
-        if cycle is None:
+        if cycle is None or not _text(r, "label"):
             continue
-        cells.append((f"{r['label']} {r['read']}", int(cycle), _float(r.get("mean"))))
+        cells.append((f"{_text(r, 'label')} {_text(r, 'read')}".strip(), int(cycle), _float(r.get("mean"))))
     return _assemble(figure, cells)
 
 
-def _cost(figure, path):
-    # cost_surface.py --table: align_vcpu, align_memory_mb, window_mb, median_cost_usd (one row per grid cell).
-    cells = []
+def _grid_run(figure, path, column, scale):
+    # cost_surface.py --table (#221's grid): align_vcpus, shards, runs, median_cost_usd, median_turnaround_s.
+    cells, shard_counts = [], set()
     for r in _rows_of(path):
-        window, cost = _float(r.get("window_mb")), _float(r.get("median_cost_usd"))
-        if window is None:
+        vcpus, shards, value = _float(r.get("align_vcpus")), _float(r.get("shards")), _float(r.get(column))
+        if vcpus is None or not shards or shards <= 0:
             continue
-        name = f"{r.get('align_vcpu', '?')} vCPU / {int(_float(r.get('align_memory_mb')) or 0) // 1024} GiB"
-        cells.append((name, window, None if cost is None else round(cost * 100, 3)))
-    return _assemble(figure, cells)
+        shard_counts.add(int(shards))
+        name = f"{vcpus:g} vCPU" + ("s" if vcpus != 1 else "")
+        cells.append((name, round(math.log2(shards), 4), None if value is None else round(value * scale, 3)))
+    grid = _assemble(figure, cells)
+    grid.x_ticks = [(round(math.log2(s), 4), str(s)) for s in sorted(shard_counts)]
+    return grid
 
 
 def _dv(figure, path, column, scale):
@@ -247,7 +269,8 @@ BUILDERS = {
     "quality": _quality,
     "dv-stage": lambda figure, path: _dv(figure, path, "stage_s", 1 / 60),
     "dv-call": lambda figure, path: _dv(figure, path, "call_variants_s", 1),
-    "cost": _cost,
+    "cost": lambda figure, path: _grid_run(figure, path, "median_cost_usd", 100),
+    "turnaround": lambda figure, path: _grid_run(figure, path, "median_turnaround_s", 1 / 60),
 }
 
 
@@ -305,6 +328,9 @@ def poster_svg(grid: Grid) -> str:
     x0, x1 = grid.x[0], grid.x[-1] if grid.x[-1] != grid.x[0] else grid.x[0] + 1
     plot_w = POSTER_W - MARGIN_L - MARGIN_R
     band = (POSTER_H - MARGIN_T - MARGIN_B) / (n + 1.5)  # each ridge rises up to 2.5 bands: overlap like a ridgeline
+    span = (
+        top - grid.base
+    ) or 1.0  # a flat grid (every value equal to the baseline) draws flat, not a ZeroDivisionError
     paths = []
     for i, name in enumerate(grid.rows):
         base = MARGIN_T + band * (i + 2.5)
@@ -314,7 +340,7 @@ def poster_svg(grid: Grid) -> str:
             if v is None:
                 continue
             px = MARGIN_L + (grid.x[j] - x0) / (x1 - x0) * plot_w
-            py = base - max(0.0, min(v, top) - grid.base) / (top - grid.base) * band * 2.5
+            py = base - max(0.0, min(v, top) - grid.base) / span * band * 2.5
             points.append(f"{px:.1f},{py:.1f}")
         if not points:
             continue
