@@ -107,6 +107,29 @@ always use Terraform's defaults.
 | `align_vcpu` | string | `"4"` (`stage_resources["align"]`) | with `align_memory_mb`, a valid Fargate pair (`"0.25"`: 512/1024/2048 MiB; `"0.5"`: 1-4 GiB; `"1"`: 2-8 GiB; `"2"`: 4-16 GiB; `"4"`: 8-30 GiB, in 1 GiB steps), where QC or the planner plus align still fit in `fargate_max_vcpus` (so no 8 vCPU at the default cap). Written as Terraform writes it: `"4"`, not `"4.0"` |
 | `align_memory_mb` | string | `"8192"` | as above |
 | `variant_region_window` | number | `50000000` (`variant_region_window`) | a whole number from 5,000,000 to 250,000,000 (bases per region; the planner and the merge both use it). 65 Mb = 1 shard on chr20, 33 Mb = 2, 17 Mb = 4, 9 Mb = 8 |
+| `chunk_count` | number | `24` (`genome_chunk_count`) | large route only: a whole number from 2 to 96 (equal chunks the pre-flight cuts) |
+| `align_concurrency` | number | `5` (`genome_align_concurrency`) | large route only: chunks aligned at once, 1 to (`fargate_spot_max_vcpus` − QC's vCPU) ÷ a chunk's vCPU = (48 − 8) ÷ 8 = **5** |
+| `calling_concurrency` | number | `4` (`variants_max_concurrency`) | both routes: calling shards at once, 1 to `fargate_spot_max_vcpus` ÷ a shard's vCPU = **48** |
+| `merge_threads` | number | `8` (`genome_merge_threads`) | large route only: the merge's samtools threads, 1 to its vCPU (**8**) |
+
+The maxima come from the **Fargate Spot** cap, so a run that asks for the most still stays on Spot prices. Raising
+them (a "fast" genome) is a cap raise in Terraform: a compute-environment change, the user's apply.
+
+**Big inputs (v1.4): the large route.** The trigger passes the upload's size as `input_bytes` (both mates added
+up). At or above `large_input_gb` (5 GB) a run takes the large route:
+- QC on the whole input, alongside a **pre-flight**: one streaming pass for gzip integrity, the read count, mates
+  in step and `chunk_count` equal chunks;
+- the chunks aligned in parallel (bwa-mem2), then a streaming merge (markdup, CRAM).
+
+The outputs are the same keys as today's, so calling, the gate and everything after are unchanged. Smaller
+inputs, or none, run as before.
+- A truncated or corrupt upload fails in the pre-flight (`qc_reports/<id>.preflight.json` says why), before any
+  alignment.
+- A manual start chooses the route with `input_bytes`. A chr20 **canary on the large route**:
+  `"input_bytes": 5000000000, "overrides": {"chunk_count": 4}`.
+- **giraffe stays chromosome-scale:** `aligner` other than bwa-mem2 on a large input fails before any job with
+  `AlignerNotOnLargeRoute` (haplotype sampling needs the whole sample).
+- An `input_bytes` that isn't a non-negative number fails before any job with `InvalidInputBytes`.
 
 Any key left out keeps its default. Only align and the window change: QC, the planner, the shards and the
 merge keep their sizes.
