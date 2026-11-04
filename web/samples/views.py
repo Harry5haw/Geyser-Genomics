@@ -10,6 +10,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import redirect, render
+from django.utils.safestring import mark_safe
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.gzip import gzip_page
 from django.views.decorators.http import require_GET, require_POST
@@ -29,6 +30,7 @@ from geyser_web.pipeline import (
     sample_vcf_key,
 )
 
+from . import figures as figures_mod
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
@@ -151,6 +153,54 @@ def upload(request):
     kind = "paired-end reads" if layout == PAIRED else "reads"
     messages.success(request, f"Uploaded {sample_id} ({kind}). The pipeline starts as soon as the trigger sees it.")
     return redirect("samples:detail", sample_id=sample_id)
+
+
+@require_GET
+@gzip_page
+def figures_page(request):
+    """The signature figures as 3D terrains: each card shows its inline-SVG poster; the renderer and the grid load
+    in the browser only when a card scrolls into view (geyser.js)."""
+    cards = []
+    for name, figure in figures_mod.FIGURES.items():
+        card = {"name": name, "figure": figure, "grid": None, "poster": None, "error": ""}
+        try:
+            grid = figures_mod.load(name)
+        except (OSError, ValueError, KeyError) as err:  # a broken CSV: say so on its card, never fail the page
+            card["error"] = f"{figure.csv} can't be read: {err}"
+            grid = None
+        if grid is not None:
+            card.update(grid=grid, poster=mark_safe(figures_mod.poster_svg(grid)))  # noqa: S308 - labels escaped
+        cards.append(card)
+    return render(request, "samples/figures.html", {"cards": cards})
+
+
+def _grid_or_404(name):
+    if name not in figures_mod.FIGURES:
+        raise Http404("No such figure")
+    try:
+        grid = figures_mod.load(name)
+    except (OSError, ValueError, KeyError):
+        grid = None
+    if grid is None:
+        raise Http404("No data for this figure yet")
+    return grid
+
+
+@require_GET
+@gzip_page
+def figure_data(request, name):
+    """The grid surface.js draws (axes, rows, values, height cap), as compact JSON."""
+    response = HttpResponse(figures_mod.grid_json(_grid_or_404(name)), content_type="application/json")
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@require_GET
+def figure_csv(request, name):
+    """The CSV a figure is drawn from: its table view."""
+    grid = _grid_or_404(name)
+    path = figures_mod.csv_path(grid.figure)
+    return FileResponse(open(path, "rb"), as_attachment=True, filename=grid.figure.csv, content_type="text/csv")
 
 
 @require_POST
