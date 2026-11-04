@@ -821,7 +821,7 @@ Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` a
 
 ✅ done · ☁️ done and verified in the cloud · 🚧 in progress · 🎯 top priority · 🔜 next
 
-**Releases:** [v0.3](../../releases/tag/v0.3) (observability), [v0.35](../../releases/tag/v0.35) (legacy names removed), [v0.4](../../releases/tag/v0.4) (DeepVariant, local GPU to cloud GPU) and [v1.0](../../releases/tag/v1.0) (public release) are tagged. v2.0 is drafted in [`docs/releases/`](docs/releases/README.md).
+**Releases:** [v0.3](../../releases/tag/v0.3) (observability), [v0.35](../../releases/tag/v0.35) (legacy names removed), [v0.4](../../releases/tag/v0.4) (DeepVariant, local GPU to cloud GPU), [v1.0](../../releases/tag/v1.0) (public release), [v1.1](../../releases/tag/v1.1) (measured: the cost grid, right-sizing, GPU DeepVariant) and [v1.2](../../releases/tag/v1.2) (the fast web UI and 3D figures) are tagged. v2.0 is drafted in [`docs/releases/`](docs/releases/README.md).
 
 ### 1.0: the platform, made public
 
