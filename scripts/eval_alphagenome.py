@@ -5,25 +5,27 @@ Question: do AlphaGenome's scores rank the sample's variants that are fine-mappe
 that are not? For each score it reports the AUROC (fine-mapped eQTL vs matched non-coding controls) with a
 bootstrap 95% CI, plus a csq-vs-AlphaGenome overlap table and coverage/cost figures.
 
-    python scripts/eval_alphagenome.py --annotated variants/S1.alphagenome.tsv \\
-        --eqtl QTD000116.credible_sets.tsv.gz --tss tss_chr20.tsv --af af_chr20.tsv \\
-        --out-json eval.json --out-md eval.md
+    python scripts/eval_alphagenome.py --annotated stats/S1/alphagenome.tsv \\
+        --eqtl QTD000116.credible_sets.tsv.gz --eqtl QTD000121.credible_sets.tsv.gz \\
+        --tss tss_chr20.tsv --af af_chr20.tsv --out-json eval.json --out-md eval.md
 
-**Scores** (``--score NAME[:abs]``, repeatable; the first is the primary):
-- ``AG_RNA_LFC:abs`` (default primary): |log fold change| of predicted expression (AlphaGenome's RNA_SEQ scorer),
-  the score that matches what an eQTL is.
-- ``AG_AVI`` (default secondary): the AlphaGenome Variant Impact score. **AVI is a deleteriousness score trained
+**Scores** (``--score NAME[:abs]``, repeatable; the first is the primary). Defaults follow the annotate stage's
+interface contract (#207): for its TSV ``rna_lfc:abs`` then ``avi``; for its VCF ``AG_RNA_LFC:abs`` then ``AG_AVI``.
+- ``rna_lfc`` / ``AG_RNA_LFC`` with ``:abs`` (default primary): |log fold change| of predicted expression
+  (AlphaGenome's RNA_SEQ scorer) for the gene of the strongest effect, the score that matches what an eQTL is.
+- ``avi`` / ``AG_AVI`` (default secondary): the AlphaGenome Variant Impact score, PHRED-scaled. **AVI is a deleteriousness score trained
   to separate variants with gnomAD AF > 0.1% from rarer ones** (plus conservation and AlphaMissense; Cheng et al.
   2026). Fine-mapped eQTLs are mostly common variants, so AVI's AUROC here measures allele frequency as much as
   regulation unless the controls are matched on AF. The report says so whenever an AVI score is evaluated.
 
 **Inputs**
-- ``--annotated``: the annotated calls, a TSV with a header or a VCF (.vcf / .vcf.gz). Columns or INFO keys:
-  CHROM, POS, REF, ALT, the score columns, and optionally AG_GENE, AG_SOURCE, AF and the bcftools csq consequence
-  (VCF: INFO/BCSQ; TSV: a ``CSQ`` column holding the consequence, e.g. ``missense`` or empty). Rename any column
-  with ``--col ROLE=NAME`` (roles: chrom pos ref alt gene source af csq). The column names follow the annotate
-  stage's contract (AG_* tags); this script only reads them.
-- ``--eqtl``: fine-mapped eQTLs in eQTL Catalogue's SuSiE credible-set format (GRCh38): columns ``variant``
+- ``--annotated``: the annotate stage's output (#207): ``stats/{id}/alphagenome.tsv`` (lines starting with ``#``,
+  such as its terms notice, are skipped; columns ``chrom pos ref alt ... avi avi_raw top_track gene rna_lfc csq
+  source``, ``csq`` comma-separated) or ``variants/{id}.alphagenome.vcf.gz`` (INFO ``AG_AVI``, ``AG_AVI_RAW``,
+  ``AG_TOP_TRACK``, ``AG_GENE``, ``AG_RNA_LFC``, ``AG_SOURCE``, ``BCSQ``). An optional ``af`` column (TSV) or
+  ``AF`` INFO key is used for matching. Rename any column with ``--col ROLE=NAME`` (roles: chrom pos ref alt gene
+  source af csq).
+- ``--eqtl`` (repeatable, e.g. one per GTEx tissue): fine-mapped eQTLs in eQTL Catalogue's SuSiE credible-set format (GRCh38): columns ``variant``
   (chrN_pos_ref_alt) or ``chromosome``/``position``/``ref``/``alt``, plus ``pip`` and ``molecular_trait_id``.
   Positives are the sample's calls with PIP >= ``--min-pip`` (default 0.9); every variant in any credible set is
   excluded from the controls.
@@ -60,17 +62,38 @@ import math
 import random
 import sys
 
-DEFAULT_SCORES = ["AG_RNA_LFC:abs", "AG_AVI"]
-DEFAULT_COLUMNS = {
-    "chrom": "CHROM",
-    "pos": "POS",
-    "ref": "REF",
-    "alt": "ALT",
-    "gene": "AG_GENE",
-    "source": "AG_SOURCE",
-    "af": "AF",
-    "csq": "CSQ",
+# Defaults per input format, from the annotate stage's interface contract (#207).
+DEFAULTS = {
+    "tsv": {
+        "scores": ["rna_lfc:abs", "avi"],
+        "flag": "avi>=20",
+        "columns": {
+            "chrom": "chrom",
+            "pos": "pos",
+            "ref": "ref",
+            "alt": "alt",
+            "gene": "gene",
+            "source": "source",
+            "af": "af",
+            "csq": "csq",
+        },
+    },
+    "vcf": {
+        "scores": ["AG_RNA_LFC:abs", "AG_AVI"],
+        "flag": "AG_AVI>=20",
+        "columns": {
+            "chrom": "CHROM",
+            "pos": "POS",
+            "ref": "REF",
+            "alt": "ALT",
+            "gene": "AG_GENE",
+            "source": "AG_SOURCE",
+            "af": "AF",
+            "csq": "BCSQ",
+        },
+    },
 }
+ROLES = sorted(DEFAULTS["tsv"]["columns"])
 # bcftools csq consequences that change the protein (or its splicing at the canonical sites). Anything else, or no
 # consequence at all (intronic and intergenic variants get none), counts as non-coding here.
 PROTEIN_LEVEL = {
@@ -159,23 +182,27 @@ def bcsq_consequence(value):
 
 
 def is_protein_level(consequence):
+    """True when any of the consequences (comma- or '&'-separated, as csq writes them) changes the protein."""
     if not consequence:
         return False
-    return any(part in PROTEIN_LEVEL for part in consequence.split("&"))
+    return any(part.strip().lstrip("*") in PROTEIN_LEVEL for part in consequence.replace("&", ",").split(","))
+
+
+def input_format(path):
+    return "vcf" if path.endswith((".vcf", ".vcf.gz")) else "tsv"
 
 
 def read_annotated(path, columns, score_names):
     """Annotated calls -> list of dicts: key, gene, source, af, csq, scores {name: float|None}."""
-    if path.endswith((".vcf", ".vcf.gz")):
+    if input_format(path) == "vcf":
         return list(_read_vcf(path, columns, score_names))
     return list(_read_tsv(path, columns, score_names))
 
 
 def _read_tsv(path, columns, score_names):
     with open_text(path) as fh:
-        reader = csv.DictReader(fh, delimiter="\t")
-        if reader.fieldnames:
-            reader.fieldnames = [f.lstrip("#") for f in reader.fieldnames]
+        # The annotate TSV starts with a '#' terms-notice line: skip comment lines before the header.
+        reader = csv.DictReader((line for line in fh if not line.startswith("#")), delimiter="\t")
         missing = [columns[r] for r in ("chrom", "pos", "ref", "alt") if columns[r] not in (reader.fieldnames or [])]
         if missing:
             raise ValueError(f"{path}: missing column(s) {missing}")
@@ -211,7 +238,7 @@ def _read_vcf(path, columns, score_names):
                     "gene": _allele_value(tags, columns["gene"], i),
                     "source": _allele_value(tags, columns["source"], i),
                     "af": parse_float(_allele_value(tags, columns["af"], i)),
-                    "csq": bcsq_consequence(tags.get("BCSQ")),
+                    "csq": bcsq_consequence(tags.get(columns["csq"])),
                     "scores": {name: parse_float(_allele_value(tags, name, i)) for name in score_names},
                 }
 
@@ -225,9 +252,15 @@ def _allele_value(tags, name, idx):
     return parts[idx] if len(parts) > idx else parts[0]
 
 
-def read_eqtls(path):
-    """Credible-set table -> {variant key: (max PIP, set of genes)}."""
+def read_eqtls(paths):
+    """Credible-set tables (one or more, e.g. per tissue) -> {variant key: (max PIP over all, set of genes)}."""
     out = {}
+    for path in [paths] if isinstance(paths, str) else paths:
+        _read_eqtl_file(path, out)
+    return out
+
+
+def _read_eqtl_file(path, out):
     with open_text(path) as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         for row in reader:
@@ -242,7 +275,6 @@ def read_eqtls(path):
             if gene:
                 genes = genes | {gene}
             out[key] = (max(best, pip), genes)
-    return out
 
 
 def read_tss(path):
@@ -380,13 +412,15 @@ def run_record_summary(path):
 
 
 def evaluate(args):
-    score_specs = [parse_score_spec(s) for s in (args.score or DEFAULT_SCORES)]
-    columns = dict(DEFAULT_COLUMNS)
+    defaults = DEFAULTS[input_format(args.annotated)]
+    score_specs = [parse_score_spec(s) for s in (args.score or defaults["scores"])]
+    columns = dict(defaults["columns"])
     for item in args.col or []:
         role, _, name = item.partition("=")
         if role not in columns or not name:
-            raise ValueError(f"--col needs ROLE=NAME with ROLE in {sorted(columns)}, got {item!r}")
+            raise ValueError(f"--col needs ROLE=NAME with ROLE in {ROLES}, got {item!r}")
         columns[role] = name
+    args.flag = args.flag or defaults["flag"]
     flag = parse_flag(args.flag)
     names = sorted({n for n, _ in score_specs} | {flag[0]})
 
@@ -547,19 +581,23 @@ def to_markdown(result):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--annotated", required=True, help="annotated calls: TSV with header, or VCF/VCF.gz")
-    p.add_argument("--eqtl", required=True, help="fine-mapped eQTLs, eQTL Catalogue credible-set TSV (GRCh38)")
+    p.add_argument(
+        "--eqtl", required=True, action="append", help="fine-mapped eQTLs, eQTL Catalogue credible-set TSV (GRCh38)"
+    )
     p.add_argument("--tss", help="TSV chrom pos [gene] of TSSs, to match on distance to the nearest TSS")
     p.add_argument("--af", help="TSV chrom pos ref alt af, to match on allele frequency")
     p.add_argument("--run-record", help="the annotate stage's run-record part (JSON), for API calls, time, cost")
     p.add_argument(
-        "--score", action="append", help=f"NAME[:abs], repeatable; first = primary (default {DEFAULT_SCORES})"
+        "--score",
+        action="append",
+        help="NAME[:abs], repeatable; first = primary (default: TSV rna_lfc:abs, avi; VCF AG_RNA_LFC:abs, AG_AVI)",
     )
     p.add_argument(
         "--col",
         action="append",
-        help="ROLE=NAME to rename an input column (roles: " + ", ".join(sorted(DEFAULT_COLUMNS)) + ")",
+        help="ROLE=NAME to rename an input column (roles: " + ", ".join(ROLES) + ")",
     )
-    p.add_argument("--flag", default="AG_AVI_PHRED>=20", help="AlphaGenome flag for the csq overlap table")
+    p.add_argument("--flag", help="AlphaGenome flag for the csq overlap table (default: AVI PHRED >= 20)")
     p.add_argument("--min-pip", type=float, default=0.9)
     p.add_argument("--controls-per-case", type=int, default=5)
     p.add_argument("--bootstrap", type=int, default=1000)

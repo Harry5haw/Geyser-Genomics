@@ -15,7 +15,7 @@ A run can optionally report which of its called variants AlphaGenome predicts wi
 
 | Route | What it gives | Terms | Used for |
 |---|---|---|---|
-| **AVI download** (`avi_scores_snvs_tabix.zip`, 88.5 GB, one file) | One score per SNV: `#CHROM POS REF ALT raw_score PHRED`. GRCh38, chr1-22, X and Y. No chrM, no indels, **no gene, no track**. Raw ≈ −1.3 to +4.0; PHRED 0 to ~80, where 20 means the top 1% genome-wide | **Permissive, commercial and non-commercial** (the ToS' "Permissive Use Downloadable Artifacts") | Local SNV lookup: `AG_AVI` |
+| **AVI download** (`avi_scores_snvs_tabix.zip`, 88.5 GB, one file) | One score per SNV: `#CHROM POS REF ALT raw_score PHRED`. GRCh38, chr1-22, X and Y. No chrM, no indels, **no gene, no track**. Raw ≈ −1.3 to +4.0; PHRED 0 to ~80, where 20 means the top 1% genome-wide | **Permissive, commercial and non-commercial** (the ToS' "Permissive Use Downloadable Artifacts") | Local SNV lookup: `AG_AVI` (PHRED), `AG_AVI_RAW` |
 | **Atlas API** (`alphagenome.atlas.AtlasClient`: `query_variants`, `query_interval`) | Precomputed per-scorer, per-track and per-gene scores, raw and calibrated, filterable by tissue (ontology term) and gene. Higher query rate than the model | Non-commercial; API key | Gene and track detail ("why") for selected SNVs: `AG_RNA_LFC`, `AG_GENE`, `AG_TOP_TRACK` |
 | **Model API** (`dna_client.create(key).score_variant(interval, variant, scorers)`) | One AnnData per scorer (tracks × genes). Interval of 16 kb, 128 kb, 512 kb or 1 Mb; up to 20 scorers per request (the recommended set has 19) | Non-commercial; API key; no published quota ("thousands of predictions", not millions) | Indels, and SNVs not in the Atlas, capped |
 | Open weights (Kaggle and Hugging Face, JAX) | Self-hosted inference | Non-commercial model terms | **Not used.** Needs an H100-class 80 GB GPU; Google Cloud won't even run it on a 40 GB A100. The RTX 3080 (10 GB) and L4 (24 GB) are out **(unverified)**, and AWS p4de/p5 would break the cost rules |
@@ -33,18 +33,18 @@ AVI is a neural network over AlphaGenome's predictions, with each of ten modalit
 
 ## Design
 
-**App (`app/alphagenome.py`, `tasks.py annotate <id> <ref> --source avi|atlas|api|fake`)**
-- No AWS imports; storage goes through the existing backends. The annotate stage's interface contract is authoritative for names and columns.
+**App (`app/alphagenome.py`, `tasks.py annotate <id> <ref> --source avi-file|atlas|api|fake`)**
+- No AWS imports; storage goes through the existing backends. The annotate stage's interface contract (#207) is authoritative for names, columns and the run-record part; the summary here follows it.
 - **Step 1, AVI (all PASS SNVs, local, $0):**
   - tabix lookup in `reference/alphagenome/avi_chr20.tsv.gz` (+ `.tbi`);
   - normalise `#CHROM` (`chr20` or `20`), and check that REF equals our GRCh38 base, counting mismatches;
-  - this fills `AG_AVI` and `AG_AVI_PHRED`.
+  - this fills `AG_AVI` (PHRED) and `AG_AVI_RAW`.
 - **Step 2, Atlas (selected SNVs, needs the key, capped):**
   - per-gene `RNA_SEQ` log fold change and the top track, which fill `AG_RNA_LFC`, `AG_GENE` and `AG_TOP_TRACK`;
   - selection: PASS calls; non-coding or near-gene by `bcftools csq` (UTR, splice region, upstream or downstream, intronic near exons), plus AVI PHRED ≥ 20; ranked; at most `ALPHAGENOME_MAX_VARIANTS` (default 500).
 - **Step 3, model API (indels, capped):** `score_variant` with a 1 Mb interval centred on the variant and the 19 recommended scorers. That's one request per variant, from the same cap.
 - **Output:**
-  - `variants/{id}.alphagenome.vcf.gz` (+ `.tbi`) with INFO `AG_*`, and `AG_SOURCE=avi|atlas|api`;
+  - `variants/{id}.alphagenome.vcf.gz` (+ `.tbi`) with INFO `AG_*`, and `AG_SOURCE=avi-file|atlas|api|fake`;
   - `stats/{id}/alphagenome.tsv`, a ranked "variants of interest" table;
   - a run-record part `Annotate`: counts per source, requests used, seconds, the client version, and the AVI file's name, byte size, SHA-256 and download date;
   - metrics `Annotate` and `Annotate.ApiCalls`.

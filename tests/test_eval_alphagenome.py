@@ -103,7 +103,7 @@ def test_read_vcf_pass_only_multiallelic_and_bcsq(tmp_path):
         "chr20\t300\t.\tG\tA\t50\t.\tAG_AVI=.\n",
         encoding="utf-8",
     )
-    rows = ev.read_annotated(str(vcf), dict(ev.DEFAULT_COLUMNS), ["AG_AVI"])
+    rows = ev.read_annotated(str(vcf), ev.DEFAULTS["vcf"]["columns"], ["AG_AVI"])
     assert [r["key"][1:] for r in rows] == [(100, "A", "G"), (100, "A", "T"), (300, "G", "A")]
     assert [r["scores"]["AG_AVI"] for r in rows] == [1.5, 2.5, None]
     assert rows[0]["csq"] == "missense" and rows[0]["gene"] == "ENSG01"
@@ -111,9 +111,31 @@ def test_read_vcf_pass_only_multiallelic_and_bcsq(tmp_path):
 
 
 def test_tsv_missing_core_column_is_an_error(tmp_path):
-    path = write_tsv(tmp_path / "a.tsv", ["CHROM", "POS", "REF"], [["chr20", 1, "A"]])
-    with pytest.raises(ValueError, match="ALT"):
-        ev.read_annotated(path, dict(ev.DEFAULT_COLUMNS), ["AG_AVI"])
+    path = write_tsv(tmp_path / "a.tsv", ["chrom", "pos", "ref"], [["chr20", 1, "A"]])
+    with pytest.raises(ValueError, match="alt"):
+        ev.read_annotated(path, ev.DEFAULTS["tsv"]["columns"], ["avi"])
+
+
+def test_vcf_defaults_follow_the_contract(synthetic, tmp_path):
+    vcf = tmp_path / "S1.alphagenome.vcf"
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n##alphagenome_terms=research use only\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        + "".join(
+            f"chr20\t{5_000 + 3_000 * i}\t.\tA\tG\t50\tPASS\tAG_AVI={10 + i % 7};AG_RNA_LFC={1.0 if i < 30 else 0.01}"
+            f";AG_GENE=ENSG{i:05d};AG_SOURCE=atlas\n"
+            for i in range(300)
+        ),
+        encoding="utf-8",
+    )
+    out = tmp_path / "v.json"
+    assert (
+        ev.main(["--annotated", str(vcf), "--eqtl", synthetic["eqtl"][0], "--bootstrap", "50", "--out-json", str(out)])
+        == 0
+    )
+    result = json.loads(out.read_text("utf-8"))
+    assert [s["score"] for s in result["scores"]] == ["AG_RNA_LFC:abs", "AG_AVI"]
+    assert result["overlap"]["flag"] == "AG_AVI>=20" and result["counts"]["positives"] == 30
+    assert result["scores"][0]["auroc"] == 1.0
 
 
 def test_tss_distance_and_bins():
@@ -145,51 +167,102 @@ def test_matching_draws_within_stratum_without_replacement():
 # --- End to end on a synthetic sample ------------------------------------------------------------------------------
 
 
+HEADER = [
+    "rank",
+    "chrom",
+    "pos",
+    "ref",
+    "alt",
+    "kind",
+    "qual",
+    "avi",
+    "avi_raw",
+    "top_track",
+    "gene",
+    "rna_lfc",
+    "csq",
+    "source",
+]  # the annotate TSV's columns (#207)
+
+
+def phred_of(raw):
+    """A monotone stand-in for AVI's PHRED scale (higher raw, higher PHRED)."""
+    return round(max(0.0, (raw + 1.3) * 8), 2)
+
+
 @pytest.fixture
 def synthetic(tmp_path):
-    """60 fine-mapped eQTL calls with high |LFC| (and common AF), 600 non-coding non-eQTL calls, 20 missense calls.
-    AVI is made to track rarity (low for common variants), as the real score does, so it should NOT separate the
-    eQTLs once AF is matched."""
+    """60 fine-mapped eQTL calls with high |LFC| (and common AF), 600 non-coding non-eQTL calls, 20 missense calls,
+    written as the annotate stage's TSV (#207), terms-notice line first. AVI is made to track rarity (low for common
+    variants), as the real score does, so it should NOT separate the eQTLs once AF is matched."""
     rng = random.Random(3)
     tss = [["chr20", 10_000 * i, f"G{i}"] for i in range(1, 200)]
-    ann, eqtl, af = [], [], []
+    ann, eqtl_a, eqtl_b, af = [], [], [], []
+    noncoding_flagged = 0
     for i in range(660):
         pos = 5_000 + 3_000 * i
         is_eqtl = i < 60
         freq = rng.uniform(0.05, 0.5) if is_eqtl or i % 2 == 0 else rng.uniform(0.0005, 0.04)
         lfc = rng.gauss(0.8, 0.2) * rng.choice([-1, 1]) if is_eqtl else rng.gauss(0, 0.2)
-        avi = -1.0 + 2.0 * (0.5 - freq) + rng.gauss(0, 0.3)
-        phred = 25 if (i % 50 == 7) else 5
+        raw = round(-1.0 + 2.0 * (0.5 - freq) + rng.gauss(0, 0.3), 4)
+        noncoding_flagged += phred_of(raw) >= 20
+        gene = f"ENSG{i:05d}" if is_eqtl else ""
         ann.append(
             [
+                0,
                 "chr20",
                 pos,
                 "A",
                 "G",
+                "snv",
+                50,
+                phred_of(raw),
+                raw,
+                "RNA_SEQ:liver",
+                gene,
                 round(lfc, 4),
-                round(avi, 4),
-                phred,
-                f"ENSG{i:05d}" if is_eqtl else "",
-                "atlas",
                 "",
+                "atlas",
             ]
         )
         af.append(["chr20", pos, "A", "G", round(freq, 4)])
         if is_eqtl:
-            eqtl.append([f"ENSG{i:05d}.1", f"chr20_{pos}_A_G", 0.95])
+            (eqtl_a if i < 30 else eqtl_b).append([f"ENSG{i:05d}.1", f"chr20_{pos}_A_G", 0.95])
     for j in range(20):
-        pos = 3_000_000 + 1_000 * j
-        ann.append(["chr20", pos, "C", "T", 0.0, 2.0, 30 if j < 5 else 5, "", "atlas", "missense"])
-    eqtl.append(["ENSG99999", "chr20_6000000_T_C", 0.1])  # in a credible set, not a positive, not called
+        raw = 4.0 if j < 5 else 0.0
+        ann.append(
+            [
+                0,
+                "chr20",
+                3_000_000 + 1_000 * j,
+                "C",
+                "T",
+                "snv",
+                50,
+                phred_of(raw),
+                raw,
+                "",
+                "",
+                0.0,
+                "missense,intron",
+                "atlas",
+            ]
+        )
+    eqtl_b.append(["ENSG99999", "chr20_6000000_T_C", 0.1])  # in a credible set, not a positive, not called
+    annotated = tmp_path / "alphagenome.tsv"
+    write_tsv(annotated, HEADER, ann)
+    annotated.write_text(
+        "# AlphaGenome outputs: research use only, not for clinical decisions\n" + annotated.read_text("utf-8"), "utf-8"
+    )
     paths = {
-        "annotated": write_tsv(
-            tmp_path / "ann.tsv",
-            ["CHROM", "POS", "REF", "ALT", "AG_RNA_LFC", "AG_AVI", "AG_AVI_PHRED", "AG_GENE", "AG_SOURCE", "CSQ"],
-            ann,
-        ),
-        "eqtl": write_tsv(tmp_path / "cs.tsv.gz", ["molecular_trait_id", "variant", "pip"], eqtl),
+        "annotated": str(annotated),
+        "eqtl": [
+            write_tsv(tmp_path / "a.cs.tsv.gz", ["molecular_trait_id", "variant", "pip"], eqtl_a),
+            write_tsv(tmp_path / "b.cs.tsv", ["molecular_trait_id", "variant", "pip"], eqtl_b),
+        ],
         "tss": write_tsv(tmp_path / "tss.tsv", ["chrom", "pos", "gene"], tss),
         "af": write_tsv(tmp_path / "af.tsv", ["chrom", "pos", "ref", "alt", "af"], af),
+        "noncoding_flagged": noncoding_flagged,
     }
     rr = tmp_path / "rr.json"
     rr.write_text(json.dumps({"stage": "Annotate", "source": "atlas", "api_calls": 12, "seconds": 41.5}), "utf-8")
@@ -203,7 +276,9 @@ def run(paths, tmp_path, *extra):
         "--annotated",
         paths["annotated"],
         "--eqtl",
-        paths["eqtl"],
+        paths["eqtl"][0],
+        "--eqtl",
+        paths["eqtl"][1],
         "--out-json",
         str(out_json),
         "--out-md",
@@ -223,17 +298,17 @@ def test_end_to_end_matched_on_tss_and_af(synthetic, tmp_path):
     assert result["matched_on"] == ["distance to nearest TSS", "allele frequency"] and result["af_matched"]
     assert result["counts"]["positives"] == 60
     primary, avi = result["scores"]
-    assert primary["score"] == "AG_RNA_LFC:abs" and primary["role"] == "primary"
+    assert primary["score"] == "rna_lfc:abs" and primary["role"] == "primary"
     assert primary["auroc"] > 0.95 and primary["ci95"][0] > 0.9
-    assert avi["score"] == "AG_AVI" and 0.25 < avi["auroc"] < 0.75  # AF matched: no frequency signal left
+    assert avi["score"] == "avi" and 0.25 < avi["auroc"] < 0.75  # AF matched: no frequency signal left
     assert "matched on allele frequency" in avi["caveat"]
     assert result["gene_agreement"] == {"positives_with_ag_gene": 60, "ag_gene_is_eqtl_gene": 60}
     o = result["overlap"]
-    assert (o["csq_and_ag"], o["csq_only"]) == (5, 15)
-    assert o["ag_only"] + o["neither"] == 660
+    assert o["flag"] == "avi>=20" and (o["csq_and_ag"], o["csq_only"]) == (5, 15)
+    assert o["ag_only"] == synthetic["noncoding_flagged"] and o["ag_only"] + o["neither"] == 660
     assert result["coverage"]["by_source"] == {"atlas": 680}
     assert result["run_record"] == {"source": "atlas", "api_calls": 12, "seconds": 41.5}
-    assert "| `AG_RNA_LFC:abs` | primary |" in md and "research use only" in md
+    assert "| `rna_lfc:abs` | primary |" in md and "research use only" in md
 
 
 def test_without_af_the_report_says_so_and_avi_shows_the_confound(synthetic, tmp_path):
@@ -246,12 +321,13 @@ def test_without_af_the_report_says_so_and_avi_shows_the_confound(synthetic, tmp
 
 
 def test_nothing_to_match_on_and_custom_scores(synthetic, tmp_path):
-    result, _ = run(synthetic, tmp_path, "--score", "AG_AVI", "--controls-per-case", "2")
+    result, _ = run(synthetic, tmp_path, "--score", "avi_raw", "--controls-per-case", "2")
     assert result["matched_on"] == ["nothing (no TSS table, no allele frequencies)"]
-    assert [s["score"] for s in result["scores"]] == ["AG_AVI"] and result["scores"][0]["role"] == "primary"
+    assert [s["score"] for s in result["scores"]] == ["avi_raw"] and result["scores"][0]["role"] == "primary"
+    assert "caveat" in result["scores"][0]  # any AVI score carries the confound note
     assert result["counts"]["controls"] == 120
 
 
 def test_bad_column_mapping_fails_cleanly(synthetic, tmp_path, capsys):
-    assert ev.main(["--annotated", synthetic["annotated"], "--eqtl", synthetic["eqtl"], "--col", "nope=X"]) == 1
+    assert ev.main(["--annotated", synthetic["annotated"], "--eqtl", synthetic["eqtl"][0], "--col", "nope=X"]) == 1
     assert "--col needs ROLE=NAME" in capsys.readouterr().err
