@@ -44,7 +44,30 @@ def test_every_page_prerenders_same_site_links_on_hover(client, storage):
         (rule,) = rules["prerender"]
         assert rule["eagerness"] == "moderate"  # on hover / pointer-down, not every link up front
         clauses = rule["where"]["and"]
-        assert {"href_matches": "/*"} in clauses  # same-site only
+        # Same-site only. URL patterns match the query string separately: "/*" alone would leave out ?vpage= pages.
+        assert {"or": [{"href_matches": "/*"}, {"href_matches": "/*\\?*"}]} in clauses
+
+
+def test_a_static_root_without_collectstatic_still_serves_pages(client, storage, tmp_path, settings):
+    # The hashed storage is on whenever STATIC_ROOT is set; a missing manifest falls back to plain names, not a 500.
+    from django.test import override_settings
+
+    (root := tmp_path / "never-collected").mkdir()  # exists, but nothing was collected into it
+    with override_settings(
+        DEBUG=False,
+        STATIC_ROOT=root,
+        STORAGES={"staticfiles": {"BACKEND": "geyser_web.static_storage.ForgivingManifestStaticFilesStorage"}},
+    ):
+        resp = client.get("/")
+    assert resp.status_code == 200
+    assert 'src="/static/samples/geyser.js"' in resp.content.decode()
+
+
+def test_a_zero_page_size_is_treated_as_one(client, storage, settings):
+    settings.GEYSER_TABLE_ROWS = 0
+    big_sample(storage, calls=3)
+    body = client.get("/samples/S1/?vpage=9").content.decode()
+    assert "3–3 of 3 calls" in body  # a page past the end shows the last one, with no division by zero
 
 
 @pytest.mark.parametrize(
@@ -190,3 +213,4 @@ def test_html_is_gzipped_and_downloads_are_not(client, storage):
     assert page["Content-Encoding"] == "gzip"
     download = client.get("/samples/S1/files/vcf/", HTTP_ACCEPT_ENCODING="gzip, br")
     assert not download.has_header("Content-Encoding")  # a .vcf.gz is sent as it is, never recompressed
+    download.close()  # a FileResponse holds the file open until closed
