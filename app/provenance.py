@@ -280,6 +280,7 @@ JOB_NAME_STAGES = (
     ("PlanRegions-", "PlanRegions"),
     ("DeepVariant-", "DeepVariant"),  # G2: the GPU caller; an extra caller, so its failure doesn't fail the run
     ("QualityGate-", "QualityGate"),  # #162: the gate after either caller
+    ("Annotate-", "Annotate"),  # 3.0: AlphaGenome annotation (#209's state); an extra stage (EXTRA_STAGES)
 )
 REASON_LIMIT = 1000  # characters of a failure reason kept in the record
 EXTRA_CALLERS = ("DeepVariant", "PangenomeDeepVariant")  # their failure never fails the core run

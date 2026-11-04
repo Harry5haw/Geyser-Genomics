@@ -113,7 +113,7 @@ PIPELINE_ENV_VARS = (
     "GATE_CONFIG",
 )
 ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
-# --annotate alphagenome (3.0): the AlphaGenome sources (app/alphagenome.py SOURCES; a test keeps them equal).
+# --annotate alphagenome (3.0): the AlphaGenome sources (app/alphagenome_annotation.py SOURCES; a test keeps them equal).
 # Offline the default is fake: deterministic test data, not predictions. atlas and api need the key in the
 # host's environment, which is passed to the container by name only (never on a command line):
 #   set -a; . ~/geyser-secrets/alphagenome.env; set +a

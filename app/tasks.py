@@ -1518,7 +1518,7 @@ def gate_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
-# --- AlphaGenome annotation (3.0, opt-in; app/alphagenome.py) ---------------------------------------------
+# --- AlphaGenome annotation (3.0, opt-in; app/alphagenome_annotation.py) ---------------------------------------------
 
 ANNOTATE_METRIC = "Annotate"  # an extra stage: provenance.EXTRA_STAGES, so a failure never fails the run
 ANNOTATE_CALLS_METRIC = "Annotate.ApiCalls"  # a count: the backend calls one annotation made
@@ -1527,7 +1527,7 @@ ALPHAGENOME_PREFIX = REFERENCE_PREFIX + "alphagenome/"  # local AlphaGenome data
 
 def alphagenome_avi_key(reference_name: str) -> str:
     """The AVI table for a reference (--source avi-file): an extract of the official download for its contigs,
-    as bgzip TSV `#CHROM POS REF ALT raw_score PHRED` (alphagenome.AviFileBackend)."""
+    as bgzip TSV `#CHROM POS REF ALT raw_score PHRED` (ag.AviFileBackend)."""
     return f"{ALPHAGENOME_PREFIX}{reference_name}.avi.tsv.gz"
 
 
@@ -1546,14 +1546,14 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
     """AlphaGenome scores for the sample's selected variants -> variants/{id}.alphagenome.vcf.gz (+ .tbi) and
     stats/{id}/alphagenome.tsv. Research use only. An extra stage: a failure here is noted, never fatal.
 
-    max_variants: the selection cap (default $ALPHAGENOME_MAX_VARIANTS, else alphagenome.DEFAULT_MAX_VARIANTS).
+    max_variants: the selection cap (default $ALPHAGENOME_MAX_VARIANTS, else ag.DEFAULT_MAX_VARIANTS).
     """
-    import alphagenome  # only this stage needs it
+    import alphagenome_annotation as ag  # only this stage needs it
 
-    if source not in alphagenome.SOURCES:  # before any download
-        raise ValueError(f"unknown AlphaGenome source {source!r}; expected one of {alphagenome.SOURCES}")
+    if source not in ag.SOURCES:  # before any download
+        raise ValueError(f"unknown AlphaGenome source {source!r}; expected one of {ag.SOURCES}")
     if max_variants is None:
-        max_variants = alphagenome.max_variants_from_env()
+        max_variants = ag.max_variants_from_env()
     elif max_variants < 1:
         raise ValueError(f"max_variants must be >= 1, got {max_variants}")
     keys = keys_for(sample_id)
@@ -1572,10 +1572,10 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
             table = os.path.join(wd, os.path.basename(avi_key))
             storage().download(avi_key, table)
             provenance.note_input(avi_key, table)
-        backend = alphagenome.backend_for(source, table=table)
+        backend = ag.backend_for(source, table=table)
 
-        header, contigs, has_bcsq, records = alphagenome.read_vcf(local_vcf)
-        selected, counts = alphagenome.select(records, contigs, has_bcsq, max_variants)
+        header, contigs, has_bcsq, records = ag.read_vcf(local_vcf)
+        selected, counts = ag.select(records, contigs, has_bcsq, max_variants)
         print(
             f"AlphaGenome ({source}): {counts['selected']} of {counts['candidates']} candidate variants selected "
             f"({counts['pass']} PASS records; consequences {'used' if has_bcsq else 'not available'}; "
@@ -1583,19 +1583,19 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
             flush=True,
         )
         scores = backend.score(selected)
-        rows = alphagenome.scored_rows(selected, scores)
+        rows = ag.scored_rows(selected, scores)
         print(f"AlphaGenome: {len(rows)} scored, {len(selected) - len(rows)} not scored", flush=True)
 
         plain = os.path.join(wd, "alphagenome.vcf")
         with open(plain, "w", encoding="utf-8") as fh:
-            fh.write(alphagenome.vcf_text(rows, header, contigs, reference_name, backend.name, backend.model_version))
+            fh.write(ag.vcf_text(rows, header, contigs, reference_name, backend.name, backend.model_version))
         vcf = os.path.join(wd, os.path.basename(keys["alphagenome_vcf"]))
         tbi = os.path.join(wd, os.path.basename(keys["alphagenome_tbi"]))
         tsv = os.path.join(wd, os.path.basename(keys["alphagenome_tsv"]))
         run_shell(f"bcftools view -Oz -o {shlex.quote(vcf)} {shlex.quote(plain)}")
         run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
         with open(tsv, "w", encoding="utf-8") as fh:
-            fh.write(alphagenome.tsv_text(rows))
+            fh.write(ag.tsv_text(rows))
         provenance.note(
             alphagenome={
                 "source": backend.name,
@@ -1636,21 +1636,21 @@ def annotate_main(argv) -> int:
     record and the log, never fatal to the run); 2 only for usage errors (arguments, a source or cap that isn't
     valid), before anything runs.
     """
-    import alphagenome
+    import alphagenome_annotation as ag
 
     parser = argparse.ArgumentParser(prog="tasks.py annotate", description=annotate_main.__doc__)
     parser.add_argument("srr_id")
     parser.add_argument("reference_name")
-    parser.add_argument("--source", help=f"one of {', '.join(alphagenome.SOURCES)}; default ${ALPHAGENOME_SOURCE_ENV}")
-    parser.add_argument("--max-variants", type=int, help=f"selection cap; default ${alphagenome.MAX_VARIANTS_ENV}")
+    parser.add_argument("--source", help=f"one of {', '.join(ag.SOURCES)}; default ${ALPHAGENOME_SOURCE_ENV}")
+    parser.add_argument("--max-variants", type=int, help=f"selection cap; default ${ag.MAX_VARIANTS_ENV}")
     args = parser.parse_args(argv)
     source = (args.source or os.environ.get(ALPHAGENOME_SOURCE_ENV, "")).strip().lower()
-    if source not in alphagenome.SOURCES:
-        parser.error(f"--source (or ${ALPHAGENOME_SOURCE_ENV}) must be one of {alphagenome.SOURCES}, got {source!r}")
+    if source not in ag.SOURCES:
+        parser.error(f"--source (or ${ALPHAGENOME_SOURCE_ENV}) must be one of {ag.SOURCES}, got {source!r}")
     max_variants = args.max_variants
     if max_variants is None:
         try:
-            max_variants = alphagenome.max_variants_from_env()
+            max_variants = ag.max_variants_from_env()
         except ValueError as err:
             parser.error(str(err))
     elif max_variants < 1:
@@ -1669,6 +1669,9 @@ TASKS = {
     "align": (align_task, True),
     "variants": (variants_task, True),
     "gate": (gate_task, False),
+    # 3.0: the CLI is annotate_main (--source, --max-variants, exit codes); listed here so the state machine's
+    # Annotate step (#209) and tasks.py agree on the stage and its reference argument (tests/test_consistency.py).
+    "annotate": (annotate_task, True),
 }
 
 
@@ -1676,7 +1679,7 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["regions"]:
         return regions_main(argv[1:])
-    if argv[:1] == ["annotate"]:  # not in TASKS until the state machine has an Annotate state (3.0, P3)
+    if argv[:1] == ["annotate"]:  # its own options and exit codes (annotate_main)
         return annotate_main(argv[1:])
     if argv[:1] == ["finalize"]:
         return finalize_main(argv[1:])

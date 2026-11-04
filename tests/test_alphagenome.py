@@ -13,7 +13,7 @@ import traceback
 
 import pytest
 
-import alphagenome
+import alphagenome_annotation as ag
 import provenance
 import run_local
 import tasks
@@ -38,9 +38,9 @@ def rec(chrom, pos, ref, alt, qual=50, filt=".", info="DP=30"):
 def read(path_text, has_csq=False, cap=500):
     path, text = path_text
     path.write_text(text)
-    header, contigs, has_bcsq, records = alphagenome.read_vcf(str(path))
+    header, contigs, has_bcsq, records = ag.read_vcf(str(path))
     assert has_bcsq == has_csq
-    return alphagenome.select(records, contigs, has_bcsq, cap)
+    return ag.select(records, contigs, has_bcsq, cap)
 
 
 # --- csq parsing and selection -----------------------------------------------------------------------------
@@ -48,8 +48,8 @@ def read(path_text, has_csq=False, cap=500):
 
 def test_bcsq_consequences_and_genes():
     info = "DP=3;BCSQ=missense|G1|T1|protein_coding|+|5A>5T|100A>T,*intron&splice_region|G2|T2|protein_coding,@123"
-    assert alphagenome.parse_bcsq(info) == (("missense", "intron", "splice_region"), ("G1", "G2"))
-    assert alphagenome.parse_bcsq("DP=3") == ((), ())
+    assert ag.parse_bcsq(info) == (("missense", "intron", "splice_region"), ("G1", "G2"))
+    assert ag.parse_bcsq("DP=3") == ((), ())
 
 
 def test_selection_keeps_pass_snvs_and_indels_ranked_by_qual(tmp_path):
@@ -116,24 +116,24 @@ def test_an_empty_vcf_selects_nothing(tmp_path):
 
 @pytest.mark.parametrize("raw,expected", [(None, 500), ("", 500), ("25", 25), (" 7 ", 7)])
 def test_max_variants_from_env(raw, expected):
-    env = {} if raw is None else {alphagenome.MAX_VARIANTS_ENV: raw}
-    assert alphagenome.max_variants_from_env(env) == expected
+    env = {} if raw is None else {ag.MAX_VARIANTS_ENV: raw}
+    assert ag.max_variants_from_env(env) == expected
 
 
 @pytest.mark.parametrize("raw", ["0", "-3", "ten", "2.5"])
 def test_a_bad_max_variants_is_an_error(raw):
-    with pytest.raises(ValueError, match=alphagenome.MAX_VARIANTS_ENV):
-        alphagenome.max_variants_from_env({alphagenome.MAX_VARIANTS_ENV: raw})
+    with pytest.raises(ValueError, match=ag.MAX_VARIANTS_ENV):
+        ag.max_variants_from_env({ag.MAX_VARIANTS_ENV: raw})
 
 
 # --- backends ---------------------------------------------------------------------------------------------
 
-V1 = alphagenome.Variant("chr20", 100, "A", "G", 50.0)
-V2 = alphagenome.Variant("chr20", 200, "AT", "A", 40.0)
+V1 = ag.Variant("chr20", 100, "A", "G", 50.0)
+V2 = ag.Variant("chr20", 200, "AT", "A", 40.0)
 
 
 def test_the_fake_backend_is_deterministic_and_counts_calls():
-    first, second = alphagenome.FakeBackend(), alphagenome.FakeBackend()
+    first, second = ag.FakeBackend(), ag.FakeBackend()
     assert first.score([V1, V2]) == second.score([V1, V2])
     assert first.api_calls == 2
     score = first.score([V1])[V1.key]
@@ -144,14 +144,14 @@ def test_the_fake_backend_is_deterministic_and_counts_calls():
 def test_the_fake_backend_uses_recorded_responses(tmp_path, monkeypatch):
     path = tmp_path / "responses.json"
     path.write_text(json.dumps({V1.key: {"avi": 33.5, "top_track": "RNA_SEQ:liver", "gene": "GENE1"}}))
-    monkeypatch.setenv(alphagenome.FAKE_RESPONSES_ENV, str(path))
-    backend = alphagenome.backend_for("fake")
+    monkeypatch.setenv(ag.FAKE_RESPONSES_ENV, str(path))
+    backend = ag.backend_for("fake")
     scores = backend.score([V1, V2])
-    assert scores[V1.key] == alphagenome.Score("fake", avi=33.5, top_track="RNA_SEQ:liver", gene="GENE1")
+    assert scores[V1.key] == ag.Score("fake", avi=33.5, top_track="RNA_SEQ:liver", gene="GENE1")
     assert V2.key in scores  # not recorded: derived
 
 
-def write_avi_table(path, rows, header=alphagenome.AVI_FILE_COLUMNS):
+def write_avi_table(path, rows, header=ag.AVI_FILE_COLUMNS):
     # Synthetic values only: real AVI data is never committed or used in tests.
     with gzip.open(path, "wt") as fh:
         fh.write("\t".join(header) + "\n")
@@ -162,9 +162,9 @@ def write_avi_table(path, rows, header=alphagenome.AVI_FILE_COLUMNS):
 def test_the_avi_file_backend_looks_up_snvs_only(tmp_path):
     table = tmp_path / "chr20.fa.avi.tsv.gz"
     write_avi_table(table, [("chr20", 100, "A", "G", 1.25, 22.5), ("chr20", 100, "A", "C", -0.5, 1.0)])
-    backend = alphagenome.backend_for("avi-file", table=str(table))
-    scores = backend.score([V1, V2, alphagenome.Variant("chr20", 999, "C", "T", 9.0)])
-    assert scores == {V1.key: alphagenome.Score("avi-file", avi=22.5, avi_raw=1.25)}  # no indel, no missing SNV
+    backend = ag.backend_for("avi-file", table=str(table))
+    scores = backend.score([V1, V2, ag.Variant("chr20", 999, "C", "T", 9.0)])
+    assert scores == {V1.key: ag.Score("avi-file", avi=22.5, avi_raw=1.25)}  # no indel, no missing SNV
     assert backend.api_calls == 0 and backend.model_version == "chr20.fa.avi.tsv.gz"
 
 
@@ -172,26 +172,114 @@ def test_the_avi_file_backend_refuses_a_table_that_is_not_one(tmp_path):
     table = tmp_path / "t.tsv.gz"
     write_avi_table(table, [], header=("chrom", "pos", "ref", "alt", "avi"))
     with pytest.raises(ValueError, match="not an AVI table"):
-        alphagenome.backend_for("avi-file", table=str(table)).score([V1])
+        ag.backend_for("avi-file", table=str(table)).score([V1])
 
 
 @pytest.mark.parametrize("source", ["atlas", "api"])
 def test_keyed_backends_need_the_key_and_never_show_it(source, monkeypatch):
-    monkeypatch.delenv(alphagenome.API_KEY_ENV, raising=False)
-    with pytest.raises(ValueError, match=alphagenome.API_KEY_ENV):
-        alphagenome.backend_for(source)
-    monkeypatch.setenv(alphagenome.API_KEY_ENV, SECRET)
-    backend = alphagenome.backend_for(source)
+    monkeypatch.delenv(ag.API_KEY_ENV, raising=False)
+    with pytest.raises(ValueError, match=ag.API_KEY_ENV):
+        ag.backend_for(source)
+    monkeypatch.setenv(ag.API_KEY_ENV, SECRET)
+    backend = ag.backend_for(source)
     assert SECRET not in repr(backend) and SECRET not in str(vars(backend).keys())
     assert backend.score([]) == {}
+
+
+def test_the_api_backend_is_not_wired_in_yet(monkeypatch):
+    monkeypatch.setenv(ag.API_KEY_ENV, SECRET)
     with pytest.raises(NotImplementedError, match="not wired in yet") as err:
-        backend.score([V1])
+        ag.backend_for("api").score([V1])
     assert SECRET not in str(err.value)
 
 
+# A stand-in for the Atlas client's answer: {scorer: AnnData}, with X, layers["quantiles"], var (tracks) and obs.
+class Data:
+    def __init__(self, x, quantiles, tracks, genes=None):
+        self.X, self.layers, self.var, self.obs = x, {"quantiles": quantiles}, tracks, genes
+
+
+DNASE = Data(
+    [[0.01, -0.05]],
+    [[0.2, -0.7]],
+    [{"name": "DNase-seq", "biosample_name": "liver"}, {"name": "x", "biosample_name": "K562"}],
+)
+CHIP = Data([[0.02]], [[0.4]], [{"name": "h", "histone_mark": "H3K27ac", "biosample_name": "lung"}])
+RNA = Data(
+    [[0.01, 0.02], [-0.3, 0.05]],  # genes x tracks: raw log fold changes
+    [[0.1, 0.2], [-0.95, 0.3]],
+    [{"name": "RNA-seq", "biosample_name": "liver"}, {"name": "RNA-seq", "biosample_name": "lung"}],
+    [{"gene_id": "ENSG1", "gene_name": "PAK5"}, {"gene_id": "ENSG2", "gene_name": "SNAP25"}],
+)
+
+
+def test_reduce_atlas_takes_the_largest_quantile_and_the_top_genes_lfc():
+    score = ag.reduce_atlas({"DNASE": DNASE, "CHIP_HISTONE": CHIP, "RNA_SEQ": RNA})
+    # |-0.95| (RNA_SEQ, SNAP25 in liver) beats DNASE's |-0.7|: quantiles compare across scorers, raw scores don't.
+    assert score == ag.Score("atlas", top_track="RNA_SEQ:liver", gene="SNAP25", rna_lfc=-0.3)
+    assert ag.reduce_atlas({"DNASE": DNASE, "CHIP_HISTONE": CHIP}) == ag.Score("atlas", top_track="DNASE:K562")
+    assert ag.reduce_atlas({"CHIP_HISTONE": CHIP}).top_track == "CHIP_HISTONE:H3K27ac:lung"
+    assert ag.reduce_atlas({}) is None
+    assert ag.reduce_atlas({"DNASE": Data([], [], [])}) is None
+
+
+class FakeAtlasClient:
+    """query_variant(variant, requested_scorers=...) as the real client has it; NOT_FOUND is a ValueError there."""
+
+    def __init__(self, missing=(), error=None):
+        self.missing, self.error, self.asked = set(missing), error, []
+
+    def query_variant(self, variant, *, requested_scorers):
+        self.asked.append((variant, tuple(requested_scorers)))
+        if self.error:
+            raise self.error
+        if variant in self.missing:
+            raise ValueError(f"Variant {variant} not found")
+        return {"DNASE": DNASE, "RNA_SEQ": RNA}
+
+
+def atlas_backend(client):
+    return ag.AtlasBackend(SECRET, client=client, make_variant=lambda *v: v, workers=2)
+
+
+def test_the_atlas_backend_scores_snvs_and_leaves_missing_ones_unscored():
+    v3 = ag.Variant("chr20", 300, "G", "C", 9.0)
+    client = FakeAtlasClient(missing={("chr20", 300, "G", "C")})
+    backend = atlas_backend(client)
+    scores = backend.score([V1, V2, v3])  # V2 is an indel: not in the Atlas, never asked
+    assert scores == {V1.key: ag.Score("atlas", top_track="RNA_SEQ:liver", gene="SNAP25", rna_lfc=-0.3)}
+    assert sorted(v for v, _ in client.asked) == [("chr20", 100, "A", "G"), ("chr20", 300, "G", "C")]
+    assert client.asked[0][1] == ag.ATLAS_SCORERS and not any(s.endswith("_ACTIVE") for s in client.asked[0][1])
+    assert backend.api_calls == 2 and backend.not_found == 1
+    assert backend.model_version.startswith("alphagenome-client ")
+
+
+def test_an_atlas_error_fails_the_annotation_with_the_key_redacted():
+    backend = atlas_backend(FakeAtlasClient(error=PermissionError(f"API key {SECRET} not valid")))
+    with pytest.raises(RuntimeError) as err:
+        backend.score([V1])
+    assert SECRET not in str(err.value) and "PermissionError" in str(err.value)
+    assert SECRET not in "".join(traceback.format_exception(err.value))
+
+
+def test_the_atlas_backend_without_the_client_says_how_to_install_it(monkeypatch):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_alphagenome(name, *args, **kwargs):
+        if name.startswith("alphagenome"):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_alphagenome)
+    with pytest.raises(RuntimeError, match="requirements-alphagenome.txt"):
+        ag.AtlasBackend(SECRET).score([V1])
+
+
 def test_a_client_error_containing_the_key_is_redacted(monkeypatch):
-    monkeypatch.setenv(alphagenome.API_KEY_ENV, SECRET)
-    backend = alphagenome.backend_for("api")
+    monkeypatch.setenv(ag.API_KEY_ENV, SECRET)
+    backend = ag.backend_for("api")
 
     def failing_client(variant):
         raise ConnectionError(f"401 for https://example.invalid/v1/score?key={SECRET} ({variant.key})")
@@ -205,33 +293,33 @@ def test_a_client_error_containing_the_key_is_redacted(monkeypatch):
 
 
 def test_the_api_backend_takes_only_the_allowed_intervals(monkeypatch):
-    assert alphagenome.ApiBackend(SECRET).interval == 1_048_576
+    assert ag.ApiBackend(SECRET).interval == 1_048_576
     with pytest.raises(ValueError, match="one of"):
-        alphagenome.ApiBackend(SECRET, interval=1_000_000)
+        ag.ApiBackend(SECRET, interval=1_000_000)
 
 
 def test_an_unknown_source_is_an_error():
     with pytest.raises(ValueError, match="unknown AlphaGenome source"):
-        alphagenome.backend_for("gnomad")
+        ag.backend_for("gnomad")
 
 
 # --- outputs ----------------------------------------------------------------------------------------------
 
 
 def test_the_vcf_has_the_tags_a_source_has_sorted_by_position():
-    v3 = alphagenome.Variant("chr20", 50, "C", "T", 10.0, ("intron",), ("G9",), "intron|G9|T9|protein_coding")
+    v3 = ag.Variant("chr20", 50, "C", "T", 10.0, ("intron",), ("G9",), "intron|G9|T9|protein_coding")
     rows = [
-        (V1, alphagenome.Score("fake", avi=12.5, avi_raw=0.5, top_track="RNA_SEQ:liver", gene="G1", rna_lfc=-0.25)),
-        (v3, alphagenome.Score("avi-file", avi=3.0, avi_raw=-0.1)),
+        (V1, ag.Score("fake", avi=12.5, avi_raw=0.5, top_track="RNA_SEQ:liver", gene="G1", rna_lfc=-0.25)),
+        (v3, ag.Score("avi-file", avi=3.0, avi_raw=-0.1)),
     ]
-    text = alphagenome.vcf_text(
+    text = ag.vcf_text(
         rows, HEADER.splitlines() + [BCSQ_HEADER.strip()], ["chr20", "chr21"], "chr20.fa", "fake", "fake-1"
     )
     lines = text.splitlines()
     for tag in ("AG_AVI", "AG_AVI_RAW", "AG_TOP_TRACK", "AG_GENE", "AG_RNA_LFC", "AG_SOURCE", "BCSQ"):
         assert any(line.startswith(f"##INFO=<ID={tag},") for line in lines), tag
     assert "##alphagenome_source=fake (deterministic test data, not predictions)" in lines
-    assert "##AlphaGenomeTerms=" + alphagenome.TERMS_NOTICE in lines  # the Output Terms' notice
+    assert "##AlphaGenomeTerms=" + ag.TERMS_NOTICE in lines  # the Output Terms' notice
     assert (
         "##contig=<ID=chr20,length=64444167>" in lines and lines[-3] == "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
     )
@@ -246,16 +334,16 @@ def test_the_vcf_has_the_tags_a_source_has_sorted_by_position():
 
 
 def test_the_tsv_is_ranked_by_avi_then_lfc():
-    v3 = alphagenome.Variant("chr20", 300, "G", "C", 99.0, ("intron",), ("G3",))
+    v3 = ag.Variant("chr20", 300, "G", "C", 99.0, ("intron",), ("G3",))
     rows = [
-        (V1, alphagenome.Score("fake", avi=5.0, rna_lfc=0.1)),
-        (V2, alphagenome.Score("fake", avi=20.0)),
-        (v3, alphagenome.Score("fake", avi=5.0, rna_lfc=-0.9)),
+        (V1, ag.Score("fake", avi=5.0, rna_lfc=0.1)),
+        (V2, ag.Score("fake", avi=20.0)),
+        (v3, ag.Score("fake", avi=5.0, rna_lfc=-0.9)),
     ]
-    lines = alphagenome.tsv_text(rows).splitlines()
-    assert lines[0] == "#AlphaGenomeTerms=" + alphagenome.TERMS_NOTICE  # a comment line readers skip
-    assert lines[1].split("\t") == list(alphagenome.TSV_COLUMNS)
-    table = [dict(zip(alphagenome.TSV_COLUMNS, line.split("\t"), strict=True)) for line in lines[2:]]
+    lines = ag.tsv_text(rows).splitlines()
+    assert lines[0] == "#AlphaGenomeTerms=" + ag.TERMS_NOTICE  # a comment line readers skip
+    assert lines[1].split("\t") == list(ag.TSV_COLUMNS)
+    table = [dict(zip(ag.TSV_COLUMNS, line.split("\t"), strict=True)) for line in lines[2:]]
     assert [(r["rank"], r["pos"]) for r in table] == [("1", "200"), ("2", "300"), ("3", "100")]
     assert table[1]["gene"] == "G3" and table[1]["csq"] == "intron" and table[0]["kind"] == "indel"
     assert table[0]["avi_raw"] == "" and table[0]["top_track"] == ""  # what the source doesn't have stays empty
@@ -263,16 +351,14 @@ def test_the_tsv_is_ranked_by_avi_then_lfc():
 
 def test_t3s_columns_are_all_there():
     # The web UI (#206) reads these by name.
-    assert {"chrom", "pos", "ref", "alt", "gene", "avi", "top_track", "csq", "source", "rna_lfc"} <= set(
-        alphagenome.TSV_COLUMNS
-    )
+    assert {"chrom", "pos", "ref", "alt", "gene", "avi", "top_track", "csq", "source", "rna_lfc"} <= set(ag.TSV_COLUMNS)
 
 
 @pytest.mark.skipif(not shutil.which("bcftools"), reason="bcftools not installed (the Docker E2E checks it in CI)")
 def test_bcftools_reads_the_annotated_vcf_back(tmp_path):
-    rows = [(V1, alphagenome.Score("fake", avi=12.5, top_track="RNA_SEQ:liver", gene="G1", rna_lfc=0.5))]
+    rows = [(V1, ag.Score("fake", avi=12.5, top_track="RNA_SEQ:liver", gene="G1", rna_lfc=0.5))]
     plain = tmp_path / "a.vcf"
-    plain.write_text(alphagenome.vcf_text(rows, HEADER.splitlines(), ["chr20", "chr21"], "chr20.fa", "fake", "fake-1"))
+    plain.write_text(ag.vcf_text(rows, HEADER.splitlines(), ["chr20", "chr21"], "chr20.fa", "fake", "fake-1"))
     out = tmp_path / "a.vcf.gz"
     subprocess.run(["bcftools", "view", "-Oz", "-o", str(out), str(plain)], check=True)
     subprocess.run(["bcftools", "index", "-t", str(out)], check=True)
@@ -292,7 +378,7 @@ def test_bcftools_reads_the_annotated_vcf_back(tmp_path):
 def stage(local_env, monkeypatch):
     """Local storage with S1's calls, a faked bcftools (view -Oz: gzip; index: an empty .tbi), no key."""
     monkeypatch.setattr(provenance, "_current", None)
-    for var in (alphagenome.API_KEY_ENV, "ALPHAGENOME_SOURCE", alphagenome.MAX_VARIANTS_ENV, "PIPELINE_CALLER"):
+    for var in (ag.API_KEY_ENV, "ALPHAGENOME_SOURCE", ag.MAX_VARIANTS_ENV, "PIPELINE_CALLER"):
         monkeypatch.delenv(var, raising=False)
     commands = []
 
@@ -344,7 +430,7 @@ def test_annotate_writes_the_vcf_tsv_part_and_metrics(stage, uploads, capsys):
     assert all("AG_SOURCE=fake" in r and "AG_AVI=" in r for r in records)
     tsv = (stage["root"] / keys["alphagenome_tsv"]).read_text().splitlines()
     assert tsv[0].startswith("#AlphaGenomeTerms=By using this information")
-    assert tsv[1].split("\t") == list(alphagenome.TSV_COLUMNS) and len(tsv) == 6
+    assert tsv[1].split("\t") == list(ag.TSV_COLUMNS) and len(tsv) == 6
 
     part = provenance.read_part(stage["store"], "S1", "Annotate")
     assert part["status"] == "Success"
@@ -410,7 +496,7 @@ def test_a_failed_annotation_is_noted_never_fatal(stage, capsys, monkeypatch, se
     stage["core_run"]()
     if setup == "calls":
         stage["put_vcf"]("variants/S1.vcf.gz", LINES)
-    monkeypatch.setenv(alphagenome.API_KEY_ENV, SECRET)
+    monkeypatch.setenv(ag.API_KEY_ENV, SECRET)
     assert tasks.main(["annotate", "S1", "chr20.fa", "--source", source]) == 0  # exit 0: noted, not fatal
     record = provenance.read_record(stage["store"], "S1")
     assert record["status"] == "succeeded" and record["complete"]  # the core run keeps its status
@@ -429,7 +515,7 @@ def test_a_failed_annotation_is_noted_never_fatal(stage, capsys, monkeypatch, se
         (["annotate", "S1", "chr20.fa"], {}),  # no --source and no $ALPHAGENOME_SOURCE: never a silent fake
         (["annotate", "S1", "chr20.fa", "--source", "gnomad"], {}),
         (["annotate", "S1", "chr20.fa", "--source", "fake", "--max-variants", "0"], {}),
-        (["annotate", "S1", "chr20.fa", "--source", "fake"], {alphagenome.MAX_VARIANTS_ENV: "lots"}),
+        (["annotate", "S1", "chr20.fa", "--source", "fake"], {ag.MAX_VARIANTS_ENV: "lots"}),
         (["annotate", "S1"], {}),
     ],
 )
@@ -458,7 +544,7 @@ def test_a_failed_annotate_part_does_not_fail_a_closed_run():
 
 
 def test_run_local_knows_the_same_sources():
-    assert run_local.ANNOTATE_SOURCES == alphagenome.SOURCES
+    assert run_local.ANNOTATE_SOURCES == ag.SOURCES
 
 
 def test_run_local_adds_an_optional_annotate_job_last():
@@ -472,8 +558,8 @@ def test_run_local_adds_an_optional_annotate_job_last():
 
 
 def test_run_local_passes_the_key_by_name_only(monkeypatch, tmp_path):
-    monkeypatch.setenv(alphagenome.API_KEY_ENV, SECRET)
-    monkeypatch.setenv(alphagenome.MAX_VARIANTS_ENV, "50")
+    monkeypatch.setenv(ag.API_KEY_ENV, SECRET)
+    monkeypatch.setenv(ag.MAX_VARIANTS_ENV, "50")
     ran = []
     monkeypatch.setattr(
         run_local.subprocess, "run", lambda cmd, **k: ran.append(cmd) or subprocess.CompletedProcess(cmd, 0)
@@ -482,8 +568,8 @@ def test_run_local_passes_the_key_by_name_only(monkeypatch, tmp_path):
     assert run_local.run_job(job, "docker", str(tmp_path)) == 0
     (cmd,) = ran
     assert SECRET not in " ".join(cmd)
-    assert cmd[cmd.index(alphagenome.API_KEY_ENV) - 1] == "-e"  # docker copies it from the environment
-    assert f"{alphagenome.MAX_VARIANTS_ENV}=50" in cmd
+    assert cmd[cmd.index(ag.API_KEY_ENV) - 1] == "-e"  # docker copies it from the environment
+    assert f"{ag.MAX_VARIANTS_ENV}=50" in cmd
 
 
 def test_run_local_carries_on_after_a_failed_optional_job(tmp_path, monkeypatch, capsys):

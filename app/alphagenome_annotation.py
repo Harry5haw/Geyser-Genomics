@@ -1,4 +1,4 @@
-# app/alphagenome.py
+# app/alphagenome_annotation.py
 """AlphaGenome variant-effect annotation (3.0 "Project Alpha Genome"): selection, scoring backends, outputs.
 
 `tasks.py annotate <id> <reference> --source avi-file|atlas|api|fake` reads the sample's calls, picks the variants
@@ -16,8 +16,8 @@ Sources (backend_for; the P0 spike's decision record, 4 Nov 2026):
   a per-reference extract at reference/alphagenome/<reference>.avi.tsv.gz. A local lookup: no key, no calls, $0.
   AVI only (no gene or track in the file). AVI is a deleteriousness score (PHRED 20 = top 1% genome-wide).
 - atlas: the Atlas API (alphagenome.atlas.AtlasClient): precomputed per-track and per-gene scores, so it fills
-  AG_GENE, AG_TOP_TRACK and AG_RNA_LFC (the RNA_SEQ log fold change for the top gene). Needs the key.
-  TODO(P2): the client call isn't wired in; no real calls before the user's go-ahead.
+  AG_GENE, AG_TOP_TRACK and AG_RNA_LFC (the RNA_SEQ log fold change for the top gene). SNVs only. Needs the key
+  and the client (requirements-alphagenome.txt, ~500 MB with its dependencies: not in the pipeline image).
 - api: score_variant (dna_client) with the recommended scorers over a 1 Mb window (API_INTERVAL), one request per
   variant: indels and anything Atlas lacks. Needs the key. TODO(P2): as for atlas.
 - fake: deterministic, offline, free, every field filled. Not predictions (AG_SOURCE=fake): for tests and the offline
@@ -366,9 +366,12 @@ class _KeyedBackend:
     """A backend that calls AlphaGenome with the user's key: kept out of repr, logs and errors."""
 
     def __init__(self, api_key):
+        import threading
+
         if not api_key:
             raise ValueError(f"--source {self.name} needs an AlphaGenome API key in ${API_KEY_ENV}")
         self._api_key = api_key
+        self._lock = threading.Lock()
         self.api_calls = 0
 
     def __repr__(self):
@@ -376,29 +379,183 @@ class _KeyedBackend:
 
     def _call(self, fn, *args, **kwargs):
         """One request to the service: counted, and any error re-raised with the key redacted (no chained
-        traceback, which would carry the original text)."""
-        self.api_calls += 1
+        traceback, which would carry the original text). The client raises ValueError for NOT_FOUND and
+        INVALID_ARGUMENT: that variant isn't in the service (NotInService), not a failure of the annotation."""
+        with self._lock:
+            self.api_calls += 1
         try:
             return fn(*args, **kwargs)
+        except ValueError as err:
+            raise NotInService(f"{self.name}: {redact(err, self._api_key)}") from None
         except Exception as err:  # noqa: BLE001 - re-raised, redacted
             raise RuntimeError(f"{self.name}: {type(err).__name__}: {redact(err, self._api_key)}") from None
 
 
-class AtlasBackend(_KeyedBackend):
-    """Precomputed per-track and per-gene scores from the Atlas API (alphagenome.atlas.AtlasClient).
+# The Atlas effect scorers (variant_scorers.RECOMMENDED_VARIANT_SCORERS without the *_ACTIVE ones, which measure
+# activity, not an effect, and CONTACT_MAPS). Each returns per-track scores and a signed 'quantiles' layer in
+# [-1, 1] that makes scorers comparable; gene scorers (RNA_SEQ, SPLICE_*, POLYADENYLATION) have a row per gene.
+ATLAS_SCORERS = (
+    "RNA_SEQ",
+    "SPLICE_SITES",
+    "SPLICE_SITE_USAGE",
+    "SPLICE_JUNCTIONS",
+    "POLYADENYLATION",
+    "CAGE",
+    "PROCAP",
+    "DNASE",
+    "ATAC",
+    "CHIP_TF",
+    "CHIP_HISTONE",
+)
+ATLAS_WORKERS = 4  # concurrent lookups (the client's own default is 10; no published rate limit)
+CLIENT_HINT = "pip install -r requirements-alphagenome.txt"
 
-    TODO(P2): create the client with AtlasClient.create(key), query_variants over the selection, and take AVI,
-    the top track, the top gene and its RNA_SEQ LFC from the per-scorer AnnData. Not wired in until the user
-    approves real calls; until then score() fails clearly (the annotation is noted as failed, never fatal).
+
+class NotInService(Exception):
+    """The service has no score for this variant (NOT_FOUND / INVALID_ARGUMENT): not scored, not a failure."""
+
+
+def _matrix(values) -> list:
+    """A 2-D score array (numpy, from AnnData) as nested lists."""
+    values = values.tolist() if hasattr(values, "tolist") else values
+    return [list(row) for row in values]
+
+
+def _records(frame) -> list:
+    """A DataFrame's rows as dicts (or a list of dicts as it is); [] for None."""
+    if frame is None:
+        return []
+    return frame.to_dict("records") if hasattr(frame, "to_dict") else list(frame)
+
+
+def _largest(matrix):
+    """(row, column, value) of the largest |value| in a 2-D list, or None if it is empty. NaN is skipped."""
+    best = None
+    for r, row in enumerate(matrix):
+        for c, value in enumerate(row):
+            if value is None or value != value:  # NaN
+                continue
+            if best is None or abs(value) > abs(best[2]):
+                best = (r, c, value)
+    return best
+
+
+def _track_label(scorer: str, track: dict) -> str:
+    """'<scorer>:<histone mark>:<biosample>' (as available), else '<scorer>:<track name>'."""
+    parts = [scorer]
+    if track.get("histone_mark"):
+        parts.append(str(track["histone_mark"]))
+    parts.append(str(track.get("biosample_name") or track.get("name") or "track"))
+    return ":".join(parts)
+
+
+def reduce_atlas(result) -> Score:
+    """One variant's Atlas answer ({scorer: AnnData}) as a Score.
+
+    top_track: the track with the largest |quantile| over every scorer (quantiles are comparable across scorers;
+    raw scores are not). gene and rna_lfc: RNA_SEQ's gene x track cell with the largest |quantile|, and that cell's
+    raw score, the signed log fold change of the gene's expression, ALT vs REF. The Atlas has no AVI (avi-file).
+    None if the answer is empty.
+    """
+    top = None  # (|quantile|, label)
+    for scorer in sorted(result):
+        data = result[scorer]
+        layers = getattr(data, "layers", None) or {}
+        quantiles = _matrix(layers["quantiles"]) if "quantiles" in layers else _matrix(data.X)
+        found = _largest(quantiles)
+        if found is None:
+            continue
+        tracks = _records(data.var)
+        label = _track_label(scorer, tracks[found[1]] if found[1] < len(tracks) else {})
+        if top is None or abs(found[2]) > top[0]:
+            top = (abs(found[2]), label)
+    gene = rna_lfc = None
+    rna = result.get("RNA_SEQ")
+    if rna is not None:
+        layers = getattr(rna, "layers", None) or {}
+        raw = _matrix(rna.X)
+        found = _largest(_matrix(layers["quantiles"]) if "quantiles" in layers else raw)
+        genes = _records(rna.obs)
+        if found is not None and found[0] < len(genes):
+            row = genes[found[0]]
+            gene = row.get("gene_name") or row.get("gene_id") or None
+            rna_lfc = round(float(raw[found[0]][found[1]]), 4)
+    if top is None and gene is None:
+        return None
+    return Score("atlas", top_track=top[1] if top else None, gene=gene, rna_lfc=rna_lfc)
+
+
+class AtlasBackend(_KeyedBackend):
+    """Precomputed per-track and per-gene scores from the Atlas API (alphagenome.atlas.AtlasClient): the top
+    track, the top gene and its RNA_SEQ log fold change (reduce_atlas). SNVs only; no AVI (that is avi-file's).
+
+    One query_variant per selected SNV, ATLAS_WORKERS at a time (query_variants would fail the whole batch on one
+    missing variant). A variant the Atlas doesn't have is left unscored; anything else (the key refused, the
+    service down) fails the annotation, which is noted and never fatal. The client (requirements-alphagenome.txt)
+    is imported only here.
     """
 
     name = "atlas"
-    model_version = None
+
+    def __init__(self, api_key, client=None, workers=ATLAS_WORKERS, make_variant=None):
+        super().__init__(api_key)
+        self._client = client
+        self._make_variant = make_variant  # genome.Variant by default (tests pass their own: no client needed)
+        self.workers = workers
+        self.not_found = 0
+        self.model_version = f"alphagenome-client {_client_version()} (Atlas)"
+
+    def _connect(self):
+        if self._client is None:
+            try:
+                from alphagenome.atlas import atlas
+            except ImportError:
+                raise RuntimeError(f"--source atlas needs the alphagenome client ({CLIENT_HINT})") from None
+            try:
+                self._client = atlas.create(self._api_key, timeout=60)
+            except Exception as err:  # noqa: BLE001 - re-raised, redacted
+                raise RuntimeError(
+                    f"atlas: could not connect: {type(err).__name__}: {redact(err, self._api_key)}"
+                ) from None
+        return self._client
 
     def score(self, variants) -> dict:
-        if not variants:
+        snvs = [v for v in variants if v.kind == "snv"]
+        if not snvs:
             return {}
-        raise NotImplementedError("the Atlas API backend is not wired in yet (P2); use --source avi-file or fake")
+        client = self._connect()
+        from concurrent.futures import ThreadPoolExecutor
+
+        make_variant = self._make_variant
+        if make_variant is None:
+            from alphagenome.data import genome
+
+            make_variant = genome.Variant  # 1-based position, as in the VCF
+
+        def one(v):
+            try:
+                result = self._call(
+                    client.query_variant,
+                    make_variant(v.chrom, v.pos, v.ref, v.alt),
+                    requested_scorers=list(ATLAS_SCORERS),
+                )
+            except NotInService:
+                return v.key, None
+            return v.key, reduce_atlas(result)
+
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            answers = list(pool.map(one, snvs))
+        self.not_found = sum(score is None for _, score in answers)
+        return {key: score for key, score in answers if score is not None}
+
+
+def _client_version():
+    try:
+        from importlib.metadata import version
+
+        return version("alphagenome")
+    except Exception:  # noqa: BLE001 - only a label
+        return "unknown"
 
 
 class ApiBackend(_KeyedBackend):
