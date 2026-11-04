@@ -45,6 +45,14 @@ FAKE_RESPONSES_ENV = "ALPHAGENOME_FAKE_RESPONSES"
 API_INTERVALS = (16_384, 131_072, 524_288, 1_048_576)
 API_INTERVAL = 1_048_576
 AVI_FILE_COLUMNS = ("#CHROM", "POS", "REF", "ALT", "raw_score", "PHRED")
+# AlphaGenome's Output Terms ask for a conspicuous notice on published Outputs and Derivatives (the AVI score
+# excepted). Every output carries it: the VCF as a header line, the TSV as its first line (a '#' comment that
+# readers skip). Both are derived outputs: selected, ranked and reduced from AlphaGenome's scores.
+TERMS_NOTICE = (
+    "By using this information, you agree to AlphaGenome Output Terms of Use found at "
+    "https://deepmind.google.com/science/alphagenome/output-terms"
+)
+TERMS_LINE = f"AlphaGenomeTerms={TERMS_NOTICE}"
 
 # bcftools csq consequences that are non-coding but near a gene: where a regulatory effect is plausible and a
 # protein-level one isn't the whole story. Coding-only variants (missense, synonymous, ...) are csq's territory;
@@ -468,7 +476,8 @@ def vcf_text(rows, header, contigs, reference_name: str, source: str, model_vers
         f"##reference={reference_name}",
         f"##alphagenome_source={source}" + (" (deterministic test data, not predictions)" if source == "fake" else ""),
         f"##alphagenome_model_version={_info_value(model_version or 'unknown')}",
-        "##alphagenome_terms=research use only; not for clinical use",
+        f"##{TERMS_LINE}",
+        "##alphagenome_use=research use only; not for clinical use",
         *[line for line in header if line.startswith("##contig=")],
         *INFO_HEADERS,
         *bcsq_header,
@@ -503,8 +512,9 @@ def _rank_key(row):
 
 def tsv_text(rows) -> str:
     """The variants-of-interest table (TSV_COLUMNS): ranked by AVI, then |RNA_SEQ LFC|, then QUAL (highest
-    first; a missing value last). Empty cells for what a source doesn't have."""
-    out = ["\t".join(TSV_COLUMNS)]
+    first; a missing value last). Empty cells for what a source doesn't have. The first line is the terms notice,
+    as a '#' comment; then the column header."""
+    out = [f"#{TERMS_LINE}", "\t".join(TSV_COLUMNS)]
     for rank, (v, s) in enumerate(sorted(rows, key=_rank_key), start=1):
         cells = (
             rank,
