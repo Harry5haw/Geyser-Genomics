@@ -209,7 +209,10 @@ def test_align_uploads_cram_and_its_index(local_env, tool_calls, shell_commands,
         "stats/S1/mosdepth.global.dist.txt",
         "alignments/S1.cram.crai",
         "alignments/S1.cram",
+        "alignments/S1.cram.crai",  # again, now with the CRAM's ETag (upload_alignment)
     ]
+    store = tasks.storage()
+    assert store.head("alignments/S1.cram.crai")["metadata"] == {"cram-etag": store.head("alignments/S1.cram")["etag"]}
     assert (local_env / "stats" / "S1" / "flagstat.txt").read_bytes() == stats_fixture("single", "flagstat.txt")
     assert work_dir_is_empty(local_env)
 
@@ -492,7 +495,7 @@ def test_failed_stats_tools_warn_but_the_alignment_is_still_uploaded(
 
     tasks.align_task("S1", REF)
 
-    assert uploads == ["alignments/S1.cram.crai", "alignments/S1.cram"]  # no stats, but the alignment
+    assert uploads == ["alignments/S1.cram.crai", "alignments/S1.cram", "alignments/S1.cram.crai"]  # no stats
     out = capsys.readouterr().out
     assert "WARNING: samtools flagstat failed" in out and "WARNING: mosdepth failed" in out
 

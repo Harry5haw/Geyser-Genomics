@@ -368,7 +368,7 @@ def test_align_with_giraffe_sampling(local_env, giraffe_tools, uploads, monkeypa
     assert [s.split()[:2] for s in post] == [["samtools", "reheader"], ["samtools", "sort"], ["samtools", "markdup"]]
     assert "-O cram" in post[-1]
     assert "SN:chr20\t" in seen["renamed"]
-    assert uploads[-2:] == ["alignments/S1.cram.crai", "alignments/S1.cram"]
+    assert uploads[-3:] == ["alignments/S1.cram.crai", "alignments/S1.cram", "alignments/S1.cram.crai"]
     part = read_json(local_env, "runs/S1.provenance/Align.json")
     assert part["status"] == "Success" and part["aligner"] == "giraffe"
     assert part["graph"] == {"name": GRAPH, "haplotype_sampling": True}

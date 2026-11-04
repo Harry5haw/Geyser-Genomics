@@ -126,7 +126,7 @@ def test_worker_runs_a_pair_once_when_both_mates_exist(storage):
 def test_detail_page_shows_both_mates_reads_and_one_qc_report(client, storage):
     finished_pair(storage)
     body = client.get("/samples/P1/").content.decode()
-    assert 'src="/samples/P1/files/qc_html/?inline=1"' in body and "fastp report (both mates)" in body
+    assert 'href="/samples/P1/files/qc_html/?inline=1" target="_blank"' in body and "fastp report (both mates)" in body
     assert "Insert size (peak)" in body and "218 bp" in body
     for mate in ("R1", "R2"):
         assert f"/samples/P1/files/raw_{mate}/" in body
