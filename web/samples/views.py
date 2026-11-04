@@ -10,7 +10,9 @@ from django.conf import settings
 from django.contrib import messages
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import redirect, render
+from django.utils.safestring import mark_safe
 from django.views.decorators.clickjacking import xframe_options_sameorigin
+from django.views.decorators.gzip import gzip_page
 from django.views.decorators.http import require_GET, require_POST
 
 from geyser_web.pipeline import (
@@ -28,6 +30,7 @@ from geyser_web.pipeline import (
     sample_vcf_key,
 )
 
+from . import figures as figures_mod
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
@@ -113,12 +116,14 @@ def _list_context(storage, form):
 
 
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_list(request):
     storage = get_storage()
     return render(request, "samples/list.html", _list_context(storage, UploadForm(storage=storage)))
 
 
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_rows(request):
     storage = get_storage()
     return render(request, "samples/_sample_table.html", _list_context(storage, None))
@@ -148,6 +153,58 @@ def upload(request):
     kind = "paired-end reads" if layout == PAIRED else "reads"
     messages.success(request, f"Uploaded {sample_id} ({kind}). The pipeline starts as soon as the trigger sees it.")
     return redirect("samples:detail", sample_id=sample_id)
+
+
+@require_GET
+@gzip_page
+def figures_page(request):
+    """The signature figures as 3D terrains: each card shows its inline-SVG poster; the renderer and the grid load
+    in the browser only when a card scrolls into view (geyser.js)."""
+    cards = []
+    for name, figure in figures_mod.FIGURES.items():
+        card = {"name": name, "figure": figure, "grid": None, "poster": None, "error": ""}
+        try:
+            grid = figures_mod.load(name)
+            poster = figures_mod.poster_svg(grid) if grid is not None else None
+        except Exception as err:  # noqa: BLE001 - a broken CSV is said on its card; the page never fails over it
+            # Our own ValueErrors name the problem; anything else (OSError, csv.Error, ...) only by type, since its
+            # message can carry a server path.
+            reason = str(err) if type(err) is ValueError else type(err).__name__
+            card["error"] = f"{figure.csv} can't be read ({reason})"
+            grid = poster = None
+        if grid is not None:
+            card.update(grid=grid, poster=mark_safe(poster))  # noqa: S308 - labels escaped in poster_svg
+        cards.append(card)
+    return render(request, "samples/figures.html", {"cards": cards})
+
+
+def _grid_or_404(name):
+    if name not in figures_mod.FIGURES:
+        raise Http404("No such figure")
+    try:
+        grid = figures_mod.load(name)
+    except Exception:  # noqa: BLE001 - unreadable data is "no data", never a 500
+        grid = None
+    if grid is None:
+        raise Http404("No data for this figure yet")
+    return grid
+
+
+@require_GET
+@gzip_page
+def figure_data(request, name):
+    """The grid surface.js draws (axes, rows, values, height cap), as compact JSON."""
+    response = HttpResponse(figures_mod.grid_json(_grid_or_404(name)), content_type="application/json")
+    response["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@require_GET
+def figure_csv(request, name):
+    """The CSV a figure is drawn from: its table view."""
+    grid = _grid_or_404(name)
+    path = figures_mod.csv_path(grid.figure)
+    return FileResponse(open(path, "rb"), as_attachment=True, filename=grid.figure.csv, content_type="text/csv")
 
 
 @require_POST
@@ -205,7 +262,43 @@ def _current_annotated_vcf(storage, sample):
     return key if any(o.get("key") == key for o in part.get("outputs") or []) else None
 
 
+def _page_offset(request, param: str, size: int) -> int:
+    """The offset for ?<param>=N (1-based page); page 1 for anything else."""
+    try:
+        page = int(request.GET.get(param, "1"))
+    except ValueError:
+        page = 1
+    return (max(page, 1) - 1) * size
+
+
+def _url(request, anchor: str, **changes) -> str:
+    """This page's URL with query parameters changed (None removes one), scrolled to #anchor."""
+    query = request.GET.copy()
+    for name, value in changes.items():
+        if value is None:
+            query.pop(name, None)
+        else:
+            query[name] = str(value)
+    encoded = query.urlencode()
+    return f"{request.path}{'?' + encoded if encoded else ''}#{anchor}"
+
+
+def _pager(request, param: str, anchor: str, table, size: int):
+    """Previous/next links for one paged table (first page inline; each page is its own prerenderable URL)."""
+    if table is None or table.total <= size:
+        return None
+    page = table.offset // size + 1
+    return {
+        "first": table.first,
+        "last": table.last,
+        "total": table.total,
+        "prev": _url(request, anchor, **{param: None if page == 2 else page - 1}) if page > 1 else None,
+        "next": _url(request, anchor, **{param: page + 1}) if table.last < table.total else None,
+    }
+
+
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_detail(request, sample_id):
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
@@ -216,7 +309,10 @@ def sample_detail(request, sample_id):
     bcftools_calls = sample.keys["vcf"] == keys_for(sample_id)["vcf"]
     annotated = _current_annotated_vcf(storage, sample) if bcftools_calls else None
     variants_key = annotated or sample.keys["vcf"]
-    variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
+    size = max(1, settings.GEYSER_TABLE_ROWS)  # never 0: the page arithmetic divides by it
+    variants = read_variants(storage, variants_key, size, _page_offset(request, "vpage", size))
+    if variants is not None and variants.total and not variants.rows:  # past the end (a stale link): the last page
+        variants = read_variants(storage, variants_key, size, (variants.total - 1) // size * size)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):
@@ -240,18 +336,20 @@ def sample_detail(request, sample_id):
         "downloads": downloads,
         "gate": read_gate(storage, sample.keys["gate_verdict"], record),
         "record": record_view(record),
+        "variant_pager": _pager(request, "vpage", "variants", variants, size),
     }
     return render(request, "samples/detail.html", context)
 
 
 @require_GET
+@gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_status(request, sample_id):
-    """Polled by htmx while a run is active. Once it finishes, reload the page to show the results."""
+    """Polled by geyser.js while a run is active. Once it finishes, the page reloads to show the results."""
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
     if request.GET.get("was_active") and not sample.active:
         response = HttpResponse(status=204)
-        response["HX-Refresh"] = "true"
+        response["Geyser-Refresh"] = "true"
         return response
     return render(request, "samples/_status.html", _status_context(storage, sample))
 

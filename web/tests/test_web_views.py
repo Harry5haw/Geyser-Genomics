@@ -51,7 +51,7 @@ def test_empty_list_page(client, storage):
     assert resp.status_code == 200
     assert b"No samples yet" in resp.content
     assert b"csrfmiddlewaretoken" in resp.content
-    assert b"hx-trigger" not in resp.content  # nothing to poll
+    assert b"data-poll" not in resp.content  # nothing to poll
 
 
 def test_list_shows_samples_and_polls_only_while_active(client, storage):
@@ -62,11 +62,11 @@ def test_list_shows_samples_and_polls_only_while_active(client, storage):
     body = resp.content.decode()
     assert "/samples/S1/" in body and "/samples/S2/" in body
     assert "Complete" in body and "Queued" in body
-    assert 'hx-trigger="every' in body
+    assert 'data-poll="/samples/rows/"' in body and 'data-poll-seconds="' in body
 
     write_run(storage, "S2", {"state": "failed", "queued": 1, "started": 2, "finished": 3, "exit_code": 1})
     rows = client.get("/samples/rows/").content.decode()
-    assert "Failed" in rows and "hx-trigger" not in rows
+    assert "Failed" in rows and "data-poll" not in rows  # finished: geyser.js stops polling
 
 
 def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
@@ -76,7 +76,9 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert "1 unexpected call" in body
     assert body.count('class="planted"') == 2
     assert "Variants" in body and "3 calls" in body
-    assert 'src="/samples/S1/files/qc_html/?inline=1"' in body
+    assert (
+        'href="/samples/S1/files/qc_html/?inline=1" target="_blank"' in body and "<iframe" not in body
+    )  # on request only
     assert "Bases ≥ Q30" in body and "93.4%" in body and "Duplication (fastp estimate)" in body
     for kind in (
         "raw",
@@ -111,7 +113,7 @@ def test_detail_page_for_running_sample_polls_and_shows_live_log(client, storage
 def test_status_partial_asks_for_reload_when_run_finishes(client, storage):
     finished_sample(storage)
     resp = client.get("/samples/S1/status/?was_active=1")
-    assert resp.status_code == 204 and resp["HX-Refresh"] == "true"
+    assert resp.status_code == 204 and resp["Geyser-Refresh"] == "true"  # geyser.js reloads the page
     resp = client.get("/samples/S1/status/")
     assert resp.status_code == 200 and b"run-status" in resp.content
 
