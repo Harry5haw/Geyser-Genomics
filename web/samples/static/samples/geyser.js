@@ -69,8 +69,42 @@
     });
   };
 
+  // The static site: an element with data-status-api="<web API>/status/<id>" polls the run's status (JSON) and
+  // reloads the page once the run has ended, as its last step republishes the pages. Every 15 s at most (the
+  // API is small and shared); at most 3 reloads per page per session, in case a cache serves the old copy.
+  const ENDED = new Set(["SUCCEEDED", "FAILED", "TIMED_OUT", "ABORTED"]);
+  const watch = (el) => {
+    const every = Math.max(15, Number(el.dataset.pollSeconds) || 0) * 1000;
+    const tick = async () => {
+      if (!document.hidden) {
+        try {
+          const r = await fetch(el.dataset.statusApi, { cache: "no-store" });
+          if (r.status === 404) return; // no run of this sample: nothing to wait for
+          const run = r.ok ? await r.json() : null;
+          if (run && ENDED.has(run.status)) {
+            // Only for a run that ended just now: one that stopped long ago was published already (a page that
+            // still shows it running had no publish to wait for, so reloading would loop).
+            const stopped = Date.parse(run.stopped || "");
+            const recent = Number.isNaN(stopped) || Date.now() - stopped < 15 * 60 * 1000;
+            const key = `geyser-reloads:${location.pathname}`, done = Number(sessionStorage.getItem(key) || 0);
+            if (recent && done < 3) {
+              sessionStorage.setItem(key, String(done + 1));
+              setTimeout(() => location.reload(), 5000); // a moment for the CDN to drop its copy
+            }
+            return;
+          }
+        } catch (_) {
+          // the API unreachable for a moment: try again next tick
+        }
+      }
+      setTimeout(tick, every);
+    };
+    setTimeout(tick, every);
+  };
+
   const start = () => {
     document.querySelectorAll("[data-poll]").forEach(poll);
+    document.querySelectorAll("[data-status-api]").forEach(watch);
     figures();
   };
   // A page prerendered by the speculation rules doesn't poll or load 3D until it is shown.

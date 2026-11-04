@@ -194,18 +194,26 @@ def test_the_first_page_of_calls_is_inline_and_the_rest_are_links(client, storag
     body = client.get("/samples/S1/").content.decode()
     assert "1500 calls" in body and "1–50 of 1500 calls" in body
     assert body.count("<td>synth1</td>") == 50
-    assert 'href="/samples/S1/?vpage=2#variants" rel="next"' in body
+    # Pages are paths, not ?vpage=: the static site publishes each as a folder with an index.html (W2).
+    assert 'href="/samples/S1/calls/2/#variants" rel="next"' in body
     assert 'rel="prev"' not in body
 
 
 def test_a_later_page_and_its_neighbours(client, storage, settings):
     settings.GEYSER_TABLE_ROWS = 50
     big_sample(storage)
-    body = client.get("/samples/S1/?vpage=3&view=x").content.decode()
+    body = client.get("/samples/S1/calls/3/").content.decode()
     assert "101–150 of 1500 calls" in body
     assert f'<td class="num">{1000 + 37 * 100}</td>' in body  # call 101 starts the page
-    assert 'href="/samples/S1/?vpage=2&amp;view=x#variants" rel="prev"' in body  # other parameters kept
-    assert 'href="/samples/S1/?vpage=4&amp;view=x#variants" rel="next"' in body
+    assert 'href="/samples/S1/calls/2/#variants" rel="prev"' in body
+    assert 'href="/samples/S1/calls/4/#variants" rel="next"' in body
+
+
+def test_the_old_query_page_links_still_open_the_right_page(client, storage, settings):
+    settings.GEYSER_TABLE_ROWS = 50
+    big_sample(storage)
+    body = client.get("/samples/S1/?vpage=3").content.decode()  # links from before W2 (bookmarks)
+    assert "101–150 of 1500 calls" in body and 'href="/samples/S1/calls/4/#variants" rel="next"' in body
 
 
 def test_page_two_links_back_to_the_plain_url(client, storage, settings):

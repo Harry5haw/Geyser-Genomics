@@ -1,5 +1,5 @@
 {% load geyser %}
-<section id="run-status" class="panel"{% if sample.active %} data-poll="{% url 'samples:status' sample.sample_id %}?was_active=1" data-poll-seconds="{{ poll_seconds }}"{% endif %}>
+<section id="run-status" class="panel"{% if sample.active and not static %} data-poll="{% url 'samples:status' sample.sample_id %}?was_active=1" data-poll-seconds="{{ poll_seconds }}"{% elif status_api %} data-status-api="{{ status_api }}" data-poll-seconds="{{ poll_seconds }}"{% endif %}>
   <div class="head">
     <h1>{{ sample.sample_id }}</h1>
     <span class="badge {{ sample.state }}">{{ sample.state_label }}</span>

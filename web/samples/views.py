@@ -10,6 +10,7 @@ from django.conf import settings
 from django.contrib import messages
 from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.views.decorators.clickjacking import xframe_options_sameorigin
 from django.views.decorators.gzip import gzip_page
@@ -38,7 +39,8 @@ from .gate import read_gate
 from .qc import read_qc_summary
 from .record import load_record, record_view
 from .runs import is_valid_sample_id, log_key, read_text
-from .vcf import check_truth, planted_positions, read_truth, read_variants, truth_key
+from .static_site import PUBLIC_KINDS, static_of
+from .vcf import check_truth, page_of, planted_positions, read_truth, read_variants, truth_key
 
 # Downloadable files: kind -> (label, description). Anything not listed here is a 404.
 # Per-read-file kinds (PER_MATE_KEYS) of a paired-end sample are served as <kind>_R1 / <kind>_R2.
@@ -102,10 +104,12 @@ def _download_kinds(keys):
                 yield f"{kind}_{mate}", f"{label} ({mate})", description
 
 
-def _list_context(storage, form):
-    samples = status_mod.load_all(storage)
+def _list_context(storage, form, static=None):
+    # Publishing: the publisher's one listing (its samples dict keeps load_all's order), no second pass.
+    samples = list(static.samples.values()) if static else status_mod.load_all(storage)
     return {
         "form": form,
+        "static": static,
         "samples": samples,
         "any_active": any(s.active for s in samples),
         "poll_seconds": settings.GEYSER_POLL_SECONDS,
@@ -119,7 +123,9 @@ def _list_context(storage, form):
 @gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
 def sample_list(request):
     storage = get_storage()
-    return render(request, "samples/list.html", _list_context(storage, UploadForm(storage=storage)))
+    static = static_of(request)
+    form = None if static else UploadForm(storage=storage)  # the static showcase has no forms
+    return render(request, "samples/list.html", _list_context(storage, form, static))
 
 
 @require_GET
@@ -218,8 +224,9 @@ def demo(request):
     return redirect("samples:detail", sample_id=sample_id)
 
 
-def _load_sample_or_404(storage, sample_id):
-    sample = status_mod.load_one(storage, sample_id)
+def _load_sample_or_404(storage, sample_id, static=None):
+    # Publishing: from the publisher's listing (no HEAD on the raw reads or alignments, which it may not read).
+    sample = static.samples.get(sample_id) if static else status_mod.load_one(storage, sample_id)
     if sample is None:
         raise Http404("No such sample")
     return sample
@@ -233,10 +240,13 @@ def _log_tail(storage, sample_id):
     return "\n".join(lines[-LOG_TAIL_LINES:])
 
 
-def _status_context(storage, sample):
+def _status_context(storage, sample, static=None):
     return {
         "sample": sample,
-        "log": _log_tail(storage, sample.sample_id),
+        "static": static,
+        # The static site shows no run log (it can carry paths and commands) and polls the web API, if any.
+        "log": None if static else _log_tail(storage, sample.sample_id),
+        "status_api": static.status_url(sample.sample_id) if static and sample.active else "",
         "poll_seconds": settings.GEYSER_POLL_SECONDS,
     }
 
@@ -262,81 +272,115 @@ def _current_annotated_vcf(storage, sample):
     return key if any(o.get("key") == key for o in part.get("outputs") or []) else None
 
 
-def _page_offset(request, param: str, size: int) -> int:
-    """The offset for ?<param>=N (1-based page); page 1 for anything else."""
-    try:
-        page = int(request.GET.get(param, "1"))
-    except ValueError:
-        page = 1
-    return (max(page, 1) - 1) * size
+def _page_number(request, page) -> int:
+    """The calls page: from the path (/samples/<id>/calls/<n>/), else the old ?vpage=N; 1 for anything else."""
+    if page is None:
+        try:
+            page = int(request.GET.get("vpage", "1"))
+        except ValueError:
+            page = 1
+    return max(page, 1)
 
 
-def _url(request, anchor: str, **changes) -> str:
-    """This page's URL with query parameters changed (None removes one), scrolled to #anchor."""
-    query = request.GET.copy()
-    for name, value in changes.items():
-        if value is None:
-            query.pop(name, None)
-        else:
-            query[name] = str(value)
-    encoded = query.urlencode()
-    return f"{request.path}{'?' + encoded if encoded else ''}#{anchor}"
+def _calls_url(sample_id: str, page: int) -> str:
+    """A calls page as a path, so the same link works on the static site (a folder with an index.html)."""
+    if page <= 1:
+        return reverse("samples:detail", args=[sample_id]) + "#variants"
+    return reverse("samples:detail_page", args=[sample_id, page]) + "#variants"
 
 
-def _pager(request, param: str, anchor: str, table, size: int):
-    """Previous/next links for one paged table (first page inline; each page is its own prerenderable URL)."""
+def _pager(sample_id: str, table, size: int, last_page=None):
+    """Previous/next links for the calls (first page inline; each page is its own prerenderable URL).
+    last_page: the static site publishes only so many pages; the rest is the VCF download."""
     if table is None or table.total <= size:
         return None
     page = table.offset // size + 1
+    has_next = table.last < table.total and (last_page is None or page < last_page)
     return {
         "first": table.first,
         "last": table.last,
         "total": table.total,
-        "prev": _url(request, anchor, **{param: None if page == 2 else page - 1}) if page > 1 else None,
-        "next": _url(request, anchor, **{param: page + 1}) if table.last < table.total else None,
+        "prev": _calls_url(sample_id, page - 1) if page > 1 else None,
+        "next": _calls_url(sample_id, page + 1) if has_next else None,
     }
+
+
+def variants_key_of(storage, sample) -> str:
+    """The VCF the page shows: the csq-annotated copy when this run wrote one, else the run's calls.
+    sample.keys["vcf"] is the record's VCF (status.build_sample): DeepVariant's when it was the run's caller,
+    and bcftools csq annotates the bcftools VCF only, so the annotated copy applies only to that one."""
+    bcftools_calls = sample.keys["vcf"] == keys_for(sample.sample_id)["vcf"]
+    annotated = _current_annotated_vcf(storage, sample) if bcftools_calls else None
+    return annotated or sample.keys["vcf"]
+
+
+def _file_href(static, sample_id, kind, key) -> str:
+    return static.file_href(sample_id, kind, key) if static else reverse("samples:file", args=[sample_id, kind])
 
 
 @require_GET
 @gzip_page  # HTML only: downloads (CRAM, VCF.gz) are served as they are
-def sample_detail(request, sample_id):
+def sample_detail(request, sample_id, page=None):
+    static = static_of(request)
     storage = get_storage()
-    sample = _load_sample_or_404(storage, sample_id)
+    sample = _load_sample_or_404(storage, sample_id, static)
     truth = read_truth(storage, sample_id)
     record = load_record(storage, sample_id)
-    # sample.keys["vcf"] is the record's VCF (status.build_sample): DeepVariant's when it was the run's
-    # caller. bcftools csq annotates the bcftools VCF only, so the annotated copy applies only to that one.
     bcftools_calls = sample.keys["vcf"] == keys_for(sample_id)["vcf"]
-    annotated = _current_annotated_vcf(storage, sample) if bcftools_calls else None
-    variants_key = annotated or sample.keys["vcf"]
+    variants_key = variants_key_of(storage, sample)
     size = max(1, settings.GEYSER_TABLE_ROWS)  # never 0: the page arithmetic divides by it
-    variants = read_variants(storage, variants_key, size, _page_offset(request, "vpage", size))
-    if variants is not None and variants.total and not variants.rows:  # past the end (a stale link): the last page
-        variants = read_variants(storage, variants_key, size, (variants.total - 1) // size * size)
+    offset = (_page_number(request, page) - 1) * size
+    preloaded = static.variants.get(variants_key) if static else None
+    if preloaded is not None:  # the publisher parsed this VCF once for all its pages
+        variants = page_of(preloaded, offset, size)
+    else:
+        variants = read_variants(storage, variants_key, size, offset, want_calls=truth is not None)
+        if variants is not None and variants.total and not variants.rows:  # past the end (stale link): last page
+            last = (variants.total - 1) // size * size
+            variants = read_variants(storage, variants_key, size, last, want_calls=truth is not None)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):
+        if static and kind not in PUBLIC_KINDS:
+            continue  # the public showcase: the calls, QC, gate, stats and run record only (never reads or CRAMs)
         key = _file_key(sample_id, kind, sample.keys)
         if kind in ("csq_vcf", "csq_tbi") and variants_key != sample.keys["csq_vcf"]:
             continue  # an annotated VCF (and its index) from an earlier run: not this sample's current calls
         if kind == "tbi" and not bcftools_calls:
             continue  # the bcftools VCF's index; DeepVariant's VCF is served without one
         if storage.exists(key):
+            filename = os.path.basename(key)
             downloads.append(
-                {"kind": kind, "label": label, "description": description, "filename": os.path.basename(key)}
+                {
+                    "kind": kind,
+                    "label": label,
+                    "description": description,
+                    "filename": filename,
+                    "href": _file_href(static, sample_id, kind, key),
+                }
             )
+    qc_key = sample.keys["qc_html"]
+    qc_report = storage.exists(qc_key)
+    if static:
+        qc_href = static.file_href(sample_id, "qc_html", qc_key)
+    else:
+        qc_href = reverse("samples:file", args=[sample_id, "qc_html"]) + "?inline=1"
+    shown_calls = static.max_pages * size if static else None
     context = {
-        **_status_context(storage, sample),
+        **_status_context(storage, sample, static),
         "truth": truth,
         "truth_result": truth_result,
         "planted": planted_positions(truth),
         "variants": variants,
-        "qc_report": storage.exists(sample.keys["qc_html"]),
+        "qc_report": qc_report,
+        "qc_href": qc_href,
         "qc_summary": read_qc_summary(storage, sample.keys["qc_json"]),
         "downloads": downloads,
         "gate": read_gate(storage, sample.keys["gate_verdict"], record),
         "record": record_view(record),
-        "variant_pager": _pager(request, "vpage", "variants", variants, size),
+        "variant_pager": _pager(sample_id, variants, size, static.max_pages if static else None),
+        # The static site publishes the first max_pages pages; past that, the VCF download has the rest.
+        "calls_shown": shown_calls if static and variants and variants.total > shown_calls else None,
     }
     return render(request, "samples/detail.html", context)
 

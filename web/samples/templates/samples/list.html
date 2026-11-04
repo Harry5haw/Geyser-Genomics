@@ -14,6 +14,10 @@
   <p><a href="{% url 'samples:figures' %}">See the project's results in 3D →</a></p>
 </section>
 
+{% if static %}
+<p class="note" role="note">A read-only showcase: each sample's calls, QC, quality gate and run record, as the pipeline left them.
+  The raw reads and alignments aren't published.</p>
+{% else %}
 <section class="actions">
   <div class="card">
     <h3>Try a demo sample</h3>
@@ -57,6 +61,7 @@
     </form>
   </div>
 </section>
+{% endif %}
 
 <section class="panel" id="samples">
   <h2>Samples</h2>

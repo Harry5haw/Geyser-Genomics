@@ -13,6 +13,8 @@ urlpatterns = [
     path("upload/", views.upload, name="upload"),
     path("demo/", views.demo, name="demo"),
     path("samples/<str:sample_id>/", views.sample_detail, name="detail"),
+    # Calls pages as paths (not ?vpage=), so the static site can publish each as a folder with an index.html.
+    path("samples/<str:sample_id>/calls/<int:page>/", views.sample_detail, name="detail_page"),
     path("samples/<str:sample_id>/status/", views.sample_status, name="status"),
     path("samples/<str:sample_id>/files/<str:kind>/", views.sample_file, name="file"),
 ]
