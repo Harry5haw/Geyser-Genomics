@@ -43,9 +43,9 @@ variable "budget_alert_email" {
 # --- Claude Code guardrails (#73, claude_guardrails.tf) ---
 
 variable "gpu_max_vcpus" {
-  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 4 = one g5.xlarge (or g4dn.xlarge) at a time."
+  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 16 = one g6.4xlarge or g5.4xlarge at a time (at most $2.06/h). batch_gpu.tf refuses a cap above the smallest gpu_instance_types' vCPUs, so it is always one instance at a time."
   type        = number
-  default     = 4
+  default     = 16
 }
 
 variable "fargate_max_vcpus" {
@@ -205,15 +205,15 @@ variable "alignment_expiry_days" {
 # --- Cloud DeepVariant (G2: #43, #44; docs/design/cloud-deepvariant.md) ---
 
 variable "gpu_instance_types" {
-  description = "Instance types the GPU Batch environment may launch. Both have a 24 GB-class GPU (call_variants at batch 1024 needs more than 10 GB). g6 (L4) is about 20% cheaper than g5 (A10G) in eu-west-2."
+  description = "Instance types the GPU Batch environment may launch, each in batch_gpu.tf's gpu_instance_shapes. Both have a 24 GB-class GPU (call_variants at batch 1024 needs more than 10 GB). g6 (L4) is about 20% cheaper than g5 (A10G) in eu-west-2. The 4xlarge (16 vCPU / 64 GiB) types are the measured shape (docs/design/cloud-deepvariant.md): cheaper per run than the xlarge, since make_examples runs four times faster."
   type        = list(string)
-  default     = ["g6.xlarge", "g5.xlarge"]
+  default     = ["g6.4xlarge", "g5.4xlarge"]
 }
 
 variable "deepvariant_resources" {
-  description = "vCPU and memory (MiB) per DeepVariant job, plus one GPU. 4 vCPU fits the current gpu_max_vcpus cap; the measured shape (16 vCPU, ~8 min for chr20) needs gpu_max_vcpus = 16 and the 4xlarge types."
+  description = "vCPU and memory (MiB) per DeepVariant job, plus one GPU. The measured shape: 16 vCPU (~8 min for chr20). It must fit gpu_max_vcpus and the smallest gpu_instance_types (deepvariant.tf)."
   type        = object({ vcpu = number, memory_mb = number })
-  default     = { vcpu = 4, memory_mb = 14336 } # 16 GiB instance, ~2 GiB left for the ECS agent and OS
+  default     = { vcpu = 16, memory_mb = 57344 } # 64 GiB instance; 56 GiB leaves room for the ECS agent and OS (need: 0.6 GB per shard + 2 GB)
 }
 
 variable "deepvariant_image_version" {
@@ -253,9 +253,14 @@ variable "giraffe_kmc_memory_gb" {
 }
 
 variable "gpu_disk_gb" {
-  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment and DeepVariant's intermediates: 100 GB for chromosome-scale runs, 250+ for a whole genome."
+  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment (~17 GB CRAM for a 30x genome) and DeepVariant's intermediates (or, in v1.5 split mode, every part's examples): 100 GB is enough for a chromosome, a whole genome needs 250+. 300 GB of gp3 is ~$0.04 per instance-hour, billed only while an instance runs."
   type        = number
-  default     = 100
+  default     = 300
+
+  validation {
+    condition     = var.gpu_disk_gb >= 100 && var.gpu_disk_gb <= 1000 && floor(var.gpu_disk_gb) == var.gpu_disk_gb
+    error_message = "gpu_disk_gb must be a whole number of GB from 100 (the image alone is ~28 GB) to 1000."
+  }
 }
 
 variable "default_caller" {
