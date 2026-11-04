@@ -35,8 +35,10 @@ resource "aws_iam_role" "geyser_publish_task_role" {
   tags = { Name = "${var.project_name}-publish-task-role", Environment = var.environment, ManagedBy = "Terraform" }
 }
 
-# What a page shows, read-only. No raw_reads/ or alignments/ objects: the publisher takes their presence from the
-# listing (T3's contract).
+# What a page shows, read-only. variants_deepvariant/ and variants_pangenome/ hold the sample's calls when DeepVariant
+# or pangenome-aware DeepVariant was the run's caller (the run record says which); the publisher fails loud on a 403
+# rather than publish a page without its calls. No raw_reads/ or alignments/ objects: the publisher takes their
+# presence from the listing. truth/ stays unreadable (the publisher reads that as "no truth"). T3's contract.
 resource "aws_iam_role_policy" "geyser_publish_read_data_lake" {
   name = "${var.project_name}-publish-read-data-lake-${var.environment}"
   role = aws_iam_role.geyser_publish_task_role.id
@@ -50,10 +52,13 @@ resource "aws_iam_role_policy" "geyser_publish_read_data_lake" {
         Resource = aws_s3_bucket.data_lake.arn
       },
       {
-        Sid      = "ReadWhatPagesShow"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = [for prefix in ["qc_reports", "variants", "stats", "runs", "metrics"] : "${aws_s3_bucket.data_lake.arn}/${prefix}/*"]
+        Sid    = "ReadWhatPagesShow"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = [
+          for prefix in ["qc_reports", "variants", "variants_deepvariant", "variants_pangenome", "stats", "runs", "metrics"] :
+          "${aws_s3_bucket.data_lake.arn}/${prefix}/*"
+        ]
       }
     ]
   })
