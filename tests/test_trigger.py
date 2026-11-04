@@ -138,6 +138,10 @@ def test_batch_job_names_still_fit(trigger):
         "QualityControl",
         "AlignGenome",
         "AlignGenome",
+        # v1.3 the large route: QC on the whole input, the pre-flight, the merge (the chunks are named by index).
+        "QualityControl",
+        "Preflight",
+        "AlignMerge",
         "DeepVariant",
         "PlanRegions",
         "CallVariants",
@@ -337,3 +341,45 @@ def test_unreadable_metadata_flags_the_reference_too(trigger, monkeypatch, s3):
 def test_a_vanished_upload_keeps_the_default_reference(trigger, monkeypatch, s3):
     s3.missing = True
     assert _start(trigger, monkeypatch)["reference_name"] == "chr20.fa"
+
+
+# --- v1.3: the upload's size (HeadObject ContentLength) as input_bytes, for Choose_Route -------------------
+
+
+def _start_sized(trigger, monkeypatch, event_size=None):
+    calls = []
+
+    class FakeSfn:
+        def start_execution(self, **kwargs):
+            calls.append(json.loads(kwargs["input"]))
+            return {"executionArn": "arn:fake"}
+
+    monkeypatch.setenv("STATE_MACHINE_ARN", "arn:sm")
+    monkeypatch.delenv("REFERENCE_NAME", raising=False)
+    monkeypatch.delenv("CALLER", raising=False)
+    monkeypatch.setattr(trigger, "_sfn_client", FakeSfn())
+    obj = {"key": "raw_reads/S1.fastq.gz", **({"size": event_size} if event_size is not None else {})}
+    trigger.handler({"Records": [{"s3": {"bucket": {"name": "b"}, "object": obj}}]}, None)
+    return calls[0]
+
+
+def test_a_single_end_upload_passes_its_size(trigger, monkeypatch, s3):
+    original = s3.head_object
+    s3.head_object = lambda Bucket, Key: {**original(Bucket, Key), "ContentLength": 60_000_000_000}
+    assert _start_sized(trigger, monkeypatch, event_size=1)["input_bytes"] == 60_000_000_000  # the HEAD wins
+
+
+def test_without_a_head_size_the_events_size_is_used(trigger, monkeypatch, s3):
+    s3.missing = True  # vanished: no HEAD; the event still says how big it was
+    assert _start_sized(trigger, monkeypatch, event_size=1234)["input_bytes"] == 1234
+
+
+def test_with_no_size_at_all_the_input_has_none(trigger, monkeypatch, s3):
+    assert "input_bytes" not in _start_sized(trigger, monkeypatch)  # Choose_Route: today's path
+
+
+def test_input_bytes_adds_up_mates_and_refuses_unknowns(trigger):
+    assert trigger.input_bytes([{"ContentLength": 3}, {"ContentLength": 4}]) == 7
+    assert trigger.input_bytes([{"ContentLength": 3}, {}]) is None
+    assert trigger.input_bytes([{"ContentLength": True}]) is None
+    assert trigger.input_bytes([]) is None

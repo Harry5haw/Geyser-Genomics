@@ -70,6 +70,7 @@
       </table>
       </div>
       {% include "samples/_pager.html" with pager=variant_pager noun="calls" %}
+      {% if calls_shown %}<p class="muted"><small>The first {{ calls_shown }} calls are on these pages; the VCF below has all {{ variants.total }}.</small></p>{% endif %}
     {% else %}
       <p class="muted">The variant caller found no differences from the reference.</p>
     {% endif %}
@@ -88,7 +89,7 @@
     {% endif %}
     {% if qc_report %}
     {# On request only: a real fastp report is ~220 KB and asks for a ~1 MB chart script, so it never loads with this page. #}
-    <p><a href="{% url 'samples:file' sample.sample_id 'qc_html' %}?inline=1" target="_blank" rel="noopener">View the full fastp report{% if sample.layout == "paired" %} (both mates){% endif %}</a>
+    <p><a href="{{ qc_href }}" target="_blank" rel="noopener">View the full fastp report{% if sample.layout == "paired" %} (both mates){% endif %}</a>
       <small class="muted">(opens in a new tab, sandboxed: its charts stay blank there because its scripts are blocked; the downloaded report draws them when opened online)</small></p>
     {% endif %}
   </section>
@@ -133,7 +134,7 @@
     <h2>Files</h2>
     <ul class="files">
       {% for d in downloads %}
-        <li><a href="{% url 'samples:file' sample.sample_id d.kind %}" download>{{ d.label }}</a>
+        <li><a href="{{ d.href }}" download>{{ d.label }}</a>
           <small>{{ d.filename }} · {{ d.description }}</small></li>
       {% endfor %}
     </ul>

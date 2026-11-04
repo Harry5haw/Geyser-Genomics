@@ -25,7 +25,10 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}:*"
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}:*",
+          # v1.3: the large route's jobs (genome_scale.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*"
         ]
       },
       {
@@ -34,6 +37,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
       # Read_Regions reads the planner's output (tasks.py regions --output-key) straight from S3.
       { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/variant-regions/*" },
+      # Read_Manifest reads the pre-flight's chunk manifest (tasks.py preflight) on the large route, and only that.
+      { Sid = "ReadChunkManifests", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/chunks/*/manifest.json" },
       # Check_Reference checks the run's reference/<name> exists before any job (HeadObject needs
       # s3:GetObject). s3:ListBucket makes S3 answer a missing reference with 404 (NoSuchKey) instead of
       # 403, so the run fails with "not found" rather than an access error. As for the trigger Lambda,
@@ -78,6 +83,13 @@ locals {
   # 25,000-event history (a shard is ~10 events). 250 Mb: one region per GRCh38 chromosome (chr1 is 248.9 Mb).
   variant_region_window_min = 5000000
   variant_region_window_max = 250000000
+  # v1.3 the large route: the per-run parallelism's maxima, from the Fargate Spot cap (so a large run stays on
+  # Spot prices rather than spilling onto on-demand). QC runs alongside the chunks.
+  large                   = var.large_route_resources
+  align_concurrency_max   = floor((var.fargate_spot_max_vcpus - local.large["qc"].vcpu) / local.large["chunk"].vcpu)
+  calling_concurrency_max = floor(var.fargate_spot_max_vcpus / var.stage_resources["variants"].vcpu)
+  merge_threads_max       = local.large["merge"].vcpu
+  large_input_bytes       = floor(var.large_input_gb * 1000000000)
 }
 
 resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
@@ -110,6 +122,23 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     align_sizes                = jsonencode(local.align_override_sizes)
     variant_region_window_min  = local.variant_region_window_min
     variant_region_window_max  = local.variant_region_window_max
+    # v1.3 the large route (genome_scale.tf) and the per-run parallelism.
+    large_job_definition     = aws_batch_job_definition.geyser_app_large_job_def.name
+    large_input_bytes        = local.large_input_bytes
+    genome_chunk_count       = var.genome_chunk_count
+    genome_align_concurrency = var.genome_align_concurrency
+    genome_merge_threads     = var.genome_merge_threads
+    align_concurrency_max    = local.align_concurrency_max
+    calling_concurrency_max  = local.calling_concurrency_max
+    merge_threads_max        = local.merge_threads_max
+    preflight_vcpu           = local.large["preflight"].vcpu
+    preflight_memory_mb      = local.large["preflight"].memory_mb
+    qc_large_vcpu            = local.large["qc"].vcpu
+    qc_large_memory_mb       = local.large["qc"].memory_mb
+    chunk_vcpu               = local.large["chunk"].vcpu
+    chunk_memory_mb          = local.large["chunk"].memory_mb
+    align_merge_vcpu         = local.large["merge"].vcpu
+    align_merge_memory_mb    = local.large["merge"].memory_mb
   })
 
   lifecycle {
@@ -126,6 +155,24 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
       # The defaults go through the same checks as an override (Run_Setting_Rules), so they must pass them.
       condition     = var.variant_region_window >= local.variant_region_window_min && var.variant_region_window <= local.variant_region_window_max
       error_message = "variant_region_window must be within the per-run override bounds (5 Mb to 250 Mb), or every run would fail its own settings check."
+    }
+    # v1.3: the parallelism defaults go through the per-run checks too, so they must fit the derived maxima.
+    precondition {
+      condition     = local.align_concurrency_max >= 1 && var.genome_align_concurrency <= local.align_concurrency_max
+      error_message = "genome_align_concurrency must fit with QC in fargate_spot_max_vcpus: at most (fargate_spot_max_vcpus - qc vCPU) / chunk vCPU, and at least one chunk must fit."
+    }
+    precondition {
+      condition     = var.variants_max_concurrency <= local.calling_concurrency_max
+      error_message = "variants_max_concurrency (calling_concurrency's default) must be at most fargate_spot_max_vcpus / the variants vCPU."
+    }
+    precondition {
+      condition     = var.genome_merge_threads <= local.merge_threads_max
+      error_message = "genome_merge_threads must be at most the merge job's vCPU (large_route_resources.merge)."
+    }
+    precondition {
+      # The pre-flight runs alongside QC, before the chunks.
+      condition     = local.large["preflight"].vcpu + local.large["qc"].vcpu <= var.fargate_spot_max_vcpus
+      error_message = "The pre-flight and QC run at the same time: their vCPUs together must fit in fargate_spot_max_vcpus."
     }
   }
   logging_configuration {

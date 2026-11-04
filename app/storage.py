@@ -11,6 +11,8 @@ those keys live:
 Select one with ``STORAGE_BACKEND=s3|local``. See ``storage_from_env``.
 """
 
+import hashlib
+import json
 import os
 import shutil
 from collections.abc import Iterator
@@ -19,6 +21,11 @@ from typing import BinaryIO
 
 class ObjectNotFound(Exception):
     """Raised when a key does not exist in the backend."""
+
+
+# Presigned URLs (the streaming merge and region-streamed calling read objects in place over HTTPS) must outlive
+# the longest job that reads them: the merge's 4 h timeout.
+PRESIGN_SECONDS = 6 * 3600
 
 
 class LocalStorage:
@@ -45,9 +52,44 @@ class LocalStorage:
             raise ObjectNotFound(key)
         shutil.copyfile(src, local_path)
 
-    def upload(self, local_path: str, key: str) -> None:
+    def upload(self, local_path: str, key: str, metadata: dict = None) -> None:
+        """metadata: user metadata, as S3 keeps it with the object (here a hidden sidecar file that listings skip).
+        An upload without metadata clears any earlier object's, as an S3 PUT does."""
         with open(local_path, "rb") as src:
             self.upload_stream(src, key)
+        sidecar = self._meta_path(key)
+        if metadata:
+            with open(sidecar, "w", encoding="utf-8") as fh:
+                json.dump({k.lower(): str(v) for k, v in metadata.items()}, fh)
+        elif os.path.exists(sidecar):
+            os.remove(sidecar)
+
+    def _meta_path(self, key: str) -> str:
+        path = self._path(key)
+        return os.path.join(os.path.dirname(path), f".{os.path.basename(path)}.meta.json")
+
+    def head(self, key: str) -> dict:
+        """{"etag", "size", "metadata"} without reading the object's data into the caller. The ETag is the
+        content's MD5, as S3 gives for a single-part upload."""
+        path = self._path(key)
+        if not os.path.isfile(path):
+            raise ObjectNotFound(key)
+        md5 = hashlib.md5()  # noqa: S324 - an ETag, not security
+        with open(path, "rb") as fh:
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                md5.update(block)
+        metadata = {}
+        if os.path.exists(self._meta_path(key)):
+            with open(self._meta_path(key), encoding="utf-8") as fh:
+                metadata = json.load(fh)
+        return {"etag": md5.hexdigest(), "size": os.path.getsize(path), "metadata": metadata}
+
+    def presigned_url(self, key: str, expires: int = PRESIGN_SECONDS) -> str:
+        """Where a tool can read the object in place: locally, the file itself."""
+        path = self._path(key)
+        if not os.path.isfile(path):
+            raise ObjectNotFound(key)
+        return path
 
     def open_read(self, key: str) -> BinaryIO:
         path = self._path(key)
@@ -71,6 +113,9 @@ class LocalStorage:
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
+        sidecar = self._meta_path(key)
+        if os.path.exists(sidecar):  # a new object has no metadata until upload() gives it some
+            os.remove(sidecar)
 
     def list_keys(self, prefix: str = "") -> Iterator[str]:
         """Yield every key starting with ``prefix``, sorted, like an S3 listing."""
@@ -232,8 +277,32 @@ class S3Storage:
                 raise ObjectNotFound(key) from err
             raise
 
-    def upload(self, local_path: str, key: str) -> None:
-        self._client.upload_file(local_path, self.bucket, key)
+    def upload(self, local_path: str, key: str, metadata: dict = None) -> None:
+        extra = {"Metadata": {k.lower(): str(v) for k, v in metadata.items()}} if metadata else None
+        self._client.upload_file(local_path, self.bucket, key, ExtraArgs=extra)
+
+    def head(self, key: str) -> dict:
+        """{"etag", "size", "metadata"} from HeadObject (the ETag without its quotes)."""
+        from botocore.exceptions import ClientError
+
+        try:
+            head = self._client.head_object(Bucket=self.bucket, Key=key)
+        except ClientError as err:
+            if self._is_not_found(err):
+                raise ObjectNotFound(key) from err
+            raise
+        return {
+            "etag": (head.get("ETag") or "").strip('"'),
+            "size": head.get("ContentLength"),
+            "metadata": {k.lower(): v for k, v in (head.get("Metadata") or {}).items()},
+        }
+
+    def presigned_url(self, key: str, expires: int = PRESIGN_SECONDS) -> str:
+        """A time-limited HTTPS GET URL, signed with this process's own credentials (the job role), so htslib
+        can range-read the object without S3 credentials of its own."""
+        return self._client.generate_presigned_url(
+            "get_object", Params={"Bucket": self.bucket, "Key": key}, ExpiresIn=expires
+        )
 
     def open_read(self, key: str) -> BinaryIO:
         from botocore.exceptions import ClientError
