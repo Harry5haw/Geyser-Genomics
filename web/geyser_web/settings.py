@@ -123,6 +123,8 @@ GEYSER_MAX_UPLOAD_MB = int(os.environ.get("GEYSER_MAX_UPLOAD_MB", "200"))
 # Rows per page of the variant and AlphaGenome tables (the first page is inline; the rest are prerenderable links).
 # GEYSER_VARIANT_ROWS is the old name (it capped the one inline table); still honoured. At least 1.
 GEYSER_TABLE_ROWS = max(1, int(os.environ.get("GEYSER_TABLE_ROWS") or os.environ.get("GEYSER_VARIANT_ROWS") or "50"))
+# The signature figures' derived CSVs (#189), drawn as 3D terrains on /figures/ (W1b).
+GEYSER_FIGURES_DIR = Path(os.environ.get("GEYSER_FIGURES_DIR", REPO_ROOT / "docs" / "figures" / "csv"))
 GEYSER_POLL_SECONDS = int(os.environ.get("GEYSER_POLL_SECONDS", "3"))
 
 # Local worker (python web/manage.py runworker): the offline stand-in for the S3 -> Lambda trigger.
