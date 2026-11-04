@@ -1,0 +1,208 @@
+# infrastructure/web_api.tf: the hosted web UI's API (lambda/web_api/index.py), in the main stack.
+#
+# The site itself (a private S3 bucket behind CloudFront, with a response-headers policy) is in its own stack,
+# infrastructure/web/, which only the user plans and applies: CloudFront is outside geyser-claude's
+# permissions boundary, which can't even read it, so in this state it would break every Claude plan at refresh.
+# Everything here is regional and inside the boundary. Two steps:
+#   1. this stack with the defaults (no web_origin, publishing off): the API exists, with no browser origin
+#      allowed yet;
+#   2. after the user applies infrastructure/web/: web_origin, web_site_bucket, web_site_distribution_id and
+#      publish_enabled = true in tfvars, then plan again (CORS on the data lake, the publish policy, the
+#      function URL's CORS and the state machine's switch).
+#
+# The upload token is an SSM SecureString the user puts in (like the AlphaGenome key): referenced by name only,
+# read by the function at cold start.
+
+locals {
+  web_upload_token_parameter_arn = "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.web_upload_token_parameter, "/")}"
+  web_origins                    = var.web_origin == "" ? [] : [var.web_origin]
+  # The output files the API may presign a GET for (FILE_KEY_TEMPLATES in the function).
+  web_download_prefixes = ["qc_reports", "alignments", "variants", "stats"]
+}
+
+data "archive_file" "geyser_web_api_zip" {
+  type        = "zip"
+  source_file = "${path.module}/../lambda/web_api/index.py"
+  output_path = "${path.module}/../.terraform/lambda_zips/geyser_web_api.zip"
+}
+
+resource "aws_cloudwatch_log_group" "geyser_web_api" {
+  name              = "/aws/lambda/${var.project_name}-web-api-${var.environment}"
+  retention_in_days = var.log_retention_days
+  tags              = { Name = "${var.project_name}-web-api-logs", Environment = var.environment, ManagedBy = "Terraform" }
+}
+
+resource "aws_iam_role" "geyser_web_api" {
+  name = "${var.project_name}-web-api-role-${var.environment}"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17",
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "lambda.amazonaws.com" } }]
+  })
+  tags = { Name = "${var.project_name}-web-api-role", Environment = var.environment, ManagedBy = "Terraform" }
+}
+
+resource "aws_iam_role_policy_attachment" "geyser_web_api_logs" {
+  role       = aws_iam_role.geyser_web_api.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+# Least privilege: presigned URLs act with the function's own permissions, so these are exactly what a
+# browser can do through it.
+resource "aws_iam_role_policy" "geyser_web_api" {
+  name = "${var.project_name}-web-api-${var.environment}"
+  role = aws_iam_role.geyser_web_api.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        # Multipart uploads of raw reads only (Create/UploadPart/Complete are s3:PutObject); the S3 trigger
+        # starts the run when an upload completes.
+        Sid      = "UploadRawReads"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:AbortMultipartUpload"]
+        Resource = "${aws_s3_bucket.data_lake.arn}/raw_reads/*"
+      },
+      {
+        # Downloads of a sample's outputs (HeadObject is s3:GetObject too). Never raw_reads/, runs/ or reference/.
+        Sid      = "DownloadOutputs"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = [for prefix in local.web_download_prefixes : "${aws_s3_bucket.data_lake.arn}/${prefix}/*"]
+      },
+      {
+        # A missing output is a 404 (not a 403) for HeadObject only with s3:ListBucket.
+        Sid      = "MissingOutputIs404"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucket"]
+        Resource = aws_s3_bucket.data_lake.arn
+      },
+      {
+        Sid      = "RunStatus"
+        Effect   = "Allow"
+        Action   = ["states:ListExecutions"]
+        Resource = aws_sfn_state_machine.geyser_pipeline_state_machine.arn
+      },
+      {
+        # The upload token, one parameter (default key aws/ssm: no kms:Decrypt needed).
+        Sid      = "ReadUploadToken"
+        Effect   = "Allow"
+        Action   = ["ssm:GetParameter"]
+        Resource = local.web_upload_token_parameter_arn
+      }
+    ]
+  })
+}
+
+resource "aws_lambda_function" "geyser_web_api" {
+  function_name    = "${var.project_name}-web-api-${var.environment}"
+  role             = aws_iam_role.geyser_web_api.arn
+  filename         = data.archive_file.geyser_web_api_zip.output_path
+  source_code_hash = data.archive_file.geyser_web_api_zip.output_base64sha256
+  handler          = "index.handler"
+  runtime          = "python3.11" # as the trigger; boto3 comes with the runtime
+  timeout          = 15
+  memory_size      = 256
+
+  logging_config {
+    log_format = "Text"
+    log_group  = aws_cloudwatch_log_group.geyser_web_api.name
+  }
+
+  environment {
+    variables = {
+      BUCKET_NAME            = aws_s3_bucket.data_lake.bucket
+      STATE_MACHINE_ARN      = aws_sfn_state_machine.geyser_pipeline_state_machine.arn
+      UPLOAD_TOKEN_PARAMETER = var.web_upload_token_parameter
+      MAX_UPLOAD_BYTES       = tostring(var.web_max_upload_gb * 1024 * 1024 * 1024)
+    }
+  }
+
+  tags = { Name = "${var.project_name}-web-api", Environment = var.environment, ManagedBy = "Terraform" }
+}
+
+# Public HTTPS endpoint, auth NONE: uploads check the token in code; status and downloads are the public
+# showcase. Browsers may call it only from the site's origin (CORS), once web_origin is set.
+resource "aws_lambda_function_url" "geyser_web_api" {
+  function_name      = aws_lambda_function.geyser_web_api.function_name
+  authorization_type = "NONE"
+
+  dynamic "cors" {
+    for_each = var.web_origin == "" ? [] : [var.web_origin]
+    content {
+      allow_origins  = [cors.value]
+      allow_methods  = ["GET", "POST"]
+      allow_headers  = ["authorization", "content-type"]
+      expose_headers = ["location"]
+      max_age        = 3600
+    }
+  }
+}
+
+# A function URL with auth NONE needs both permissions (since Oct 2025): InvokeFunctionUrl for the URL, and
+# InvokeFunction limited to calls that come through the URL.
+resource "aws_lambda_permission" "geyser_web_api_url" {
+  statement_id           = "FunctionUrlPublic"
+  action                 = "lambda:InvokeFunctionUrl"
+  function_name          = aws_lambda_function.geyser_web_api.function_name
+  principal              = "*"
+  function_url_auth_type = "NONE"
+}
+
+resource "aws_lambda_permission" "geyser_web_api_invoke_via_url" {
+  statement_id             = "FunctionUrlInvoke"
+  action                   = "lambda:InvokeFunction"
+  function_name            = aws_lambda_function.geyser_web_api.function_name
+  principal                = "*"
+  invoked_via_function_url = true
+}
+
+# The browser PUTs upload parts straight to the data lake and must read each part's ETag to complete the
+# upload. A separate CORS resource: the bucket itself doesn't change. Only once web_origin is set.
+resource "aws_s3_bucket_cors_configuration" "data_lake_web_uploads" {
+  count  = var.web_origin == "" ? 0 : 1
+  bucket = aws_s3_bucket.data_lake.id
+
+  cors_rule {
+    allowed_methods = ["PUT"]
+    allowed_origins = local.web_origins
+    allowed_headers = ["content-type"]
+    expose_headers  = ["ETag"]
+    max_age_seconds = 3600
+  }
+}
+
+# The Publish job (the app job definition, task role) writes the site and invalidates its index.
+resource "aws_iam_role_policy" "geyser_batch_task_publish" {
+  count = var.publish_enabled ? 1 : 0
+  name  = "${var.project_name}-batch-task-publish-${var.environment}"
+  role  = aws_iam_role.geyser_batch_task_role.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid      = "WriteSite"
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:GetObject", "s3:ListBucket"]
+        Resource = ["arn:aws:s3:::${var.web_site_bucket}", "arn:aws:s3:::${var.web_site_bucket}/*"]
+      },
+      {
+        Sid      = "InvalidateIndex"
+        Effect   = "Allow"
+        Action   = ["cloudfront:CreateInvalidation"]
+        Resource = "arn:aws:cloudfront::${data.aws_caller_identity.current.account_id}:distribution/${var.web_site_distribution_id}"
+      }
+    ]
+  })
+
+  lifecycle {
+    precondition {
+      condition     = var.web_site_bucket != "" && var.web_site_distribution_id != ""
+      error_message = "publish_enabled needs web_site_bucket and web_site_distribution_id (infrastructure/web/'s outputs)."
+    }
+  }
+}
+
+output "web_api_url" {
+  description = "The web API's function URL (the site's API origin, for infrastructure/web/'s api_origin)."
+  value       = aws_lambda_function_url.geyser_web_api.function_url
+}

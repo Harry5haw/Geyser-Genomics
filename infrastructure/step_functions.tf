@@ -107,6 +107,10 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     align_sizes                = jsonencode(local.align_override_sizes)
     variant_region_window_min  = local.variant_region_window_min
     variant_region_window_max  = local.variant_region_window_max
+    # The hosted site (web_api.tf, infrastructure/web/): the Publish state's switch and its targets.
+    publish_enabled      = var.publish_enabled
+    site_bucket          = var.web_site_bucket
+    site_distribution_id = var.web_site_distribution_id
   })
 
   lifecycle {

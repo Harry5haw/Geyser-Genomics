@@ -107,6 +107,7 @@
           "variant_region_window": ${variant_region_window}
         },
         "setting_count": 3,
+        "publish": ${publish_enabled},
         "align_sizes": ${align_sizes},
         "window_min": ${variant_region_window_min},
         "window_max": ${variant_region_window_max}
@@ -604,7 +605,7 @@
       "Type": "Choice",
       "Comment": "pass: done. fail (with its reasons): the mode decides. Anything else (verdict null: the gate couldn't judge) is a gate problem.",
       "Choices": [
-        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Pipeline_Succeeded" },
+        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Publish_Run" },
         {
           "And": [
             { "Variable": "$.gate.verdict.verdict", "StringEquals": "fail" },
@@ -649,12 +650,69 @@
     "Gate_Warned": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate failed the sample: recorded (qc_reports/{id}.gate.json, the run record, the job log, this execution's output) and the run still succeeds.",
-      "Next": "Pipeline_Succeeded"
+      "Next": "Publish_Run"
     },
     "Gate_Skipped": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate gave no verdict ($.gate_error or a null verdict says why). The run succeeds, but it was never judged: it doesn't count toward the switch to fail (#157). The QualityGate stage's FailureCount metric shows a failed gate job on the dashboard.",
-      "Next": "Pipeline_Succeeded"
+      "Next": "Publish_Run"
+    },
+    "Publish_Run": {
+      "Type": "Choice",
+      "Comment": "Every run ends here, succeeded or failed (after Notify_Failure): the hosted site's page for the sample is published when publish_enabled (Terraform; $.run_rules.publish). A run that failed before Run_Setting_Rules (a bad profile or reference) has no rules and isn't published: it never started a job. Otherwise straight to the run's own end, so this changes nothing while publishing is off.",
+      "Choices": [
+        {
+          "And": [
+            { "Variable": "$.run_rules.publish", "IsPresent": true },
+            { "Variable": "$.run_rules.publish", "BooleanEquals": true }
+          ],
+          "Next": "Publish"
+        },
+        { "Variable": "$.run_close", "IsPresent": true, "Next": "Pipeline_Failed" }
+      ],
+      "Default": "Pipeline_Succeeded"
+    },
+    "Publish": {
+      "Type": "Task",
+      "Comment": "Renders the sample's page and the index to the site bucket and invalidates /index.html (the web UI's publisher, W2: manage.py publish <id> --out s3://<site>). Best effort: a failed publish is noted ($.publish_error) and the run keeps its own outcome.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('Publish-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobDefinition": "${job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'manage.py', 'publish', $.srr_id, '--out', 's3://${site_bucket}')",
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "${site_distribution_id}" }
+          ],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value": "${qc_vcpu}" },
+            { "Type": "MEMORY", "Value": "${qc_memory_mb}" }
+          ]
+        },
+        "Timeout": { "AttemptDurationSeconds": 900 }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.publish_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Publish_Finished", "ResultPath": "$.publish_error" }
+      ],
+      "Next": "Publish_Finished"
+    },
+    "Publish_Finished": {
+      "Type": "Choice",
+      "Comment": "Back to the run's own outcome: Prepare_Run_Close ($.run_close) is on every failure path and on no success path.",
+      "Choices": [{ "Variable": "$.run_close", "IsPresent": true, "Next": "Pipeline_Failed" }],
+      "Default": "Pipeline_Succeeded"
     },
     "Pipeline_Succeeded": {
       "Type": "Succeed",
@@ -715,9 +773,9 @@
       },
       "ResultPath": null,
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Pipeline_Failed", "ResultPath": "$.notify_error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Publish_Run", "ResultPath": "$.notify_error" }
       ],
-      "Next": "Pipeline_Failed"
+      "Next": "Publish_Run"
     },
     "Pipeline_Failed": {
       "Type": "Fail",

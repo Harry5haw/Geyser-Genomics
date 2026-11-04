@@ -32,6 +32,8 @@ ASL_PATH = os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json")
 MACHINE = "geyser-pipeline-local"
 # The same definition rendered with gate_mode = "fail" (variables.tf's default since #157; MACHINE is "warn").
 MACHINE_FAIL = "geyser-pipeline-local-gate-fail"
+# The same definition with publishing on (W3: the Publish state after every run).
+MACHINE_PUBLISH = "geyser-pipeline-local-publish"
 REGION = "eu-west-2"
 ACCOUNT = "123456789012"  # Step Functions Local's fixed account
 # Inside the container. The image runs as uid 1000 (stepfunctionslocal) and reads this file on every
@@ -65,7 +67,12 @@ TEMPLATE_VARS = {
     # The quality gate (#144): warn here, so the warn paths stay tested; MACHINE_FAIL renders variables.tf's
     # default, fail (#157).
     "gate_mode": "warn",
+    # The hosted site (W3): publishing off, as variables.tf's default. MACHINE_PUBLISH renders it on.
+    "publish_enabled": "false",
+    "site_bucket": "",
+    "site_distribution_id": "",
 }
+PUBLISH_VARS = {"publish_enabled": "true", "site_bucket": "geyser-site-local", "site_distribution_id": "E2EXAMPLE"}
 
 
 def fargate_memory_table() -> dict:
@@ -161,6 +168,11 @@ TEST_CASES = {
     "ReferenceMissing": {"Check_Reference": "NoSuchKey", "Notify_Failure": "Published"},
     # S3 errors on the HeadObject once (e.g. a 503), then answers: retried, the run goes on.
     "ReferenceFlakyOnce": {"Check_Reference": "ReferenceFlakyThenFound"},
+    # The hosted site (W3), on MACHINE_PUBLISH: every run ends with Publish, succeeded or failed.
+    "PublishOk": {"Publish": OK},
+    "PublishFails": {"Publish": FAIL},
+    "QCFailsThenPublished": {"Quality_Control": FAIL, "Notify_Failure": "Published", "Publish": OK},
+    "QCFailsAndPublishFails": {"Quality_Control": FAIL, "Notify_Failure": "Published", "Publish": FAIL},
 }
 # Every case passes the gate unless it says otherwise.
 GATE = {"Quality_Gate": OK, "Read_Gate_Verdict": "VerdictPass"}
@@ -171,7 +183,11 @@ TEST_CASES = {
     for name, case in TEST_CASES.items()
 }
 MOCK_CONFIG = {
-    "StateMachines": {MACHINE: {"TestCases": TEST_CASES}, MACHINE_FAIL: {"TestCases": TEST_CASES}},
+    "StateMachines": {
+        MACHINE: {"TestCases": TEST_CASES},
+        MACHINE_FAIL: {"TestCases": TEST_CASES},
+        MACHINE_PUBLISH: {"TestCases": TEST_CASES},
+    },
     "MockedResponses": {
         OK: {"0": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
         FAIL: {
@@ -336,6 +352,18 @@ def sfn_fail(sfn):
     arn = client.create_state_machine(
         name=MACHINE_FAIL,
         definition=render_definition(gate_mode="fail"),
+        roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
+    )["stateMachineArn"]
+    return client, arn, name
+
+
+@pytest.fixture(scope="module")
+def sfn_publish(sfn):
+    """The definition rendered with publishing on (W3), in the same Step Functions Local container."""
+    client, _, name = sfn
+    arn = client.create_state_machine(
+        name=MACHINE_PUBLISH,
+        definition=render_definition(**PUBLISH_VARS),
         roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
     )["stateMachineArn"]
     return client, arn, name
@@ -726,7 +754,7 @@ def test_a_failed_deepvariant_falls_back_to_bcftools(sfn):
 def test_both_callers_failing_fails_the_run(sfn):
     desc, events = run_case(sfn, "BothCallersFail", caller="deepvariant")
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
-    assert entered(events)[-2:] == ["Notify_Failure", "Pipeline_Failed"]
+    assert entered(events)[-3:] == ["Notify_Failure", "Publish_Run", "Pipeline_Failed"]
 
 
 # --- scatter-gather: the Map over the planned regions (#108) ------------------------------------
@@ -821,7 +849,8 @@ def test_the_gate_judges_the_merged_call_set_and_a_pass_ends_the_run(sfn):
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
     assert states.index("Call_Variants") < states.index("Quality_Gate") < states.index("Read_Gate_Verdict")
-    assert states[-2:] == ["Gate_Decision", "Pipeline_Succeeded"]
+    # Every run ends through Publish_Run (W3), which goes straight on while publishing is off.
+    assert states[-3:] == ["Gate_Decision", "Publish_Run", "Pipeline_Succeeded"]
     assert gate_read(events) == {"Bucket": TEMPLATE_VARS["bucket"], "Key": "qc_reports/SAMPLE7.gate.json"}
     output = json.loads(desc["output"])
     assert output["gate"]["verdict"]["verdict"] == "pass"
@@ -853,7 +882,7 @@ def test_warn_mode_records_a_failed_or_missing_verdict_and_the_run_succeeds(sfn,
     states = entered(events)
     # A judged run (Gate_Warned) is told apart from one the gate never judged (Gate_Skipped, #157).
     last = "Gate_Warned" if case == "GateFailsVerdict" else "Gate_Skipped"
-    assert states[-2:] == [last, "Pipeline_Succeeded"]
+    assert states[-3:] == [last, "Publish_Run", "Pipeline_Succeeded"]
     assert "States.Runtime" not in history_text(events)
     assert "Notify_Failure" not in states
     output = json.loads(desc["output"])
@@ -868,11 +897,12 @@ def test_fail_mode_fails_the_run_with_the_gates_reasons(sfn_fail):
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
     # The failure path like any failed stage's: the run record is closed as failed, then the notification.
-    assert states[-5:] == [
+    assert states[-6:] == [
         "Prepare_Gate_Failure",
         "Prepare_Run_Close",
         "Close_Run_Record",
         "Notify_Failure",
+        "Publish_Run",
         "Pipeline_Failed",
     ]
     closed = run_close(events)["Body"]
@@ -889,11 +919,12 @@ def test_fail_mode_fails_the_run_with_the_gates_reasons(sfn_fail):
 def test_fail_mode_treats_no_verdict_as_no_pass(sfn_fail, case):
     desc, events = run_case(sfn_fail, case)
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
-    assert entered(events)[-5:] == [
+    assert entered(events)[-6:] == [
         "Prepare_Gate_Error",
         "Prepare_Run_Close",
         "Close_Run_Record",
         "Notify_Failure",
+        "Publish_Run",
         "Pipeline_Failed",
     ]
     assert run_close(events)["Body"]["caught"]["Error"] == "QualityGateError"
@@ -967,7 +998,7 @@ def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request,
     states = entered(events)
     assert states[:2] == ["Check_Gate_Profile", "Prepare_Profile_Error"]
     assert "QC_and_Align" not in states and "Quality_Gate" not in states  # no job ran
-    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert states[-4:] == ["Close_Run_Record", "Notify_Failure", "Publish_Run", "Pipeline_Failed"]
     error = published_message(events)["ErrorDetails"]
     # States.JsonToString writes compact JSON.
     assert error["Error"] == "UnknownGateProfile" and json.dumps(profile, separators=(",", ":")) in error["Cause"]
@@ -1043,11 +1074,12 @@ def test_a_reference_not_in_the_data_lake_fails_the_run_before_any_job(request, 
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
     assert "QC_and_Align" not in states and not batch_parameters(events)  # no job ran
-    assert states[-5:] == [
+    assert states[-6:] == [
         "Prepare_Reference_Not_Found",
         "Prepare_Run_Close",
         "Close_Run_Record",
         "Notify_Failure",
+        "Publish_Run",
         "Pipeline_Failed",
     ]
     assert len(sdk_calls(events, "Check_Reference")) == 1  # a missing key is not retried
@@ -1080,7 +1112,7 @@ def test_a_reference_that_is_not_a_file_name_fails_the_run_before_any_job(reques
     states = entered(events)
     assert states[2:4] == ["Check_Reference_Name", "Prepare_Reference_Error"]
     assert "Check_Reference" not in states and "QC_and_Align" not in states  # not even S3 was asked
-    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert states[-4:] == ["Close_Run_Record", "Notify_Failure", "Publish_Run", "Pipeline_Failed"]
     assert_closed_before_notifying(desc, events, "UnknownReference")
     error = published_message(events)["ErrorDetails"]
     assert error["Error"] == "UnknownReference"
@@ -1221,7 +1253,7 @@ def test_invalid_overrides_fail_the_run_before_any_job(sfn, overrides):
     assert "Prepare_Run_Overrides_Error" in states
     assert "QC_and_Align" not in states and not batch_parameters(events)  # no job ran
     assert "States.Runtime" not in history_text(events)
-    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert states[-4:] == ["Close_Run_Record", "Notify_Failure", "Publish_Run", "Pipeline_Failed"]
     assert_closed_before_notifying(desc, events, "InvalidRunOverrides")
     error = published_message(events)["ErrorDetails"]
     assert error["Error"] == "InvalidRunOverrides"
@@ -1255,3 +1287,59 @@ def test_the_checks_run_in_order_gate_profile_reference_then_run_settings(reques
     _, events = run_case(sfn, "ReferenceMissing", reference="GRCh37.fa", overrides={"align_cpu": "2"})
     assert "Run_Setting_Rules" not in entered(events)
     assert published_message(events)["ErrorDetails"]["Error"] == "ReferenceNotFound"
+
+
+# --- the hosted site (W3): the Publish state after every run ---------------------------------------------------
+
+
+@pytest.mark.parametrize("case,status", [("HappyPath", "SUCCEEDED"), ("QCFails", "FAILED")])
+def test_with_publishing_off_a_run_ends_as_before(sfn, case, status):
+    desc, events = run_case(sfn, case)
+    assert desc["status"] == status
+    states = entered(events)
+    assert "Publish" not in states and states[-2] == "Publish_Run"
+    assert json.loads(desc["output"] if status == "SUCCEEDED" else "{}").get("publish_output") is None
+
+
+def test_a_succeeded_run_publishes_its_page_then_succeeds(sfn_publish):
+    desc, events = run_case(sfn_publish, "PublishOk", sample="SAMPLE7")
+    assert desc["status"] == "SUCCEEDED"
+    assert entered(events)[-4:] == ["Publish_Run", "Publish", "Publish_Finished", "Pipeline_Succeeded"]
+    (params,) = batch_calls(events, "Publish")
+    assert params["JobDefinition"] == TEMPLATE_VARS["job_definition"]
+    assert params["JobName"] == f"Publish-SAMPLE7-{desc['name']}"
+    overrides = params["ContainerOverrides"]
+    assert overrides["Command"] == ["python", "manage.py", "publish", "SAMPLE7", "--out", "s3://geyser-site-local"]
+    assert {"Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "E2EXAMPLE"} in overrides["Environment"]
+    assert params["Timeout"] == {"AttemptDurationSeconds": 900}
+
+
+def test_a_failed_publish_never_changes_the_runs_outcome(sfn_publish):
+    desc, events = run_case(sfn_publish, "PublishFails")
+    assert desc["status"] == "SUCCEEDED"
+    assert json.loads(desc["output"])["publish_error"]["Error"] == "States.TaskFailed"
+    desc, events = run_case(sfn_publish, "QCFailsAndPublishFails")
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert entered(events)[-3:] == ["Publish", "Publish_Finished", "Pipeline_Failed"]
+
+
+def test_a_failed_run_is_published_after_its_notification_and_still_fails(sfn_publish):
+    desc, events = run_case(sfn_publish, "QCFailsThenPublished")
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert states[-6:] == [
+        "Close_Run_Record",
+        "Notify_Failure",
+        "Publish_Run",
+        "Publish",
+        "Publish_Finished",
+        "Pipeline_Failed",
+    ]
+
+
+def test_a_run_that_never_started_is_not_published(sfn_publish):
+    # A bad profile fails before Run_Setting_Rules: no rules, no page (no job ever ran).
+    desc, events = run_case(sfn_publish, "HappyPath", gate_profile="strict")
+    assert desc["status"] == "FAILED"
+    states = entered(events)
+    assert "Publish" not in states and states[-2:] == ["Publish_Run", "Pipeline_Failed"]
