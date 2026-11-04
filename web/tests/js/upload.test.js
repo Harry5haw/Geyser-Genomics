@@ -239,3 +239,19 @@ test("the status after an upload is that upload's run, not an earlier run of the
   assert.ok(!U.runOfUpload({ started: "2026-11-04T09:00:00+00:00" }, since));
   assert.ok(!U.runOfUpload({ status: "NOT_FOUND" }, since));
 });
+
+test("an S3 400 (RequestTimeout, ExpiredToken) renews the URL and retries; an API 400 doesn't", async () => {
+  const stalled = { 1: [new U.ApiError(400, "RequestTimeout")] };
+  const { io, calls, puts } = harness({ fail: stalled });
+  await U.sendFile(io, fakeFile(5 * MiB), upload(5 * MiB, 5 * MiB), new Map(), () => {});
+  assert.deepEqual(puts.map((p) => p.url), ["first-1", "fresh-1"]);
+  assert.equal(calls.at(-1).route, "/uploads/complete");
+
+  const refused = harness();
+  refused.io.api = async () => {
+    throw new U.ApiError(400, "part_numbers must be whole numbers", true);
+  };
+  const noUrls = { key: "raw_reads/S1.fastq.gz", upload_id: "U1", part_size: 5 * MiB, parts: [], expires_at: 0 };
+  await assert.rejects(U.sendParts(refused.io, fakeFile(5 * MiB), noUrls, new Map(), () => {}), /whole numbers/);
+  assert.equal(refused.sleeps.length, 0);
+});

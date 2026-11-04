@@ -20,7 +20,10 @@
   const MAX_TRIES = 6;
   const RENEW_MARGIN_MS = 5 * 60 * 1000; // ask for fresh part URLs this long before they expire
   const RENEW_BATCH = 1000; // part URLs per /uploads/parts call (the API's limit)
-  const FATAL = new Set([400, 401, 404]); // retrying can't help: a bad request, the token, the upload is gone
+  // API answers retrying can't help: a bad request, the token, the upload is gone. (S3 PUTs differ: a 400 there is
+  // RequestTimeout or ExpiredToken, both fixed by a fresh URL and another try; only a 404 means the upload is gone.)
+  const FATAL = new Set([400, 401, 404]);
+  const PROGRESS_SAY_MS = 2000; // the status line's progress text at most this often (screen readers read it)
   const SAMPLE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,29}$/; // as the web API (and the trigger) accept
   const MATE_LIKE = /_R[12]$/;
   const STORE = "geyser-upload:";
@@ -29,11 +32,13 @@
   const FOLLOW_FOR_MS = 10 * 60 * 1000; // how long to wait for the run to appear before saying so
 
   class ApiError extends Error {
-    constructor(status, message) {
+    constructor(status, message, fromApi = false) {
       super(message);
       this.status = status;
+      this.fromApi = fromApi; // the web API's answer (not an S3 PUT's)
     }
   }
+  const fatal = (err) => (err.fromApi ? FATAL.has(err.status) : err.status === 404);
 
   const checkSampleId = (id) => {
     if (!SAMPLE_ID.test(id)) return "Use 1-30 letters, digits, '-' or '_', starting with a letter or digit.";
@@ -72,7 +77,9 @@
       throw new ApiError(0, "The upload service can't be reached. Check the connection and try again.");
     }
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new ApiError(response.status, data.error || data.message || `HTTP ${response.status}`);
+    if (!response.ok) {
+      throw new ApiError(response.status, data.error || data.message || `HTTP ${response.status}`, true);
+    }
     return data;
   };
 
@@ -135,8 +142,9 @@
         } catch (err) {
           sent.set(r.part_number, 0);
           report();
-          if (cancelled() || stopped || FATAL.has(err.status) || tries >= MAX_TRIES) throw err;
-          if (err.status === 403) urls.delete(r.part_number); // most likely an expired URL: renew it
+          if (cancelled() || stopped || fatal(err) || tries >= MAX_TRIES) throw err;
+          // An S3 403/400: an expired URL or signing token, or a stalled connection: a fresh URL, then retry.
+          if (!err.fromApi && (err.status === 403 || err.status === 400)) urls.delete(r.part_number);
           await io.online();
           await io.sleep(Math.min(30000, 1000 * 2 ** (tries - 1)));
         }
@@ -378,12 +386,15 @@
       // Progress: the bytes of every file; the rate only from what this session has sent.
       const total = chosen.reduce((a, f) => a + f.size, 0), sentBy = chosen.map(() => 0);
       const firstBy = chosen.map(() => null), began = Date.now();
+      let saidAt = 0;
       const progress = (i) => (bytes) => {
         sentBy[i] = bytes;
         if (firstBy[i] === null) firstBy[i] = bytes;
         const sum = sentBy.reduce((a, b) => a + b, 0);
         const fresh = sentBy.reduce((a, b, j) => a + b - (firstBy[j] ?? b), 0), secs = (Date.now() - began) / 1000;
         bar.value = total ? sum / total : 0;
+        if (Date.now() - saidAt < PROGRESS_SAY_MS && sum < total) return; // the bar moves; the words less often
+        saidAt = Date.now();
         const rate = secs > 2 && fresh > 0 ? fresh / secs : 0;
         const left = rate ? Math.round((total - sum) / rate / 60) : null;
         say(`Uploading ${sampleId}: ${(100 * bar.value).toFixed(0)}%` + (rate ? ` · ${(rate / 1048576).toFixed(1)} MB/s` : "") + (left !== null ? ` · about ${left} min left` : ""));
@@ -446,6 +457,11 @@
         if (wasCancelled) {
           say("Cancelled. The parts sent so far are kept: choose the same files to carry on, or discard the upload.");
         } else if (resuming && err.status === 404) {
+          // One of its uploads is gone (finished, discarded or expired; perhaps completed with the reply lost).
+          // Drop the others too, so no unfinished upload is left behind.
+          for (const f of saved.files) {
+            if (!f.completed) run.api("/uploads/abort", { key: f.key, upload_id: f.upload_id }).catch(() => {});
+          }
           forget(sampleId);
           say("That unfinished upload is gone (finished, discarded or expired). Press Upload to start again.", "error");
         } else if (started) {
