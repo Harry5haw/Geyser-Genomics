@@ -55,8 +55,15 @@ def test_the_fixture_parses_every_row():
         "5_prime_utr SYNTHG1",
         "atlas",
     )
+    assert first.rna_lfc == 0.62
     unscored = rows[3]
     assert unscored.avi is None and unscored.gene == "" and unscored.consequence == "intron"
+    assert unscored.rna_lfc is None and rows[2].rna_lfc is None  # API rows: no Atlas RNA |LFC|
+
+
+def test_rna_lfc_is_optional():
+    rows, problem = parse_tsv("chrom\tpos\tref\talt\tavi\nsynth1\t1\tA\tG\t0.5\n")
+    assert problem == "" and rows[0].rna_lfc is None
 
 
 def test_sorted_by_avi_highest_first_with_unscored_rows_last():
@@ -168,6 +175,7 @@ def test_page_shows_the_table_sorted_by_avi_with_the_research_note(client, stora
     assert body.index("SPLICE_SITES:brain") < body.index("RNA_SEQ:liver") < body.index("CAGE:hepg2")
     assert "0.873" in body and "splice_region SYNTHG1" in body and "5 scored" in body
     assert 'href="?avi=asc#alphagenome"' in body and 'aria-sort="descending"' in body
+    assert "RNA |LFC|" in body and "1.375" in body  # Atlas rows' RNA |LFC|; the rest show a dash
 
 
 def test_page_sorts_lowest_first_on_request(client, storage):

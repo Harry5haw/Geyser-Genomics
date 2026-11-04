@@ -32,6 +32,7 @@ COLUMNS = {
     "top_track": "top_track",
     "csq": "consequence",
     "source": "source",
+    "rna_lfc": "rna_lfc",  # RNA_SEQ |log fold change| for the top gene (Atlas rows only)
 }
 REQUIRED = ("chrom", "pos", "ref", "alt", "avi")
 SORTS = ("desc", "asc")  # by AVI; rows without a score go last either way
@@ -53,6 +54,7 @@ class Scored:
     top_track: str = ""
     consequence: str = ""
     source: str = ""
+    rna_lfc: float | None = None
 
 
 @dataclass
@@ -109,6 +111,7 @@ def parse_tsv(text: str) -> tuple[list, str]:
                 top_track=values.get("top_track", ""),
                 consequence=values.get("consequence", ""),
                 source=values.get("source", ""),
+                rna_lfc=_float(values.get("rna_lfc")),
             )
         )
     return rows, ""

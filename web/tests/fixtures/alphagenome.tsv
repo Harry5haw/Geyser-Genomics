@@ -1,6 +1,6 @@
-chrom	pos	ref	alt	gene	avi	top_track	csq	source
-synth1	100	A	G	SYNTHG1	0.412	RNA_SEQ:liver	5_prime_utr SYNTHG1	atlas
-synth1	250	C	T	SYNTHG1	0.873	SPLICE_SITES:brain	splice_region SYNTHG1	atlas
-synth1	400	G	GA	SYNTHG2	0.155	DNASE:k562	upstream SYNTHG2	api
-synth1	520	T	C				intron	api
-synth1	700	A	C	SYNTHG2	0.0315	CAGE:hepg2	downstream SYNTHG2	atlas
+chrom	pos	ref	alt	gene	avi	top_track	rna_lfc	csq	source
+synth1	100	A	G	SYNTHG1	0.412	RNA_SEQ:liver	0.62	5_prime_utr SYNTHG1	atlas
+synth1	250	C	T	SYNTHG1	0.873	SPLICE_SITES:brain	1.375	splice_region SYNTHG1	atlas
+synth1	400	G	GA	SYNTHG2	0.155	DNASE:k562		upstream SYNTHG2	api
+synth1	520	T	C					intron	api
+synth1	700	A	C	SYNTHG2	0.0315	CAGE:hepg2	0.04	downstream SYNTHG2	atlas

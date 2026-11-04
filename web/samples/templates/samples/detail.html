@@ -90,14 +90,17 @@
           <th class="num" aria-sort="{% if alphagenome.sort == 'asc' %}ascending{% else %}descending{% endif %}">
             <a href="?avi={% if alphagenome.sort == 'asc' %}desc{% else %}asc{% endif %}#alphagenome"
                title="Sort by AVI, {% if alphagenome.sort == 'asc' %}highest{% else %}lowest{% endif %} first">AVI {% if alphagenome.sort == "asc" %}▲{% else %}▼{% endif %}</a></th>
-          <th>Top track</th><th>Consequence (csq)</th><th>Source</th></tr></thead>
+          <th>Top track</th><th class="num" title="RNA-seq |log fold change| predicted for the top gene (Atlas scores only)">RNA |LFC|</th>
+          <th>Consequence (csq)</th><th>Source</th></tr></thead>
         <tbody>
         {% for v in alphagenome.rows %}
           <tr>
             <td>{{ v.gene|default:"–" }}</td><td>{{ v.chrom }}</td><td class="num">{{ v.pos }}</td>
             <td class="base nt-{{ v.ref }}">{{ v.ref }}</td><td class="base nt-{{ v.alt }}">{{ v.alt }}</td>
             <td class="num">{% if v.avi is None %}–{% else %}{{ v.avi|floatformat:"-3" }}{% endif %}</td>
-            <td>{{ v.top_track|default:"–" }}</td><td>{{ v.consequence|default:"–" }}</td><td>{{ v.source|default:"–" }}</td>
+            <td>{{ v.top_track|default:"–" }}</td>
+            <td class="num">{% if v.rna_lfc is None %}–{% else %}{{ v.rna_lfc|floatformat:"-3" }}{% endif %}</td>
+            <td>{{ v.consequence|default:"–" }}</td><td>{{ v.source|default:"–" }}</td>
           </tr>
         {% endfor %}
         </tbody>
