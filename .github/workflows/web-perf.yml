@@ -98,4 +98,5 @@ jobs:
             .lighthouseci/
             web-server.log
           if-no-files-found: warn
+          include-hidden-files: true  # .lighthouseci/ (upload-artifact skips dot-directories by default)
           retention-days: 30
