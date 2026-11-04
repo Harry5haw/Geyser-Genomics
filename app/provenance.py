@@ -250,6 +250,25 @@ def _read_json(storage, key):
         return None
 
 
+def _read_part(storage, key):
+    """One part as a dict, or None: missing, unreadable, or not a part (then with a warning, never a crash).
+
+    The state machine's Close_Run_Record has written its Finalize part as a JSON string holding the JSON
+    ("{\\"schema\\":1,...}": aws-sdk:s3:putObject encodes the States.JsonToString body once more), so a part
+    that decodes to a string is decoded once more.
+    """
+    part = _read_json(storage, key)
+    if isinstance(part, str):
+        try:
+            part = json.loads(part)
+        except ValueError:
+            pass
+    if part is not None and not (isinstance(part, dict) and part.get("task")):
+        _warn(f"read part {key}", f"not a run-record part ({type(part).__name__} without a task); skipped")
+        return None
+    return part
+
+
 def finish(storage, status: str, duration: float, error: str = None, usage: dict = None) -> None:
     """Close the current part: write it, then re-assemble the record. Never raises.
 
@@ -376,7 +395,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     """
     if part_keys is None:
         part_keys = storage.list_keys(part_prefix(sample_id))
-    parts = [p for p in (_read_json(storage, k) for k in part_keys if k.endswith(".json")) if p]
+    parts = [p for p in (_read_part(storage, k) for k in part_keys if k.endswith(".json")) if p]
     if not parts:
         return None
     for p in parts:
@@ -539,7 +558,7 @@ def _union(lists) -> list:
 
 def read_part(storage, sample_id: str, task: str):
     """One stage's part (the last run of that stage), or None. Each task has exactly one, overwritten per run."""
-    return _read_json(storage, f"{part_prefix(sample_id)}{task}.json")
+    return _read_part(storage, f"{part_prefix(sample_id)}{task}.json")
 
 
 def read_record(storage, sample_id: str, part_keys=None):
