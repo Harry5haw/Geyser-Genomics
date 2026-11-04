@@ -270,6 +270,25 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
 - The run record's `app_version` is the tag the job was given (`dev-local`). The exact build is the
   `main-<sha>` that `dev-local` pointed to at the time.
 
+## The hosted site (v1.4, not live yet)
+
+The site is static pages in a private S3 bucket behind CloudFront (`infrastructure/web/`, which the user plans and
+applies). A small API Lambda serves uploads, status and downloads (`web_api.tf`). The `geyser-publish` job
+(`publish.tf`) writes the pages.
+- **Per run:** with `publish_enabled = true`, every run ends by publishing its sample's pages and the index, whether
+  it succeeded or failed: a failed run's page shows which stage failed. The only exception is a run that failed
+  before any job (a bad profile or reference). A failed publish never changes the run's outcome.
+- **Bootstrap, once per new site:** `python manage.py publish --all` (in the `geyser-publish` image, or from a
+  checkout for `/figures/`). It writes every sample's pages; the per-run publishes then keep it current.
+- **After a publish image whose inline CSS or scripts changed:**
+  1. run `publish --all`;
+  2. copy `csp-hashes.json`'s `script` and `style` lists from the site's root into the web stack's `script_hashes` /
+     `style_hashes`;
+  3. apply the web stack (the response-headers policy in place).
+  Until then, the pages' inline blocks are blocked by the CSP.
+- **Uploads** need the token in the SSM SecureString `web_upload_token_parameter`, which the user puts in. Rotate it
+  after sharing it for a demo.
+
 ## Cost guardrails, in brief
 
 - **No NAT gateway** (`enable_nat_gateway = false`): Fargate jobs run in a public subnet with a public IP.
