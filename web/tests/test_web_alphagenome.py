@@ -58,10 +58,10 @@ def test_the_fixture_parses_every_row():
         "5_prime_utr SYNTHG1",
         "atlas",
     )
-    assert liver.rna_lfc == 0.62
+    assert liver.rna_lfc == -0.62  # signed: ALT lowers expression
     unscored = rows[4]
     assert unscored.avi is None and unscored.gene == "" and unscored.consequence == "intron"
-    assert unscored.rna_lfc is None and rows[2].rna_lfc is None  # API rows: no Atlas RNA |LFC|
+    assert unscored.rna_lfc is None and rows[2].rna_lfc is None  # API rows: no Atlas RNA LFC
 
 
 def test_comment_lines_before_the_header_are_skipped():
@@ -193,7 +193,7 @@ def test_page_shows_the_table_sorted_by_avi_with_the_research_note(client, stora
     assert "By using this information, you agree to AlphaGenome Output Terms of Use found at" in body
     assert f'<a href="{TERMS_URL}"' in body
     assert 'href="?avi=asc#alphagenome"' in body and 'aria-sort="descending"' in body
-    assert "RNA |LFC|" in body and "1.375" in body  # Atlas rows' RNA |LFC|; the rest show a dash
+    assert "RNA LFC" in body and "1.375" in body and "-0.62" in body  # signed (ALT vs REF); a dash when absent
 
 
 def test_page_sorts_lowest_first_on_request(client, storage):

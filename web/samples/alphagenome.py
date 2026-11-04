@@ -34,7 +34,7 @@ COLUMNS = {
     "top_track": "top_track",
     "csq": "consequence",
     "source": "source",
-    "rna_lfc": "rna_lfc",  # RNA_SEQ |log fold change| for the top gene (Atlas rows only)
+    "rna_lfc": "rna_lfc",  # RNA_SEQ log fold change (ALT vs REF, signed) of the gene's expression (Atlas rows only)
 }
 REQUIRED = ("chrom", "pos", "ref", "alt", "avi")
 SORTS = ("desc", "asc")  # by AVI; rows without a score go last either way

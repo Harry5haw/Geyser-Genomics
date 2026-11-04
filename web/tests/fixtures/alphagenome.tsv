@@ -1,7 +1,7 @@
-# By using this information, you agree to AlphaGenome Output Terms of Use found at https://deepmind.google.com/science/alphagenome/output-terms
+#AlphaGenomeTerms=By using this information, you agree to AlphaGenome Output Terms of Use found at https://deepmind.google.com/science/alphagenome/output-terms
 rank	chrom	pos	ref	alt	kind	qual	avi	avi_raw	top_track	gene	rna_lfc	csq	source
-1	synth1	250	C	T	SNP	225.4	31.4	0.873	SPLICE_SITES:brain	SYNTHG1	1.375	splice_region SYNTHG1	atlas
-2	synth1	100	A	G	SNP	225.4	22.1	0.412	RNA_SEQ:liver	SYNTHG1	0.62	5_prime_utr SYNTHG1	atlas
-3	synth1	400	G	GA	Indel	180.2	12.6	0.155	DNASE:k562	SYNTHG2		upstream SYNTHG2	api
-4	synth1	700	A	C	SNP	99.0	3.05	0.0315	CAGE:hepg2	SYNTHG2	0.04	downstream SYNTHG2	atlas
-5	synth1	520	T	C	SNP	60.1						intron	api
+1	synth1	250	C	T	snv	225.4	31.4	0.873	SPLICE_SITES:brain	SYNTHG1	1.375	splice_region SYNTHG1	atlas
+2	synth1	100	A	G	snv	225.4	22.1	0.412	RNA_SEQ:liver	SYNTHG1	-0.62	5_prime_utr SYNTHG1	atlas
+3	synth1	400	G	GA	indel	180.2	12.6	0.155	DNASE:k562	SYNTHG2		upstream SYNTHG2	api
+4	synth1	700	A	C	snv	99.0	3.05	0.0315	CAGE:hepg2	SYNTHG2	0.04	downstream SYNTHG2	atlas
+5	synth1	520	T	C	snv	60.1						intron	api

@@ -90,7 +90,7 @@
           <th class="num" aria-sort="{% if alphagenome.sort == 'asc' %}ascending{% else %}descending{% endif %}">
             <a href="?avi={% if alphagenome.sort == 'asc' %}desc{% else %}asc{% endif %}#alphagenome"
                title="Sort by AVI, {% if alphagenome.sort == 'asc' %}highest{% else %}lowest{% endif %} first">AVI {% if alphagenome.sort == "asc" %}▲{% else %}▼{% endif %}</a></th>
-          <th>Top track</th><th class="num" title="RNA-seq |log fold change| predicted for the top gene (Atlas scores only)">RNA |LFC|</th>
+          <th>Top track</th><th class="num" title="Predicted RNA-seq log fold change (ALT vs REF) of the gene's expression: below 0 down, above 0 up (Atlas scores only)">RNA LFC</th>
           <th>Consequence (csq)</th><th>Source</th></tr></thead>
         <tbody>
         {% for v in alphagenome.rows %}
@@ -109,8 +109,8 @@
       {% if alphagenome.truncated %}<p class="muted"><small>Showing {{ alphagenome.rows|length }} of {{ alphagenome.total }}, by AVI. Download the table for the rest.</small></p>{% endif %}
       <p class="muted"><small>Sources: {% for source, n in alphagenome.sources %}{{ source }} {{ n }}{% if not forloop.last %}, {% endif %}{% endfor %}.
         AVI: AlphaGenome Variant Impact, PHRED-scaled (20 = top 1% genome-wide); higher means a larger predicted effect.</small></p>
-      <p class="terms-notice"><small>By using this information, you agree to AlphaGenome Output Terms of Use found at
-        <a href="{{ alphagenome_terms_url }}" rel="noopener noreferrer" target="_blank">{{ alphagenome_terms_url }}</a></small></p>
+      <p class="terms-notice" role="note"><strong>By using this information, you agree to AlphaGenome Output Terms of Use found at
+        <a href="{{ alphagenome_terms_url }}" rel="noopener noreferrer" target="_blank">{{ alphagenome_terms_url }}</a></strong></p>
     {% elif alphagenome.state == "empty" %}
       <p class="muted">AlphaGenome annotated this run, but none of its variants were selected as of interest.</p>
     {% elif alphagenome.state == "failed" %}
