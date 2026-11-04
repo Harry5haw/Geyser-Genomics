@@ -102,6 +102,40 @@ numbers), and `Set_Run_Settings` puts them in `$.run_settings`. The bounds are d
 
 QC_Large runs alongside the chunk Map, so the chunks get 40 of the 48 vCPU: 5 at a time, not the plan's 6.
 
+## Equivalence with a single align job, and its tolerance
+
+**Synthetic data (the Docker E2E):** the chunked route gives **identical** VCF records and the same flagstat totals
+as one align job, single-end and paired-end.
+
+**Real data is equivalent, not identical.** REAL-HG003-30x-chr20 (8,114,368 pairs) was run locally, as one align
+job and as 4 chunks, both with bwa-mem2 and bcftools, on 4 Nov 2026:
+- **Reads:** the same 16,228,736 primary records in both (none lost or duplicated).
+- **A handful of alignment decisions differ:** 20 supplementary records, 5 primary-mapped and 191 duplicates
+  (0.012%).
+- **Calls:** 136,245 vs 136,244 records. 99.8% share the same site and alleles, and genotypes agree at 99.96% of
+  those sites. 10% of shared records differ in QUAL (MAPQ shifts).
+- **Accuracy is the same** (hap.py, GIAB v4.2.1 HG003, chr20 confident regions):
+
+| | Single job | Chunked | Δ |
+| :--- | ---: | ---: | ---: |
+| SNP F1 (P / R) | 0.990193 (0.985925 / 0.994499) | 0.990158 (0.985869 / 0.994485) | 0.000035 |
+| Indel F1 (P / R) | 0.949949 (0.955572 / 0.944392) | 0.949993 (0.955661 / 0.944392) | 0.000044 |
+
+  That passes the pre-registered rule: |ΔF1| ≤ 0.0005 (SNP) and ≤ 0.001 (indel), and precision and recall each
+  ≤ 0.001.
+
+**Why it isn't identical:** bwa-mem (bwa-mem2 too) estimates the paired-end insert-size distribution **per input
+batch**, so its output depends on how the reads are batched. Chunking re-batches them, and so does a different
+thread count: a 4-vCPU align already differs from a 16-thread one for the same reason. The documented tolerance for
+the chunked route is therefore:
+- the same primary reads;
+- duplicates within 0.1%;
+- records within 0.1%;
+- hap.py F1 within the rule above.
+
+A fixed `-K` (bwa's batch size) with batch-aligned contiguous chunks would make the routes byte-identical. That's a
+reproducibility follow-up for later: changing it now would move every baseline.
+
 ## What the jobs need (for the infra half)
 
 - **Reads:** `raw_reads/*`, `intermediate/chunks/*`, `intermediate/aligned/*`, `alignments/*`, `reference/*`.
