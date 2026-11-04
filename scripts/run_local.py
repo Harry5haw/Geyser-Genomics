@@ -229,7 +229,7 @@ def pipeline_jobs(
             job["image"] = align_image or app_image
             if align_env:
                 job["env"] = dict(align_env)
-            if chunks:  # v1.4's large route, as the state machine runs it: check and split, align each chunk, merge
+            if chunks:  # v1.3's large route, as the state machine runs it: check and split, align each chunk, merge
                 jobs += large_route_jobs(sample_id, reference_name, chunks, job["image"], job.get("env"))
                 continue
         jobs.append(job)
@@ -602,7 +602,7 @@ def main(argv=None):
         "--chunks",
         type=int,
         metavar="N",
-        help="align through v1.4's large route: preflight into N chunks, align each, merge (default: one align job)",
+        help="align through v1.3's large route: preflight into N chunks, align each, merge (default: one align job)",
     )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     p.add_argument("--no-gate", action="store_true", help="skip the quality gate after variant calling")

@@ -352,7 +352,7 @@ def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
     assert (root / "variants" / "SYNTH001.csq.vcf.gz.tbi").exists()
 
 
-# --- v1.4 "Big inputs": the large route and region-streamed calling (docs/design/genome-scale-app.md) -----------
+# --- v1.3 "Big inputs": the large route and region-streamed calling (docs/design/genome-scale-app.md) -----------
 
 
 def _flagstat(root, sample):

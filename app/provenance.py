@@ -296,7 +296,7 @@ JOB_NAME_STAGES = (
     ("PlanRegions-", "PlanRegions"),
     ("DeepVariant-", "DeepVariant"),  # G2: the GPU caller; an extra caller, so its failure doesn't fail the run
     ("QualityGate-", "QualityGate"),  # #162: the gate after either caller
-    # v1.4's large route: the pre-flight split, the per-chunk aligners and the merge (the merge is the Align stage).
+    # v1.3's large route: the pre-flight split, the per-chunk aligners and the merge (the merge is the Align stage).
     ("Preflight-", "Preflight"),
     ("AlignChunk-", "AlignChunk"),
     ("AlignMerge-", "Align"),

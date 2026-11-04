@@ -35,7 +35,7 @@ def state_machine_stages():
     return stages
 
 
-# v1.4's large route (docs/design/genome-scale-app.md): the app half adds these stages and job names, the infra
+# v1.3's large route (docs/design/genome-scale-app.md): the app half adds these stages and job names, the infra
 # half the states that run them. Either can merge first, so the checks below require them in the state machine
 # only once its large route exists, and then all of them.
 LARGE_ROUTE = {"preflight": False, "align_chunk": True, "align_merge": True}

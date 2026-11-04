@@ -1,7 +1,7 @@
-# v1.4 "Big inputs": the app half (pre-flight, chunked alignment, streaming merge, region-streamed calling)
+# v1.3 "Big inputs": the app half (pre-flight, chunked alignment, streaming merge, region-streamed calling)
 
 The interface contract between `app/tasks.py` (this half) and the state machine (the infra half). The plan, with its
-sizes, costs and stop rules, is the v1.4-v2.0 genome-scale plan. Everything here works offline against local
+sizes, costs and stop rules, is the v1.3-v2.0 genome-scale plan. Everything here works offline against local
 storage, as every stage does. **A change to this contract is announced to the coordinator before it is pushed.**
 
 ## Commands

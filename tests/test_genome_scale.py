@@ -1,4 +1,4 @@
-"""v1.4 "Big inputs" (docs/design/genome-scale-app.md): storage ETags and metadata, preflight, align_chunk,
+"""v1.3 "Big inputs" (docs/design/genome-scale-app.md): storage ETags and metadata, preflight, align_chunk,
 align_merge and region-streamed calling, offline with faked tools. The Docker E2E checks the real tools."""
 
 import gzip

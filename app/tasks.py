@@ -1562,7 +1562,7 @@ def gate_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
-# --- v1.4 "Big inputs": pre-flight, chunked alignment, the streaming merge (docs/design/genome-scale-app.md) -----
+# --- v1.3 "Big inputs": pre-flight, chunked alignment, the streaming merge (docs/design/genome-scale-app.md) -----
 #
 # A genome too big for one align job takes the large route: preflight checks and splits the raw reads in one
 # streaming pass, align_chunk aligns each chunk (no duplicate marking: duplicates can sit in different chunks),
@@ -2008,7 +2008,7 @@ TASKS = {
     "align": (align_task, True),
     "variants": (variants_task, True),
     "gate": (gate_task, False),
-    # v1.4's large route (docs/design/genome-scale-app.md). Their CLIs are their own *_main (other options and exit
+    # v1.3's large route (docs/design/genome-scale-app.md). Their CLIs are their own *_main (other options and exit
     # codes); listed here so the state machine and tasks.py agree on the stages (tests/test_consistency.py).
     "preflight": (preflight_task, False),
     "align_chunk": (align_chunk_task, True),
