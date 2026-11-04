@@ -56,3 +56,9 @@ def from_epoch(ts):
 @register.filter
 def call_key(variant):
     return (variant.pos, variant.ref, variant.alt)
+
+
+@register.filter
+def status_url(sample_id, static):
+    """The web API's run status for a sample on the static site ("" with no API)."""
+    return static.status_url(sample_id) if static else ""

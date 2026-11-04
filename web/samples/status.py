@@ -197,9 +197,12 @@ def build_sample(
         if view.state == "pending" and all(dep in done for dep in st.after)
     ]
     first_pending = ready[0] if ready else None
+    # In the cloud there are no local metrics or worker records: a failed run shows only in its run record, which
+    # the state machine closes with status "failed" (#155). Without this it would look "in progress" for ever.
+    record_failed = (record or {}).get("status") == "failed"
     if all(s.state == "done" for s in stages):
         state = "succeeded"
-    elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded"):
+    elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded") or record_failed:
         # 'succeeded' with outputs missing means they were removed afterwards; don't claim success.
         state = "failed"
         if not any(s.state == "failed" for s in stages) and first_pending:
@@ -248,16 +251,19 @@ def _load_record(storage, sample_id):
         return None
 
 
-# A run record part of a stage that can be a run's caller: runs/<id>.provenance/<Stage>.json.
+# Run record parts that change what the list shows: a stage that can be a run's caller
+# (runs/<id>.provenance/<Stage>.json), and Finalize, the part the state machine writes when it closes a failed run.
 CALLER_PART_NAMES = tuple(f"/{stage}.json" for stage in STAGE_VCF if stage != "CallVariants")
+RECORD_PART_NAMES = (*CALLER_PART_NAMES, "/Finalize.json")
 
 
 def _samples_with_caller_parts(storage) -> set:
-    """Samples whose run record can make DeepVariant's VCF their calls: those with a DeepVariant or pangenome
-    part. One LIST of runs/, so the list page reads records for these samples only, not one per sample."""
+    """Samples whose run record changes their row: a DeepVariant or pangenome part (DeepVariant's VCF can be their
+    calls) or a Finalize part (the run failed; the cloud has no other sign of it). One LIST of runs/, so the list
+    page reads records for these samples only, not one per sample."""
     found = set()
     for key in storage.list_keys("runs/"):
-        if key.endswith(CALLER_PART_NAMES) and ".provenance/" in key:
+        if key.endswith(RECORD_PART_NAMES) and ".provenance/" in key:
             found.add(key[len("runs/") :].split(".provenance/", 1)[0])
     return found
 

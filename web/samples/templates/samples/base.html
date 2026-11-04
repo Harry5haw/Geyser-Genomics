@@ -19,7 +19,7 @@
     <nav class="wrap" aria-label="Site">
       <a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/geyser-mark.png' %}" width="62" height="72" alt="">
         <span><b>Geyser Genomics</b><i>FASTQ → VCF pipeline</i></span></a>
-      <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span style="--i:{{ i }}"><i></i></span>{% endfor %}</div>
+      <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
       <a class="tube" href="{% url 'samples:list' %}#samples">Samples</a>
     </nav>
   </header>

@@ -41,6 +41,8 @@ background:linear-gradient(90deg,#5ad1c3,#7fb6ff 45%,#b9a3f0 75%,#f0c75e);transi
 .helix{--t:2.6s;display:flex;align-items:center;gap:6px;height:64px;flex:0 1 26rem;min-width:0;margin:0 2rem;overflow:hidden;
 -webkit-mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)}
 .helix span{--d:calc(var(--i)*-.13s);position:relative;flex:none;width:10px;height:64px}
+/* Each rung's index as a rule, not a style attribute: the hosted site's strict CSP allows no inline styles */
+.helix span:nth-child(1){--i:0}.helix span:nth-child(2){--i:1}.helix span:nth-child(3){--i:2}.helix span:nth-child(4){--i:3}.helix span:nth-child(5){--i:4}.helix span:nth-child(6){--i:5}.helix span:nth-child(7){--i:6}.helix span:nth-child(8){--i:7}.helix span:nth-child(9){--i:8}.helix span:nth-child(10){--i:9}.helix span:nth-child(11){--i:10}.helix span:nth-child(12){--i:11}.helix span:nth-child(13){--i:12}.helix span:nth-child(14){--i:13}.helix span:nth-child(15){--i:14}.helix span:nth-child(16){--i:15}.helix span:nth-child(17){--i:16}.helix span:nth-child(18){--i:17}.helix span:nth-child(19){--i:18}.helix span:nth-child(20){--i:19}.helix span:nth-child(21){--i:20}.helix span:nth-child(22){--i:21}.helix span:nth-child(23){--i:22}.helix span:nth-child(24){--i:23}.helix span:nth-child(25){--i:24}.helix span:nth-child(26){--i:25}
 .helix span::before,.helix span::after{content:"";position:absolute;left:0;top:0;width:10px;height:10px;border-radius:50%;animation:hs var(--t) infinite var(--d)}
 .helix span::before{background:#7ee2a8;box-shadow:0 0 8px rgba(126,226,168,.8)}
 .helix span::after{background:#7fb6ff;box-shadow:0 0 8px rgba(127,182,255,.8);animation-delay:calc(var(--d) - var(--t)/2)}
