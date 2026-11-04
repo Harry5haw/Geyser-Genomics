@@ -14,7 +14,7 @@
             { "Variable": "$.gate_profile", "StringEquals": "synthetic" },
             { "Variable": "$.gate_profile", "StringEquals": "smoke" }
           ],
-          "Next": "Check_Reference_Name"
+          "Next": "Check_Annotate"
         }
       ],
       "Default": "Prepare_Profile_Error"
@@ -23,7 +23,38 @@
       "Type": "Pass",
       "Result": "default",
       "ResultPath": "$.gate_profile",
+      "Next": "Check_Annotate"
+    },
+    "Check_Annotate": {
+      "Type": "Choice",
+      "Comment": "Optional variant annotation after the quality gate (3.0, AlphaGenome): annotate in the input (the trigger sets it from the upload's S3 metadata annotate). None: no annotation. Checked before any job, like gate_profile, so an unknown value (alphagnome, AlphaGenome, a flagged value from the trigger) fails the run here instead of the annotation being skipped silently.",
+      "Choices": [
+        { "Not": { "Variable": "$.annotate", "IsPresent": true }, "Next": "No_Annotation" },
+        {
+          "Or": [
+            { "Variable": "$.annotate", "StringEquals": "none" },
+            { "Variable": "$.annotate", "StringEquals": "alphagenome" }
+          ],
+          "Next": "Check_Reference_Name"
+        }
+      ],
+      "Default": "Prepare_Annotate_Error"
+    },
+    "No_Annotation": {
+      "Type": "Pass",
+      "Result": "none",
+      "ResultPath": "$.annotate",
       "Next": "Check_Reference_Name"
+    },
+    "Prepare_Annotate_Error": {
+      "Type": "Pass",
+      "Comment": "An unknown annotate value: an operator mistake, like an unknown gate_profile. JsonToString, so any value (a list from mates that disagree, an object the trigger flagged) gives the message.",
+      "Parameters": {
+        "Error": "UnknownAnnotation",
+        "Cause.$": "States.Format('annotate {} is not one of: none, alphagenome', States.JsonToString($.annotate))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Prepare_Profile_Error": {
       "Type": "Pass",
@@ -604,7 +635,7 @@
       "Type": "Choice",
       "Comment": "pass: done. fail (with its reasons): the mode decides. Anything else (verdict null: the gate couldn't judge) is a gate problem.",
       "Choices": [
-        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Pipeline_Succeeded" },
+        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Choose_Annotation" },
         {
           "And": [
             { "Variable": "$.gate.verdict.verdict", "StringEquals": "fail" },
@@ -649,16 +680,69 @@
     "Gate_Warned": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate failed the sample: recorded (qc_reports/{id}.gate.json, the run record, the job log, this execution's output) and the run still succeeds.",
-      "Next": "Pipeline_Succeeded"
+      "Next": "Choose_Annotation"
     },
     "Gate_Skipped": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate gave no verdict ($.gate_error or a null verdict says why). The run succeeds, but it was never judged: it doesn't count toward the switch to fail (#157). The QualityGate stage's FailureCount metric shows a failed gate job on the dashboard.",
+      "Next": "Choose_Annotation"
+    },
+    "Choose_Annotation": {
+      "Type": "Choice",
+      "Comment": "Every run that is going to succeed comes through here, after the quality gate (a pass; in warn mode also Gate_Warned and Gate_Skipped). annotate = alphagenome runs the annotation; anything else (none, checked by Check_Annotate) ends the run.",
+      "Choices": [{ "Variable": "$.annotate", "StringEquals": "alphagenome", "Next": "Prepare_Annotate_Command" }],
+      "Default": "Pipeline_Succeeded"
+    },
+    "Prepare_Annotate_Command": {
+      "Type": "Pass",
+      "Comment": "AlphaGenome annotation of the run's calls (tasks.py annotate, 3.0). Its own job definition: the only one that maps the API key (an SSM SecureString, into the container's environment), on the smallest Fargate size. Its own ResultPath, so $.batch_params (the gate's mode) stays as the gate left it.",
+      "Parameters": {
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'annotate', $.srr_id, $.reference_name, '--source', '${annotate_source}')",
+          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value": "${annotate_vcpu}" },
+            { "Type": "MEMORY", "Value": "${annotate_memory_mb}" }
+          ]
+        }
+      },
+      "ResultPath": "$.annotate_params",
+      "Next": "Annotate"
+    },
+    "Annotate": {
+      "Type": "Task",
+      "Comment": "Optional and never fatal: any failure (the job's own, a missing API key parameter, a timeout) is caught and noted, and the run succeeds with the core pipeline's status, as for a failed DeepVariant. The app writes its own Annotate run-record part, failed or not, when its container runs.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('Annotate-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobDefinition": "${annotate_job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides.$": "$.annotate_params.ContainerOverrides",
+        "Timeout": { "AttemptDurationSeconds": ${annotate_timeout_seconds} }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.annotate_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Annotation_Failed", "ResultPath": "$.annotate_error" }
+      ],
+      "Next": "Pipeline_Succeeded"
+    },
+    "Annotation_Failed": {
+      "Type": "Pass",
+      "Comment": "Noted, not fatal: $.annotate_error (in this execution's output) says why, and the Annotate stage's FailureCount metric and the job log show it. The calls, the gate verdict and the run's status are unaffected.",
       "Next": "Pipeline_Succeeded"
     },
     "Pipeline_Succeeded": {
       "Type": "Succeed",
-      "Comment": "Every successful run ends here, after the quality gate."
+      "Comment": "Every successful run ends here, after the quality gate (and the optional annotation)."
     },
     "Prepare_Run_Close": {
       "Type": "Pass",

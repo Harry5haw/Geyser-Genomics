@@ -23,7 +23,10 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_job_def.name}:*",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*"
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*",
+          # The optional annotation (3.0): its own job definition, on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}:*"
         ]
       },
       {
@@ -107,6 +110,11 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     align_sizes                = jsonencode(local.align_override_sizes)
     variant_region_window_min  = local.variant_region_window_min
     variant_region_window_max  = local.variant_region_window_max
+    annotate_job_definition    = aws_batch_job_definition.geyser_annotate_job_def.name
+    annotate_source            = var.annotate_source
+    annotate_vcpu              = var.annotate_resources.vcpu
+    annotate_memory_mb         = var.annotate_resources.memory_mb
+    annotate_timeout_seconds   = var.annotate_timeout_seconds
   })
 
   lifecycle {
