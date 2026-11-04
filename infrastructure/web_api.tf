@@ -61,9 +61,10 @@ resource "aws_iam_role_policy" "geyser_web_api" {
       {
         # Multipart uploads of raw reads only (Create/UploadPart/Complete are s3:PutObject); the S3 trigger
         # starts the run when an upload completes.
-        Sid      = "UploadRawReads"
-        Effect   = "Allow"
-        Action   = ["s3:PutObject", "s3:AbortMultipartUpload"]
+        Sid    = "UploadRawReads"
+        Effect = "Allow"
+        # ListMultipartUploadParts: resuming an upload (POST /uploads/parts) asks S3 which parts it already has.
+        Action   = ["s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"]
         Resource = "${aws_s3_bucket.data_lake.arn}/raw_reads/*"
       },
       {

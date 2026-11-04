@@ -41,6 +41,22 @@ class FakeS3:
             raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
         return {"ContentLength": 1}
 
+    # Resume: the parts S3 holds per upload id, served two per page (to exercise the pagination).
+    uploaded = {}
+
+    def list_parts(self, Bucket, Key, UploadId, PartNumberMarker=0):
+        self.calls.append(("list_parts", UploadId, PartNumberMarker))
+        if UploadId not in self.uploaded:
+            from botocore.exceptions import ClientError
+
+            raise ClientError({"Error": {"Code": "NoSuchUpload", "Message": "gone"}}, "ListParts")
+        parts = [p for p in self.uploaded[UploadId] if p["PartNumber"] > PartNumberMarker][:2]
+        more = bool(parts) and parts[-1]["PartNumber"] < self.uploaded[UploadId][-1]["PartNumber"]
+        page = {"Parts": parts, "IsTruncated": more}
+        if more:
+            page["NextPartNumberMarker"] = parts[-1]["PartNumber"]
+        return page
+
 
 class FakeSfn:
     def __init__(self, pages):
@@ -241,6 +257,63 @@ def test_completing_and_aborting_need_the_token(api):
     assert call(api, "POST", "/uploads/abort", body, token="wrong")[0] == 401
     assert call(api, "POST", "/uploads/abort", body)[0] == 200
     assert [c[0] for c in api._clients["s3"].calls] == ["abort"]
+
+
+# --- resume: POST /uploads/parts (T3's upload page, after a reload or past the URLs' hour) -------------------------
+
+
+def _uploaded(api, upload_id, numbers):
+    api._clients["s3"].uploaded = {
+        upload_id: [{"PartNumber": n, "ETag": f'"e{n}"', "Size": 64 * 1024 * 1024} for n in numbers]
+    }
+
+
+def test_resume_lists_what_s3_has_and_presigns_what_is_asked_for(api):
+    _uploaded(api, "up-1", [1, 2, 3, 5, 6])  # five parts, over three list_parts pages
+    body = {"key": "raw_reads/S1_R1.fastq.gz", "upload_id": "up-1", "part_numbers": [4, 7]}
+    status, payload, _ = call(api, "POST", "/uploads/parts", body)
+    assert status == 200 and payload["key"] == "raw_reads/S1_R1.fastq.gz" and payload["expires_in"] == 3600
+    assert [p["part_number"] for p in payload["done"]] == [1, 2, 3, 5, 6]  # S3 is the source of truth
+    assert payload["done"][0] == {"part_number": 1, "etag": '"e1"', "size": 64 * 1024 * 1024}
+    assert [p["part_number"] for p in payload["parts"]] == [4, 7]
+    s3 = api._clients["s3"]
+    assert [c[2] for c in s3.calls if c[0] == "list_parts"] == [0, 2, 5]  # paginated by PartNumberMarker
+    presigns = [c for c in s3.calls if c[0] == "presign"]
+    assert {c[1] for c in presigns} == {"upload_part"}
+    assert [c[2]["PartNumber"] for c in presigns] == [4, 7] and all(c[2]["UploadId"] == "up-1" for c in presigns)
+
+
+def test_resume_with_no_part_numbers_only_reports_progress(api):
+    _uploaded(api, "up-1", [1])
+    status, payload, _ = call(api, "POST", "/uploads/parts", {"key": "raw_reads/S1.fastq.gz", "upload_id": "up-1"})
+    assert status == 200 and len(payload["done"]) == 1 and payload["parts"] == []
+
+
+def test_resuming_an_unknown_or_finished_upload_is_a_404(api):
+    _uploaded(api, "up-1", [1])
+    body = {"key": "raw_reads/S1.fastq.gz", "upload_id": "gone", "part_numbers": [2]}
+    status, payload, _ = call(api, "POST", "/uploads/parts", body)
+    assert status == 404 and "start the upload again" in payload["error"]
+    assert not [c for c in api._clients["s3"].calls if c[0] == "presign"]  # no URLs for a dead upload
+
+
+@pytest.mark.parametrize("part_numbers", [[0], [10_001], [1, 1], ["2"], [True], 3, list(range(1, 1002))])
+def test_resume_refuses_bad_part_numbers(api, part_numbers):
+    body = {"key": "raw_reads/S1.fastq.gz", "upload_id": "up-1", "part_numbers": part_numbers}
+    assert call(api, "POST", "/uploads/parts", body)[0] == 400
+    assert not api._clients["s3"].calls
+
+
+@pytest.mark.parametrize("key", ["variants/S1.vcf.gz", "raw_reads/../x.fastq.gz", "raw_reads/S1_R1.fq.gz"])
+def test_resume_only_for_upload_keys(api, key):
+    assert call(api, "POST", "/uploads/parts", {"key": key, "upload_id": "u", "part_numbers": [1]})[0] == 400
+
+
+def test_resume_needs_the_token(api):
+    body = {"key": "raw_reads/S1.fastq.gz", "upload_id": "up-1", "part_numbers": [1]}
+    assert call(api, "POST", "/uploads/parts", body, token=None)[0] == 401
+    assert call(api, "POST", "/uploads/parts", body, token="wrong")[0] == 401
+    assert not api._clients["s3"].calls
 
 
 # --- status ------------------------------------------------------------------------------------------------------

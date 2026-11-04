@@ -9,6 +9,8 @@ dynamic part:
                                  the browser PUTs the parts straight to S3
   POST /uploads/complete  token  finish one file's multipart upload (the S3 trigger then starts the run)
   POST /uploads/abort     token  drop an unfinished upload
+  POST /uploads/parts     token  resume an unfinished upload: the parts S3 already has (list_parts) and fresh
+                                 presigned URLs for the ones asked for (after a reload, or past the URLs' hour)
   GET  /status/<id>              the sample's latest run: status and times, as a small JSON
   GET  /files/<id>/<kind>        a 302 to a short-lived presigned GET, for a PUBLIC_FILES kind (the calls,
                                  QC, stats, the gate verdict and the run record: the public showcase)
@@ -284,6 +286,55 @@ def abort_upload(event: dict) -> tuple:
     return 200, {"key": key, "aborted": True}
 
 
+MAX_PARTS_PER_REQUEST = 1000  # presigned URLs per resume call (a page asks again for more)
+
+
+def upload_parts(event: dict) -> tuple:
+    """Resume: the parts S3 already holds for this upload (S3 is the source of truth), and fresh presigned
+    upload_part URLs for the part numbers asked for. An unknown or finished upload is a 404."""
+    _check_token(event["headers"])
+    data = _json_body(event)
+    key, upload_id = _upload_target(data)
+    numbers = data.get("part_numbers", [])
+    if (
+        not isinstance(numbers, list)
+        or len(numbers) > MAX_PARTS_PER_REQUEST
+        or len(set(map(str, numbers))) != len(numbers)
+        or not all(isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= S3_MAX_PARTS for n in numbers)
+    ):
+        raise HttpError(
+            400, f"part_numbers must be up to {MAX_PARTS_PER_REQUEST} distinct whole numbers from 1 to {S3_MAX_PARTS}"
+        )
+    bucket = os.environ["BUCKET_NAME"]
+    s3 = _client("s3")
+    done, marker = [], 0
+    while True:
+        try:
+            page = s3.list_parts(Bucket=bucket, Key=key, UploadId=upload_id, PartNumberMarker=marker)
+        except Exception as err:  # noqa: BLE001
+            code = str(getattr(err, "response", {}).get("Error", {}).get("Code", ""))
+            if code in ("NoSuchUpload", "404", "NotFound"):
+                raise HttpError(404, "no such unfinished upload: start the upload again") from None
+            raise
+        done += [{"part_number": p["PartNumber"], "etag": p["ETag"], "size": p["Size"]} for p in page.get("Parts", [])]
+        if not page.get("IsTruncated"):
+            break
+        marker = page["NextPartNumberMarker"]
+    expires = _env_int("UPLOAD_URL_SECONDS", 3600)
+    parts = [
+        {
+            "part_number": n,
+            "url": s3.generate_presigned_url(
+                "upload_part",
+                Params={"Bucket": bucket, "Key": key, "UploadId": upload_id, "PartNumber": n},
+                ExpiresIn=expires,
+            ),
+        }
+        for n in numbers
+    ]
+    return 200, {"key": key, "done": done, "parts": parts, "expires_in": expires}
+
+
 def utc_iso(moment) -> str:
     """ISO 8601 in UTC with an explicit offset (2026-11-04T01:02:03+00:00): never a naive time, which a browser would
     read as its own local time (the published pages' reload guard parses `stopped`). A naive datetime is taken as UTC."""
@@ -350,6 +401,7 @@ ROUTES = {
     ("POST", "/uploads"): ("upload", start_upload),
     ("POST", "/uploads/complete"): ("complete", complete_upload),
     ("POST", "/uploads/abort"): ("abort", abort_upload),
+    ("POST", "/uploads/parts"): ("parts", upload_parts),
 }
 
 
