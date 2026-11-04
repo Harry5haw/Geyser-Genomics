@@ -297,6 +297,24 @@ def test_a_file_is_a_redirect_to_a_short_lived_presigned_get(api):
     (presign,) = [c for c in api._clients["s3"].calls if c[0] == "presign"]
     assert presign[1] == "get_object" and presign[3] == 900
     assert presign[2]["ResponseContentDisposition"] == 'attachment; filename="S1.vcf.gz"'
+    assert "ResponseContentType" not in presign[2]
+
+
+def test_the_fastp_report_opens_in_the_browser_as_html(api):
+    # The site's "View the full fastp report" link: inline, as text/html (T3's W2 pages), not a download.
+    status, _, headers = call(api, "GET", "/files/S1/qc_html", token=None)
+    assert status == 302 and "qc_reports/S1.fastp.html" in headers["location"]
+    (presign,) = [c for c in api._clients["s3"].calls if c[0] == "presign"]
+    assert presign[2]["ResponseContentDisposition"] == 'inline; filename="S1.fastp.html"'
+    assert presign[2]["ResponseContentType"] == "text/html; charset=utf-8"
+    assert set(api.INLINE_FILES) <= set(api.PUBLIC_FILES)  # never a token-only kind
+
+
+def test_the_public_kinds_are_the_ones_the_published_pages_link_to(api):
+    # T3's W2 download hrefs, {API}/files/<id>/<kind>: exactly the public allowlist.
+    pages = ["vcf", "tbi", "csq_vcf", "csq_tbi", "qc_html", "qc_json", "gate_verdict"]
+    pages += ["flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats", "run_record"]
+    assert sorted(api.PUBLIC_FILES) == sorted(pages)
 
 
 PUBLIC_KINDS = [

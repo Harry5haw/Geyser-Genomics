@@ -62,6 +62,8 @@ TOKEN_FILES = {
     "bam": "alignments/{id}.bam",
 }
 # Never offered: the raw reads (raw_reads/) and anything not listed above.
+# Kinds a page opens in the browser rather than downloads, with the content type to serve them as.
+INLINE_FILES = {"qc_html": "text/html; charset=utf-8"}
 # Upload metadata the run reads (lambda/trigger/index.py): S3 user metadata keys, as the trigger spells them.
 METADATA_KEYS = ("gate-profile", "reference", "annotate")
 MAX_METADATA_VALUE = 100
@@ -318,15 +320,12 @@ def file_redirect(sample_id: str, kind: str, headers: dict) -> tuple:
         if code in ("404", "NoSuchKey", "NotFound"):
             raise HttpError(404, f"{sample_id} has no {kind} yet") from None
         raise
-    url = s3.generate_presigned_url(
-        "get_object",
-        Params={
-            "Bucket": bucket,
-            "Key": key,
-            "ResponseContentDisposition": f'attachment; filename="{key.rsplit("/", 1)[-1]}"',
-        },
-        ExpiresIn=_env_int("DOWNLOAD_URL_SECONDS", 900),
-    )
+    filename = key.rsplit("/", 1)[-1]
+    params = {"Bucket": bucket, "Key": key, "ResponseContentDisposition": f'attachment; filename="{filename}"'}
+    if kind in INLINE_FILES:  # opened as a page (the site's "View the full fastp report"), not downloaded
+        params["ResponseContentDisposition"] = f'inline; filename="{filename}"'
+        params["ResponseContentType"] = INLINE_FILES[kind]
+    url = s3.generate_presigned_url("get_object", Params=params, ExpiresIn=_env_int("DOWNLOAD_URL_SECONDS", 900))
     if gated:  # fetched by the page's script with the token: it follows url itself
         return 200, {"url": url, "expires_in": _env_int("DOWNLOAD_URL_SECONDS", 900)}
     return 302, {"location": url}
