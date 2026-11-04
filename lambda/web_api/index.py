@@ -34,6 +34,7 @@ import logging
 import math
 import os
 import re
+import secrets
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -74,6 +75,10 @@ TOKEN_FILES = {
 INLINE_FILES = {"qc_html": "text/html; charset=utf-8"}
 # Upload metadata the run reads (lambda/trigger/index.py): S3 user metadata keys, as the trigger spells them.
 METADATA_KEYS = ("gate-profile", "reference", "annotate")
+# Set by /uploads on every file of one call (never by the caller: METADATA_KEYS refuses it), so the trigger starts a
+# paired run only on two mates from the same upload, never on a new R1 and the old R2 of an earlier one
+# (lambda/trigger/index.py UPLOAD_BATCH_METADATA; tests/test_web_api.py checks they agree).
+UPLOAD_BATCH_METADATA = "upload-batch"
 MAX_METADATA_VALUE = 100
 
 # A sample id the pipeline handles everywhere unchanged: it is the execution name's first part (the trigger
@@ -214,7 +219,7 @@ def start_upload(event: dict) -> tuple:
         or not all(isinstance(s, int) and not isinstance(s, bool) and 0 < s <= max_bytes for s in sizes)
     ):
         raise HttpError(400, f"sizes must list one size in bytes per file ({len(keys)}), each 1 to {max_bytes}")
-    metadata = _metadata(data.get("metadata"))
+    metadata = {**_metadata(data.get("metadata")), UPLOAD_BATCH_METADATA: secrets.token_hex(8)}
     expires = _env_int("UPLOAD_URL_SECONDS", 3600)
     bucket = os.environ["BUCKET_NAME"]
     s3 = _client("s3")

@@ -157,6 +157,8 @@ def test_a_single_end_upload_gets_a_presigned_multipart_upload_with_its_settings
     assert [p["part_number"] for p in upload["parts"]] == [1, 2, 3]  # 130 MiB in 64 MiB parts
     s3 = api._clients["s3"]
     (create,) = [c[1] for c in s3.calls if c[0] == "create"]
+    batch = create["Metadata"].pop("upload-batch")  # one random id per call (the trigger pairs mates by it)
+    assert len(batch) == 16 and int(batch, 16) >= 0
     assert create == {
         "Bucket": "lake",
         "Key": "raw_reads/S1.fastq.gz",
@@ -173,6 +175,25 @@ def test_a_paired_upload_gets_both_mates_r1_first(api):
     status, payload, _ = call(api, "POST", "/uploads", {"sample_id": "P1", "layout": "paired", "sizes": [10, 20]})
     assert status == 200
     assert [u["key"] for u in payload["uploads"]] == ["raw_reads/P1_R1.fastq.gz", "raw_reads/P1_R2.fastq.gz"]
+
+
+def test_both_mates_of_one_call_share_one_batch_and_each_call_gets_a_new_one(api):
+    # The trigger starts a paired run only on mates of one batch: never a new R1 with an earlier upload's R2.
+    body = {"sample_id": "P1", "layout": "paired", "sizes": [10, 20]}
+    call(api, "POST", "/uploads", body)
+    call(api, "POST", "/uploads", body)
+    batches = [c[1]["Metadata"]["upload-batch"] for c in api._clients["s3"].calls if c[0] == "create"]
+    assert len(batches) == 4 and batches[0] == batches[1] and batches[2] == batches[3] and batches[0] != batches[2]
+
+
+def test_the_caller_cannot_set_the_batch(api):
+    body = {"sample_id": "P1", "layout": "paired", "sizes": [10, 20], "metadata": {"upload-batch": "old"}}
+    assert call(api, "POST", "/uploads", body)[0] == 400
+
+
+def test_the_batch_key_is_the_one_the_trigger_reads(api):
+    trigger = load_module("trigger_for_batch", "lambda", "trigger", "index.py")
+    assert api.UPLOAD_BATCH_METADATA == trigger.UPLOAD_BATCH_METADATA == "upload-batch"
 
 
 def test_a_huge_file_gets_bigger_parts_to_stay_within_10000(api):
