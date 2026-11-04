@@ -1,0 +1,205 @@
+"""AlphaGenome's variants of interest on the sample page (3.0, P4): the reader and the panel."""
+
+import json
+import os
+
+import pytest
+
+from samples.alphagenome import annotation_key, parse_tsv, read_annotation, sort_rows
+
+from .web_helpers import fastq_gz, put, vcf_gz
+
+FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "alphagenome.tsv")
+TSV_KEY = "stats/S1/alphagenome.tsv"
+RESEARCH_NOTE = "Research use only, not for clinical use."
+
+
+def fixture_text() -> str:
+    with open(FIXTURE, encoding="utf-8") as fh:
+        return fh.read()
+
+
+def record(annotate=None, **extra):
+    """An assembled run record; annotate: the Annotate stage's part, or None for a run that didn't annotate."""
+    stages = {"CallVariants": {"status": "Success", "started": "2026-11-04T10:00:00Z"}}
+    if annotate is not None:
+        stages["Annotate"] = {"started": "2026-11-04T10:05:00Z", **annotate}
+    return {"schema": 1, "sample_id": "S1", "run_name": "S1-run", "status": "succeeded", "stages": stages, **extra}
+
+
+def sample_with(storage, tsv=None, run_record=None):
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    put(storage, "alignments/S1.cram", b"x")
+    put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G"), (250, "C", "T")]))
+    if tsv is not None:
+        put(storage, TSV_KEY, tsv)
+    if run_record is not None:
+        put(storage, "runs/S1.provenance.json", json.dumps(run_record))
+
+
+# ------------------------------------------------------------------ the reader
+
+
+def test_the_table_lives_under_stats():
+    assert annotation_key("S1") == TSV_KEY
+
+
+def test_the_fixture_parses_every_row():
+    rows, problem = parse_tsv(fixture_text())
+    assert problem == "" and len(rows) == 5
+    first = rows[0]
+    assert (first.chrom, first.pos, first.ref, first.alt, first.gene) == ("synth1", 100, "A", "G", "SYNTHG1")
+    assert (first.avi, first.top_track, first.consequence, first.source) == (
+        0.412,
+        "RNA_SEQ:liver",
+        "5_prime_utr SYNTHG1",
+        "atlas",
+    )
+    unscored = rows[3]
+    assert unscored.avi is None and unscored.gene == "" and unscored.consequence == "intron"
+
+
+def test_sorted_by_avi_highest_first_with_unscored_rows_last():
+    rows, _ = parse_tsv(fixture_text())
+    assert [r.pos for r in sort_rows(rows)] == [250, 100, 400, 700, 520]
+    assert [r.pos for r in sort_rows(rows, "asc")] == [700, 400, 100, 250, 520]  # unscored still last
+
+
+def test_a_table_without_a_required_column_is_unreadable():
+    rows, problem = parse_tsv("chrom\tpos\tref\talt\tgene\nsynth1\t1\tA\tG\tX\n")
+    assert rows == [] and problem == "columns missing: avi"
+
+
+def test_a_bad_position_names_its_line():
+    rows, problem = parse_tsv("chrom\tpos\tref\talt\tavi\nsynth1\t1\tA\tG\t0.1\nsynth1\tten\tC\tT\t0.2\n")
+    assert rows == [] and problem == "line 3: position 'ten' is not a number"
+
+
+@pytest.mark.parametrize("value", ["", "NA", "nan", "inf", "high"])
+def test_an_unusable_avi_is_unscored_not_an_error(value):
+    rows, problem = parse_tsv(f"chrom\tpos\tref\talt\tavi\nsynth1\t1\tA\tG\t{value}\n")
+    assert problem == "" and rows[0].avi is None
+
+
+def test_rows_from_the_avi_file_have_no_gene_or_track():
+    # The downloadable AVI table holds the score only: the columns may be absent entirely.
+    rows, problem = parse_tsv("chrom\tpos\tref\talt\tavi\tsource\nsynth1\t1\tA\tG\t23.5\tavi-file\n")
+    assert problem == "" and (rows[0].gene, rows[0].top_track, rows[0].source) == ("", "", "avi-file")
+
+
+def test_unknown_columns_are_ignored():
+    rows, problem = parse_tsv("chrom\tpos\tref\talt\tavi\tmodel_version\nsynth1\t1\tA\tG\t0.5\tv1\n")
+    assert problem == "" and rows[0].avi == 0.5
+
+
+def test_no_table_and_no_annotate_stage_is_not_annotated(storage):
+    assert read_annotation(storage, "S1").state == "not_annotated"
+    assert read_annotation(storage, "S1", record()).state == "not_annotated"
+
+
+def test_rows_with_their_sources(storage):
+    put(storage, TSV_KEY, fixture_text())
+    view = read_annotation(storage, "S1", record({"status": "Success"}))
+    assert view.state == "rows" and view.total == 5 and not view.truncated
+    assert [r.pos for r in view.rows] == [250, 100, 400, 700, 520]
+    assert view.sources == [("atlas", 3), ("api", 2)] and not view.test_data
+
+
+def test_the_row_limit_keeps_the_highest_scores(storage):
+    put(storage, TSV_KEY, fixture_text())
+    view = read_annotation(storage, "S1", limit=2)
+    assert [r.pos for r in view.rows] == [250, 100] and view.total == 5 and view.truncated
+
+
+def test_an_unknown_sort_falls_back_to_highest_first(storage):
+    put(storage, TSV_KEY, fixture_text())
+    assert read_annotation(storage, "S1", order="sideways").sort == "desc"
+
+
+def test_a_header_only_table_is_annotated_with_nothing_of_interest(storage):
+    put(storage, TSV_KEY, fixture_text().splitlines()[0] + "\n")
+    assert read_annotation(storage, "S1", record({"status": "Success"})).state == "empty"
+
+
+def test_a_failed_stage_shows_its_error(storage):
+    view = read_annotation(storage, "S1", record({"status": "Failure", "error": "API quota exceeded"}))
+    assert (view.state, view.error) == ("failed", "API quota exceeded")
+
+
+def test_a_table_from_an_earlier_run_is_not_this_runs(storage):
+    # The latest run didn't annotate (its record has no Annotate stage): the old table stays on disk.
+    put(storage, TSV_KEY, fixture_text())
+    assert read_annotation(storage, "S1", record()).state == "not_annotated"
+
+
+def test_without_a_record_the_table_is_trusted(storage):
+    put(storage, TSV_KEY, fixture_text())
+    assert read_annotation(storage, "S1", None).state == "rows"
+
+
+def test_a_succeeded_stage_without_its_table_is_unreadable(storage):
+    view = read_annotation(storage, "S1", record({"status": "Success"}))
+    assert view.state == "unreadable" and view.error == "the table is missing"
+
+
+def test_fake_scores_are_flagged_as_test_data(storage):
+    put(storage, TSV_KEY, "chrom\tpos\tref\talt\tavi\tsource\nsynth1\t1\tA\tG\t0.5\tfake\n")
+    assert read_annotation(storage, "S1").test_data
+
+
+def test_a_storage_error_never_fails_the_page(storage, monkeypatch):
+    put(storage, TSV_KEY, fixture_text())
+
+    def denied(key):
+        raise PermissionError("AccessDenied")
+
+    monkeypatch.setattr(storage, "open_read", denied)
+    view = read_annotation(storage, "S1")
+    assert view.state == "unreadable" and "AccessDenied" in view.error
+
+
+# ------------------------------------------------------------------ the sample page
+
+
+def test_page_shows_the_table_sorted_by_avi_with_the_research_note(client, storage):
+    sample_with(storage, fixture_text(), record({"status": "Success"}))
+    body = client.get("/samples/S1/").content.decode()
+    assert "Variants of interest" in body and RESEARCH_NOTE in body
+    assert body.index("SPLICE_SITES:brain") < body.index("RNA_SEQ:liver") < body.index("CAGE:hepg2")
+    assert "0.873" in body and "splice_region SYNTHG1" in body and "5 scored" in body
+    assert 'href="?avi=asc#alphagenome"' in body and 'aria-sort="descending"' in body
+
+
+def test_page_sorts_lowest_first_on_request(client, storage):
+    sample_with(storage, fixture_text(), record({"status": "Success"}))
+    body = client.get("/samples/S1/?avi=asc").content.decode()
+    assert body.index("CAGE:hepg2") < body.index("RNA_SEQ:liver") < body.index("SPLICE_SITES:brain")
+    assert 'href="?avi=desc#alphagenome"' in body and 'aria-sort="ascending"' in body
+
+
+def test_page_without_annotation_shows_the_empty_state(client, storage):
+    sample_with(storage, run_record=record())
+    body = client.get("/samples/S1/").content.decode()
+    assert "Not annotated. AlphaGenome annotation is opt-in per run" in body and RESEARCH_NOTE in body
+    assert "alphagenome-table" not in body
+
+
+def test_page_shows_a_failed_annotation_without_failing_the_sample(client, storage):
+    sample_with(storage, run_record=record({"status": "Failure", "error": "API quota exceeded"}))
+    response = client.get("/samples/S1/")
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "AlphaGenome annotation failed for this run" in body and "API quota exceeded" in body
+
+
+def test_page_escapes_the_tables_text(client, storage):
+    tsv = "chrom\tpos\tref\talt\tgene\tavi\nsynth1\t1\tA\tG\t<script>x</script>\t0.5\n"
+    sample_with(storage, tsv)
+    body = client.get("/samples/S1/").content.decode()
+    assert "<script>x</script>" not in body and "&lt;script&gt;x&lt;/script&gt;" in body
+
+
+def test_no_panel_before_there_are_calls(client, storage):
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    put(storage, TSV_KEY, fixture_text())
+    assert "Variants of interest" not in client.get("/samples/S1/").content.decode()

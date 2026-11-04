@@ -347,3 +347,9 @@ table.variants tr.planted td:first-child { box-shadow: inset 3px 0 0 var(--geyse
 @media (prefers-reduced-motion: reduce) {
   .helix .bp::before, .helix .bp::after, .helix .bp i { animation-play-state: paused; }
 }
+
+/* AlphaGenome variants of interest (3.0): the research-only note stands out; the AVI header is the sort link. */
+.alphagenome .research-only { border-left: .35rem solid var(--geyser-warn); padding: .5rem .9rem; background: rgba(245, 176, 65, .08);
+  border-radius: .4rem; font-size: .9rem; }
+table.alphagenome-table thead th a { color: inherit; text-decoration: none; }
+table.alphagenome-table thead th a:hover, table.alphagenome-table thead th a:focus { text-decoration: underline; }

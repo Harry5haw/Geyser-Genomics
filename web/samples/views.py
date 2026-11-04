@@ -29,6 +29,7 @@ from geyser_web.pipeline import (
 )
 
 from . import status as status_mod
+from .alphagenome import read_annotation
 from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
 from .gate import read_gate
@@ -240,6 +241,12 @@ def sample_detail(request, sample_id):
         "downloads": downloads,
         "gate": read_gate(storage, sample.keys["gate_verdict"], record),
         "record": record_view(record),
+        # Only next to calls: there is nothing to annotate before the variants stage.
+        "alphagenome": (
+            read_annotation(storage, sample_id, record, request.GET.get("avi", "desc"), settings.GEYSER_VARIANT_ROWS)
+            if variants is not None
+            else None
+        ),
     }
     return render(request, "samples/detail.html", context)
 

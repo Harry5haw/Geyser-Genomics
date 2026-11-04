@@ -76,6 +76,50 @@
   </section>
 {% endif %}
 
+{% if alphagenome %}
+  <section class="panel alphagenome" id="alphagenome" aria-labelledby="alphagenome-heading">
+    <h2 id="alphagenome-heading">Variants of interest <small class="muted">(AlphaGenome{% if alphagenome.total %}, {{ alphagenome.total }} scored{% endif %})</small>
+      {% if alphagenome.test_data %}<span class="badge warn">Test data</span>{% endif %}</h2>
+    <p class="research-only" role="note"><strong>Research use only, not for clinical use.</strong>
+      These are AlphaGenome's predictions of how each variant may change gene regulation (expression, splicing, chromatin).
+      They are not a diagnosis and have not been clinically validated.</p>
+    {% if alphagenome.state == "rows" %}
+      <div class="overflow-auto table-frame">
+      <table class="variants alphagenome-table data-table">
+        <thead><tr><th>Gene</th><th>Chrom</th><th class="num">Position</th><th class="base">Ref</th><th class="base">Alt</th>
+          <th class="num" aria-sort="{% if alphagenome.sort == 'asc' %}ascending{% else %}descending{% endif %}">
+            <a href="?avi={% if alphagenome.sort == 'asc' %}desc{% else %}asc{% endif %}#alphagenome"
+               title="Sort by AVI, {% if alphagenome.sort == 'asc' %}highest{% else %}lowest{% endif %} first">AVI {% if alphagenome.sort == "asc" %}▲{% else %}▼{% endif %}</a></th>
+          <th>Top track</th><th>Consequence (csq)</th><th>Source</th></tr></thead>
+        <tbody>
+        {% for v in alphagenome.rows %}
+          <tr>
+            <td>{{ v.gene|default:"–" }}</td><td>{{ v.chrom }}</td><td class="num">{{ v.pos }}</td>
+            <td class="base nt-{{ v.ref }}">{{ v.ref }}</td><td class="base nt-{{ v.alt }}">{{ v.alt }}</td>
+            <td class="num">{% if v.avi is None %}–{% else %}{{ v.avi|floatformat:"-3" }}{% endif %}</td>
+            <td>{{ v.top_track|default:"–" }}</td><td>{{ v.consequence|default:"–" }}</td><td>{{ v.source|default:"–" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% if alphagenome.truncated %}<p class="muted"><small>Showing {{ alphagenome.rows|length }} of {{ alphagenome.total }}, by AVI. Download the table for the rest.</small></p>{% endif %}
+      <p class="muted"><small>Sources: {% for source, n in alphagenome.sources %}{{ source }} {{ n }}{% if not forloop.last %}, {% endif %}{% endfor %}.
+        AVI: AlphaGenome Variant Impact, higher means a larger predicted regulatory effect.</small></p>
+    {% elif alphagenome.state == "empty" %}
+      <p class="muted">AlphaGenome annotated this run, but none of its variants were selected as of interest.</p>
+    {% elif alphagenome.state == "failed" %}
+      <p><strong>AlphaGenome annotation failed for this run.</strong> The calls above are unaffected: annotation never fails a run.</p>
+      <p class="muted">{{ alphagenome.error }}</p>
+    {% elif alphagenome.state == "unreadable" %}
+      <p><strong>The AlphaGenome table can't be shown.</strong> The calls above are unaffected.</p>
+      <p class="muted">{{ alphagenome.error }}</p>
+    {% else %}
+      <p class="muted">Not annotated. AlphaGenome annotation is opt-in per run and off by default.</p>
+    {% endif %}
+  </section>
+{% endif %}
+
 {% if qc_summary or qc_report %}
   <section class="panel">
     <h2>Quality control</h2>
