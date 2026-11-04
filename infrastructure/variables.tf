@@ -296,6 +296,17 @@ variable "web_site_distribution_id" {
   default     = ""
 }
 
+variable "web_api_reserved_concurrency" {
+  description = "Reserved concurrency of the web API Lambda: its rate limit. At most this many requests run at once and the rest get 429, so a flood of requests can't run up the bill or starve the account's other functions (the trigger)."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.web_api_reserved_concurrency >= 1 && var.web_api_reserved_concurrency <= 50 && floor(var.web_api_reserved_concurrency) == var.web_api_reserved_concurrency
+    error_message = "web_api_reserved_concurrency must be a whole number from 1 to 50 (0 would disable the API; -1, unreserved, would remove the limit)."
+  }
+}
+
 variable "web_max_upload_gb" {
   description = "The largest file the web API starts an upload for, in GiB (a 30x paired FASTQ mate is ~30-50 GB)."
   type        = number

@@ -299,9 +299,49 @@ def test_a_file_is_a_redirect_to_a_short_lived_presigned_get(api):
     assert presign[2]["ResponseContentDisposition"] == 'attachment; filename="S1.vcf.gz"'
 
 
-@pytest.mark.parametrize("kind", ["raw", "raw_R1", "provenance", "..", "VCF"])
-def test_only_output_files_can_be_fetched(api, kind):
-    assert call(api, "GET", f"/files/S1/{kind}", token=None)[0] == 404
+PUBLIC_KINDS = [
+    "vcf",
+    "tbi",
+    "csq_vcf",
+    "csq_tbi",
+    "qc_html",
+    "qc_json",
+    "gate_verdict",
+    "flagstat",
+    "mosdepth_summary",
+    "mosdepth_dist",
+    "bcftools_stats",
+    "run_record",
+]
+
+
+@pytest.mark.parametrize("kind", PUBLIC_KINDS)
+def test_the_calls_qc_stats_and_run_record_are_public(api, kind):
+    status, _, headers = call(api, "GET", f"/files/S1/{kind}", token=None)
+    assert status == 302 and headers["location"].startswith("https://bucket.s3.eu-west-2.amazonaws.com/")
+    assert sorted(api.PUBLIC_FILES) == sorted(PUBLIC_KINDS)  # the allowlist is exactly the user's choice
+
+
+@pytest.mark.parametrize("kind", ["cram", "crai", "bam"])
+@pytest.mark.parametrize("token", [None, "wrong", TOKEN[:-1]])
+def test_alignments_without_the_token_are_refused_before_any_lookup(api, kind, token):
+    status, payload, _ = call(api, "GET", f"/files/S1/{kind}", token=token)
+    assert status == 401 and "token" in payload["error"]
+    assert not api._clients["s3"].calls  # not even a HeadObject: nothing about the file is revealed
+
+
+@pytest.mark.parametrize("kind", ["cram", "crai", "bam"])
+def test_alignments_with_the_token_come_as_a_url_the_page_follows(api, kind):
+    status, payload, headers = call(api, "GET", f"/files/S1/{kind}")
+    assert status == 200 and headers["cache-control"] == "no-store"
+    assert payload["url"].startswith("https://bucket.s3.eu-west-2.amazonaws.com/alignments/S1.")
+    assert payload["expires_in"] == 900
+
+
+@pytest.mark.parametrize("kind", ["raw", "raw_R1", "raw_R2", "reads", "fastq", "provenance", "..", "VCF", "CRAM"])
+@pytest.mark.parametrize("token", [None, TOKEN])
+def test_raw_reads_and_anything_unlisted_are_never_offered(api, kind, token):
+    assert call(api, "GET", f"/files/S1/{kind}", token=token)[0] == 404
     assert not api._clients["s3"].calls
 
 
@@ -336,11 +376,32 @@ def test_an_unexpected_error_is_a_bare_500(api, caplog):
 # --- consistency: the Lambda zip can't import app/ or the trigger, so their conventions live here too ----------
 
 
-def test_file_kinds_are_keys_for_outputs(api):
+def test_file_kinds_are_the_stages_own_keys(api):
+    # Every output tasks.keys_for names is either public or token-only, never both, and the raw reads neither.
+    import provenance
     import tasks
 
+    assert not set(api.PUBLIC_FILES) & set(api.TOKEN_FILES)
+    offered = {k: t.format(id="S1") for k, t in {**api.PUBLIC_FILES, **api.TOKEN_FILES}.items()}
     outputs = {k: v for k, v in tasks.keys_for("S1").items() if not k.startswith("raw")}
-    assert {k: t.format(id="S1") for k, t in api.FILE_KEY_TEMPLATES.items()} == outputs
+    assert offered == {**outputs, "run_record": provenance.record_key("S1")}
+    assert not any(key.startswith("raw_reads/") for key in offered.values())
+
+
+def test_the_api_role_can_read_exactly_the_offered_prefixes():
+    # web_api.tf grants s3:GetObject on these prefixes and on the run record only.
+    import re
+
+    from conftest import REPO_ROOT
+
+    with open(f"{REPO_ROOT}/infrastructure/web_api.tf", encoding="utf-8") as fh:
+        tf = fh.read()
+    prefixes = re.search(r"web_download_prefixes\s*=\s*\[([^\]]*)\]", tf).group(1)
+    assert sorted(re.findall(r'"([\w-]+)"', prefixes)) == ["alignments", "qc_reports", "stats", "variants"]
+    assert "/runs/*.provenance.json" in tf
+    # raw_reads/ appears once: the upload statement (PutObject), never in a GetObject grant.
+    assert tf.count("/raw_reads/*") == 1
+    assert tf.index("UploadRawReads") < tf.index("/raw_reads/*") < tf.index("DownloadOutputs")
 
 
 @pytest.mark.parametrize("layout", ["single", "paired"])

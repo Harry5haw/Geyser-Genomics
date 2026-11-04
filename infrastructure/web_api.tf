@@ -16,7 +16,8 @@
 locals {
   web_upload_token_parameter_arn = "arn:aws:ssm:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:parameter/${trimprefix(var.web_upload_token_parameter, "/")}"
   web_origins                    = var.web_origin == "" ? [] : [var.web_origin]
-  # The output files the API may presign a GET for (FILE_KEY_TEMPLATES in the function).
+  # The prefixes of the output files the API may presign a GET for (PUBLIC_FILES and TOKEN_FILES in the function;
+  # tests/test_web_api.py checks this list).
   web_download_prefixes = ["qc_reports", "alignments", "variants", "stats"]
 }
 
@@ -63,11 +64,15 @@ resource "aws_iam_role_policy" "geyser_web_api" {
         Resource = "${aws_s3_bucket.data_lake.arn}/raw_reads/*"
       },
       {
-        # Downloads of a sample's outputs (HeadObject is s3:GetObject too). Never raw_reads/, runs/ or reference/.
-        Sid      = "DownloadOutputs"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = [for prefix in local.web_download_prefixes : "${aws_s3_bucket.data_lake.arn}/${prefix}/*"]
+        # Downloads of a sample's outputs (HeadObject is s3:GetObject too): the function's PUBLIC_FILES and, with
+        # the token, TOKEN_FILES (alignments/). Never raw_reads/ or reference/; of runs/, only the stored records.
+        Sid    = "DownloadOutputs"
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = concat(
+          [for prefix in local.web_download_prefixes : "${aws_s3_bucket.data_lake.arn}/${prefix}/*"],
+          ["${aws_s3_bucket.data_lake.arn}/runs/*.provenance.json"]
+        )
       },
       {
         # A missing output is a 404 (not a 403) for HeadObject only with s3:ListBucket.
@@ -102,6 +107,9 @@ resource "aws_lambda_function" "geyser_web_api" {
   runtime          = "python3.11" # as the trigger; boto3 comes with the runtime
   timeout          = 15
   memory_size      = 256
+  # Rate limiting: at most this many requests at once; more get 429 (TooManyRequests) from the function URL.
+  # The account's limit is 1000 (4 Nov 2026), so reserving a few leaves the rest of the account untouched.
+  reserved_concurrent_executions = var.web_api_reserved_concurrency
 
   logging_config {
     log_format = "Text"

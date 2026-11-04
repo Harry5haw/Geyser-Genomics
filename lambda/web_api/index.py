@@ -10,7 +10,11 @@ dynamic part:
   POST /uploads/complete  token  finish one file's multipart upload (the S3 trigger then starts the run)
   POST /uploads/abort     token  drop an unfinished upload
   GET  /status/<id>              the sample's latest run: status and times, as a small JSON
-  GET  /files/<id>/<kind>        a 302 to a short-lived presigned GET, for a keys_for() output only
+  GET  /files/<id>/<kind>        a 302 to a short-lived presigned GET, for a PUBLIC_FILES kind (the calls,
+                                 QC, stats, the gate verdict and the run record: the public showcase)
+  GET  /files/<id>/<kind> token  the alignments (TOKEN_FILES: CRAM, CRAI, BAM), as JSON {url, expires_in}: a
+                                 plain link can't carry the token, so the page fetches this and follows url.
+                                 Raw reads are never offered.
 
 Uploads need the token: a long random string in an SSM SecureString (named by UPLOAD_TOKEN_PARAMETER),
 read once per cold start and compared in constant time. It is never logged, and neither is any request
@@ -34,24 +38,30 @@ logger.setLevel(logging.INFO)
 
 MATES = ("R1", "R2")  # must match app/tasks.py and the trigger (tests/test_web_api.py checks)
 RAW_SUFFIX = ".fastq.gz"
-# The output files a page may link to: tasks.keys_for() minus the raw reads (the uploads stay private).
-# Templates, so the Lambda zip needs nothing from app/; tests/test_web_api.py checks them against keys_for.
-FILE_KEY_TEMPLATES = {
-    "qc_html": "qc_reports/{id}.fastp.html",
-    "qc_json": "qc_reports/{id}.fastp.json",
-    "cram": "alignments/{id}.cram",
-    "crai": "alignments/{id}.cram.crai",
-    "bam": "alignments/{id}.bam",
+# The files a page may offer, as an explicit allowlist (the user's decision, 4 Nov 2026). Templates, so the Lambda
+# zip needs nothing from app/; tests/test_web_api.py checks them against tasks.keys_for and provenance.record_key.
+# Public: the calls, QC, stats, the gate verdict and the run record. Anyone may download these.
+PUBLIC_FILES = {
     "vcf": "variants/{id}.vcf.gz",
     "tbi": "variants/{id}.vcf.gz.tbi",
     "csq_vcf": "variants/{id}.csq.vcf.gz",
     "csq_tbi": "variants/{id}.csq.vcf.gz.tbi",
+    "qc_html": "qc_reports/{id}.fastp.html",
+    "qc_json": "qc_reports/{id}.fastp.json",
+    "gate_verdict": "qc_reports/{id}.gate.json",
     "flagstat": "stats/{id}/flagstat.txt",
     "mosdepth_summary": "stats/{id}/mosdepth.summary.txt",
     "mosdepth_dist": "stats/{id}/mosdepth.global.dist.txt",
     "bcftools_stats": "stats/{id}/bcftools.stats.txt",
-    "gate_verdict": "qc_reports/{id}.gate.json",
+    "run_record": "runs/{id}.provenance.json",
 }
+# Token only: the alignments carry every read, so they are the uploader's, not the showcase's.
+TOKEN_FILES = {
+    "cram": "alignments/{id}.cram",
+    "crai": "alignments/{id}.cram.crai",
+    "bam": "alignments/{id}.bam",
+}
+# Never offered: the raw reads (raw_reads/) and anything not listed above.
 # Upload metadata the run reads (lambda/trigger/index.py): S3 user metadata keys, as the trigger spells them.
 METADATA_KEYS = ("gate-profile", "reference", "annotate")
 MAX_METADATA_VALUE = 100
@@ -289,11 +299,16 @@ def run_status(sample_id: str) -> tuple:
     return 404, {"sample_id": sample_id, "status": "NOT_FOUND"}
 
 
-def file_redirect(sample_id: str, kind: str) -> tuple:
+def file_redirect(sample_id: str, kind: str, headers: dict) -> tuple:
     sample_id = _sample_id(sample_id)
-    if kind not in FILE_KEY_TEMPLATES:
-        raise HttpError(404, f"no such file kind: one of {sorted(FILE_KEY_TEMPLATES)}")
-    key = FILE_KEY_TEMPLATES[kind].format(id=sample_id)
+    if kind in PUBLIC_FILES:
+        template, gated = PUBLIC_FILES[kind], False
+    elif kind in TOKEN_FILES:
+        _check_token(headers)  # 401 before anything is looked up
+        template, gated = TOKEN_FILES[kind], True
+    else:
+        raise HttpError(404, f"no such file kind: one of {sorted(PUBLIC_FILES)} (alignments with the upload token)")
+    key = template.format(id=sample_id)
     bucket = os.environ["BUCKET_NAME"]
     s3 = _client("s3")
     try:
@@ -312,6 +327,8 @@ def file_redirect(sample_id: str, kind: str) -> tuple:
         },
         ExpiresIn=_env_int("DOWNLOAD_URL_SECONDS", 900),
     )
+    if gated:  # fetched by the page's script with the token: it follows url itself
+        return 200, {"url": url, "expires_in": _env_int("DOWNLOAD_URL_SECONDS", 900)}
     return 302, {"location": url}
 
 
@@ -345,7 +362,7 @@ def _route(method: str, path: str, event: dict) -> tuple:
     if name == "status":
         return run_status(parts[1])
     if name == "files":
-        return file_redirect(parts[1], parts[2])
+        return file_redirect(parts[1], parts[2], event["headers"])
     if name != "unknown":
         raise HttpError(405, "use POST")
     raise HttpError(404, "no such route")
