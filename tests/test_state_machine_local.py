@@ -67,7 +67,49 @@ TEMPLATE_VARS = {
     # The quality gate (#144): warn here, so the warn paths stay tested; MACHINE_FAIL renders variables.tf's
     # default, fail (#157).
     "gate_mode": "warn",
+    # v1.4 the large route (genome_scale.tf) and the per-run parallelism: variables.tf's defaults, and the
+    # maxima step_functions.tf derives from fargate_spot_max_vcpus = 48 (live, 4 Nov 2026).
+    "large_job_definition": "geyser-app-large-job",
+    "large_input_bytes": "5000000000",
+    "genome_chunk_count": "24",
+    "genome_align_concurrency": "5",
+    "genome_merge_threads": "8",
+    "align_concurrency_max": "5",  # (48 - qc 8) / chunk 8
+    "calling_concurrency_max": "48",  # 48 / variants 1
+    "merge_threads_max": "8",
+    "preflight_vcpu": "8",
+    "preflight_memory_mb": "16384",
+    "qc_large_vcpu": "8",
+    "qc_large_memory_mb": "16384",
+    "chunk_vcpu": "8",
+    "chunk_memory_mb": "32768",
+    "align_merge_vcpu": "8",
+    "align_merge_memory_mb": "16384",
 }
+# Each Map's MaxConcurrencyPath (the run's setting): the real definition's, which this Step Functions Local image
+# rejects ("Field 'MaxConcurrencyPath' is not supported"). for_sfn_local() swaps in the default as MaxConcurrency;
+# test_each_map_reads_its_concurrency_from_the_run_settings pins the real definition.
+CONCURRENCY_PATHS = {
+    "$.run_settings.align_concurrency": "genome_align_concurrency",
+    "$.run_settings.calling_concurrency": "variants_max_concurrency",
+}
+
+
+def for_sfn_local(definition: str) -> str:
+    data = json.loads(definition)
+
+    def swap(states):
+        for state in states.values():
+            path = state.pop("MaxConcurrencyPath", None)
+            if path is not None:
+                state["MaxConcurrency"] = int(TEMPLATE_VARS[CONCURRENCY_PATHS[path]])
+            for branch in state.get("Branches", []):
+                swap(branch["States"])
+            if "Iterator" in state:
+                swap(state["Iterator"]["States"])
+
+    swap(data["States"])
+    return json.dumps(data)
 
 
 def fargate_memory_table() -> dict:
@@ -98,6 +140,24 @@ TEMPLATE_VARS["variant_region_window_max"] = "250000000"
 BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate")
 # What Read_Regions gets from S3 in the tests: the planner's JSON list, as GetObject returns it (a string).
 REGIONS = ["chr20:1-50000000", "chr20:50000001-64444167", "chr21:1-46709983"]
+# What Read_Manifest gets from S3 on the large route: the pre-flight's manifest (schema 1), three chunks.
+MANIFEST = {
+    "schema": 1,
+    "sample_id": "S1",
+    "layout": "paired",
+    "reads": 300,
+    "chunk_count": 3,
+    "chunks": [
+        {
+            "index": i,
+            "name": f"chunk-{i:03d}",
+            "reads": 100,
+            "aligned": f"intermediate/aligned/S1/run/chunk-{i:03d}.bam",
+        }
+        for i in range(3)
+    ],
+}
+LARGE = 60_000_000_000  # input_bytes of a 30x genome (~53-60 GB): above large_input_bytes
 # What Read_Gate_Verdict gets from S3: the verdict tasks.py gate stored (abridged), as a string.
 GATE_REASONS = ["duplicate_pct 15.2 is above the maximum 6", "mean_depth 12.1 is below the minimum 20"]
 VERDICTS = {
@@ -165,6 +225,48 @@ TEST_CASES = {
     "ReferenceMissing": {"Check_Reference": "NoSuchKey", "Notify_Failure": "Published"},
     # S3 errors on the HeadObject once (e.g. a 503), then answers: retried, the run goes on.
     "ReferenceFlakyOnce": {"Check_Reference": "ReferenceFlakyThenFound"},
+    # v1.4 the large route: QC alongside the pre-flight, the chunks, the merge. The manifest has three chunks.
+    "LargeRouteOk": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksOk",
+        "Align_Merge": OK,
+    },
+    "PreflightFails": {
+        "Quality_Control_Large": OK,
+        "Preflight": FAIL,
+        "Notify_Failure": "Published",
+    },
+    "ManifestMissing": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "NoSuchKey",
+        "Notify_Failure": "Published",
+    },
+    "ChunkFails": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksFail",
+        "Notify_Failure": "Published",
+    },
+    "MergeFails": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksOk",
+        "Align_Merge": FAIL,
+        "Notify_Failure": "Published",
+    },
+    "LargeQCFails": {
+        "Quality_Control_Large": FAIL,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksOk",
+        "Align_Merge": OK,
+        "Notify_Failure": "Published",
+    },
 }
 # Every case passes the gate unless it says otherwise.
 GATE = {"Quality_Gate": OK, "Read_Gate_Verdict": "VerdictPass"}
@@ -189,6 +291,14 @@ MOCK_CONFIG = {
         },
         "AlwaysThrottled": {"0-3": {"Throw": {"Error": "Batch.AWSBatchException", "Cause": "Too Many Requests"}}},
         "RegionsRead": {"0": {"Return": {"Body": json.dumps(REGIONS), "ContentType": "application/json"}}},
+        # The pre-flight's manifest (docs/design/genome-scale-app.md, schema 1), abridged to what the Map reads.
+        "ManifestRead": {"0": {"Return": {"Body": json.dumps(MANIFEST), "ContentType": "application/json"}}},
+        "ChunksOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
+        "ChunksFail": {
+            "0-99": {
+                "Throw": {"Error": "States.TaskFailed", "Cause": "Essential container in task exited (exit code 1)"}
+            }
+        },
         **{
             f"Verdict{kind.capitalize()}": {"0": {"Return": {"Body": json.dumps(v), "ContentType": "application/json"}}}
             for kind, v in VERDICTS.items()
@@ -315,7 +425,9 @@ def sfn():
                 if arn is None:
                     client.list_state_machines()
                     arn = client.create_state_machine(
-                        name=MACHINE, definition=render_definition(), roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole"
+                        name=MACHINE,
+                        definition=for_sfn_local(render_definition()),
+                        roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
                     )["stateMachineArn"]
                 if _start_probe(client, arn):
                     break
@@ -339,7 +451,7 @@ def sfn_fail(sfn):
     client, _, name = sfn
     arn = client.create_state_machine(
         name=MACHINE_FAIL,
-        definition=render_definition(gate_mode="fail"),
+        definition=for_sfn_local(render_definition(gate_mode="fail")),
         roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
     )["stateMachineArn"]
     return client, arn, name
@@ -358,6 +470,7 @@ def run_case(
     gate_profile=_UNSET,
     overrides=_UNSET,
     aligner=_UNSET,
+    input_bytes=_UNSET,
 ):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
@@ -372,6 +485,8 @@ def run_case(
         run_input["gate_profile"] = gate_profile
     if overrides is not _UNSET:  # likewise
         run_input["overrides"] = overrides
+    if input_bytes is not _UNSET:  # likewise (the trigger passes the upload's size; Choose_Route reads it)
+        run_input["input_bytes"] = input_bytes
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
@@ -775,11 +890,22 @@ def test_the_map_calls_every_region_once_then_merges(sfn):
     }
 
 
-def test_the_map_runs_at_most_the_configured_shards_at_once():
+def test_each_map_reads_its_concurrency_from_the_run_settings():
+    # The real definition (not for_sfn_local's): each Map takes the run's setting, whose default is Terraform's.
     definition = json.loads(render_definition())
-    assert definition["States"]["Call_Variant_Shards"]["MaxConcurrency"] == int(
-        TEMPLATE_VARS["variants_max_concurrency"]
-    )
+    states = definition["States"]
+    assert states["Call_Variant_Shards"]["MaxConcurrencyPath"] == "$.run_settings.calling_concurrency"
+    assert "MaxConcurrency" not in states["Call_Variant_Shards"]
+    (chunks,) = [
+        b["States"]["Align_Chunks"] for b in states["Large_QC_and_Align"]["Branches"] if "Align_Chunks" in b["States"]
+    ]
+    assert chunks["MaxConcurrencyPath"] == "$.run_settings.align_concurrency" and "MaxConcurrency" not in chunks
+    defaults = states["Run_Setting_Rules"]["Result"]["defaults"]
+    assert defaults["calling_concurrency"] == int(TEMPLATE_VARS["variants_max_concurrency"])
+    assert defaults["align_concurrency"] == int(TEMPLATE_VARS["genome_align_concurrency"])
+    # Every MaxConcurrencyPath in the file is one for_sfn_local knows how to stand in for.
+    paths = re.findall(r'"MaxConcurrencyPath": "([^"]+)"', render_definition())
+    assert sorted(paths) == sorted(CONCURRENCY_PATHS)
 
 
 @pytest.mark.parametrize("case", ["PlanFails", "RegionsUnreadable", "ShardFails"])
@@ -1176,7 +1302,16 @@ def test_a_bad_gate_profile_is_still_reported_first(sfn):
 
 # --- per-run size overrides (the cost x turnaround grid; docs/figures/cost-surface-grid.md) ---------------
 
-DEFAULT_RUN_SETTINGS = {"align_vcpu": "4", "align_memory_mb": "8192", "variant_region_window": "50000000"}
+DEFAULT_RUN_SETTINGS = {
+    "align_vcpu": "4",
+    "align_memory_mb": "8192",
+    "variant_region_window": "50000000",
+    # v1.4: the genome's parallelism (the concurrencies as numbers, for MaxConcurrencyPath).
+    "chunk_count": "24",
+    "align_concurrency": 5,
+    "calling_concurrency": 4,
+    "merge_threads": "8",
+}
 OVERRIDE_CHAIN = [
     "Run_Setting_Rules",
     "Check_Run_Overrides",
@@ -1187,6 +1322,7 @@ OVERRIDE_CHAIN = [
     "Inspect_Run_Setting_Values",
     "Check_Run_Setting_Values",
     "Set_Run_Settings",
+    "Choose_Route",  # v1.4: small inputs go on to QC_and_Align as before
 ]
 
 
@@ -1325,3 +1461,173 @@ def test_the_checks_run_in_order_gate_profile_reference_then_run_settings(reques
     _, events = run_case(sfn, "ReferenceMissing", reference="GRCh37.fa", overrides={"align_cpu": "2"})
     assert "Run_Setting_Rules" not in entered(events)
     assert published_message(events)["ErrorDetails"]["Error"] == "ReferenceNotFound"
+
+
+# --- v1.4 Big inputs: Choose_Route, the large route, the per-run parallelism ----------------------------------
+
+LARGE_STATES = ("Large_QC_and_Align", "Preflight", "Read_Manifest", "Align_Chunks", "Align_Chunk", "Align_Merge")
+
+
+@pytest.mark.parametrize("input_bytes", [_UNSET, 0, 4_999_999_999])
+def test_small_inputs_take_todays_path_unchanged(sfn, input_bytes):
+    desc, events = run_case(sfn, "HappyPath", input_bytes=input_bytes)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    at = states.index("Set_Run_Settings")
+    assert states[at + 1 : at + 3] == ["Choose_Route", "QC_and_Align"]
+    assert not set(LARGE_STATES) & set(states)
+    assert set(batch_parameters(events)) == set(BATCH_TASKS)  # the same jobs as before v1.4
+
+
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_a_large_input_takes_the_large_route_and_rejoins_at_the_caller(request, machine):
+    desc, events = run_case(request.getfixturevalue(machine), "LargeRouteOk", sample="SAMPLE7", input_bytes=LARGE)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "QC_and_Align" not in states and "Align_Genome" not in states
+    order = [
+        "Choose_Route",
+        "Check_Large_Aligner",
+        "Large_QC_and_Align",
+        "Choose_Caller",
+        "Plan_Regions",
+        "Quality_Gate",
+    ]
+    assert [states.index(s) for s in order] == sorted(states.index(s) for s in order)
+    large_order = ["Preflight", "Read_Manifest", "Align_Chunks", "Align_Merge"]
+    assert [states.index(s) for s in large_order] == sorted(states.index(s) for s in large_order)
+    name = desc["name"]
+    (preflight,) = batch_calls(events, "Preflight")
+    assert preflight["JobName"] == f"Preflight-SAMPLE7-{name}"
+    assert preflight["JobDefinition"] == TEMPLATE_VARS["large_job_definition"]
+    assert preflight["ContainerOverrides"]["Command"] == [
+        "python",
+        "tasks.py",
+        "preflight",
+        "SAMPLE7",
+        "--chunks",
+        "24",
+    ]
+    assert preflight["Timeout"] == {"AttemptDurationSeconds": 7200}
+    (qc,) = batch_calls(events, "Quality_Control_Large")
+    assert qc["ContainerOverrides"]["Command"] == ["python", "tasks.py", "qc", "SAMPLE7"]
+    assert qc["JobDefinition"] == TEMPLATE_VARS["large_job_definition"]
+    assert qc["ContainerOverrides"]["ResourceRequirements"] == [
+        {"Type": "VCPU", "Value": "8"},
+        {"Type": "MEMORY", "Value": "16384"},
+    ]
+    assert sdk_calls(events, "Read_Manifest") == [
+        {"Bucket": TEMPLATE_VARS["bucket"], "Key": f"intermediate/chunks/SAMPLE7/{name}/manifest.json"}
+    ]
+    chunks = batch_calls(events, "Align_Chunk")
+    assert sorted(c["ContainerOverrides"]["Command"][-1] for c in chunks) == ["0", "1", "2"]  # one per manifest chunk
+    for c in chunks:
+        index = c["ContainerOverrides"]["Command"][-1]
+        expected = ["python", "tasks.py", "align_chunk", "SAMPLE7", "chr20.fa", "--chunk", index]
+        assert c["ContainerOverrides"]["Command"] == expected
+        assert c["JobName"] == f"AlignChunk-{index}-{name}"
+        assert c["JobDefinition"] == TEMPLATE_VARS["large_job_definition"]
+        assert c["Timeout"] == {"AttemptDurationSeconds": 3600}
+        assert c["ContainerOverrides"]["ResourceRequirements"][1] == {"Type": "MEMORY", "Value": "32768"}
+    (merge,) = batch_calls(events, "Align_Merge")
+    expected = ["python", "tasks.py", "align_merge", "SAMPLE7", "chr20.fa", "--threads", "8"]
+    assert merge["ContainerOverrides"]["Command"] == expected
+    assert merge["JobName"] == f"AlignMerge-SAMPLE7-{name}"
+    assert merge["Timeout"] == {"AttemptDurationSeconds": 14400}
+    # Downstream is unchanged: the same calling, merge and gate as the small route.
+    assert {"Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate"} <= set(batch_parameters(events))
+
+
+@pytest.mark.parametrize(
+    "case,failed",
+    [
+        ("PreflightFails", "Preflight"),
+        ("ManifestMissing", "Read_Manifest"),
+        ("ChunkFails", "Align_Chunk"),
+        ("MergeFails", "Align_Merge"),
+        ("LargeQCFails", "Quality_Control_Large"),
+    ],
+)
+def test_a_failure_on_the_large_route_closes_and_notifies_before_calling(sfn, case, failed):
+    desc, events = run_case(sfn, case, input_bytes=LARGE)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert failed in states and "Choose_Caller" not in states and "Plan_Regions" not in states
+    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+
+
+def test_a_failed_preflight_runs_no_alignment(sfn):
+    _, events = run_case(sfn, "PreflightFails", input_bytes=LARGE)
+    assert "Align_Chunks" not in entered(events) and not batch_calls(events, "Align_Chunk")
+
+
+@pytest.mark.parametrize("aligner", ["giraffe", "GIRAFFE", "bwa", 42])
+def test_the_large_route_refuses_any_aligner_but_bwa_mem2_before_any_job(sfn, aligner):
+    desc, events = run_case(sfn, "LargeRouteOk", input_bytes=LARGE, aligner=aligner)
+    assert desc["status"] == "FAILED"
+    assert "Prepare_Large_Aligner_Error" in entered(events) and not batch_parameters(events)
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "AlignerNotOnLargeRoute" and "giraffe needs the whole sample" in error["Cause"]
+
+
+def test_bwa_mem2_named_explicitly_is_fine_on_the_large_route(sfn):
+    desc, _ = run_case(sfn, "LargeRouteOk", input_bytes=LARGE, aligner="bwa-mem2")
+    assert desc["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("input_bytes", ["60000000000", -1, None, [1], {"size": 1}, True])
+def test_an_input_size_that_is_not_a_byte_count_fails_before_any_job(sfn, input_bytes):
+    desc, events = run_case(sfn, "HappyPath", input_bytes=input_bytes)
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    assert published_message(events)["ErrorDetails"]["Error"] == "InvalidInputBytes"
+
+
+def test_the_defaults_are_the_run_settings(sfn):
+    desc, _ = run_case(sfn, "LargeRouteOk", input_bytes=LARGE)
+    settings = json.loads(desc["output"])["run_settings"]
+    assert settings["chunk_count"] == "24" and settings["merge_threads"] == "8"
+    assert settings["align_concurrency"] == 5 and settings["calling_concurrency"] == 4  # numbers, for the Maps
+
+
+def test_parallelism_overrides_reach_the_preflight_the_merge_and_both_maps(sfn):
+    overrides = {"chunk_count": 4, "align_concurrency": 2, "calling_concurrency": 48, "merge_threads": 4}
+    desc, events = run_case(sfn, "LargeRouteOk", input_bytes=LARGE, overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    (preflight,) = batch_calls(events, "Preflight")
+    assert preflight["ContainerOverrides"]["Command"][-2:] == ["--chunks", "4"]
+    (merge,) = batch_calls(events, "Align_Merge")
+    assert merge["ContainerOverrides"]["Command"][-2:] == ["--threads", "4"]
+    # The Maps read these through MaxConcurrencyPath (pinned by test_each_map_reads_its_concurrency_from_the_run_settings).
+    settings = json.loads(desc["output"])["run_settings"]
+    assert settings["align_concurrency"] == 2 and settings["calling_concurrency"] == 48
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"chunk_count": 1},
+        {"chunk_count": 97},
+        {"chunk_count": "24"},
+        {"chunk_count": 24.5},
+        {"chunk_count": 2.4e1},
+        {"align_concurrency": 0},
+        {"align_concurrency": 6},  # 6 x 8 + QC 8 = 56 > the 48-vCPU Spot cap
+        {"align_concurrency": "5"},
+        {"calling_concurrency": 49},
+        {"calling_concurrency": 0},
+        {"calling_concurrency": 1.5},
+        {"merge_threads": 9},
+        {"merge_threads": 0},
+        {"merge_threads": None},
+        {"align_concurency": 2},  # misspelt: never a silent default
+    ],
+)
+@pytest.mark.parametrize("input_bytes", [LARGE, _UNSET])
+def test_out_of_bounds_parallelism_fails_before_any_job_on_either_route(sfn, overrides, input_bytes):
+    desc, events = run_case(sfn, "LargeRouteOk", input_bytes=input_bytes, overrides=overrides)
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    states = entered(events)
+    assert "Prepare_Run_Overrides_Error" in states and "Choose_Route" not in states
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidRunOverrides"
+    assert "align_concurrency (1 to 5)" in error["Cause"] and "calling_concurrency (1 to 48)" in error["Cause"]

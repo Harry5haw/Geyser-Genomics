@@ -265,7 +265,9 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     # are step_functions.tf's locals, and variables.tf's default window is inside them.
     states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
     rules = states["Run_Setting_Rules"]["Result"]
-    assert rules["setting_count"] == len(rules["defaults"]) == 3
+    # Seven since v1.4: the size and window (#192), and the genome's parallelism (chunk_count, align_concurrency,
+    # calling_concurrency, merge_threads).
+    assert rules["setting_count"] == len(rules["defaults"]) == 7
     assert set(states["Set_Run_Settings"]["Parameters"]) == {f"{k}.$" for k in rules["defaults"]}
     with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
         sfn_tf = fh.read()
@@ -278,6 +280,10 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     assert low <= default <= high
     for name in ("align_sizes", "variant_region_window_min", "variant_region_window_max"):
         assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=", sfn_tf), name
+    # The parallelism maxima are derived in step_functions.tf (from the Fargate Spot cap) and rendered in.
+    for name in ("align_concurrency_max", "calling_concurrency_max", "merge_threads_max", "large_input_bytes"):
+        assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=\s*\S", sfn_tf), name
+    assert "fargate_spot_max_vcpus" in sfn_tf.split("align_concurrency_max")[1].split("\n")[0]
 
 
 def test_alignments_expire_by_break_even_and_nothing_else_shares_the_prefix():

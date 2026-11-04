@@ -99,17 +99,27 @@
     },
     "Run_Setting_Rules": {
       "Type": "Pass",
-      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus).",
+      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus). The genome's parallelism (v1.4, whole numbers): chunk_count (the large route's alignment chunks), align_concurrency (chunks aligned at once), calling_concurrency (calling shards at once, both routes) and merge_threads; their maxima are rendered from the Fargate Spot cap (step_functions.tf), so a run can't ask for more than the cap holds.",
       "Result": {
         "defaults": {
           "align_vcpu": "${align_vcpu}",
           "align_memory_mb": "${align_memory_mb}",
-          "variant_region_window": ${variant_region_window}
+          "variant_region_window": ${variant_region_window},
+          "chunk_count": ${genome_chunk_count},
+          "align_concurrency": ${genome_align_concurrency},
+          "calling_concurrency": ${variants_max_concurrency},
+          "merge_threads": ${genome_merge_threads}
         },
-        "setting_count": 3,
+        "setting_count": 7,
         "align_sizes": ${align_sizes},
         "window_min": ${variant_region_window_min},
-        "window_max": ${variant_region_window_max}
+        "window_max": ${variant_region_window_max},
+        "chunk_count_min": 2,
+        "chunk_count_max": 96,
+        "align_concurrency_max": ${align_concurrency_max},
+        "calling_concurrency_max": ${calling_concurrency_max},
+        "merge_threads_max": ${merge_threads_max},
+        "large_input_bytes": ${large_input_bytes}
       },
       "ResultPath": "$.run_rules",
       "Next": "Check_Run_Overrides"
@@ -156,7 +166,11 @@
             { "Variable": "$.run_check.parts", "NumericEqualsPath": "$.run_rules.setting_count" },
             { "Variable": "$.run_check.settings.align_vcpu", "IsString": true },
             { "Variable": "$.run_check.settings.align_memory_mb", "IsString": true },
-            { "Variable": "$.run_check.settings.variant_region_window", "IsNumeric": true }
+            { "Variable": "$.run_check.settings.variant_region_window", "IsNumeric": true },
+            { "Variable": "$.run_check.settings.chunk_count", "IsNumeric": true },
+            { "Variable": "$.run_check.settings.align_concurrency", "IsNumeric": true },
+            { "Variable": "$.run_check.settings.calling_concurrency", "IsNumeric": true },
+            { "Variable": "$.run_check.settings.merge_threads", "IsNumeric": true }
           ],
           "Next": "Inspect_Run_Setting_Values"
         }
@@ -169,7 +183,11 @@
       "Parameters": {
         "settings.$": "$.run_check.settings",
         "align_size_ok.$": "States.ArrayContains($.run_rules.align_sizes, States.Format('{}/{}', $.run_check.settings.align_vcpu, $.run_check.settings.align_memory_mb))",
-        "window_text.$": "States.Format('{}', $.run_check.settings.variant_region_window)"
+        "window_text.$": "States.Format('{}', $.run_check.settings.variant_region_window)",
+        "chunk_text.$": "States.Format('{}', $.run_check.settings.chunk_count)",
+        "align_concurrency_text.$": "States.Format('{}', $.run_check.settings.align_concurrency)",
+        "calling_concurrency_text.$": "States.Format('{}', $.run_check.settings.calling_concurrency)",
+        "merge_threads_text.$": "States.Format('{}', $.run_check.settings.merge_threads)"
       },
       "ResultPath": "$.run_check",
       "Next": "Check_Run_Setting_Values"
@@ -184,7 +202,27 @@
             { "Variable": "$.run_check.settings.variant_region_window", "NumericLessThanEqualsPath": "$.run_rules.window_max" },
             { "Not": { "Variable": "$.run_check.window_text", "StringMatches": "*.*" } },
             { "Not": { "Variable": "$.run_check.window_text", "StringMatches": "*E*" } },
-            { "Not": { "Variable": "$.run_check.window_text", "StringMatches": "*e*" } }
+            { "Not": { "Variable": "$.run_check.window_text", "StringMatches": "*e*" } },
+            { "Variable": "$.run_check.settings.chunk_count", "NumericGreaterThanEqualsPath": "$.run_rules.chunk_count_min" },
+            { "Variable": "$.run_check.settings.chunk_count", "NumericLessThanEqualsPath": "$.run_rules.chunk_count_max" },
+            { "Not": { "Variable": "$.run_check.chunk_text", "StringMatches": "*.*" } },
+            { "Not": { "Variable": "$.run_check.chunk_text", "StringMatches": "*E*" } },
+            { "Not": { "Variable": "$.run_check.chunk_text", "StringMatches": "*e*" } },
+            { "Variable": "$.run_check.settings.align_concurrency", "NumericGreaterThanEquals": 1 },
+            { "Variable": "$.run_check.settings.align_concurrency", "NumericLessThanEqualsPath": "$.run_rules.align_concurrency_max" },
+            { "Not": { "Variable": "$.run_check.align_concurrency_text", "StringMatches": "*.*" } },
+            { "Not": { "Variable": "$.run_check.align_concurrency_text", "StringMatches": "*E*" } },
+            { "Not": { "Variable": "$.run_check.align_concurrency_text", "StringMatches": "*e*" } },
+            { "Variable": "$.run_check.settings.calling_concurrency", "NumericGreaterThanEquals": 1 },
+            { "Variable": "$.run_check.settings.calling_concurrency", "NumericLessThanEqualsPath": "$.run_rules.calling_concurrency_max" },
+            { "Not": { "Variable": "$.run_check.calling_concurrency_text", "StringMatches": "*.*" } },
+            { "Not": { "Variable": "$.run_check.calling_concurrency_text", "StringMatches": "*E*" } },
+            { "Not": { "Variable": "$.run_check.calling_concurrency_text", "StringMatches": "*e*" } },
+            { "Variable": "$.run_check.settings.merge_threads", "NumericGreaterThanEquals": 1 },
+            { "Variable": "$.run_check.settings.merge_threads", "NumericLessThanEqualsPath": "$.run_rules.merge_threads_max" },
+            { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*.*" } },
+            { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*E*" } },
+            { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*e*" } }
           ],
           "Next": "Set_Run_Settings"
         }
@@ -193,21 +231,74 @@
     },
     "Set_Run_Settings": {
       "Type": "Pass",
-      "Comment": "What this run uses (also in the execution's output): align's size, and the window the planner and the merge both get, as the text tasks.py reads.",
+      "Comment": "What this run uses (also in the execution's output): align's size, and the window the planner and the merge both get, as the text tasks.py reads. The concurrencies stay numbers (each Map's MaxConcurrencyPath reads them); chunk_count and merge_threads go to commands, as text.",
       "Parameters": {
         "align_vcpu.$": "$.run_check.settings.align_vcpu",
         "align_memory_mb.$": "$.run_check.settings.align_memory_mb",
-        "variant_region_window.$": "$.run_check.window_text"
+        "variant_region_window.$": "$.run_check.window_text",
+        "chunk_count.$": "$.run_check.chunk_text",
+        "align_concurrency.$": "$.run_check.settings.align_concurrency",
+        "calling_concurrency.$": "$.run_check.settings.calling_concurrency",
+        "merge_threads.$": "$.run_check.merge_threads_text"
       },
       "ResultPath": "$.run_settings",
-      "Next": "QC_and_Align"
+      "Next": "Choose_Route"
+    },
+    "Choose_Route": {
+      "Type": "Choice",
+      "Comment": "Big inputs (v1.4): input_bytes in the input (the trigger passes the upload's ContentLength, both mates added up; a manual start may pass it, e.g. to send a small canary down the large route). At or above large_input_bytes (Terraform large_input_gb) the large route: pre-flight, chunked alignment, a streaming merge. Below it, or without it, today's path, unchanged. A value that isn't a non-negative number fails the run before any job.",
+      "Choices": [
+        { "Not": { "Variable": "$.input_bytes", "IsPresent": true }, "Next": "QC_and_Align" },
+        {
+          "And": [
+            { "Variable": "$.input_bytes", "IsNumeric": true },
+            { "Variable": "$.input_bytes", "NumericGreaterThanEqualsPath": "$.run_rules.large_input_bytes" }
+          ],
+          "Next": "Check_Large_Aligner"
+        },
+        {
+          "And": [
+            { "Variable": "$.input_bytes", "IsNumeric": true },
+            { "Variable": "$.input_bytes", "NumericGreaterThanEquals": 0 }
+          ],
+          "Next": "QC_and_Align"
+        }
+      ],
+      "Default": "Prepare_Input_Bytes_Error"
+    },
+    "Check_Large_Aligner": {
+      "Type": "Choice",
+      "Comment": "The large route aligns in chunks with bwa-mem2. giraffe stays chromosome-scale: its haplotype sampling needs the whole sample's k-mer counts, which chunking breaks. So aligner = giraffe (or anything but bwa-mem2) on a large input fails here, before any job, rather than silently aligning with bwa-mem2.",
+      "Choices": [
+        { "Not": { "Variable": "$.aligner", "IsPresent": true }, "Next": "Large_QC_and_Align" },
+        { "Variable": "$.aligner", "StringEquals": "bwa-mem2", "Next": "Large_QC_and_Align" }
+      ],
+      "Default": "Prepare_Large_Aligner_Error"
+    },
+    "Prepare_Input_Bytes_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "InvalidInputBytes",
+        "Cause.$": "States.Format('input_bytes {} is not a size in bytes (a non-negative number)', States.JsonToString($.input_bytes))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Prepare_Large_Aligner_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "AlignerNotOnLargeRoute",
+        "Cause.$": "States.Format('aligner {} can not align a large input ({} bytes, the large route from {}): the large route aligns in chunks with bwa-mem2 only (giraffe needs the whole sample for haplotype sampling). Leave aligner out, or set bwa-mem2', States.JsonToString($.aligner), $.input_bytes, $.run_rules.large_input_bytes)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Prepare_Run_Overrides_Error": {
       "Type": "Pass",
       "Comment": "Invalid overrides fail the run before any job, like an unknown gate_profile: never a silent default. Only JsonToString and plain numbers here, so this Pass can't fail.",
       "Parameters": {
         "Error": "InvalidRunOverrides",
-        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}) and variant_region_window (a whole number from {} to {})', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max)"
+        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}), variant_region_window (a whole number from {} to {}), chunk_count ({} to {}), align_concurrency (1 to {}), calling_concurrency (1 to {}) and merge_threads (1 to {}), all whole numbers', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max, $.run_rules.chunk_count_min, $.run_rules.chunk_count_max, $.run_rules.align_concurrency_max, $.run_rules.calling_concurrency_max, $.run_rules.merge_threads_max)"
       },
       "ResultPath": "$.error",
       "Next": "Prepare_Run_Close"
@@ -347,6 +438,182 @@
       ],
       "Next": "Choose_Caller"
     },
+    "Large_QC_and_Align": {
+      "Type": "Parallel",
+      "Comment": "The large route (v1.4, docs/design/genome-scale-app.md): QC on the whole input, alongside the pre-flight (one streaming pass: gzip integrity, read count, chunk_count equal chunks), then the chunks aligned in parallel (align_concurrency at a time) and a streaming merge (markdup, CRAM). The outputs are today's align's, so everything after Choose_Caller is unchanged. Every job runs on the large-disk job definition. Peak vCPU: QC + pre-flight, then QC + align_concurrency chunks, within the Fargate Spot cap (step_functions.tf derives align_concurrency_max from it).",
+      "Branches": [
+        {
+          "StartAt": "Quality_Control_Large",
+          "States": {
+            "Quality_Control_Large": {
+              "Type": "Task",
+              "Comment": "Today's QC command on the whole input, with 8 vCPU (fastp takes the job's CPUs) and the large disk.",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "States.Format('QualityControl-{}-{}', $.srr_id, $$.Execution.Name)",
+                "JobDefinition": "${large_job_definition}",
+                "JobQueue": "${job_queue}",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'qc', $.srr_id)",
+                  "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value": "${qc_large_vcpu}" },
+                    { "Type": "MEMORY", "Value": "${qc_large_memory_mb}" }
+                  ]
+                },
+                "Timeout": { "AttemptDurationSeconds": 7200 }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+              "ResultPath": "$.batch_output",
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Preflight",
+          "States": {
+            "Preflight": {
+              "Type": "Task",
+              "Comment": "tasks.py preflight: fails (PreflightFailed, with qc_reports/{id}.preflight.json still written) on a truncated or corrupt gzip, an empty input or mates out of step, before any alignment.",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "States.Format('Preflight-{}-{}', $.srr_id, $$.Execution.Name)",
+                "JobDefinition": "${large_job_definition}",
+                "JobQueue": "${job_queue}",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'preflight', $.srr_id, '--chunks', $.run_settings.chunk_count)",
+                  "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value": "${preflight_vcpu}" },
+                    { "Type": "MEMORY", "Value": "${preflight_memory_mb}" }
+                  ]
+                },
+                "Timeout": { "AttemptDurationSeconds": 7200 }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+              "ResultPath": "$.preflight_output",
+              "Next": "Read_Manifest"
+            },
+            "Read_Manifest": {
+              "Type": "Task",
+              "Comment": "The pre-flight's manifest (its documented key, intermediate/chunks/{id}/{RUN_NAME}/manifest.json), read straight from S3 like Read_Regions and parsed for the Map.",
+              "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+              "Parameters": {
+                "Bucket": "${bucket}",
+                "Key.$": "States.Format('intermediate/chunks/{}/{}/manifest.json', $.srr_id, $$.Execution.Name)"
+              },
+              "ResultSelector": { "body.$": "States.StringToJson($.Body)" },
+              "ResultPath": "$.manifest",
+              "Retry": [
+                { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+              ],
+              "Next": "Align_Chunks"
+            },
+            "Align_Chunks": {
+              "Type": "Map",
+              "Comment": "One align_chunk job per manifest chunk (bwa-mem2 | fixmate | sort, no markdup), at most align_concurrency at a time (the run's setting). The chunk's index goes in as text. Legacy Parameters/Iterator syntax, as Call_Variant_Shards (Step Functions Local).",
+              "ItemsPath": "$.manifest.body.chunks",
+              "Parameters": {
+                "srr_id.$": "$.srr_id",
+                "reference_name.$": "$.reference_name",
+                "chunk_index.$": "States.Format('{}', $$.Map.Item.Value.index)"
+              },
+              "MaxConcurrencyPath": "$.run_settings.align_concurrency",
+              "Iterator": {
+                "StartAt": "Align_Chunk",
+                "States": {
+                  "Align_Chunk": {
+                    "Type": "Task",
+                    "Resource": "arn:aws:states:::batch:submitJob.sync",
+                    "Parameters": {
+                      "JobName.$": "States.Format('AlignChunk-{}-{}', $.chunk_index, $$.Execution.Name)",
+                      "JobDefinition": "${large_job_definition}",
+                      "JobQueue": "${job_queue}",
+                      "ContainerOverrides": {
+                        "Command.$": "States.Array('python', 'tasks.py', 'align_chunk', $.srr_id, $.reference_name, '--chunk', $.chunk_index)",
+                        "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                        "ResourceRequirements": [
+                          { "Type": "VCPU", "Value": "${chunk_vcpu}" },
+                          { "Type": "MEMORY", "Value": "${chunk_memory_mb}" }
+                        ]
+                      },
+                      "Timeout": { "AttemptDurationSeconds": 3600 }
+                    },
+                    "Retry": [
+                      {
+                        "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                        "IntervalSeconds": 10,
+                        "MaxAttempts": 3,
+                        "BackoffRate": 2
+                      }
+                    ],
+                    "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+                    "End": true
+                  }
+                }
+              },
+              "ResultPath": null,
+              "Next": "Align_Merge"
+            },
+            "Align_Merge": {
+              "Type": "Task",
+              "Comment": "tasks.py align_merge: the chunk BAMs merged in place (presigned URLs), markdup, CRAM + .crai (with the CRAM's ETag), flagstat and mosdepth: the same outputs and run-record part as today's align.",
+              "Resource": "arn:aws:states:::batch:submitJob.sync",
+              "Parameters": {
+                "JobName.$": "States.Format('AlignMerge-{}-{}', $.srr_id, $$.Execution.Name)",
+                "JobDefinition": "${large_job_definition}",
+                "JobQueue": "${job_queue}",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'align_merge', $.srr_id, $.reference_name, '--threads', $.run_settings.merge_threads)",
+                  "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value": "${align_merge_vcpu}" },
+                    { "Type": "MEMORY", "Value": "${align_merge_memory_mb}" }
+                  ]
+                },
+                "Timeout": { "AttemptDurationSeconds": 14400 }
+              },
+              "Retry": [
+                {
+                  "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                  "IntervalSeconds": 10,
+                  "MaxAttempts": 3,
+                  "BackoffRate": 2
+                }
+              ],
+              "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+              "ResultPath": "$.batch_output",
+              "End": true
+            }
+          }
+        }
+      ],
+      "ResultSelector": {
+        "qc.$": "$[0].batch_output",
+        "align.$": "$[1].batch_output"
+      },
+      "ResultPath": "$.parallel_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Run_Close", "ResultPath": "$.error" }
+      ],
+      "Next": "Choose_Caller"
+    },
     "Choose_Caller": {
       "Type": "Choice",
       "Comment": "caller = deepvariant (set by the trigger from Terraform's default_caller, or in a manual start) runs DeepVariant on the GPU queue; anything else, or no caller, runs bcftools as before (regions planned, called in parallel, merged).",
@@ -464,7 +731,7 @@
     },
     "Call_Variant_Shards": {
       "Type": "Map",
-      "Comment": "Scatter: one variants --region job per region, at most variants_max_concurrency at a time. Each writes intermediate/variant-parts/<id>/<RUN_NAME>/ (expired by #62's lifecycle rule).",
+      "Comment": "Scatter: one variants --region job per region, at most calling_concurrency at a time (the run's setting; Terraform's variants_max_concurrency is its default). Each writes intermediate/variant-parts/<id>/<RUN_NAME>/ (expired by #62's lifecycle rule). On a genome each shard reads only its region of the CRAM (the ETag-verified .crai).",
       "ItemsPath": "$.plan.regions",
       "Parameters": {
         "srr_id.$": "$.srr_id",
@@ -472,7 +739,7 @@
         "region.$": "$$.Map.Item.Value",
         "index.$": "$$.Map.Item.Index"
       },
-      "MaxConcurrency": ${variants_max_concurrency},
+      "MaxConcurrencyPath": "$.run_settings.calling_concurrency",
       "Iterator": {
         "StartAt": "Prepare_Shard_Command",
         "States": {

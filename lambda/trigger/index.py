@@ -28,6 +28,10 @@ exactly like the gate profile: read from the same HeadObject, passed on as `refe
 uploaded, and validated only by the state machine (Check_Reference_Name, then Check_Reference: the
 object reference/<name> must exist) before any job starts. Without the metadata the run uses
 REFERENCE_NAME or DEFAULT_REFERENCE_GENOME, as before.
+
+Input size (v1.4 Big inputs): the upload's size in bytes (HeadObject ContentLength, both mates added up for a
+pair; the S3 event's size if the HEAD didn't answer) goes on as `input_bytes`. The state machine's
+Choose_Route sends large inputs (Terraform large_input_gb) down the large route; smaller ones run as before.
 """
 
 import hashlib
@@ -226,6 +230,14 @@ def reference_metadata(heads):
     return _metadata_value(heads, REFERENCE_METADATA, "ref")
 
 
+def input_bytes(heads):
+    """The upload's size in bytes, both mates added up (HeadObject ContentLength), or None if any is unknown."""
+    sizes = [(head or {}).get("ContentLength") for head in heads]
+    if not sizes or any(not isinstance(s, int) or isinstance(s, bool) for s in sizes):
+        return None
+    return sum(sizes)
+
+
 def _response(status: int, **body) -> dict:
     return {"statusCode": status, "body": json.dumps(body)}
 
@@ -260,13 +272,17 @@ def handler(event, context):
         # before. A vanished upload starts the run as before (QC then fails on it, visibly); metadata
         # that can't be read goes on flagged, so the run fails at Check_Gate_Profile rather than here,
         # unseen (and with neither setting silently defaulted).
+        size = None
         try:
             head = _head(bucket_name, object_key)
             heads = [head] if head is not None else []
             profile, reference = gate_profile(heads), reference_metadata(heads)
+            size = input_bytes(heads)
         except Exception as err:  # noqa: BLE001 - reported through the run, not by dropping the event
             logger.warning(f"could not read the metadata of s3://{bucket_name}/{object_key}: {err}")
             profile = reference = {"metadata unreadable": _error_code(err) or type(err).__name__}
+        if size is None:  # the event carries the size too (a vanished or unreadable upload: as before, QC says so)
+            size = s3_record["object"].get("size")
     else:
         other_key = mate_key(object_key)
         keys = {mate: object_key, parse_raw_key(other_key)[1]: other_key}
@@ -280,6 +296,10 @@ def handler(event, context):
             return _response(202, waiting_for=waiting_for)
         name = paired_execution_name(sample_id, [(heads[m]["ETag"], heads[m]["LastModified"]) for m in MATES])
         profile, reference = gate_profile(heads.values()), reference_metadata(heads.values())
+        size = input_bytes(heads.values())
+    # The upload's size (both mates added up): Choose_Route sends large inputs down the large route (v1.4).
+    if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+        pipeline_input["input_bytes"] = size
     if profile:
         pipeline_input["gate_profile"] = profile
     # Even an empty value goes on (the state machine rejects it): metadata that is set never falls back
