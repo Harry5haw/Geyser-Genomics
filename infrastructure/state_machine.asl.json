@@ -107,7 +107,6 @@
           "variant_region_window": ${variant_region_window}
         },
         "setting_count": 3,
-        "publish": ${publish_enabled},
         "align_sizes": ${align_sizes},
         "window_min": ${variant_region_window_min},
         "window_max": ${variant_region_window_max}
@@ -693,15 +692,9 @@
     },
     "Publish_Run": {
       "Type": "Choice",
-      "Comment": "Every run ends here, succeeded or failed (after Notify_Failure): the hosted site's page for the sample is published when publish_enabled (Terraform; $.run_rules.publish). A run that failed before Run_Setting_Rules (a bad profile or reference) has no rules and isn't published: it never started a job. Otherwise straight to the run's own end, so this changes nothing while publishing is off.",
+      "Comment": "Every run ends here, succeeded or failed (after Notify_Failure), including a run that failed before any job (a bad profile or reference): its page shows that it failed before any stage. Publishing is Terraform's publish_enabled, rendered into the first rule: $$.Execution.Id is always present, so IsPresent true always publishes and IsPresent false never does, whatever the run's data. Otherwise straight to the run's own end, so this changes nothing while publishing is off.",
       "Choices": [
-        {
-          "And": [
-            { "Variable": "$.run_rules.publish", "IsPresent": true },
-            { "Variable": "$.run_rules.publish", "BooleanEquals": true }
-          ],
-          "Next": "Publish"
-        },
+        { "Variable": "$$.Execution.Id", "IsPresent": ${publish_enabled}, "Next": "Publish" },
         { "Variable": "$.run_close", "IsPresent": true, "Next": "Pipeline_Failed" }
       ],
       "Default": "Pipeline_Succeeded"

@@ -3,7 +3,8 @@
 import base64
 import json
 import logging
-from datetime import UTC, datetime
+import re
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -287,6 +288,27 @@ def test_status_refuses_an_unsafe_id(api):
     assert call(api, "GET", "/status/a.b", token=None)[0] == 400
 
 
+ISO_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(\+00:00|Z)$")
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        datetime(2026, 11, 4, 1, 2, 3, tzinfo=UTC),  # what boto3 returns
+        datetime(2026, 11, 4, 2, 2, 3, tzinfo=timezone(timedelta(hours=1))),  # another offset: converted to UTC
+        datetime(2026, 11, 4, 1, 2, 3),  # naive: taken as UTC, never sent naive
+    ],
+)
+def test_status_times_are_iso_8601_utc_with_an_explicit_offset(api, start):
+    # The published pages' reload guard (W2, #233) parses `stopped`: never epoch seconds, never a naive time.
+    run = {"name": "S1-20261104T010203Z-cccccccc", "status": "SUCCEEDED", "startDate": start, "stopDate": start}
+    api._clients["stepfunctions"] = FakeSfn([{"executions": [run]}])
+    _, payload, _ = call(api, "GET", "/status/S1", token=None)
+    for field in ("started", "stopped"):
+        assert isinstance(payload[field], str) and ISO_UTC.match(payload[field]), payload[field]
+        assert datetime.fromisoformat(payload[field]) == datetime(2026, 11, 4, 1, 2, 3, tzinfo=UTC)
+
+
 # --- files -------------------------------------------------------------------------------------------------------
 
 
@@ -314,7 +336,11 @@ def test_the_public_kinds_are_the_ones_the_published_pages_link_to(api):
     # T3's W2 download hrefs, {API}/files/<id>/<kind>: exactly the public allowlist.
     pages = ["vcf", "tbi", "csq_vcf", "csq_tbi", "qc_html", "qc_json", "gate_verdict"]
     pages += ["flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats", "run_record"]
+    # The calls of a DeepVariant- or pangenome-called sample (the page picks by the record's VCF folder).
+    pages += ["deepvariant_vcf", "deepvariant_tbi", "pangenome_vcf", "pangenome_tbi"]
     assert sorted(api.PUBLIC_FILES) == sorted(pages)
+    assert api.PUBLIC_FILES["deepvariant_vcf"].format(id="S1") == "variants_deepvariant/S1.vcf.gz"
+    assert api.PUBLIC_FILES["pangenome_vcf"].format(id="S1") == "variants_pangenome/S1.vcf.gz"
 
 
 PUBLIC_KINDS = [
@@ -330,6 +356,10 @@ PUBLIC_KINDS = [
     "mosdepth_dist",
     "bcftools_stats",
     "run_record",
+    "deepvariant_vcf",
+    "deepvariant_tbi",
+    "pangenome_vcf",
+    "pangenome_tbi",
 ]
 
 
@@ -402,11 +432,17 @@ def test_file_kinds_are_the_stages_own_keys(api):
     assert not set(api.PUBLIC_FILES) & set(api.TOKEN_FILES)
     offered = {k: t.format(id="S1") for k, t in {**api.PUBLIC_FILES, **api.TOKEN_FILES}.items()}
     outputs = {k: v for k, v in tasks.keys_for("S1").items() if not k.startswith("raw")}
-    assert offered == {**outputs, "run_record": provenance.record_key("S1")}
+    # The extra callers' VCFs (and their indexes) are provenance.STAGE_VCF's, the record's "vcf" when they called.
+    callers = {
+        "deepvariant_vcf": provenance.STAGE_VCF["DeepVariant"].format(id="S1"),
+        "pangenome_vcf": provenance.STAGE_VCF["PangenomeDeepVariant"].format(id="S1"),
+    }
+    callers |= {k.replace("_vcf", "_tbi"): v + ".tbi" for k, v in list(callers.items())}
+    assert offered == {**outputs, "run_record": provenance.record_key("S1"), **callers}
     assert not any(key.startswith("raw_reads/") for key in offered.values())
 
 
-def test_the_api_role_can_read_exactly_the_offered_prefixes():
+def test_the_api_role_can_read_exactly_the_offered_prefixes(api):
     # web_api.tf grants s3:GetObject on these prefixes and on the run record only.
     import re
 
@@ -415,7 +451,9 @@ def test_the_api_role_can_read_exactly_the_offered_prefixes():
     with open(f"{REPO_ROOT}/infrastructure/web_api.tf", encoding="utf-8") as fh:
         tf = fh.read()
     prefixes = re.search(r"web_download_prefixes\s*=\s*\[([^\]]*)\]", tf).group(1)
-    assert sorted(re.findall(r'"([\w-]+)"', prefixes)) == ["alignments", "qc_reports", "stats", "variants"]
+    offered = {t.split("/")[0] for t in {**api.PUBLIC_FILES, **api.TOKEN_FILES}.values()} - {"runs"}
+    assert sorted(re.findall(r'"([\w-]+)"', prefixes)) == sorted(offered)
+    assert offered == {"alignments", "qc_reports", "stats", "variants", "variants_deepvariant", "variants_pangenome"}
     assert "/runs/*.provenance.json" in tf
     # raw_reads/ appears once: the upload statement (PutObject), never in a GetObject grant.
     assert tf.count("/raw_reads/*") == 1

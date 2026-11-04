@@ -1420,9 +1420,22 @@ def test_a_failed_run_is_published_after_its_notification_and_still_fails(sfn_pu
     ]
 
 
-def test_a_run_that_never_started_is_not_published(sfn_publish):
-    # A bad profile fails before Run_Setting_Rules: no rules, no page (no job ever ran).
-    desc, events = run_case(sfn_publish, "HappyPath", gate_profile="strict")
+@pytest.mark.parametrize("bad", [{"gate_profile": "strict"}, {"reference": "sub/x.fa"}])
+def test_a_run_that_failed_before_any_job_is_published_too(sfn_publish, bad):
+    # T3's W2: the sample list links every finished sample, so a run that failed before any stage needs its page
+    # too (it says so). The switch doesn't depend on the run's data: it is rendered into the Choice.
+    desc, events = run_case(sfn_publish, "PublishOk", **bad)
     assert desc["status"] == "FAILED"
     states = entered(events)
-    assert "Publish" not in states and states[-2:] == ["Publish_Run", "Pipeline_Failed"]
+    assert "QC_and_Align" not in states and "Run_Setting_Rules" not in states  # no job ran
+    assert states[-4:] == ["Publish_Run", "Publish", "Publish_Finished", "Pipeline_Failed"]
+    (params,) = batch_calls(events, "Publish")
+    assert params["ContainerOverrides"]["Command"] == ["python", "manage.py", "publish", "S1"]
+
+
+def test_publish_enabled_is_rendered_into_the_choice_not_read_from_the_run():
+    for enabled in ("true", "false"):
+        states = json.loads(render_definition(publish_enabled=enabled))["States"]
+        first = states["Publish_Run"]["Choices"][0]
+        assert first == {"Variable": "$$.Execution.Id", "IsPresent": enabled == "true", "Next": "Publish"}
+        assert "publish" not in states["Run_Setting_Rules"]["Result"]

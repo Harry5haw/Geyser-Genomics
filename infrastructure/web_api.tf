@@ -21,7 +21,7 @@ locals {
   web_origins                    = var.web_origin == "" ? [] : [var.web_origin]
   # The prefixes of the output files the API may presign a GET for (PUBLIC_FILES and TOKEN_FILES in the function;
   # tests/test_web_api.py checks this list).
-  web_download_prefixes = ["qc_reports", "alignments", "variants", "stats"]
+  web_download_prefixes = ["qc_reports", "alignments", "variants", "variants_deepvariant", "variants_pangenome", "stats"]
 }
 
 data "archive_file" "geyser_web_api_zip" {

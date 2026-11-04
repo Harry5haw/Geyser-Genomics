@@ -54,6 +54,12 @@ PUBLIC_FILES = {
     "mosdepth_dist": "stats/{id}/mosdepth.global.dist.txt",
     "bcftools_stats": "stats/{id}/bcftools.stats.txt",
     "run_record": "runs/{id}.provenance.json",
+    # The calls when DeepVariant or pangenome-aware DeepVariant was the run's caller (provenance.STAGE_VCF): the
+    # published page links these when the run record makes that caller's VCF the sample's calls.
+    "deepvariant_vcf": "variants_deepvariant/{id}.vcf.gz",
+    "deepvariant_tbi": "variants_deepvariant/{id}.vcf.gz.tbi",
+    "pangenome_vcf": "variants_pangenome/{id}.vcf.gz",
+    "pangenome_tbi": "variants_pangenome/{id}.vcf.gz.tbi",
 }
 # Token only: the alignments carry every read, so they are the uploader's, not the showcase's.
 TOKEN_FILES = {
@@ -278,6 +284,15 @@ def abort_upload(event: dict) -> tuple:
     return 200, {"key": key, "aborted": True}
 
 
+def utc_iso(moment) -> str:
+    """ISO 8601 in UTC with an explicit offset (2026-11-04T01:02:03+00:00): never a naive time, which a browser would
+    read as its own local time (the published pages' reload guard parses `stopped`). A naive datetime is taken as UTC."""
+    from datetime import UTC
+
+    moment = moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment.astimezone(UTC)
+    return moment.isoformat()
+
+
 def run_status(sample_id: str) -> tuple:
     sample_id = _sample_id(sample_id)
     sfn = _client("stepfunctions")
@@ -292,8 +307,8 @@ def run_status(sample_id: str) -> tuple:
                     "sample_id": sample_id,
                     "run_name": name,
                     "status": run["status"],
-                    "started": run["startDate"].isoformat(),
-                    "stopped": stopped.isoformat() if stopped else None,
+                    "started": utc_iso(run["startDate"]),
+                    "stopped": utc_iso(stopped) if stopped else None,
                 }
         if not page.get("nextToken"):
             break
