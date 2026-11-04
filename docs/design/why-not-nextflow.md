@@ -8,8 +8,9 @@ answer should change. Nextflow is used as the comparison because it is the most 
 and has the nf-core community pipelines; most of the argument applies to the others too.
 
 **Short answer.** Geyser started as a cloud-engineering project: an event-driven, serverless AWS design with
-no servers to run, least-privilege IAM per component and hard cost limits. For a short pipeline (four stages,
-one container) that design costs little extra code. The price is real, though: Geyser rebuilds pieces that
+no servers to run, least-privilege IAM per component and hard cost limits. For a short pipeline (QC and
+alignment in parallel, region-split variant calling, a quality gate; one main container image) that design
+costs little extra code. The price is real, though: Geyser rebuilds pieces that
 Nextflow provides, and that cost grows with every stage, retry rule and scatter step. The comparison below is
 meant to make that trade visible, not to argue that the choice was free.
 
@@ -17,25 +18,25 @@ meant to make that trade visible, not to argue that the choice was free.
 
 | Nextflow concept | What it does | Geyser's equivalent |
 |---|---|---|
-| `process` | One step: inputs, outputs, a script, a container, resources | A stage function in `app/tasks.py` (`decompress_task`, `qc_task`, `align_task`, `variants_task`), dispatched by `python tasks.py <task> <id>`; resources come from the single Batch job definition in `infrastructure/main.tf` (2 vCPU / 4 GB for every stage) |
-| `workflow` + channels | The DAG: which outputs feed which inputs | The state machine: a `Pass` state builds each command, a `batch:submitJob.sync` task runs it, in a fixed sequence |
-| Files in channels, work directory | Engine stages inputs in and outputs out; the user never names intermediate paths | S3 key conventions hardcoded in `tasks.py` (`keys_for` / `keys_of`: `raw_reads/` → `decompressed/` → `alignments/` → `variants/`), shared by convention with the trigger, the web UI and the scripts |
-| `Channel.fromFilePairs` | Groups `_R1`/`_R2` mates into one sample | `layout_from_keys` in `tasks.py` plus the mate pairing in the trigger Lambda (`lambda/trigger/index.py`), with the suffix list duplicated in both and kept in step by `tests/test_consistency.py` |
+| `process` | One step: inputs, outputs, a script, a container, resources | A stage function in `app/tasks.py` (`qc_task`, `align_task`, `variants_task` for a shard or the merge, `gate_task`, plus `regions` and `finalize`), dispatched by `python tasks.py <task> <id>`. One Batch job definition for all of them, with each stage's vCPU and memory sent per job by the state machine (`stage_resources`: align 4 vCPU / 8 GiB, a variant shard 1 / 2 GiB...). DeepVariant has its own GPU job definition |
+| `workflow` + channels | The DAG: which outputs feed which inputs | The state machine: a `Pass` state builds each command and a `batch:submitJob.sync` task runs it. Checks on the input first (gate profile, reference, per-run settings), then a `Parallel` state for QC and align, a `Choice` for the caller, a `Map` state over regions, the merge and the gate |
+| Files in channels, work directory | Engine stages inputs in and outputs out; the user never names intermediate paths | S3 key conventions hardcoded in `tasks.py` (`keys_for` / `keys_of`: `raw_reads/` → `qc_reports/` and `alignments/` → `variants/`, plus `stats/` and `runs/`), shared by convention with the trigger, the web UI and the scripts |
+| `Channel.fromFilePairs` | Groups `_R1`/`_R2` mates into one sample | `layout_from_raw` in `tasks.py` plus the mate pairing in the trigger Lambda (`lambda/trigger/index.py`), with the suffix list duplicated in both and kept in step by `tests/test_consistency.py` |
 | Executors (`local`, `awsbatch`, `k8s`, `slurm`, ...) and profiles | Same pipeline on a laptop, a cluster or a cloud | `STORAGE_BACKEND=s3\|local` and `METRICS_BACKEND` in `app/storage.py` / `app/metrics.py`, plus `scripts/run_local.py`, which plays the part of Step Functions and Batch offline |
 | `publishDir` | Copies final outputs to a results location | Each stage uploads its own outputs to S3 under the conventional keys |
 | `-resume` | Skips tasks whose inputs, script and container are unchanged (content-hashed cache) | None. A failed run starts again from the first stage. Step Functions *redrive* can restart a failed execution from the failed state, but it is not a cache: it doesn't notice changed inputs or code. `run_local.py --skip-to-variants` is a manual shortcut |
 | `errorStrategy`, `maxRetries`, `memory { 4.GB * task.attempt }` | Retry with more resources | Retries, but not with more resources: the Batch job definition retries infrastructure failures only (3 attempts), the state machine retries Batch API errors with back-off, and every stage has a fixed size set in Terraform (`stage_resources`). An application failure fails the run at once. Nothing grows memory per attempt |
 | `-with-trace`, `-with-report`, `-with-timeline` | Per-task duration, CPU, peak memory, I/O, exit status | The `@timed_stage` decorator (CloudWatch `Duration` / `FailureCount`), `scripts/query_pipeline_duration.py --stages` (queue wait, run time, cost, attempts, failure reason) and the dashboard scripts |
-| Scatter/gather over intervals | Split calling by region, merge the results | The stages exist (`tasks.py`: split calling by region, then merge); the Step Functions `Map` state that fans them out is the infra half, in progress |
+| Scatter/gather over intervals | Split calling by region, merge the results | `tasks.py regions` plans the regions, a Step Functions `Map` state runs one shard job per region (at most `variants_max_concurrency` at once), and `variants --window` merges them in reference order (#113, #140). The merged VCF has the same records as an unsplit call |
 | nf-core modules and pipelines (e.g. nf-core/sarek) | Reviewed, versioned wrappers for hundreds of tools; complete germline pipelines including BWA-MEM2, duplicate marking, DeepVariant and HaplotypeCaller | Hand-written tool commands in `tasks.py` and `app-deepvariant/` |
 
 ## What Nextflow would have replaced
 
 The state machine definition, the S3 key conventions and the code that keeps them in agreement, most of the
 storage backend, `run_local.py`'s orchestration, the timing metrics, the retry policy, and the resume and
-scatter/gather work. In this repository that is roughly `infrastructure/step_functions.tf` (115 lines), the
-key-convention and layout code in `app/tasks.py`, most of `app/storage.py`, the orchestration half of
-`scripts/run_local.py` (337 lines in all), and the standing rule that a renamed stage or S3 prefix must be
+scatter/gather work. In this repository that is roughly `infrastructure/state_machine.asl.json` (about 730
+lines) and `infrastructure/step_functions.tf` (135), the key-convention and layout code in `app/tasks.py`,
+most of `app/storage.py`, the orchestration half of `scripts/run_local.py` (about 650 lines in all), and the standing rule that a renamed stage or S3 prefix must be
 changed by hand in `tasks.py`, the state machine, the Lambda payload and the scripts together, because nothing
 checks at build time that they agree.
 
@@ -71,9 +72,9 @@ arrived in Nextflow 24.04. That is one more dependency in a design whose point w
    Batch would still need all of that, with the orchestration moved somewhere less visible.
 2. **Nothing runs between samples.** The trigger is a Lambda, the orchestrator is a managed service, Batch on
    Fargate scales to zero. There is no head node to size, patch or pay for.
-3. **The pipeline is short and linear.** With four stages in a fixed order, the hand-written wiring is about a
-   hundred lines of state machine. Most of Nextflow's value (dynamic DAGs, many tools, caching across long runs)
-   only pays off with more stages than this.
+3. **The pipeline is short.** It started as four stages in a fixed order and about a hundred lines of state
+   machine. Most of Nextflow's value (dynamic DAGs, many tools, caching across long runs) only pays off with
+   more stages than this. (It has since grown: see the note under "When the answer should change".)
 4. **The stage logic stays portable anyway.** Stages contain no AWS calls; cloud specifics are confined to
    the storage and metrics backends, the Lambda and Terraform. The same container runs every stage locally
    with `run_local.py`. A future move to an engine would reuse the stage code, not rewrite it.
@@ -82,7 +83,7 @@ arrived in Nextflow 24.04. That is one more dependency in a design whose point w
 
 Time. Every feature in the "replaced" list above is code written, tested and reviewed in this repository
 instead of a line of Nextflow configuration: the key conventions and their consistency test, the local runner,
-the timing metrics, and the retries, resume and sharding still to come. The pipeline also gives up
+the timing metrics, the retry policy and the region sharding, with resume still not built. The pipeline also gives up
 `-resume` (a failed align at hour three means starting again), community-reviewed tool wrappers, and the
 ability to run unchanged on an HPC cluster or another cloud.
 
@@ -96,6 +97,12 @@ Move to a workflow engine (Nextflow first, given nf-core) when any of these beco
   the one part that doesn't travel.
 - Long runs fail often enough that `-resume` would save real money.
 - Bioinformaticians, rather than cloud engineers, become the main contributors.
+
+**Where it stands (3 Nov 2026):** the first of these has started to happen. The state machine is now about
+730 lines, and the run's caller, gate profile, reference and (#192) align size and region window are per-run
+choices. It still runs on AWS only, and repeating a failed chromosome-scale run costs cents (about $0.07), so `-resume`
+would save little yet.
+So the choice holds for now, but it is closer to the line than when this note was written.
 
 What a move would involve: each stage function becomes a `process` that calls `python tasks.py <task>` (or
 the tool commands directly), channels replace the key conventions, `fromFilePairs` replaces the layout

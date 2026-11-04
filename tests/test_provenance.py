@@ -63,7 +63,11 @@ def test_a_stage_writes_its_part_and_the_record(store, tmp_path, monkeypatch):
     assert record["run_name"] == "S1-20261102T100000Z-abc" and record["app_version"] == "dev-local"
     assert record["status"] == "incomplete" and not record["complete"]  # only one of the three stages so far
     assert record["stats"] == {"flagstat": {"mapped_pct": 100.0}}
-    assert provenance.read_record(store, "S1") == record
+    # Readers rebuild the same record from the parts. Only "updated" differs: build() stamps it when it runs,
+    # to the second, so a rebuild a moment later can be a second on (#200).
+    rebuilt = provenance.read_record(store, "S1")
+    assert rebuilt.pop("updated") >= record.pop("updated")
+    assert rebuilt == record
 
 
 def test_all_core_stages_succeeding_is_a_complete_record(store):

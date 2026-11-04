@@ -33,9 +33,9 @@ could create a service role without a boundary and attach it to a Lambda.
 
 | Capacity | Cap | Worst case if fully used (eu-west-2 list prices, approximate) |
 |---|---|---|
-| Fargate compute environment | `max_vcpus = var.fargate_max_vcpus` (8, was 16): 4 jobs at 2 vCPU / 4 GB | 4 × ~$0.11/h ≈ **$0.45/h** |
+| Fargate compute environment | `max_vcpus = var.fargate_max_vcpus` (8, was 16): 8 vCPUs in any mix of stage sizes (align 4 vCPU / 8 GiB, QC and a variant shard 1 / 2 GiB, planner and merge 0.25 / 0.5 GiB) | 8 vCPU + 16 GB ≈ **$0.45/h** |
 | Fargate Spot compute environment (#124, the queue's first choice) | `max_vcpus = var.fargate_spot_max_vcpus` (8) | at Spot prices (~70% off) ≈ **$0.14/h** |
-| GPU compute environment | `max_vcpus = var.gpu_max_vcpus` (4, was 64): one g5.xlarge or g4dn.xlarge | ≈ **$1.2/h** with EBS |
+| GPU compute environment | `max_vcpus = var.gpu_max_vcpus` (4, was 64): one g6.xlarge or g5.xlarge (`gpu_instance_types`, #125) | ≈ **$1.2/h** with EBS (g6 is about 20% less) |
 | Public IPv4 per task or instance | | ~$0.005/h each |
 | **Total at all caps** | | **≈ $1.85/h** |
 
@@ -48,8 +48,10 @@ CustomizeDiff that forces replacement for environments with a custom service rol
 types, subnets, security groups, allocation strategy and similar fields. The plan must show
 `~ update in-place` for `aws_batch_compute_environment.gpu_env` and `aws_batch_compute_environment.geyser_fargate`. **Stop if it shows a replacement.**
 
-Both environments scale to zero when idle (`min_vcpus = 0`), and every Batch job has an attempt timeout of
-1-4 hours, so nothing runs indefinitely without a queue of work.
+Every environment scales to zero when idle (`min_vcpus = 0`). Every Batch job has an attempt timeout (the
+gate 15 min, the region planner 30 min, QC and DeepVariant 1 h, variant shards and the merge 2 h, align 4 h),
+and the whole run has one too (`pipeline_timeout_hours`, 12 h), so nothing runs indefinitely without a queue
+of work.
 
 ## Layer 3: the $20 budget and its kill switch (AWS-enforced, delayed)
 
@@ -76,8 +78,8 @@ environments ran flat out from the moment spend passed $8:
 
 | Lag before the action fires | Spend when it fires |
 |---|---|
-| 8 h | $8 + 8 × $1.7 ≈ **$22** |
-| 24 h | $8 + 24 × $1.7 ≈ **$49** |
+| 8 h | $8 + 8 × $1.85 ≈ **$23** |
+| 24 h | $8 + 24 × $1.85 ≈ **$52** |
 
 So the **kill switch alone does not hold a $20 line** against sustained full-capacity use. It also stops
 only geyser-claude: jobs already queued keep running until they finish or time out. The $20 holds because of
@@ -85,8 +87,8 @@ the other layers:
 
 - realistic work is far below the caps (a synthetic or small-sample run costs cents; see the
   `cloud-runs` notes);
-- the GPU environment needs explicit GPU jobs (no state-machine stage yet, #44), and today it can't even
-  pull images from the private subnet (#43), so a GPU job must not be submitted before #43;
+- the GPU environment only runs when a run asks for it (`caller=deepvariant`; the default caller is bcftools),
+  and at most one GPU instance runs at a time (`gpu_max_vcpus` = 4);
 - the local hook (below) refuses new runs when the budget is close;
 - the caps were tightened on 2 Nov 2026 (GPU 64 → 4, Fargate 16 → 8, kill switch $12 → $8) at the user's request;
   full use of both for a whole day is what the hook below exists to prevent.
@@ -100,7 +102,8 @@ commands, so it trips **before** the kill switch, on spend AWS has already recor
   `start-execution`/`redrive-execution` and Batch `submit-job` once the budget's actual spend is $6 or more,
   or when the budget can't be read (fails closed).
 - **One run at a time:** refuses starting a run while a pipeline execution is `RUNNING`.
-- **No GPU jobs until #43:** refuses `submit-job` to the GPU queue.
+- **GPU jobs only below $4 actual:** refuses GPU jobs once actual spend is $4 or more. Until 2 Nov 2026 it refused all GPU jobs; the user lifted that once #125 had
+  moved the GPU environment to the public subnet, where it can pull its image.
 - refuses `terraform destroy`, and any apply whose saved-plan check shows a destroy or replace of a bucket,
   the VPC, a compute environment, a queue or `random_id`, or a new NAT gateway.
 
