@@ -249,3 +249,60 @@ variable "gate_mode" {
     error_message = "gate_mode must be warn or fail."
   }
 }
+
+# --- 3.0: optional AlphaGenome annotation (alphagenome.tf, the Annotate state) ---------------------------
+
+variable "alphagenome_api_key_parameter" {
+  description = <<-EOT
+    Name of the SSM Parameter Store SecureString that holds the AlphaGenome API key (default KMS key
+    aws/ssm). Terraform never creates, reads or stores the parameter or its value: the user puts the
+    key in (aws ssm put-parameter --type SecureString, with their own identity). Only the annotate job's
+    execution role may read it, and only this one parameter; the job definition maps it into the
+    container's environment. Until the parameter exists, an annotate job fails to start, which the
+    state machine notes without failing the run.
+  EOT
+  type        = string
+  default     = "/geyser/alphagenome/api-key"
+
+  validation {
+    condition     = can(regex("^/[A-Za-z0-9_./-]+$", var.alphagenome_api_key_parameter))
+    error_message = "alphagenome_api_key_parameter must be a full parameter name starting with / (letters, digits, _ . - /)."
+  }
+}
+
+variable "annotate_source" {
+  description = "Where tasks.py annotate gets its scores in the cloud (its --source): atlas (precomputed scores under reference/alphagenome/) or api (the AlphaGenome API, with the key)."
+  type        = string
+  default     = "api"
+
+  validation {
+    condition     = contains(["atlas", "api"], var.annotate_source)
+    error_message = "annotate_source must be atlas or api (fake is for offline tests only)."
+  }
+}
+
+variable "annotate_resources" {
+  description = "vCPU and memory (MiB) of the annotate job. It reads the VCF, selects variants and waits on the API, so it gets the smallest Fargate size (0.25 vCPU / 512 MiB, about $0.012 an hour). A valid Fargate pair, as for stage_resources."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 0.25, memory_mb = 512 }
+
+  validation {
+    condition = contains(keys(local.fargate_memory_mb), tostring(var.annotate_resources.vcpu)) && (
+      var.annotate_resources.memory_mb >= local.fargate_memory_mb[tostring(var.annotate_resources.vcpu)][0] &&
+      var.annotate_resources.memory_mb <= local.fargate_memory_mb[tostring(var.annotate_resources.vcpu)][1] &&
+      (var.annotate_resources.memory_mb % 1024 == 0 || (var.annotate_resources.vcpu == 0.25 && var.annotate_resources.memory_mb == 512))
+    )
+    error_message = "annotate_resources needs a valid Fargate vCPU/memory pair (e.g. 0.25 vCPU with 512, 1024 or 2048 MiB; 0.5 vCPU with 1024-4096)."
+  }
+}
+
+variable "annotate_timeout_seconds" {
+  description = "Attempt limit of the annotate job. The API is sized for up to thousands of predictions, and ALPHAGENOME_MAX_VARIANTS (default 500) keeps a run's calls well inside this."
+  type        = number
+  default     = 1800
+
+  validation {
+    condition     = var.annotate_timeout_seconds >= 60 && var.annotate_timeout_seconds <= 14400
+    error_message = "annotate_timeout_seconds must be between 60 and 14400 (4 h)."
+  }
+}

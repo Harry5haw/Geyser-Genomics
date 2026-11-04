@@ -78,6 +78,21 @@ aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-
   depth about 0.02x, 0% at 10x, GC 37.5%), so it fails them. `smoke` is calibrated on the cloud checkpoints
   CLOUD005-016 ([#157](../../../issues/157)); every one passes it.
 
+**AlphaGenome annotation (3.0, draft, not live yet):** an upload can ask for the optional annotation of its calls after
+the quality gate with S3 metadata `annotate=alphagenome` (on either mate); a manual start sets `"annotate": "alphagenome"`.
+- **Off by default.** `none` or no value means no annotation. Anything else fails the run before any job with
+  `UnknownAnnotation`, like an unknown gate profile.
+- **Never fatal.** A failed annotation is noted in the execution's output (`annotate_error`) and the job log, and the run keeps
+  the core pipeline's status.
+- **The API key** is an SSM SecureString that you put in yourself, with your own identity. Terraform only references
+  it by name (`alphagenome_api_key_parameter`, default `/geyser/alphagenome/api-key`):
+
+  ```bash
+  AWS_PROFILE=default aws ssm put-parameter --name /geyser/alphagenome/api-key --type SecureString --value "<key>"
+  ```
+
+  Until it exists, an annotate job fails to start ("unable to pull secrets"), which is noted as above.
+
 ### Choose the caller
 
 | Caller | Where it runs | How to choose it |

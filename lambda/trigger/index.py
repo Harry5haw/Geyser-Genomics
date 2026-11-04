@@ -28,6 +28,11 @@ exactly like the gate profile: read from the same HeadObject, passed on as `refe
 uploaded, and validated only by the state machine (Check_Reference_Name, then Check_Reference: the
 object reference/<name> must exist) before any job starts. Without the metadata the run uses
 REFERENCE_NAME or DEFAULT_REFERENCE_GENOME, as before.
+
+Annotation per upload (3.0): S3 user metadata `annotate` (`--metadata annotate=alphagenome`, on either
+mate) asks for the optional AlphaGenome annotation after the quality gate. The same again: passed on as
+`annotate` as uploaded, validated only by the state machine (Check_Annotate: none or alphagenome) before
+any job starts. Without it the run isn't annotated.
 """
 
 import hashlib
@@ -52,6 +57,9 @@ GATE_PROFILE_METADATA = ("gate-profile", "gate_profile")
 # S3 user metadata (x-amz-meta-reference) naming this upload's reference genome under reference/.
 # Any other key with "ref" in it is passed on flagged (a likely misspelling, e.g. "refernce", "genome-ref").
 REFERENCE_METADATA = ("reference", "reference-name", "reference_name")
+# S3 user metadata (x-amz-meta-annotate) asking for the optional annotation (3.0). Any other key with
+# "annot" in it is passed on flagged (a likely misspelling, e.g. "annotation", "annotate-with").
+ANNOTATE_METADATA = ("annotate",)
 
 # Execution names: 1-80 characters. Kept to [A-Za-z0-9_-] because the name is reused in the Batch job
 # names (letters, digits, hyphens, underscores; max 128) and non-ASCII names break CloudWatch logging.
@@ -226,6 +234,11 @@ def reference_metadata(heads):
     return _metadata_value(heads, REFERENCE_METADATA, "ref")
 
 
+def annotate_metadata(heads):
+    """The upload's annotate for the input (metadata annotate), or None if unset (3.0)."""
+    return _metadata_value(heads, ANNOTATE_METADATA, "annot")
+
+
 def _response(status: int, **body) -> dict:
     return {"statusCode": status, "body": json.dumps(body)}
 
@@ -264,9 +277,10 @@ def handler(event, context):
             head = _head(bucket_name, object_key)
             heads = [head] if head is not None else []
             profile, reference = gate_profile(heads), reference_metadata(heads)
+            annotate = annotate_metadata(heads)
         except Exception as err:  # noqa: BLE001 - reported through the run, not by dropping the event
             logger.warning(f"could not read the metadata of s3://{bucket_name}/{object_key}: {err}")
-            profile = reference = {"metadata unreadable": _error_code(err) or type(err).__name__}
+            profile = reference = annotate = {"metadata unreadable": _error_code(err) or type(err).__name__}
     else:
         other_key = mate_key(object_key)
         keys = {mate: object_key, parse_raw_key(other_key)[1]: other_key}
@@ -280,12 +294,16 @@ def handler(event, context):
             return _response(202, waiting_for=waiting_for)
         name = paired_execution_name(sample_id, [(heads[m]["ETag"], heads[m]["LastModified"]) for m in MATES])
         profile, reference = gate_profile(heads.values()), reference_metadata(heads.values())
+        annotate = annotate_metadata(heads.values())
     if profile:
         pipeline_input["gate_profile"] = profile
     # Even an empty value goes on (the state machine rejects it): metadata that is set never falls back
     # to REFERENCE_NAME / the default silently.
     if reference is not None:
         pipeline_input["reference_name"] = reference
+    # Likewise: an empty or misspelt annotate fails the run visibly rather than skipping the annotation.
+    if annotate is not None:
+        pipeline_input["annotate"] = annotate
 
     logger.info(f"Triggering pipeline for '{sample_id}' from s3://{bucket_name}/{object_key}")
     try:

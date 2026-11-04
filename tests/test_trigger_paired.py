@@ -260,3 +260,25 @@ def test_a_pair_without_reference_metadata_keeps_the_default(trigger, aws):
     trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
     run_input = json.loads(sfn.started[0]["input"])
     assert run_input["reference_name"] == "chr20.fa" and run_input["gate_profile"] == "synthetic"
+
+
+# --- the optional annotation (3.0, metadata annotate), like the gate profile -------------------------
+
+
+def test_a_pairs_annotate_can_be_on_either_mate(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={"raw_reads/S1_R2.fastq.gz": {"annotate": "alphagenome"}})
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["annotate"] == "alphagenome"
+
+
+def test_mates_with_different_annotate_values_go_on_as_both_for_the_state_machine_to_refuse(trigger, aws):
+    meta = {"raw_reads/S1_R1.fastq.gz": {"annotate": "alphagenome"}, "raw_reads/S1_R2.fastq.gz": {"annotate": "none"}}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["annotate"] == ["alphagenome", "none"]
+
+
+def test_a_pair_without_annotate_metadata_is_not_annotated(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={k: {"gate-profile": "smoke"} for k in PAIR})
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    assert "annotate" not in json.loads(sfn.started[0]["input"])

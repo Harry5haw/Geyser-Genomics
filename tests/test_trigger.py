@@ -133,7 +133,15 @@ def test_batch_job_names_still_fit(trigger):
     with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
         asl = fh.read()
     prefixes = re.findall(r"States\.Format\('([A-Za-z]+)-\{\}-\{\}', \$\.srr_id, \$\$\.Execution\.Name\)", asl)
-    assert prefixes == ["QualityControl", "AlignGenome", "DeepVariant", "PlanRegions", "CallVariants", "QualityGate"]
+    assert prefixes == [
+        "QualityControl",
+        "AlignGenome",
+        "DeepVariant",
+        "PlanRegions",
+        "CallVariants",
+        "QualityGate",
+        "Annotate",
+    ]
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
     for prefix in prefixes:
@@ -328,3 +336,48 @@ def test_unreadable_metadata_flags_the_reference_too(trigger, monkeypatch, s3):
 def test_a_vanished_upload_keeps_the_default_reference(trigger, monkeypatch, s3):
     s3.missing = True
     assert _start(trigger, monkeypatch)["reference_name"] == "chr20.fa"
+
+
+# --- the optional annotation (3.0): S3 user metadata annotate -> the input's annotate ---------------------
+
+
+def test_an_uploads_annotate_metadata_reaches_the_input(trigger, monkeypatch, s3):
+    s3.metadata = {"annotate": "alphagenome", "gate-profile": "smoke"}
+    run_input = _start(trigger, monkeypatch)
+    assert run_input["annotate"] == "alphagenome" and run_input["gate_profile"] == "smoke"
+    assert s3.heads == ["raw_reads/S1.fastq.gz"]  # the same one HeadObject as the other settings
+
+
+def test_without_annotate_metadata_the_input_has_none(trigger, monkeypatch, s3):
+    s3.metadata = {"gate-profile": "smoke"}
+    assert "annotate" not in _start(trigger, monkeypatch)  # Check_Annotate: no annotation
+
+
+@pytest.mark.parametrize("value", ["AlphaGenome", "alphagnome", " alphagenome", "", "none"])
+def test_annotate_goes_on_exactly_as_uploaded_for_the_state_machine_to_check(trigger, monkeypatch, s3, value):
+    # Check_Annotate is the one validator: even an empty value goes on (and fails the run there).
+    s3.metadata = {"annotate": value}
+    assert _start(trigger, monkeypatch)["annotate"] == value
+
+
+@pytest.mark.parametrize("key", ["annotation", "annotate-with", "annotate_source"])
+def test_a_misspelled_annotate_key_goes_on_flagged_not_ignored(trigger, monkeypatch, s3, key):
+    s3.metadata = {key: "alphagenome"}
+    assert _start(trigger, monkeypatch)["annotate"] == {"unrecognised metadata key": key}
+
+
+def test_annotate_metadata_is_not_mistaken_for_the_other_settings(trigger, monkeypatch, s3):
+    # "annotate" contains neither "gate" nor "ref", so the other two settings stay unset.
+    s3.metadata = {"annotate": "alphagenome"}
+    run_input = _start(trigger, monkeypatch)
+    assert "gate_profile" not in run_input and run_input["reference_name"] == "chr20.fa"
+
+
+def test_unreadable_metadata_flags_the_annotation_too(trigger, monkeypatch, s3):
+    from botocore.exceptions import ClientError
+
+    def denied(Bucket, Key):
+        raise ClientError({"Error": {"Code": "AccessDenied", "Message": "no"}}, "HeadObject")
+
+    s3.head_object = denied
+    assert _start(trigger, monkeypatch)["annotate"] == {"metadata unreadable": "AccessDenied"}
