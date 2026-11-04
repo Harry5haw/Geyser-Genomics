@@ -4,6 +4,7 @@
     python web/dev.py                 # http://127.0.0.1:8000
     python web/dev.py --port 8080
     python web/dev.py --runner host   # tools on PATH instead of Docker
+    python web/dev.py --production --no-worker   # as deployed: DEBUG off, collectstatic, hashed assets
 
 Prerequisite: the pipeline image, built once with  docker build -f Dockerfile -t geyser-app .
 Ctrl+C stops both processes. This is a development server (DEBUG on); see the README for
@@ -12,9 +13,11 @@ running without DEBUG.
 
 import argparse
 import os
+import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 WEB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +43,12 @@ def main(argv=None):
     p.add_argument("--runner", choices=["docker", "host"], default="docker")
     p.add_argument("--image", default="geyser-app")
     p.add_argument("--no-worker", action="store_true", help="UI only; nothing will process uploads")
+    p.add_argument(
+        "--production",
+        action="store_true",
+        help="serve as deployed (DEBUG off, collectstatic into a temporary folder: hashed, compressed, immutable "
+        "assets), e.g. for Lighthouse; a throwaway secret key unless DJANGO_SECRET_KEY is set",
+    )
     a = p.parse_args(argv)
 
     env = {
@@ -52,6 +61,12 @@ def main(argv=None):
         "PYTHONUNBUFFERED": "1",
     }
     env.setdefault("REFERENCE_NAME", "synthetic_ref.fa")
+    if a.production:
+        env["DJANGO_DEBUG"] = "0"
+        env.setdefault("DJANGO_SECRET_KEY", secrets.token_urlsafe(32))
+        env["DJANGO_STATIC_ROOT"] = env.get("DJANGO_STATIC_ROOT") or tempfile.mkdtemp(prefix="geyser-static-")
+        collect = [sys.executable, os.path.join(WEB_DIR, "manage.py"), "collectstatic", "--noinput", "-v0"]
+        subprocess.run(collect, env=env, cwd=REPO_ROOT, check=True)
 
     if not a.no_worker and a.runner == "docker" and not image_exists(a.image):
         print(
@@ -64,7 +79,8 @@ def main(argv=None):
     procs = []
     if not a.no_worker:
         procs.append(subprocess.Popen(manage + ["runworker"], env=env, cwd=REPO_ROOT))
-    procs.append(subprocess.Popen(manage + ["runserver", f"{a.host}:{a.port}"], env=env, cwd=REPO_ROOT))
+    server = ["runserver", f"{a.host}:{a.port}"] + (["--noreload"] if a.production else [])
+    procs.append(subprocess.Popen(manage + server, env=env, cwd=REPO_ROOT))
     print(f"\nGeyser Genomics UI: http://{a.host}:{a.port}/   (storage: {env['LOCAL_STORAGE_DIR']})\n", flush=True)
 
     try:

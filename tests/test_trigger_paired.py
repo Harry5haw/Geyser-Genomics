@@ -85,6 +85,7 @@ class FakeS3:
 
     def __init__(self, objects, error=None, metadata=None):
         self.objects, self.error, self.heads, self.metadata = objects, error, [], metadata or {}
+        self.sizes = {}  # key -> ContentLength, when a test sets it (v1.3 input_bytes)
 
     def head_object(self, Bucket, Key):
         self.heads.append(Key)
@@ -94,7 +95,10 @@ class FakeS3:
             raise _not_found()
         value = self.objects[Key]
         etag, modified = value if isinstance(value, tuple) else (value, "2026-11-01 20:00:00+00:00")
-        return {"ETag": f'"{etag}"', "LastModified": modified, "Metadata": dict(self.metadata.get(Key, {}))}
+        head = {"ETag": f'"{etag}"', "LastModified": modified, "Metadata": dict(self.metadata.get(Key, {}))}
+        if Key in self.sizes:
+            head["ContentLength"] = self.sizes[Key]
+        return head
 
 
 class FakeSfn:
@@ -260,3 +264,21 @@ def test_a_pair_without_reference_metadata_keeps_the_default(trigger, aws):
     trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
     run_input = json.loads(sfn.started[0]["input"])
     assert run_input["reference_name"] == "chr20.fa" and run_input["gate_profile"] == "synthetic"
+
+
+# --- v1.3: the upload's size, both mates added up, for Choose_Route --------------------------------------
+
+
+def test_a_pairs_input_bytes_add_up_both_mates(trigger, aws):
+    s3, sfn = aws(PAIR)
+    s3.sizes = {"raw_reads/S1_R1.fastq.gz": 25_950_000_000, "raw_reads/S1_R2.fastq.gz": 27_040_000_000}
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    assert json.loads(sfn.started[0]["input"])["input_bytes"] == 52_990_000_000
+
+
+def test_a_pair_with_a_mates_size_unknown_has_no_input_bytes(trigger, aws):
+    # Without a size, Choose_Route takes today's path: never a guess.
+    s3, sfn = aws(PAIR)
+    s3.sizes = {"raw_reads/S1_R1.fastq.gz": 10}
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert "input_bytes" not in json.loads(sfn.started[0]["input"])

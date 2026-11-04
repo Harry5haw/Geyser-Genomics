@@ -28,9 +28,26 @@ locals {
   tf_lock_table   = "geyser-tf-lock"
 }
 
-# Existing GitHub OIDC provider
-data "aws_iam_openid_connect_provider" "github" {
-  url = "https://token.actions.githubusercontent.com"
+# The account's GitHub OIDC provider. It was created by the retired teraflow stack and only read here;
+# with teraflow torn down (#46), geyser owns it. The import block adopts the live provider into this
+# state without changing it: every argument below matches what AWS reports (checked 2 Nov 2026), so
+# the plan must say "1 to import, 0 to add, 0 to change, 0 to destroy". Order, all by the user:
+# (1) `terraform state rm` it from the teraflow state, (2) destroy teraflow, (3) plan and apply this.
+# If teraflow is destroyed first, the provider is deleted and every OIDC role below stops working.
+import {
+  to = aws_iam_openid_connect_provider.github
+  id = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
+}
+
+resource "aws_iam_openid_connect_provider" "github" {
+  url             = "https://token.actions.githubusercontent.com"
+  client_id_list  = ["sts.amazonaws.com"]
+  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+
+  lifecycle {
+    # Four CI roles (and everything CI does in AWS) trust this provider.
+    prevent_destroy = true
+  }
 }
 
 # ---------------------------
@@ -45,7 +62,7 @@ resource "aws_iam_role" "geyser_github_ecr_role_dev" {
     Version = "2012-10-17",
     Statement = [{
       Effect    = "Allow",
-      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn },
       Action    = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
@@ -100,7 +117,7 @@ resource "aws_iam_role" "geyser_github_ecr_role_prod" {
     Version = "2012-10-17",
     Statement = [{
       Effect    = "Allow",
-      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn },
       Action    = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
@@ -157,7 +174,7 @@ resource "aws_iam_role" "geyser_github_terraform_role_dev" {
     Version = "2012-10-17",
     Statement = [{
       Effect    = "Allow",
-      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn },
       Action    = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
@@ -189,7 +206,7 @@ resource "aws_iam_role" "geyser_github_terraform_role_prod" {
     Version = "2012-10-17",
     Statement = [{
       Effect    = "Allow",
-      Principal = { Federated = data.aws_iam_openid_connect_provider.github.arn },
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn },
       Action    = "sts:AssumeRoleWithWebIdentity",
       Condition = {
         StringEquals = {
