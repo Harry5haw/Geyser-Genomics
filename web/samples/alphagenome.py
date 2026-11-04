@@ -18,10 +18,12 @@ from dataclasses import dataclass, field
 from geyser_web.pipeline import ObjectNotFound, keys_for
 
 STAGE = "Annotate"  # the run-record part's task name
-KEY_NAME = "alphagenome_tsv"  # keys_for() name, once P1 adds it; until then the path below
+KEY_NAME = "alphagenome_tsv"  # keys_for() name from #207; until that merges, the path below
+TERMS_URL = "https://deepmind.google.com/science/alphagenome/output-terms"  # shown with every published table
 MAX_TSV_BYTES = 20 * 1024 * 1024  # capped at ALPHAGENOME_MAX_VARIANTS rows (500 by default): ~100 KB
 
-# TSV header -> field. The only place the column names live: the output contract (P1) maps here.
+# TSV header -> field: the columns the page shows, read by name from the output contract (#207, TSV_COLUMNS:
+# rank chrom pos ref alt kind qual avi avi_raw top_track gene rna_lfc csq source). The rest are ignored.
 COLUMNS = {
     "chrom": "chrom",
     "pos": "pos",
@@ -72,6 +74,11 @@ class AnnotationView:
         return self.total > len(self.rows)
 
     @property
+    def current(self) -> bool:
+        """This run's annotation is on disk and readable: its files may be offered for download."""
+        return self.state in ("rows", "empty")
+
+    @property
     def test_data(self) -> bool:
         """Scores from the fake backend: fixtures, not AlphaGenome's predictions."""
         return any(source == "fake" for source, _ in self.sources)
@@ -87,8 +94,12 @@ def _float(value: str):
 
 def parse_tsv(text: str) -> tuple[list, str]:
     """(rows, problem): every row as a Scored, or a reason the table can't be read ('' when it can).
-    A row with an unreadable position is a broken file; one without a usable AVI keeps its place, unscored."""
-    reader = csv.DictReader(io.StringIO(text), delimiter="\t")
+    A row with an unreadable position is a broken file; one without a usable AVI keeps its place, unscored.
+    Comment lines before the header ('#', e.g. AlphaGenome's terms notice) are skipped."""
+    lines = text.splitlines(keepends=True)
+    while lines and lines[0].startswith("#"):
+        lines.pop(0)
+    reader = csv.DictReader(io.StringIO("".join(lines)), delimiter="\t")
     header = [h.strip() for h in reader.fieldnames or []]
     missing = [name for name in REQUIRED if name not in header]
     if missing:

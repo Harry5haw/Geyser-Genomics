@@ -29,6 +29,7 @@ from geyser_web.pipeline import (
 )
 
 from . import status as status_mod
+from .alphagenome import TERMS_URL as ALPHAGENOME_TERMS_URL
 from .alphagenome import read_annotation
 from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
@@ -59,6 +60,15 @@ FILE_KINDS = {
     "mosdepth_dist": ("Coverage distribution", "mosdepth: fraction of bases covered at each depth or more"),
     "bcftools_stats": ("Variant stats", "bcftools stats: SNP and indel counts, Ti/Tv, quality distributions"),
     "gate_verdict": ("Quality gate verdict", "JSON: the verdict, named reasons and every check with its thresholds"),
+    "alphagenome_tsv": (
+        "Variants of interest (AlphaGenome)",
+        "TSV: the variants AlphaGenome scored, ranked by AVI. Research use only, not for clinical use",
+    ),
+    "alphagenome_vcf": (
+        "AlphaGenome-annotated variants",
+        "The VCF with AlphaGenome scores (INFO/AG_*). Research use only, not for clinical use",
+    ),
+    "alphagenome_tbi": ("AlphaGenome-annotated variant index", "Tabix index (.tbi) of the AlphaGenome VCF"),
     "run_record": (
         "Run record",
         "JSON: inputs, reference MD5, tool versions, image, each stage's status, time and resources",
@@ -68,6 +78,8 @@ FILE_KINDS = {
 }
 # Kinds that are one file per sample but not keys_for() names.
 SAMPLE_FILES = ("truth", "log", "run_record")
+# AlphaGenome's outputs (3.0): offered only when the panel shows this run's annotation (AnnotationView.current).
+ALPHAGENOME_KINDS = ("alphagenome_tsv", "alphagenome_vcf", "alphagenome_tbi")
 LOG_TAIL_LINES = 300
 
 
@@ -95,7 +107,7 @@ def _download_kinds(keys):
     for kind, (label, description) in FILE_KINDS.items():
         if kind in keys or kind in SAMPLE_FILES:
             yield kind, label, description
-        else:
+        elif kind in PER_MATE_KEYS:
             for mate in MATES:
                 yield f"{kind}_{mate}", f"{label} ({mate})", description
 
@@ -219,9 +231,17 @@ def sample_detail(request, sample_id):
     variants_key = annotated or sample.keys["vcf"]
     variants = read_variants(storage, variants_key, settings.GEYSER_VARIANT_ROWS)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
+    # Only next to calls: there is nothing to annotate before the variants stage.
+    alphagenome = (
+        read_annotation(storage, sample_id, record, request.GET.get("avi", "desc"), settings.GEYSER_VARIANT_ROWS)
+        if variants is not None
+        else None
+    )
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):
         key = _file_key(sample_id, kind, sample.keys)
+        if kind in ALPHAGENOME_KINDS and not (alphagenome and alphagenome.current):
+            continue  # not annotated, failed, or an earlier run's files: not this sample's current annotation
         if kind in ("csq_vcf", "csq_tbi") and variants_key != sample.keys["csq_vcf"]:
             continue  # an annotated VCF (and its index) from an earlier run: not this sample's current calls
         if kind == "tbi" and not bcftools_calls:
@@ -241,12 +261,8 @@ def sample_detail(request, sample_id):
         "downloads": downloads,
         "gate": read_gate(storage, sample.keys["gate_verdict"], record),
         "record": record_view(record),
-        # Only next to calls: there is nothing to annotate before the variants stage.
-        "alphagenome": (
-            read_annotation(storage, sample_id, record, request.GET.get("avi", "desc"), settings.GEYSER_VARIANT_ROWS)
-            if variants is not None
-            else None
-        ),
+        "alphagenome": alphagenome,
+        "alphagenome_terms_url": ALPHAGENOME_TERMS_URL,
     }
     return render(request, "samples/detail.html", context)
 

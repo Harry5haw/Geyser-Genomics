@@ -5,7 +5,9 @@ import os
 
 import pytest
 
-from samples.alphagenome import annotation_key, parse_tsv, read_annotation, sort_rows
+from geyser_web.pipeline import keys_for
+from samples.alphagenome import TERMS_URL, annotation_key, parse_tsv, read_annotation, sort_rows
+from samples.views import _download_kinds
 
 from .web_helpers import fastq_gz, put, vcf_gz
 
@@ -45,20 +47,33 @@ def test_the_table_lives_under_stats():
 
 
 def test_the_fixture_parses_every_row():
+    # The fixture is #207's TSV_COLUMNS, in rank order, after AlphaGenome's terms comment line.
     rows, problem = parse_tsv(fixture_text())
     assert problem == "" and len(rows) == 5
-    first = rows[0]
-    assert (first.chrom, first.pos, first.ref, first.alt, first.gene) == ("synth1", 100, "A", "G", "SYNTHG1")
-    assert (first.avi, first.top_track, first.consequence, first.source) == (
-        0.412,
+    liver = rows[1]
+    assert (liver.chrom, liver.pos, liver.ref, liver.alt, liver.gene) == ("synth1", 100, "A", "G", "SYNTHG1")
+    assert (liver.avi, liver.top_track, liver.consequence, liver.source) == (
+        22.1,
         "RNA_SEQ:liver",
         "5_prime_utr SYNTHG1",
         "atlas",
     )
-    assert first.rna_lfc == 0.62
-    unscored = rows[3]
+    assert liver.rna_lfc == 0.62
+    unscored = rows[4]
     assert unscored.avi is None and unscored.gene == "" and unscored.consequence == "intron"
     assert unscored.rna_lfc is None and rows[2].rna_lfc is None  # API rows: no Atlas RNA |LFC|
+
+
+def test_comment_lines_before_the_header_are_skipped():
+    text = "# terms\n# another note\nchrom\tpos\tref\talt\tavi\nsynth1\t1\tA\tG\t5\n"
+    rows, problem = parse_tsv(text)
+    assert problem == "" and [(r.pos, r.avi) for r in rows] == [(1, 5.0)]
+
+
+def test_the_contracts_extra_columns_are_ignored():
+    # rank, kind, qual and avi_raw (#207) aren't shown; reading by name means their order doesn't matter.
+    rows, problem = parse_tsv("avi_raw\tavi\talt\tref\tpos\tchrom\trank\n0.9\t30\tG\tA\t7\tsynth1\t1\n")
+    assert problem == "" and (rows[0].chrom, rows[0].pos, rows[0].avi) == ("synth1", 7, 30.0)
 
 
 def test_rna_lfc_is_optional():
@@ -124,7 +139,7 @@ def test_an_unknown_sort_falls_back_to_highest_first(storage):
 
 
 def test_a_header_only_table_is_annotated_with_nothing_of_interest(storage):
-    put(storage, TSV_KEY, fixture_text().splitlines()[0] + "\n")
+    put(storage, TSV_KEY, "\n".join(fixture_text().splitlines()[:2]) + "\n")  # the terms line and the header
     assert read_annotation(storage, "S1", record({"status": "Success"})).state == "empty"
 
 
@@ -173,7 +188,10 @@ def test_page_shows_the_table_sorted_by_avi_with_the_research_note(client, stora
     body = client.get("/samples/S1/").content.decode()
     assert "Variants of interest" in body and RESEARCH_NOTE in body
     assert body.index("SPLICE_SITES:brain") < body.index("RNA_SEQ:liver") < body.index("CAGE:hepg2")
-    assert "0.873" in body and "splice_region SYNTHG1" in body and "5 scored" in body
+    assert "31.4" in body and "splice_region SYNTHG1" in body and "5 scored" in body
+    # AlphaGenome's output terms: required wherever its outputs are published, with the link.
+    assert "By using this information, you agree to AlphaGenome Output Terms of Use found at" in body
+    assert f'<a href="{TERMS_URL}"' in body
     assert 'href="?avi=asc#alphagenome"' in body and 'aria-sort="descending"' in body
     assert "RNA |LFC|" in body and "1.375" in body  # Atlas rows' RNA |LFC|; the rest show a dash
 
@@ -211,3 +229,30 @@ def test_no_panel_before_there_are_calls(client, storage):
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     put(storage, TSV_KEY, fixture_text())
     assert "Variants of interest" not in client.get("/samples/S1/").content.decode()
+
+
+# ------------------------------------------------------------------ downloads
+
+CONTRACT_KEYS = "alphagenome_tsv" in keys_for("S1")  # #207 adds the names to keys_for(); until it merges, no links
+needs_contract = pytest.mark.skipif(not CONTRACT_KEYS, reason="keys_for() has no AlphaGenome names until #207 merges")
+
+
+def test_kinds_storage_doesnt_name_are_never_offered_per_mate():
+    # Before #207, keys_for() lacks the AlphaGenome names: they must not turn into alphagenome_tsv_R1-style kinds.
+    kinds = [kind for kind, _, _ in _download_kinds({"raw": "raw_reads/S1.fastq.gz"})]
+    assert not any(kind.startswith("alphagenome") and kind.endswith(("_R1", "_R2")) for kind in kinds)
+
+
+@needs_contract
+def test_this_runs_annotation_is_offered_for_download(client, storage):
+    sample_with(storage, fixture_text(), record({"status": "Success"}))
+    put(storage, "variants/S1.alphagenome.vcf.gz", b"x")
+    body = client.get("/samples/S1/").content.decode()
+    assert "/samples/S1/files/alphagenome_tsv/" in body and "/samples/S1/files/alphagenome_vcf/" in body
+
+
+@needs_contract
+def test_an_earlier_runs_annotation_is_not_offered(client, storage):
+    sample_with(storage, fixture_text(), record())  # the latest run didn't annotate
+    put(storage, "variants/S1.alphagenome.vcf.gz", b"x")
+    assert "alphagenome_tsv" not in client.get("/samples/S1/").content.decode()
