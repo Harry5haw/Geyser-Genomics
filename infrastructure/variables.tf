@@ -222,6 +222,62 @@ variable "deepvariant_image_version" {
   default     = "dev-local"
 }
 
+# --- DeepVariant split mode (v1.5, deepvariant_cpu.tf): make_examples parts on Fargate, then the GPU job ---
+
+variable "deepvariant_split_parts" {
+  description = "Default dv_parts (a per-run setting): make_examples part jobs on the Fargate queue before the GPU job. 1 = today's single GPU job (no split). At most fargate_spot_max_vcpus / dv_part_resources.vcpu (step_functions.tf)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.deepvariant_split_parts >= 1 && floor(var.deepvariant_split_parts) == var.deepvariant_split_parts
+    error_message = "deepvariant_split_parts must be a whole number >= 1 (1 = no split)."
+  }
+}
+
+variable "deepvariant_cpu_image_version" {
+  description = "Tag of the geyser-deepvariant-cpu image in ECR (app-deepvariant/Dockerfile with --build-arg DV_TAG=1.10.0: the GPU image's DeepVariant version, which the GPU job checks)."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "dv_part_resources" {
+  description = "vCPU and memory (MiB) of each make_examples part job. DEEPVARIANT_SHARDS = parts x vcpu (one make_examples task per vCPU). A chr20 part of 8 tasks peaked at ~1.1 GB RSS (#228); 16 GiB leaves room for a genome's. Fargate pairs: 4 vCPU 8-30 GiB (1 GiB steps), 8 vCPU 16-60 GiB (4 GiB steps), 16 vCPU 32-120 GiB (8 GiB steps)."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 8, memory_mb = 16384 }
+
+  validation {
+    condition = (
+      (var.dv_part_resources.vcpu == 4 && var.dv_part_resources.memory_mb >= 8192 && var.dv_part_resources.memory_mb <= 30720 && var.dv_part_resources.memory_mb % 1024 == 0) ||
+      (var.dv_part_resources.vcpu == 8 && var.dv_part_resources.memory_mb >= 16384 && var.dv_part_resources.memory_mb <= 61440 && var.dv_part_resources.memory_mb % 4096 == 0) ||
+      (var.dv_part_resources.vcpu == 16 && var.dv_part_resources.memory_mb >= 32768 && var.dv_part_resources.memory_mb <= 122880 && var.dv_part_resources.memory_mb % 8192 == 0)
+    )
+    error_message = "dv_part_resources needs a valid Fargate pair: 4 vCPU 8192-30720 MiB (1024 steps), 8 vCPU 16384-61440 (4096 steps), 16 vCPU 32768-122880 (8192 steps)."
+  }
+}
+
+variable "dv_part_disk_gb" {
+  description = "Ephemeral storage of each part job (GiB, Fargate's 21-200, billed per GiB-hour above 20): the whole CRAM (~17 GB for a 30x genome, ~0.4 GB for chr20), the reference and the part's examples."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.dv_part_disk_gb >= 21 && var.dv_part_disk_gb <= 200
+    error_message = "dv_part_disk_gb must be 21-200 (the Fargate range)."
+  }
+}
+
+variable "dv_part_timeout_seconds" {
+  description = "Attempt limit of each part job (the state machine's AttemptDurationSeconds). The app stops itself 300 s before it (DEEPVARIANT_TIMEOUT_SECONDS). chr20 parts took ~4.5 min (#228); a genome's share is ~50x that per part."
+  type        = number
+  default     = 14400
+
+  validation {
+    condition     = var.dv_part_timeout_seconds >= 900 && floor(var.dv_part_timeout_seconds) == var.dv_part_timeout_seconds
+    error_message = "dv_part_timeout_seconds must be a whole number of at least 900."
+  }
+}
+
 # --- vg giraffe as the aligner (#146, giraffe.tf) ---
 
 variable "giraffe_image_version" {

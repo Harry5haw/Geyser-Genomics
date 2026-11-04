@@ -28,7 +28,10 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}:*",
           # v1.3: the large route's jobs (genome_scale.tf), on the same Fargate queue.
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*"
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*",
+          # v1.5: the DeepVariant split's make_examples part jobs (deepvariant_cpu.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name}:*"
         ]
       },
       {
@@ -90,6 +93,10 @@ locals {
   calling_concurrency_max = floor(var.fargate_spot_max_vcpus / var.stage_resources["variants"].vcpu)
   merge_threads_max       = local.large["merge"].vcpu
   large_input_bytes       = floor(var.large_input_gb * 1000000000)
+  # v1.5 the DeepVariant split: parts at once on Fargate Spot, and DEEPVARIANT_SHARDS per parts (index = parts):
+  # Step Functions has no multiply, so the state machine reads parts x the part's vCPUs from this list.
+  dv_parts_max       = floor(var.fargate_spot_max_vcpus / var.dv_part_resources.vcpu)
+  dv_shards_by_parts = [for parts in range(local.dv_parts_max + 1) : parts * var.dv_part_resources.vcpu]
 }
 
 resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
@@ -139,6 +146,12 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     chunk_memory_mb          = local.large["chunk"].memory_mb
     align_merge_vcpu         = local.large["merge"].vcpu
     align_merge_memory_mb    = local.large["merge"].memory_mb
+    # v1.5 the DeepVariant split (deepvariant_cpu.tf).
+    deepvariant_cpu_job_definition = aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name
+    deepvariant_split_parts        = var.deepvariant_split_parts
+    dv_parts_max                   = local.dv_parts_max
+    dv_shards_by_parts             = jsonencode(local.dv_shards_by_parts)
+    dv_part_timeout_seconds        = var.dv_part_timeout_seconds
   })
 
   lifecycle {
@@ -173,6 +186,11 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
       # The pre-flight runs alongside QC, before the chunks.
       condition     = local.large["preflight"].vcpu + local.large["qc"].vcpu <= var.fargate_spot_max_vcpus
       error_message = "The pre-flight and QC run at the same time: their vCPUs together must fit in fargate_spot_max_vcpus."
+    }
+    precondition {
+      # v1.5: the default goes through the per-run checks too (1 to dv_parts_max).
+      condition     = var.deepvariant_split_parts <= local.dv_parts_max
+      error_message = "deepvariant_split_parts must be at most fargate_spot_max_vcpus / dv_part_resources.vcpu (and one part must fit)."
     }
   }
   logging_configuration {
