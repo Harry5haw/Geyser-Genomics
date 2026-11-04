@@ -302,7 +302,11 @@ def test_end_to_end_matched_on_tss_and_af(synthetic, tmp_path):
     assert primary["auroc"] > 0.95 and primary["ci95"][0] > 0.9
     assert avi["score"] == "avi" and 0.25 < avi["auroc"] < 0.75  # AF matched: no frequency signal left
     assert "matched on allele frequency" in avi["caveat"]
-    assert result["gene_agreement"] == {"positives_with_ag_gene": 60, "ag_gene_is_eqtl_gene": 60}
+    assert result["gene_agreement"] == {
+        "positives_with_ag_gene": 60,
+        "ag_gene_resolved_to_ensembl": 60,
+        "ag_gene_is_eqtl_gene": 60,
+    }
     o = result["overlap"]
     assert o["flag"] == "avi>=20" and (o["csq_and_ag"], o["csq_only"]) == (5, 15)
     assert o["ag_only"] == synthetic["noncoding_flagged"] and o["ag_only"] + o["neither"] == 660
@@ -331,3 +335,12 @@ def test_nothing_to_match_on_and_custom_scores(synthetic, tmp_path):
 def test_bad_column_mapping_fails_cleanly(synthetic, tmp_path, capsys):
     assert ev.main(["--annotated", synthetic["annotated"], "--eqtl", synthetic["eqtl"][0], "--col", "nope=X"]) == 1
     assert "--col needs ROLE=NAME" in capsys.readouterr().err
+
+
+def test_gene_names_resolve_to_ensembl_ids(tmp_path):
+    names = write_tsv(tmp_path / "meta.tsv.gz", ["gene_id", "gene_name"], [["ENSG01.3", "PARAL1"], ["ENSG02", "ABC"]])
+    table = ev.read_gene_names(names)
+    assert table == {"PARAL1": {"ENSG01"}, "ABC": {"ENSG02"}}
+    assert ev.gene_ids("PARAL1", table) == {"ENSG01"}
+    assert ev.gene_ids("ENSG07.2", table) == {"ENSG07"}
+    assert ev.gene_ids("UNKNOWN", table) == set()

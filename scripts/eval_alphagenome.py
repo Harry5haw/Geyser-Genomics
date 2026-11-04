@@ -301,6 +301,24 @@ def read_af(path):
     return out
 
 
+def read_gene_names(path):
+    """Gene metadata with gene_id and gene_name columns (e.g. eQTL Catalogue's phenotype metadata) ->
+    {gene name: set of Ensembl gene IDs}. AlphaGenome reports gene names where they exist; eQTL tables use IDs."""
+    out = {}
+    with open_text(path) as fh:
+        for row in csv.DictReader(fh, delimiter="\t"):
+            name, gene_id = (row.get("gene_name") or "").strip(), (row.get("gene_id") or "").split(".")[0]
+            if name and gene_id:
+                out.setdefault(name, set()).add(gene_id)
+    return out
+
+
+def gene_ids(gene, names):
+    """AlphaGenome's gene (an Ensembl ID or a name) -> the Ensembl IDs it stands for."""
+    gene = gene.split(".")[0] if gene.startswith("ENSG") else gene
+    return {gene} if gene.startswith("ENSG") else names.get(gene, set())
+
+
 def tss_distance(tss, key):
     positions = tss.get(key[0])
     if not positions:
@@ -480,15 +498,27 @@ def evaluate(args):
     gene_agreement = None
     with_gene = [v for v in positives if v["gene"]]
     if with_gene:
-        hits = sum(1 for v in with_gene if v["gene"].split(".")[0] in eqtls[v["key"]][1])
-        gene_agreement = {"positives_with_ag_gene": len(with_gene), "ag_gene_is_eqtl_gene": hits}
+        names = read_gene_names(args.gene_names) if args.gene_names else {}
+        resolved = [v for v in with_gene if gene_ids(v["gene"], names)]
+        hits = sum(1 for v in resolved if gene_ids(v["gene"], names) & eqtls[v["key"]][1])
+        gene_agreement = {
+            "positives_with_ag_gene": len(with_gene),
+            "ag_gene_resolved_to_ensembl": len(resolved),
+            "ag_gene_is_eqtl_gene": hits,
+        }
 
     scored_any = [v for v in variants if any(v["scores"].get(n) is not None for n, _ in score_specs)]
     sources = {}
     for v in variants:
         sources[v["source"] or "none"] = sources.get(v["source"] or "none", 0) + 1
     return {
-        "inputs": {"annotated": args.annotated, "eqtl": args.eqtl, "tss": args.tss, "af": args.af},
+        "inputs": {
+            "annotated": args.annotated,
+            "eqtl": args.eqtl,
+            "tss": args.tss,
+            "af": args.af,
+            "gene_names": args.gene_names,
+        },
         "min_pip": args.min_pip,
         "matched_on": matched_on or ["nothing (no TSS table, no allele frequencies)"],
         "af_matched": use_af,
@@ -550,8 +580,9 @@ def to_markdown(result):
     if g:
         lines += [
             "",
-            f"AlphaGenome's top gene is the eQTL's gene for {g['ag_gene_is_eqtl_gene']} of "
-            f"{g['positives_with_ag_gene']} positives.",
+            f"AlphaGenome's top gene is one of the eQTL's genes for {g['ag_gene_is_eqtl_gene']} of "
+            f"{g['ag_gene_resolved_to_ensembl']} positives whose gene could be matched to an Ensembl ID "
+            f"({g['positives_with_ag_gene']} had a gene).",
         ]
     o = result["overlap"]
     lines += [
@@ -586,6 +617,11 @@ def main(argv=None):
     )
     p.add_argument("--tss", help="TSV chrom pos [gene] of TSSs, to match on distance to the nearest TSS")
     p.add_argument("--af", help="TSV chrom pos ref alt af, to match on allele frequency")
+    p.add_argument(
+        "--gene-names",
+        help="gene metadata TSV with gene_id and gene_name (e.g. eQTL Catalogue phenotype metadata), so AlphaGenome's "
+        "gene names can be compared with the eQTL table's Ensembl IDs",
+    )
     p.add_argument("--run-record", help="the annotate stage's run-record part (JSON), for API calls, time, cost")
     p.add_argument(
         "--score",
