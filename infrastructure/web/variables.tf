@@ -47,7 +47,7 @@ variable "data_lake_origin" {
 }
 
 variable "script_hashes" {
-  description = "CSP hashes for the site's inline scripts, e.g. [\"sha256-...\"] for the inline speculation rules (the publisher, W2, reports them). The only inline script allowed."
+  description = "CSP hashes for the site's inline scripts, e.g. [\"sha256-...\"]: csp-hashes.json's \"script\" list in the published site's root (today one, the speculation rules). The only inline script allowed."
   type        = list(string)
   default     = []
 
@@ -58,7 +58,7 @@ variable "script_hashes" {
 }
 
 variable "style_hashes" {
-  description = "CSP hashes for inline <style> blocks (the inlined critical CSS)."
+  description = "CSP hashes for inline <style> blocks: csp-hashes.json's \"style\" list (the inlined site CSS and the figures page's block)."
   type        = list(string)
   default     = []
 

@@ -50,19 +50,23 @@ data "aws_cloudfront_cache_policy" "caching_optimized" {
 
 locals {
   site_bucket_name = "${var.project_name}-site-${var.environment}-${data.aws_caller_identity.current.account_id}"
-  # Content-Security-Policy: nothing inline except what is hash-allowed (the speculation rules, critical CSS);
-  # the page talks only to itself, the API and (for upload parts) the data lake.
-  csp = join("; ", compact([
-    "default-src 'self'",
+  # Content-Security-Policy: exactly the policy the published pages were tested with (T3's W2: Lighthouse 100, no
+  # console errors), plus the API and, for the upload page's presigned PUTs, the data lake in connect-src.
+  # Everything else is 'none' (default-src): nothing inline except the hash-allowed speculation rules and inlined
+  # CSS (csp-hashes.json in the site root: script_hashes, style_hashes); workers (the 3D view) from 'self' only;
+  # no forms (the upload page uses fetch).
+  csp = join("; ", [
+    "default-src 'none'",
     "script-src ${join(" ", concat(["'self'"], [for h in var.script_hashes : "'${h}'"]))}",
     "style-src ${join(" ", concat(["'self'"], [for h in var.style_hashes : "'${h}'"]))}",
     "img-src 'self' data:",
     "connect-src ${join(" ", compact(["'self'", var.api_origin, var.data_lake_origin]))}",
-    "form-action 'self'",
-    "frame-ancestors 'none'",
+    "worker-src 'self'",
+    "manifest-src 'self'",
     "base-uri 'none'",
-    "object-src 'none'",
-  ]))
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ])
 }
 
 # --- the site bucket: private, reachable only through CloudFront (OAC) ------------------------------------------
