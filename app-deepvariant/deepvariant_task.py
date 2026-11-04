@@ -29,6 +29,7 @@ Environment:
     DEEPVARIANT_CHECKPOINT            0 turns off keeping make_examples output for a retry (default on)
     DEEPVARIANT_FATAL_GRACE_SECONDS   after a fatal error line (e.g. GPU out of memory), stop it once it has been
                                       silent this long without exiting (default 120; the wrapper can hang)
+    DEEPVARIANT_GPU_SAMPLE_SECONDS    seconds between GPU utilisation/memory samples (default 2; 0 = off)
     RUN_DEEPVARIANT          path to run_deepvariant (default: the image's copy)
     RUN_PANGENOME_DEEPVARIANT  path to run_pangenome_aware_deepvariant (default: the image's copy)
 """
@@ -37,6 +38,7 @@ import argparse
 import hashlib
 import io
 import json
+import math
 import os
 import queue
 import re
@@ -172,18 +174,18 @@ def build_run_deepvariant_cmd(
     )
 
 
-def parse_step_timings(events, end_time):
-    """Wall-clock seconds per step from timestamped output lines.
+def parse_step_windows(events, end_time):
+    """When each step ran, from timestamped output lines: [(step_name, start, end), ...] in run order.
 
     events: [(timestamp, line), ...] in order. A step starts at its banner and ends at the
-    next banner (or end_time). Returns {step_name: seconds} in run order.
+    next banner (or end_time).
     """
-    timings = {}
+    windows = []
     current, started, banner_at = None, None, None
     for ts, line in events:
         if BANNER in line:
             if current is not None:
-                timings[current] = timings.get(current, 0.0) + (ts - started)
+                windows.append((current, started, ts))
                 current = None
             banner_at = ts
             continue
@@ -192,7 +194,15 @@ def parse_step_timings(events, end_time):
             if match:
                 current, started, banner_at = match.group(1), banner_at, None
     if current is not None:
-        timings[current] = timings.get(current, 0.0) + (end_time - started)
+        windows.append((current, started, end_time))
+    return windows
+
+
+def parse_step_timings(events, end_time):
+    """Wall-clock seconds per step ({step_name: seconds} in run order; see parse_step_windows)."""
+    timings = {}
+    for step, start, end in parse_step_windows(events, end_time):
+        timings[step] = timings.get(step, 0.0) + (end - start)
     return timings
 
 
@@ -412,6 +422,202 @@ def gpu_name():
         return None
     names = out.stdout.strip().splitlines() if out.returncode == 0 else []
     return names[0].strip() if names else None
+
+
+# ---- GPU utilisation and memory (#139) ----
+# While the wrapper runs, nvidia-smi samples the GPU every few seconds. The run record's part gets the GPU model and
+# the mean/peak utilisation and peak memory, for the whole run and per step (only call_variants uses the GPU, so the
+# other steps show how long it sat idle); each step's metric (DeepVariant.CallVariants ...) carries the same figures.
+# - utilization.gpu is the share of the sample period in which any kernel ran, not how much of the GPU it used.
+# - memory.used is the whole device's: TensorFlow reserves (nearly) all free memory at start-up, so the peak shows
+#   what was reserved, not what the model needed; on a desktop it also includes the display's own use.
+# Without nvidia-smi (CPU image, CI, no --gpus) nothing is sampled or recorded; measuring never fails the stage.
+GPU_SAMPLE_VAR = "DEEPVARIANT_GPU_SAMPLE_SECONDS"
+GPU_SAMPLE_DEFAULT = 2.0
+GPU_QUERY = "index,utilization.gpu,memory.used,memory.total"
+
+
+def gpu_sample_interval(env=None):
+    """Seconds between GPU samples: DEEPVARIANT_GPU_SAMPLE_SECONDS (default 2; 0 turns sampling off). A bad value
+    turns sampling off with a warning rather than failing the stage."""
+    env = os.environ if env is None else env
+    raw = (env.get(GPU_SAMPLE_VAR) or "").strip()
+    if not raw:
+        return GPU_SAMPLE_DEFAULT
+    try:
+        seconds = float(raw)
+    except ValueError:
+        seconds = -1
+    if not math.isfinite(seconds) or seconds < 0:
+        print(f"WARNING: {GPU_SAMPLE_VAR}={raw!r} is not a number of seconds; GPU sampling is off", flush=True)
+        return 0.0
+    return seconds
+
+
+def parse_gpu_line(line):
+    """One line of `nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total
+    --format=csv,noheader,nounits` -> (index, utilisation %, memory used MiB, memory total MiB). A value the GPU
+    doesn't report ([N/A], [Not Supported]) is None; a line that isn't a sample (a warning, a blank line) gives None."""
+    fields = [f.strip() for f in line.split(",")]
+    if len(fields) != 4:
+        return None
+    try:
+        index = int(fields[0])
+    except ValueError:
+        return None
+
+    def number(text):
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    util, used, total = (number(f) for f in fields[1:])
+    if util is None and used is None:
+        return None
+    return index, util, used, total
+
+
+class GpuSampler:
+    """Runs nvidia-smi in looping mode in the background and keeps [(timestamp, index, util, used, total), ...].
+
+    start() does nothing when interval is 0 or nvidia-smi isn't there; stop() is safe to call more than once.
+    Neither raises: a GPU that can't be measured must not fail the stage."""
+
+    def __init__(self, interval, clock=time.time):
+        self.interval = interval
+        self.clock = clock
+        self.samples = []
+        self._proc = None
+        self._reader = None
+
+    @property
+    def effective_interval(self):
+        """Seconds between samples as nvidia-smi is asked for them (at least 0.1 s), or None when off."""
+        return max(int(self.interval * 1000), 100) / 1000 if self.interval else None
+
+    def command(self):
+        ms = int(self.effective_interval * 1000)
+        return ["nvidia-smi", f"--query-gpu={GPU_QUERY}", "--format=csv,noheader,nounits", "-lms", str(ms)]
+
+    def start(self):
+        try:
+            if not self.interval or not math.isfinite(self.interval):
+                return self
+            cmd = self.command()
+            if not shutil.which(cmd[0]):
+                return self
+            self._proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                start_new_session=True,
+            )
+        except Exception as err:  # noqa: BLE001 - measuring is best effort
+            print(f"WARNING: could not start GPU sampling: {err}", flush=True)
+            self._proc = None
+            return self
+        self._reader = threading.Thread(target=self._read, args=(self._proc.stdout,), daemon=True)
+        self._reader.start()
+        return self
+
+    def _read(self, stdout):
+        try:
+            for line in stdout:
+                sample = parse_gpu_line(line)
+                if sample:
+                    self.samples.append((self.clock(), *sample))
+        except Exception as err:  # noqa: BLE001 - measuring is best effort
+            print(f"WARNING: GPU sampling stopped: {err}", flush=True)
+
+    def stop(self):
+        proc, self._proc = self._proc, None
+        if proc is None:
+            return
+        try:
+            kill_process_group(proc, wait=5)
+            proc.wait(timeout=5)
+        except Exception as err:  # noqa: BLE001
+            print(f"WARNING: could not stop GPU sampling cleanly: {err}", flush=True)
+        if self._reader is not None:
+            self._reader.join(timeout=5)
+        try:
+            proc.stdout.close()
+        except Exception:  # noqa: BLE001, S110 - only freeing the pipe
+            pass
+
+
+def _gpu_stats(rows):
+    utils = [r[2] for r in rows if r[2] is not None]
+    used = [r[3] for r in rows if r[3] is not None]
+    return {
+        "samples": len(rows),
+        "utilization_mean_pct": round(sum(utils) / len(utils), 1) if utils else None,
+        "utilization_peak_pct": max(utils) if utils else None,
+        "memory_peak_mib": max(used) if used else None,
+    }
+
+
+def summarise_gpu(samples, windows=()):
+    """GPU figures for the whole run and per step (windows: parse_step_windows), or None without samples.
+    With several GPUs, every GPU's samples count (the job definition asks for one)."""
+    if not samples:
+        return None
+    totals = [s[4] for s in samples if s[4] is not None]
+    per_step = {}
+    windows = list(windows)
+    for i, (step, start, end) in enumerate(windows):
+        last = i == len(windows) - 1  # half-open, so a sample on a boundary counts once; the last step keeps its end
+        per_step.setdefault(step, []).extend(s for s in samples if start <= s[0] < end or (last and s[0] == end))
+    return {
+        "gpus": len({s[1] for s in samples}),
+        "memory_total_mib": max(totals) if totals else None,
+        **_gpu_stats(samples),
+        "steps": {step: _gpu_stats(rows) for step, rows in per_step.items() if rows},
+    }
+
+
+def gpu_metric_usage(stats):
+    """A step's GPU figures as metrics.USAGE_METRICS keys (for metrics().record(..., usage=...))."""
+    if not stats:
+        return None
+    usage = {
+        "gpu_utilization_mean_pct": stats.get("utilization_mean_pct"),
+        "gpu_utilization_peak_pct": stats.get("utilization_peak_pct"),
+        "gpu_memory_peak_mib": stats.get("memory_peak_mib"),
+    }
+    return {k: v for k, v in usage.items() if v is not None} or None
+
+
+def note_gpu(model, sampler, events, end_time):
+    """Put the GPU figures into the run record's part and print them; returns the per-step figures ({} without).
+    Never raises."""
+    if not model:
+        return {}
+    try:
+        samples = list(sampler.samples)  # a snapshot: the reader thread may still be appending
+        summary = summarise_gpu(samples, parse_step_windows(events, end_time)) or {"samples": 0}
+        provenance.note(gpu={"model": model, "sample_seconds": sampler.effective_interval, **summary})
+        if summary["samples"]:
+            print(
+                f"GPU {model}: utilisation mean {summary['utilization_mean_pct']}% / peak "
+                f"{summary['utilization_peak_pct']}%, memory peak {summary['memory_peak_mib']} of "
+                f"{summary['memory_total_mib']} MiB ({summary['samples']} samples)",
+                flush=True,
+            )
+            for step, stats in summary["steps"].items():
+                print(
+                    f"  {step:<22}utilisation mean {stats['utilization_mean_pct']}% / peak "
+                    f"{stats['utilization_peak_pct']}%, memory peak {stats['memory_peak_mib']} MiB",
+                    flush=True,
+                )
+        return summary.get("steps", {})
+    except Exception as err:  # noqa: BLE001 - measuring is best effort
+        print(f"WARNING: could not summarise GPU use: {err}", flush=True)
+        return {}
 
 
 # ---- resuming after make_examples (#51) ----
@@ -711,12 +917,18 @@ def _call_variants(sample_id, reference_name, pangenome=None):
         # The wrapper's own plan of all its steps, so a run stopped in call_variants can still be resumed
         # (its output never shows the postprocess_variants command).
         plan = planned_steps(cmd) if checkpoints_enabled() and not resumed else []
+        sampler = GpuSampler(gpu_sample_interval() if gpu else 0).start()
         try:
             code, events, end_time = run_steps(resumed, limits) if resumed else run_streaming(cmd, limits=limits)
         except WrapperStopped as err:
+            sampler.stop()
+            note_gpu(gpu, sampler, err.events, time.time())  # a run stopped on GPU memory is worth seeing
             if checkpoints_enabled() and not resumed:
                 save_checkpoint(prefix, err.events, wd, intermediate, fingerprint, plan)
             raise
+        finally:
+            sampler.stop()
+        gpu_steps = note_gpu(gpu, sampler, events, end_time)
         if code != 0:
             if checkpoints_enabled() and not resumed:
                 save_checkpoint(prefix, events, wd, intermediate, fingerprint, plan)
@@ -727,7 +939,9 @@ def _call_variants(sample_id, reference_name, pangenome=None):
         for step, seconds in timings.items():
             print(f"  {step:<22}{seconds:9.1f}s")
             try:
-                metrics().record(step_metrics[step], sample_id, "Success", seconds)
+                metrics().record(
+                    step_metrics[step], sample_id, "Success", seconds, usage=gpu_metric_usage(gpu_steps.get(step))
+                )
             except Exception as err:  # noqa: BLE001 - metrics are best effort
                 print(f"WARNING: could not record metric: {err}", flush=True)
         counts = parse_example_counts(events)

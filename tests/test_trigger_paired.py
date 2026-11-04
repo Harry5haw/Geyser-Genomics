@@ -81,10 +81,11 @@ def _not_found():
 
 
 class FakeS3:
-    """objects: key -> ETag (LastModified is fixed) or key -> (ETag, LastModified)."""
+    """objects: key -> ETag (LastModified is fixed) or key -> (ETag, LastModified); metadata: key -> dict."""
 
-    def __init__(self, objects, error=None):
-        self.objects, self.error, self.heads = objects, error, []
+    def __init__(self, objects, error=None, metadata=None):
+        self.objects, self.error, self.heads, self.metadata = objects, error, [], metadata or {}
+        self.sizes = {}  # key -> ContentLength, when a test sets it (v1.3 input_bytes)
 
     def head_object(self, Bucket, Key):
         self.heads.append(Key)
@@ -94,7 +95,10 @@ class FakeS3:
             raise _not_found()
         value = self.objects[Key]
         etag, modified = value if isinstance(value, tuple) else (value, "2026-11-01 20:00:00+00:00")
-        return {"ETag": f'"{etag}"', "LastModified": modified}
+        head = {"ETag": f'"{etag}"', "LastModified": modified, "Metadata": dict(self.metadata.get(Key, {}))}
+        if Key in self.sizes:
+            head["ContentLength"] = self.sizes[Key]
+        return head
 
 
 class FakeSfn:
@@ -113,8 +117,8 @@ class FakeSfn:
 
 @pytest.fixture
 def aws(trigger, monkeypatch):
-    def install(objects, s3_error=None):
-        s3, sfn = FakeS3(objects, s3_error), FakeSfn()
+    def install(objects, s3_error=None, metadata=None):
+        s3, sfn = FakeS3(objects, s3_error, metadata), FakeSfn()
         monkeypatch.setattr(trigger, "_s3_client", s3)
         monkeypatch.setattr(trigger, "_sfn_client", sfn)
         return s3, sfn
@@ -192,16 +196,17 @@ def test_permission_error_on_the_mate_is_not_treated_as_waiting(trigger, aws):
     assert sfn.started == []
 
 
-def test_single_end_upload_starts_immediately_without_s3_calls(trigger, aws):
-    s3, sfn = aws({})
+def test_single_end_upload_starts_immediately_reading_only_its_metadata(trigger, aws):
+    # One HeadObject, for the gate profile (#157); the name still comes from the event (#65).
+    s3, sfn = aws({"raw_reads/S1.fastq.gz": "e"})
     result = trigger.handler(event("raw_reads/S1.fastq.gz", "e"), None)
     assert result["statusCode"] == 200
-    assert s3.heads == []
-    assert sfn.started[0]["name"].startswith("S1-")  # single-end naming from #65, unchanged
+    assert s3.heads == ["raw_reads/S1.fastq.gz"]
+    assert sfn.started[0]["name"].startswith("S1-")
 
 
 def test_other_start_errors_propagate(trigger, aws, monkeypatch):
-    s3, sfn = aws({})
+    s3, sfn = aws({"raw_reads/S1.fastq.gz": "e"})
 
     def boom(**kwargs):
         raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "no"}}, "StartExecution")
@@ -209,3 +214,71 @@ def test_other_start_errors_propagate(trigger, aws, monkeypatch):
     monkeypatch.setattr(sfn, "start_execution", boom)
     with pytest.raises(ClientError):
         trigger.handler(event("raw_reads/S1.fastq.gz", "e"), None)
+
+
+PAIR = {"raw_reads/S1_R1.fastq.gz": "e1", "raw_reads/S1_R2.fastq.gz": "e2"}
+
+
+def test_a_pairs_gate_profile_can_be_on_either_mate(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={"raw_reads/S1_R2.fastq.gz": {"gate-profile": "synthetic"}})
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["gate_profile"] == "synthetic"
+
+
+def test_mates_with_different_profiles_go_on_as_both_for_the_state_machine_to_refuse(trigger, aws):
+    meta = {
+        "raw_reads/S1_R1.fastq.gz": {"gate-profile": "default"},
+        "raw_reads/S1_R2.fastq.gz": {"gate-profile": "synthetic"},
+    }
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["gate_profile"] == ["default", "synthetic"]
+
+
+def test_mates_with_the_same_profile_give_one_value(trigger, aws):
+    meta = {k: {"gate-profile": "synthetic"} for k in PAIR}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    assert json.loads(sfn.started[0]["input"])["gate_profile"] == "synthetic"
+
+
+# --- the reference genome per upload (metadata reference), like the gate profile -------------------
+
+
+def test_a_pairs_reference_can_be_on_either_mate(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={"raw_reads/S1_R2.fastq.gz": {"reference": "GRCh38.fa"}})
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["reference_name"] == "GRCh38.fa"
+
+
+def test_mates_with_different_references_go_on_as_both_for_the_state_machine_to_refuse(trigger, aws):
+    meta = {"raw_reads/S1_R1.fastq.gz": {"reference": "chr20.fa"}, "raw_reads/S1_R2.fastq.gz": {"reference": "b.fa"}}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["reference_name"] == ["chr20.fa", "b.fa"]
+
+
+def test_a_pair_without_reference_metadata_keeps_the_default(trigger, aws):
+    meta = {k: {"gate-profile": "synthetic"} for k in PAIR}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    run_input = json.loads(sfn.started[0]["input"])
+    assert run_input["reference_name"] == "chr20.fa" and run_input["gate_profile"] == "synthetic"
+
+
+# --- v1.3: the upload's size, both mates added up, for Choose_Route --------------------------------------
+
+
+def test_a_pairs_input_bytes_add_up_both_mates(trigger, aws):
+    s3, sfn = aws(PAIR)
+    s3.sizes = {"raw_reads/S1_R1.fastq.gz": 25_950_000_000, "raw_reads/S1_R2.fastq.gz": 27_040_000_000}
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    assert json.loads(sfn.started[0]["input"])["input_bytes"] == 52_990_000_000
+
+
+def test_a_pair_with_a_mates_size_unknown_has_no_input_bytes(trigger, aws):
+    # Without a size, Choose_Route takes today's path: never a guess.
+    s3, sfn = aws(PAIR)
+    s3.sizes = {"raw_reads/S1_R1.fastq.gz": 10}
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert "input_bytes" not in json.loads(sfn.started[0]["input"])

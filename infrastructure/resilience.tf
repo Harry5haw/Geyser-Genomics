@@ -5,9 +5,11 @@
 locals {
   # Fargate's valid memory range (MiB) per vCPU count, for the stage_resources check.
   fargate_memory_mb = {
-    "1" = [2048, 8192]
-    "2" = [4096, 16384]
-    "4" = [8192, 30720]
+    "0.25" = [512, 2048]
+    "0.5"  = [1024, 4096]
+    "1"    = [2048, 8192]
+    "2"    = [4096, 16384]
+    "4"    = [8192, 30720]
   }
 }
 

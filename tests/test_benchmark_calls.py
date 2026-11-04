@@ -80,6 +80,35 @@ def test_missing_inputs_lists_everything_up_front(tmp_path):
     assert "alignments/HG003_chr20.cram or .bam" in missing and "alignments/HG003_chr20_vg.cram or .bam" in missing
 
 
+def test_r2_preset_compares_graphs_on_both_alignments():
+    configs = [bc.unpack(c) for c in bc.PRESETS["hprc-r2"]["configs"]]
+    r2 = [c for c in configs if c[7] == bc.R2_GRAPH]
+    assert [c[2] for c in r2] == ["HG003_chr20_r2", "HG003_chr20_vg_r2"]  # own sample names: hard links
+    assert all(c[4] == "pangenome" and c[3] + "_r2" == c[2] for c in r2)
+    # each r2 run has its v1.1 counterpart on the same alignment, with the same settings
+    for c in r2:
+        twin = next(o for o in configs if o[3] == c[3] and o[4] == "pangenome" and o[7] is None)
+        assert twin[5] == c[5] and twin[2] == c[3]
+    assert bc.R2_GRAPH == fetch.PANGENOMES["r2-chr20"]["build"].split("/")[-1]
+
+
+def test_unpack_defaults_the_graph():
+    assert bc.unpack(("L", "bwa", "S", "S", "deepvariant", {}, "12g"))[7] is None
+    assert bc.unpack(("L", "bwa", "S", "S", "pangenome", {}, "14g", "g.gbz"))[7] == "g.gbz"
+
+
+def test_missing_inputs_lists_each_graph_once(tmp_path):
+    missing = bc.missing_inputs(str(tmp_path), bc.PRESETS["hprc-r2"], "GRCh38_chr20.fa")
+    graphs = [m for m in missing if m.startswith("pangenome/")]
+    assert sorted(graphs) == sorted([f"pangenome/{bg_default()}", f"pangenome/{bc.R2_GRAPH}"])
+
+
+def bg_default():
+    import run_local
+
+    return run_local.DEFAULT_PANGENOME
+
+
 def test_history_metadata_names_the_aligner_and_the_reused_alignment():
     vg = bc.history_metadata("giraffe", "HG003_chr20_vg")
     assert vg["aligner"] == "vg giraffe" and vg["coverage"] == "35x"
@@ -104,3 +133,32 @@ def test_every_configuration_is_scored_with_its_history_metadata(tmp_path, monke
     for (_, aligner, sid, source, caller, _, _), (seen_sid, seen_caller, history) in zip(configs, seen, strict=True):
         assert (seen_sid, seen_caller) == (sid, caller)
         assert history == bc.history_metadata(aligner, source) and history["alignment"]
+
+
+def test_r2_configurations_pass_their_graph_to_the_caller_and_the_history(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_score(*args, history=None, pangenome=None, **kw):
+        seen.append((args[4], pangenome, (history or {}).get("graph")))
+        return {}, {}, {}
+
+    monkeypatch.setattr(bc, "missing_inputs", lambda *a, **k: [])
+    monkeypatch.setattr(bc.ba, "alignment_path", lambda root, sid: str(tmp_path / f"{sid}.bam"))
+    monkeypatch.setattr(bg, "link_or_copy", lambda *a: None)
+    monkeypatch.setattr(bg, "score_config", fake_score)
+    assert bc.main(["--root", str(tmp_path), "--preset", "hprc-r2", "--reference", "r.fa"]) == 0
+    by_sample = {sid: (graph, hist) for sid, graph, hist in seen}
+    assert by_sample["HG003_chr20_r2"] == (bc.R2_GRAPH, bc.R2_GRAPH)
+    assert by_sample["HG003_chr20_vg_r2"] == (bc.R2_GRAPH, bc.R2_GRAPH)
+    assert all(g is None and h is None for sid, (g, h) in by_sample.items() if not sid.endswith("_r2"))
+
+
+def test_r2_vcf_preset_reruns_only_the_vcf_built_graph():
+    configs = [bc.unpack(c) for c in bc.PRESETS["hprc-r2-vcf"]["configs"]]
+    built = [c for c in configs if c[7] == bc.R2_VCF_GRAPH]
+    assert [c[2] for c in built] == ["HG003_chr20_r2vcf", "HG003_chr20_vg_r2vcf"]
+    assert all("VCF-built" in c[0] and c[4] == "pangenome" for c in built)
+    # the other rows are the linear and v1.1 baselines, not the cut r2 graph
+    assert all(c[7] is None for c in configs if c not in built) and len(configs) == len(built) + 4
+    assert bc.R2_VCF_GRAPH == fetch.PANGENOMES["r2-chr20-vcf"]["build"].split("/")[-1]
+    assert bc.R2_VCF_GRAPH != bc.R2_GRAPH

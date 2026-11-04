@@ -51,7 +51,7 @@ def test_empty_list_page(client, storage):
     assert resp.status_code == 200
     assert b"No samples yet" in resp.content
     assert b"csrfmiddlewaretoken" in resp.content
-    assert b"hx-trigger" not in resp.content  # nothing to poll
+    assert b"data-poll" not in resp.content  # nothing to poll
 
 
 def test_list_shows_samples_and_polls_only_while_active(client, storage):
@@ -62,11 +62,11 @@ def test_list_shows_samples_and_polls_only_while_active(client, storage):
     body = resp.content.decode()
     assert "/samples/S1/" in body and "/samples/S2/" in body
     assert "Complete" in body and "Queued" in body
-    assert 'hx-trigger="every' in body
+    assert 'data-poll="/samples/rows/"' in body and 'data-poll-seconds="' in body
 
     write_run(storage, "S2", {"state": "failed", "queued": 1, "started": 2, "finished": 3, "exit_code": 1})
     rows = client.get("/samples/rows/").content.decode()
-    assert "Failed" in rows and "hx-trigger" not in rows
+    assert "Failed" in rows and "data-poll" not in rows  # finished: geyser.js stops polling
 
 
 def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
@@ -76,7 +76,9 @@ def test_detail_page_shows_variants_truth_qc_and_downloads(client, storage):
     assert "1 unexpected call" in body
     assert body.count('class="planted"') == 2
     assert "Variants" in body and "3 calls" in body
-    assert 'src="/samples/S1/files/qc_html/?inline=1"' in body
+    assert (
+        'href="/samples/S1/files/qc_html/?inline=1" target="_blank"' in body and "<iframe" not in body
+    )  # on request only
     assert "Bases ≥ Q30" in body and "93.4%" in body and "Duplication (fastp estimate)" in body
     for kind in (
         "raw",
@@ -111,7 +113,7 @@ def test_detail_page_for_running_sample_polls_and_shows_live_log(client, storage
 def test_status_partial_asks_for_reload_when_run_finishes(client, storage):
     finished_sample(storage)
     resp = client.get("/samples/S1/status/?was_active=1")
-    assert resp.status_code == 204 and resp["HX-Refresh"] == "true"
+    assert resp.status_code == 204 and resp["Geyser-Refresh"] == "true"  # geyser.js reloads the page
     resp = client.get("/samples/S1/status/")
     assert resp.status_code == 200 and b"run-status" in resp.content
 
@@ -227,3 +229,103 @@ def test_a_later_run_that_stopped_before_variants_keeps_the_annotation(client, s
     put(storage, "runs/S1.provenance/CallVariants.json", json.dumps(run1))
     put(storage, "runs/S1.provenance/Align.json", json.dumps(run2))
     assert "<th>Consequence</th>" in client.get("/samples/S1/").content.decode()
+
+
+# --- DeepVariant as the run's caller (#125 follow-up) -----------------------------------------------
+
+DV_VCF_LINES = [
+    (100, "A", "G", "PASS"),
+    (300, "C", "T", "PASS"),
+    (500, "G", "A", "PASS"),
+    (700, "T", "C", "RefCall"),  # a rejected candidate: not a call
+]
+
+
+def dv_vcf_gz():
+    from .web_helpers import VCF_HEADER, gz
+
+    lines = "".join(f"synth1\t{p}\t.\t{r}\t{a}\t30\t{f}\t.\tGT\t0/1\n" for p, r, a, f in DV_VCF_LINES)
+    return gz((VCF_HEADER + lines).encode())
+
+
+def dv_parts(storage, dv_status="Success", fallback=False):
+    import provenance
+
+    stages = [
+        ("QualityControl", "Success", None),
+        ("Align", "Success", None),
+        ("DeepVariant", dv_status, "deepvariant"),
+    ]
+    if fallback:
+        stages.append(("CallVariants", "Success", None))
+    for i, (task, status, caller) in enumerate(stages):
+        at = f"2026-11-02T10:0{i}:00Z"
+        part = {
+            "task": task,
+            "status": status,
+            "run_name": "R1",
+            "started": at,
+            "finished": at,
+            "inputs": [],
+            "outputs": [],
+            "tools": {},
+            "stats": {},
+        }
+        if caller:
+            part["caller"] = caller
+        provenance._put_json(storage, f"runs/S1.provenance/{task}.json", part)
+
+
+def dv_sample(storage, dv_vcf=True):
+    """A cloud run with caller=deepvariant: QC and align, then DeepVariant's VCF; no bcftools VCF."""
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    for key in ("qc_reports/S1.fastp.html", "alignments/S1.cram", "alignments/S1.cram.crai"):
+        put(storage, key, b"data")
+    put(storage, "qc_reports/S1.fastp.json", json.dumps(FASTP_SINGLE))
+    if dv_vcf:
+        put(storage, "variants_deepvariant/S1.vcf.gz", dv_vcf_gz())
+    put(
+        storage,
+        "truth/S1.json",
+        json.dumps({"snps": [{"pos": p, "ref": r, "alt": a} for p, r, a, _ in DV_VCF_LINES[:3]]}),
+    )
+    dv_parts(storage)
+
+
+def test_a_deepvariant_run_shows_deepvariants_calls_and_is_complete(client, storage):
+    dv_sample(storage)
+    body = client.get("/samples/S1/").content.decode()
+    assert "3/3 planted SNPs recovered" in body and "0 unexpected calls" in body  # RefCall isn't a call
+    assert "Complete" in body
+    assert "/samples/S1/files/vcf/" in body and "/samples/S1/files/tbi/" not in body
+    response = client.get("/samples/S1/files/vcf/")
+    assert response.status_code == 200 and b"".join(response.streaming_content) == dv_vcf_gz()
+    assert response["Content-Disposition"].endswith('S1.vcf.gz"')
+    assert client.get("/samples/S1/files/tbi/").status_code == 404
+    listing = client.get("/").content.decode()
+    assert "S1" in listing and "Complete" in listing
+
+
+def test_a_stale_bcftools_index_is_not_offered_for_deepvariants_calls(client, storage):
+    dv_sample(storage)
+    put(storage, "variants/S1.vcf.gz.tbi", b"old index")  # left by an earlier bcftools run
+    body = client.get("/samples/S1/").content.decode()
+    assert "/samples/S1/files/tbi/" not in body
+
+
+def test_after_the_bcftools_fallback_the_page_shows_bcftools_calls(client, storage):
+    dv_sample(storage)
+    put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G")]))
+    dv_parts(storage, dv_status="Failure", fallback=True)
+    body = client.get("/samples/S1/").content.decode()
+    assert "1/3 planted SNPs recovered" in body
+    assert b"".join(client.get("/samples/S1/files/vcf/").streaming_content) == vcf_gz([(100, "A", "G")])
+
+
+def test_the_list_reads_the_record_even_with_an_old_bcftools_vcf(client, storage):
+    # bcftools ran earlier; this run's caller is DeepVariant and it failed (no local fallback): not Complete.
+    dv_sample(storage, dv_vcf=False)
+    put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G")]))
+    dv_parts(storage, dv_status="Failure")
+    listing = client.get("/").content.decode()
+    assert "Complete" not in listing

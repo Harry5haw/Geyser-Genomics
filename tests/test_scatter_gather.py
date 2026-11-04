@@ -265,6 +265,7 @@ def test_run_local_plans_regions_only_for_a_bcftools_stage(tmp_path, monkeypatch
     monkeypatch.setattr(run_local, "local_regions", lambda *a: planned.append(a) or ["c:1-10"])
     monkeypatch.setattr(run_local, "run_job", lambda *a, **k: 0)
     monkeypatch.setattr(run_local, "sample_keys", lambda *a: ["raw_reads/S1.fastq.gz"])
+    monkeypatch.setattr(run_local, "reference_problem", lambda *a: None)  # no reference/ under tmp_path
     run_local.main(["--root", str(tmp_path), "--sample", "S1", "--caller", "deepvariant", "--shard-window", "10"])
     assert planned == []  # no bcftools stage: nothing to shard, the local reference isn't read
     run_local.main(["--root", str(tmp_path), "--sample", "S1", "--shard-window", "10"])

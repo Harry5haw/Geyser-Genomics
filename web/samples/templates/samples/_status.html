@@ -1,25 +1,25 @@
 {% load geyser %}
-<section id="run-status" class="panel"{% if sample.active %} hx-get="{% url 'samples:status' sample.sample_id %}?was_active=1" hx-trigger="every {{ poll_seconds }}s" hx-swap="outerHTML"{% endif %}>
-  <div class="sample-head">
+<section id="run-status" class="panel"{% if sample.active and not static %} data-poll="{% url 'samples:status' sample.sample_id %}?was_active=1" data-poll-seconds="{{ poll_seconds }}"{% elif status_api %} data-status-api="{{ status_api }}" data-poll-seconds="{{ poll_seconds }}"{% endif %}>
+  <div class="head">
     <h1>{{ sample.sample_id }}</h1>
     <span class="badge {{ sample.state }}">{{ sample.state_label }}</span>
     {% if sample.duration %}<span class="muted">{{ sample.done_count }}/{{ sample.stages|length }} stages · {{ sample.duration|duration }}</span>{% endif %}
   </div>
 
-  <div class="progress-track" role="progressbar" aria-label="Pipeline progress"
-       aria-valuemin="0" aria-valuemax="4" aria-valuenow="{{ sample.done_count }}">
-    {% for st in sample.stages %}<div class="seg s-{{ st.name }} {{ st.state }}" title="{{ st.label }}: {{ st.state }}"></div>{% endfor %}
+  <div class="track" role="progressbar" aria-label="Pipeline progress"
+       aria-valuemin="0" aria-valuemax="{{ sample.stages|length }}" aria-valuenow="{{ sample.done_count }}">
+    {% for st in sample.stages %}<div class="s-{{ st.name }} {{ st.state }}" title="{{ st.label }}: {{ st.state }}"></div>{% endfor %}
   </div>
   {% for st in sample.stages %}{% if st.state == "running" %}
-    <p class="now-running">Now running: <strong class="s-{{ st.name }}">{{ st.label }}</strong></p>
+    <p class="now">Now running: <strong class="s-{{ st.name }}">{{ st.label }}</strong></p>
   {% endif %}{% endfor %}
 
   <div class="timeline">
     {% for st in sample.stages %}
-      <div class="stage s-{{ st.name }} {{ st.state }}">
-        <div class="n">Stage {{ forloop.counter }}</div>
-        <div class="name">{{ st.label }}</div>
-        <div class="meta"><span class="pill s-{{ st.name }} {{ st.state }}">{{ st.state }}</span><span>{{ st.duration|duration }}</span></div>
+      <div class="s-{{ st.name }} {{ st.state }}">
+        <small>Stage {{ forloop.counter }}</small>
+        <strong>{{ st.label }}</strong>
+        <p><span class="pill s-{{ st.name }} {{ st.state }}">{{ st.state }}</span><span>{{ st.duration|duration }}</span></p>
       </div>
     {% endfor %}
   </div>

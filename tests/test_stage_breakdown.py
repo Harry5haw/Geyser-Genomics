@@ -279,3 +279,65 @@ def test_parallel_branches_are_credited_by_event_chain_not_order():
         ("Quality_Control", "qc-job", "qc-job"),
         ("Align_Genome", "align-job", "align-job"),
     ]
+
+
+def test_every_map_iteration_is_its_own_row_and_a_retry_stays_in_its_row():
+    # Call_Variant_Shards (a Map) enters Call_Shard once per region; each is a separate Batch job. Before
+    # this, rows were keyed by state name, so only the first shard was counted (its cost too). Shard 0's
+    # first SubmitJob is throttled and retried: the retry chains back to the same entry, so still one row.
+    def ev(eid, prev, event):
+        return {**event, "id": eid, "previousEventId": prev}
+
+    scheduled = {"type": "TaskScheduled", "taskScheduledEventDetails": {"resourceType": "batch"}}
+    throttled = {
+        "type": "TaskFailed",
+        "taskFailedEventDetails": {"resourceType": "batch", "error": "Batch.AWSBatchException", "cause": "Too Many"},
+    }
+    events = [
+        ev(1, 0, {"type": "MapStateEntered", "stateEnteredEventDetails": {"name": "Call_Variant_Shards"}}),
+        ev(2, 1, {"type": "MapIterationStarted"}),
+        ev(3, 1, {"type": "MapIterationStarted"}),
+        ev(4, 2, entered("Call_Shard")),
+        ev(5, 3, entered("Call_Shard")),
+        ev(6, 4, scheduled),
+        ev(7, 5, scheduled),
+        ev(8, 6, throttled),
+        ev(9, 7, task_event("TaskSubmitted", {"JobId": "shard-1"})),
+        ev(10, 8, scheduled),
+        ev(11, 10, task_event("TaskSubmitted", {"JobId": "shard-0"})),
+        ev(12, 9, task_event("TaskSucceeded", sfn_job("shard-1", "SUCCEEDED", T0, T0 + 1000, T0 + 118_000))),
+        ev(13, 11, task_event("TaskSucceeded", sfn_job("shard-0", "SUCCEEDED", T0, T0 + 3000, T0 + 368_000))),
+        ev(14, 13, {"type": "MapStateExited"}),
+        ev(15, 14, entered("Call_Variants")),
+        ev(16, 15, task_event("TaskSubmitted", {"JobId": "merge"})),
+        ev(17, 16, task_event("TaskSucceeded", sfn_job("merge", "SUCCEEDED", T0, T0 + 4000, T0 + 29_000))),
+    ]
+    tasks = sb.batch_tasks(paged_sfn(events), "exec-1")
+    assert [(t["stage"], t["job_id"], t["job"]["JobId"]) for t in tasks] == [
+        ("Call_Shard", "shard-0", "shard-0"),  # first Batch event: its throttled attempt
+        ("Call_Shard", "shard-1", "shard-1"),
+        ("Call_Variants", "merge", "merge"),
+    ]
+    rows = sb.execution_stages(paged_sfn(events), None, "exec-1")
+    assert [r["run_seconds"] for r in rows] == [365.0, 117.0, 25.0]
+    # Both shards are in the run's cost now (2 vCPU / 4 GiB; the merge billed at Fargate's 1-minute minimum).
+    assert sb.totals(rows)["cost_usd"] == pytest.approx((117 + 365 + 60) / 3600 * (2 * 0.04656 + 4 * 0.00511))
+
+
+def test_retry_inside_one_entry_follows_the_latest_job():
+    # From T3's #189. A Retry in the same state entry submits a second job: the row must describe that
+    # job, and the live describe_jobs lookup must ask for it, not for the first (failed) one.
+    events = [
+        entered("Call_Shard"),
+        task_event("TaskSubmitted", {"JobId": "first"}),
+        task_event("TaskFailed", sfn_job("first", "FAILED", T0, T0 + 1000, T0 + 2000)),
+        task_event("TaskSubmitted", {"JobId": "second"}),
+        task_event("TaskSucceeded", sfn_job("second", "SUCCEEDED", T0 + 5000, T0 + 6000, T0 + 66_000)),
+    ]
+    tasks = sb.batch_tasks(paged_sfn(events), "exec-1")
+    assert [(t["job_id"], t["job"]["Status"]) for t in tasks] == [("second", "SUCCEEDED")]
+    batch = mock.Mock()
+    batch.describe_jobs.return_value = {"jobs": []}
+    rows = sb.execution_stages(paged_sfn(events), batch, "exec-1")
+    batch.describe_jobs.assert_called_once_with(jobs=["second"])
+    assert rows[0]["status"] == "SUCCEEDED" and rows[0]["run_seconds"] == 60.0

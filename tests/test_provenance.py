@@ -63,7 +63,11 @@ def test_a_stage_writes_its_part_and_the_record(store, tmp_path, monkeypatch):
     assert record["run_name"] == "S1-20261102T100000Z-abc" and record["app_version"] == "dev-local"
     assert record["status"] == "incomplete" and not record["complete"]  # only one of the three stages so far
     assert record["stats"] == {"flagstat": {"mapped_pct": 100.0}}
-    assert provenance.read_record(store, "S1") == record
+    # Readers rebuild the same record from the parts. Only "updated" differs: build() stamps it when it runs,
+    # to the second, so a rebuild a moment later can be a second on (#200).
+    rebuilt = provenance.read_record(store, "S1")
+    assert rebuilt.pop("updated") >= record.pop("updated")
+    assert rebuilt == record
 
 
 def test_all_core_stages_succeeding_is_a_complete_record(store):
@@ -159,6 +163,9 @@ class FakePopen:
         ),
         ("fastp", b"fastp 0.24.0\n", "0.24.0"),  # what the geyser-app image's fastp prints (to stderr)
         ("mosdepth", b"mosdepth 0.3.15\n", "0.3.15"),
+        # The geyser-giraffe image's vg and kmc (kmc with no arguments prints its usage).
+        ("vg", b'vg version v1.55.0 "Bernolda"\nCompiled with g++ (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0\n', "1.55.0"),
+        ("kmc", b"K-Mer Counter (KMC) ver. 3.2.4 (2024-02-09)\nUsage:\n", "3.2.4"),
         ("samtools", b"something else\n", None),
     ],
 )
@@ -197,6 +204,8 @@ def test_summary_is_the_short_form():
         "stages": {"Align": "Failure"},
         "stage_runs": {"Align": None},
         "failed_stage": None,  # set when the state machine closed the run (test_finalize.py)
+        "caller": None,  # no caller in this record: the bcftools run, as before #125
+        "vcf": None,
     }
 
 
@@ -400,3 +409,86 @@ def test_the_record_names_only_a_known_caller(store):
     dv_only_run(store, caller="bcftools")  # not a caller with a stage of its own: the bcftools rule
     record = provenance.build(store, "S1")
     assert "caller" not in record and record["status"] == "incomplete"
+
+
+# --- the sample's current VCF: the variant-calling stage's (#125 follow-up) ------------------------
+
+
+def test_stage_vcf_matches_each_stages_own_keys():
+    import deepvariant_task
+    import tasks
+
+    assert provenance.STAGE_VCF["CallVariants"].format(id="S1") == tasks.keys_for("S1")["vcf"]
+    assert provenance.STAGE_VCF["DeepVariant"].format(id="S1") == deepvariant_task.deepvariant_keys("S1")["vcf"]
+    pangenome = deepvariant_task.deepvariant_keys("S1", pangenome="g.gbz")["vcf"]
+    assert provenance.STAGE_VCF["PangenomeDeepVariant"].format(id="S1") == pangenome
+    assert set(provenance.STAGE_VCF) == {"CallVariants", *provenance.CALLER_STAGES.values()}
+
+
+def test_a_bcftools_runs_vcf_is_the_bcftools_vcf(store):
+    for i, task in enumerate(provenance.CORE_STAGES):
+        write_part(store, task, run_name="R1", finished=f"2026-11-02T10:0{i}:00Z")
+    record = provenance.build(store, "S1")
+    assert (record["variant_stage"], record["vcf"]) == ("CallVariants", "variants/S1.vcf.gz")
+
+
+def test_a_deepvariant_runs_vcf_is_deepvariants(store):
+    dv_only_run(store)
+    record = provenance.build(store, "S1")
+    assert (record["variant_stage"], record["vcf"]) == ("DeepVariant", "variants_deepvariant/S1.vcf.gz")
+    assert provenance.summary(record)["vcf"] == "variants_deepvariant/S1.vcf.gz"
+
+
+def test_a_pangenome_runs_vcf_is_its_own(store):
+    dv_only_run(store, caller="pangenome", task="PangenomeDeepVariant")
+    assert provenance.build(store, "S1")["vcf"] == "variants_pangenome/S1.vcf.gz"
+
+
+def test_after_the_bcftools_fallback_the_vcf_is_bcftools(store):
+    dv_only_run(store, dv_status="Failure")
+    write_part(store, "CallVariants", run_name="R1", finished="2026-11-02T10:20:00Z", started="2026-11-02T10:06:00Z")
+    record = provenance.build(store, "S1")
+    assert (record["variant_stage"], record["vcf"]) == ("CallVariants", "variants/S1.vcf.gz")
+
+
+def test_an_extra_caller_leaves_the_vcf_to_bcftools(store):
+    # --caller both (or DeepVariant added later without PIPELINE_CALLER): bcftools' calls stay the sample's.
+    for i, task in enumerate((*provenance.CORE_STAGES, "DeepVariant")):
+        write_part(store, task, run_name="R1", finished=f"2026-11-02T10:0{i}:00Z")
+    assert provenance.build(store, "S1")["vcf"] == "variants/S1.vcf.gz"
+
+
+def test_sample_vcf_key_defaults_to_bcftools_and_accepts_only_known_keys():
+    assert provenance.sample_vcf_key(None, "S1") == "variants/S1.vcf.gz"
+    assert provenance.sample_vcf_key({"status": "succeeded"}, "S1") == "variants/S1.vcf.gz"  # before this change
+    assert (
+        provenance.sample_vcf_key({"vcf": "variants_deepvariant/S1.vcf.gz"}, "S1") == "variants_deepvariant/S1.vcf.gz"
+    )
+    assert provenance.sample_vcf_key({"vcf": "variants_deepvariant/S2.vcf.gz"}, "S1") == "variants/S1.vcf.gz"
+    assert provenance.sample_vcf_key({"vcf": "../secrets"}, "S1") == "variants/S1.vcf.gz"
+
+
+@pytest.mark.parametrize(("task", "caller"), [("PangenomeDeepVariant", None), ("DeepVariant", None)])
+def test_an_add_on_run_after_a_deepvariant_run_keeps_its_calls(store, task, caller):
+    # run_local --caller pangenome (or deepvariant) --skip-to-variants after a run whose caller was DeepVariant:
+    # the add-on has no PIPELINE_CALLER, and the sample's calls are still the DeepVariant run's.
+    dv_only_run(store, run="R1")
+    write_part(store, task, run_name="R2", finished="2026-11-02T11:00:00Z")
+    record = provenance.build(store, "S1")
+    assert (record["variant_stage"], record["vcf"]) == ("DeepVariant", "variants_deepvariant/S1.vcf.gz")
+
+
+def test_when_the_callers_run_failed_an_add_ons_calls_are_the_only_ones(store):
+    dv_only_run(store, run="R1", dv_status="Failure")
+    write_part(store, "PangenomeDeepVariant", run_name="R2", finished="2026-11-02T11:00:00Z")
+    assert provenance.build(store, "S1")["vcf"] == "variants_pangenome/S1.vcf.gz"
+
+
+def test_a_failed_bcftools_call_keeps_the_record_on_bcftools(store):
+    # bcftools ran (and failed): its VCF is the sample's calls, missing, whatever an add-on caller wrote.
+    for i, (task, status) in enumerate(
+        (("QualityControl", "Success"), ("Align", "Success"), ("CallVariants", "Failure"))
+    ):
+        write_part(store, task, status=status, run_name="R1", finished=f"2026-11-02T10:0{i}:00Z")
+    write_part(store, "DeepVariant", run_name="R2", finished="2026-11-02T11:00:00Z")
+    assert provenance.build(store, "S1")["vcf"] == "variants/S1.vcf.gz"

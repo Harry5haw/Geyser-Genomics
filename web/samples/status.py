@@ -18,6 +18,7 @@ from typing import NamedTuple
 from geyser_web.pipeline import (
     ALIGNMENT_FORMS,
     SINGLE,
+    STAGE_VCF,
     LayoutError,
     ObjectNotFound,
     keys_for,
@@ -26,6 +27,8 @@ from geyser_web.pipeline import (
     legacy_qc_keys,
     output_present,
     parse_raw_key,
+    read_record,
+    sample_vcf_key,
 )
 
 from .runs import is_valid_sample_id, read_all_runs, read_run
@@ -142,8 +145,14 @@ def read_metrics(storage) -> list:
     return records
 
 
-def build_sample(sample_id: str, present: set, metrics: list, run: dict | None, layout: str = SINGLE) -> SampleView:
+def build_sample(
+    sample_id: str, present: set, metrics: list, run: dict | None, layout: str = SINGLE, record: dict | None = None
+) -> SampleView:
+    """record: the provenance run record, when there is one. When DeepVariant was the run's caller (#125) its
+    VCF, not bcftools', is the variants stage's output, and its metric (DeepVariant) the stage's time."""
     keys = keys_for(sample_id, layout)
+    vcf_key = sample_vcf_key(record, sample_id)
+    variant_metric = (record or {}).get("variant_stage") or "CallVariants"
     since = None
     if run and run.get("started"):
         since = run["started"] - CLOCK_SLACK_SECONDS
@@ -161,9 +170,14 @@ def build_sample(sample_id: str, present: set, metrics: list, run: dict | None, 
 
     stages = []
     for st in STAGES:
-        rec = latest.get(st.metric)
+        variants = st.name == "variants" and vcf_key != keys["vcf"]
+        rec = latest.get(variant_metric if variants else st.metric)
         duration = rec.get("duration_seconds") if rec else None
-        if any(output_present(sample_id, layout, name, present.__contains__) for name in st.output):
+        if variants:
+            done = vcf_key in present
+        else:
+            done = any(output_present(sample_id, layout, name, present.__contains__) for name in st.output)
+        if done:
             state = "done"
             if rec and rec.get("status") != "Success":
                 duration = None
@@ -183,9 +197,15 @@ def build_sample(sample_id: str, present: set, metrics: list, run: dict | None, 
         if view.state == "pending" and all(dep in done for dep in st.after)
     ]
     first_pending = ready[0] if ready else None
+    # In the cloud there are no local metrics or worker records: a failed run shows only in its run record, which
+    # the state machine closes with status "failed" (#155). Without this it would look "in progress" for ever.
+    # Only without a worker record: locally, a re-run's record is the previous run's until its first stage writes a
+    # part, and the worker's own state (queued/running) is the truth. (A cloud re-run of a sample whose last run
+    # failed shows failed until its first stage finishes.)
+    record_failed = run is None and (record or {}).get("status") == "failed"
     if all(s.state == "done" for s in stages):
         state = "succeeded"
-    elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded"):
+    elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded") or record_failed:
         # 'succeeded' with outputs missing means they were removed afterwards; don't claim success.
         state = "failed"
         if not any(s.state == "failed" for s in stages) and first_pending:
@@ -210,16 +230,45 @@ def build_sample(sample_id: str, present: set, metrics: list, run: dict | None, 
         updated=max(times) if any(times) else None,
         # Local runs are sequential, so the stage times add up; in the cloud there are no local metrics.
         duration=sum(durations) if durations else None,
-        keys=keys,
+        keys={**keys, "vcf": vcf_key},
         layout=layout,
     )
 
 
+# Every caller's VCF folder (variants/, variants_deepvariant/, variants_pangenome/).
+CALLER_VCF_PREFIXES = {v.split("/", 1)[0] + "/" for v in STAGE_VCF.values()}
+
+
 def _present_keys(storage) -> set:
     present = set()
-    for prefix in {keys_for("x")[name].split("/", 1)[0] + "/" for st in STAGES for name in st.output}:
+    prefixes = {keys_for("x")[name].split("/", 1)[0] + "/" for st in STAGES for name in st.output}
+    for prefix in prefixes | CALLER_VCF_PREFIXES:
         present.update(storage.list_keys(prefix))
     return present
+
+
+def _load_record(storage, sample_id):
+    try:
+        return read_record(storage, sample_id)
+    except Exception:  # noqa: BLE001 - the record only refines the status; never fail the page over it
+        return None
+
+
+# Run record parts that change what the list shows: a stage that can be a run's caller
+# (runs/<id>.provenance/<Stage>.json), and Finalize, the part the state machine writes when it closes a failed run.
+CALLER_PART_NAMES = tuple(f"/{stage}.json" for stage in STAGE_VCF if stage != "CallVariants")
+RECORD_PART_NAMES = (*CALLER_PART_NAMES, "/Finalize.json")
+
+
+def _samples_with_caller_parts(storage) -> set:
+    """Samples whose run record changes their row: a DeepVariant or pangenome part (DeepVariant's VCF can be their
+    calls) or a Finalize part (the run failed; the cloud has no other sign of it). One LIST of runs/, so the list
+    page reads records for these samples only, not one per sample."""
+    found = set()
+    for key in storage.list_keys("runs/"):
+        if key.endswith(RECORD_PART_NAMES) and ".provenance/" in key:
+            found.add(key[len("runs/") :].split(".provenance/", 1)[0])
+    return found
 
 
 def load_all(storage) -> list:
@@ -228,7 +277,11 @@ def load_all(storage) -> list:
     if not layouts:
         return []
     present, metrics, runs = _present_keys(storage), read_metrics(storage), read_all_runs(storage)
-    samples = [build_sample(i, present, metrics, runs.get(i), layout) for i, layout in layouts.items()]
+    with_callers = _samples_with_caller_parts(storage)
+    samples = [
+        build_sample(i, present, metrics, runs.get(i), layout, _load_record(storage, i) if i in with_callers else None)
+        for i, layout in layouts.items()
+    ]
     samples.sort(key=lambda s: (s.updated or 0, s.sample_id), reverse=True)
     return samples
 
@@ -245,5 +298,7 @@ def load_one(storage, sample_id: str):
     candidates = [k for st in STAGES for name in st.output for k in keys_of(keys, name)] + legacy_qc_keys(
         sample_id, layout
     )
+    record = _load_record(storage, sample_id)
+    candidates.append(sample_vcf_key(record, sample_id))
     present = {k for k in candidates if storage.exists(k)}
-    return build_sample(sample_id, present, read_metrics(storage), read_run(storage, sample_id), layout)
+    return build_sample(sample_id, present, read_metrics(storage), read_run(storage, sample_id), layout, record)

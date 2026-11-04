@@ -21,6 +21,9 @@ however little they needed. Peaks are high-water marks of the process, so they a
 process runs one stage (always in Batch and run_local.py). A stage killed from outside (out of memory,
 the Batch attempt timeout) never reaches the measurement and logs no usage; Batch's own status reason
 says why it stopped. ``getrusage`` is Unix-only: on Windows there is no usage, only Duration.
+
+DeepVariant's step metrics (``DeepVariant.CallVariants`` ...) also carry GPU utilisation and peak GPU memory
+when the job had a GPU (#139; see deepvariant_task.py).
 """
 
 import json
@@ -42,6 +45,11 @@ USAGE_LOG_PREFIX = "stage-usage: "
 USAGE_METRICS = {
     "cpu_seconds": ("CpuSeconds", "Seconds"),
     "peak_memory_mib": ("PeakMemory", "Megabytes"),
+    # DeepVariant's steps on a GPU (#139, deepvariant_task.gpu_metric_usage): nvidia-smi's utilisation (share of
+    # time a kernel ran) and the device's peak memory in use, sampled while the step ran.
+    "gpu_utilization_mean_pct": ("GpuUtilization", "Percent"),
+    "gpu_utilization_peak_pct": ("GpuUtilizationPeak", "Percent"),
+    "gpu_memory_peak_mib": ("GpuPeakMemory", "Megabytes"),
 }
 
 

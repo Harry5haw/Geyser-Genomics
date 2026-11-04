@@ -1,0 +1,35 @@
+# Thresholds for the cloud smoke tests (the CLOUD0xx checkpoints): 10,000 real single-end reads (or 5,000
+# pairs) simulated from GRCh38 chr20:10,000,001-10,050,000 with 10 planted SNPs, aligned to the whole of
+# chr20 (reference/chr20.fa). Calibrated on every cloud checkpoint with stats, CLOUD005-CLOUD016 (11 runs,
+# 2-3 Nov 2026; CLOUD006 paired, the rest single-end): all eleven give the values in the comments below.
+# Not for `make_test_data.py` data: that is synthetic.toml (a 50 kb random reference, ~30x).
+# Use: S3 metadata gate-profile=smoke on the upload, "gate_profile": "smoke" in a manual start, or
+#      --config gate/thresholds/smoke.toml
+
+on_missing = "fail"
+
+[run_record]
+statuses = ["succeeded"]
+
+[checks]
+# Simulated reads have perfect qualities. Measured: 100.
+q30_pct = { min = 99.0 }
+# Real chr20 sequence around 10 Mb, not a random 50% reference. Measured: 37.50 single, 37.28 paired.
+gc_pct = { min = 35.0, max = 40.0 }
+reads = { min = 10000 }
+# Every read in the alignment. Measured: 0.
+read_count_difference = { min = 0, max = 0 }
+# Measured: 100.
+mapped_pct = { min = 99.5 }
+# Single-end marking flags ~5% of reads by chance (4.78 measured, as for synthetic.toml's data); paired 0.
+duplicate_pct = { max = 6.0 }
+# Measured: 100 (CLOUD006).
+properly_paired_pct = { min = 99.0 }
+# The reads cover 50 kb of a 64.4 Mb chromosome, so the mean depth over chr20 is tiny by design (measured
+# 0.0222 single, 0.0232 paired). The bounds check that the reads landed and were counted once, not the
+# sample's quality: below 0.015 about a third of the reads' bases are missing; above 0.03 some are counted twice.
+mean_depth = { min = 0.015, max = 0.03 }
+# No breadth check: 50 kb is under 0.1% of chr20, so breadth_10x_pct is 0 and breadth_1x_pct rounds to 0.
+snps = { min = 10, max = 10 }
+indels = { max = 0 }
+# No Ti/Tv check: 10 planted SNPs (measured Ti/Tv 0.25) are too few for the ratio to mean anything.
