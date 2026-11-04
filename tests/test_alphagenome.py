@@ -65,14 +65,9 @@ def test_selection_keeps_pass_snvs_and_indels_ranked_by_qual(tmp_path):
         rec("chr20", 800, "G", "A", qual=40),  # ties with 700: position breaks it
     ]
     selected, counts = read((tmp_path / "c.vcf", vcf(lines)))
-    assert [v.key for v in selected] == [
-        "chr20:200:AT:A",
-        "chr20:700:C:A",
-        "chr20:700:C:T",
-        "chr20:800:G:A",
-        "chr20:100:A:G",
-        "chr21:50:T:C",
-    ]
+    keys = [v.key for v in selected]
+    assert keys[0] == "chr20:200:AT:A" and keys[4:] == ["chr20:100:A:G", "chr21:50:T:C"]  # by QUAL; '.' last
+    assert sorted(keys[1:4]) == ["chr20:700:C:A", "chr20:700:C:T", "chr20:800:G:A"]  # the QUAL-40 tie, any order
     assert [v.kind for v in selected][:2] == ["indel", "snv"]
     assert counts == {
         "records": 9,
@@ -80,6 +75,7 @@ def test_selection_keeps_pass_snvs_and_indels_ranked_by_qual(tmp_path):
         "snvs": 5,
         "indels": 1,
         "not_scorable": 3,
+        "other_kind": 0,
         "candidates": 6,
         "selected": 6,
         "dropped_by_cap": 0,
@@ -487,7 +483,9 @@ def test_annotate_with_the_avi_file(stage):
     write_avi_table(stage["root"] / tasks.alphagenome_avi_key("chr20.fa"), [("chr20", 104, "A", "G", 2.0, 31.0)])
     assert tasks.main(["annotate", "S1", "chr20.fa", "--source", "avi-file"]) == 0
     part = provenance.read_part(stage["store"], "S1", "Annotate")
-    assert part["alphagenome"]["scored"] == 1 and part["alphagenome"]["not_scored"] == 5  # the rest: not in the table
+    assert (
+        part["alphagenome"]["scored"] == 1 and part["alphagenome"]["not_scored"] == 4
+    )  # SNVs not in the table (the indel is never selected)
     assert part["alphagenome"]["api_calls"] == 0
     assert tasks.alphagenome_avi_key("chr20.fa") in {i["key"] for i in part["inputs"]}
     tsv = (stage["root"] / "stats" / "S1" / "alphagenome.tsv").read_text().splitlines()
@@ -618,11 +616,77 @@ def test_without_bcftools_the_table_and_the_record_are_still_written(stage, monk
 
 
 def test_the_record_says_which_kinds_went_unscored(stage):
-    # avi-file takes SNVs only: the indel and the SNVs missing from the table show up by kind.
+    # avi-file takes SNVs only: the indel is never selected (other_kind), and the SNVs the table lacks show up by kind.
     stage["core_run"]()
     stage["put_vcf"]("variants/S1.vcf.gz", LINES)
     (stage["root"] / "reference" / "alphagenome").mkdir(parents=True)
     write_avi_table(stage["root"] / tasks.alphagenome_avi_key("chr20.fa"), [("chr20", 104, "A", "G", 2.0, 31.0)])
     assert tasks.main(["annotate", "S1", "chr20.fa", "--source", "avi-file"]) == 0
     summary = provenance.read_part(stage["store"], "S1", "Annotate")["alphagenome"]
-    assert summary["not_scored_by_kind"] == {"snv": 4, "indel": 1} and summary["vcf"] == "written"
+    assert summary["not_scored_by_kind"] == {"snv": 4, "indel": 0} and summary["selection"]["other_kind"] == 1
+    assert summary["vcf"] == "written"
+
+
+def test_qual_ties_are_spread_along_the_chromosome_not_taken_from_its_start(tmp_path):
+    # bcftools caps QUAL near 225, so on a real sample thousands of calls tie at the top. A positional tie-break
+    # would take the first ones along the chromosome instead of a spread.
+    lines = [rec("chr20", 1_000 * (i + 1), "A", "G", qual=225) for i in range(1_000)]
+    selected, _ = read((tmp_path / "c.vcf", vcf(lines)), cap=100)
+    positions = sorted(v.pos for v in selected)
+    assert len(positions) == 100 and positions[-1] > 500_000 and positions[0] < 500_000  # from all along
+    again, _ = read((tmp_path / "d.vcf", vcf(lines)), cap=100)
+    assert [v.key for v in again] == [v.key for v in selected]  # deterministic
+
+
+def test_keys_are_what_the_service_is_asked_for(tmp_path):
+    # chr20 as named in the VCF, the VCF's 1-based POS, upper-case alleles: the form genome.Variant takes.
+    selected, _ = read((tmp_path / "c.vcf", vcf([rec("chr20", 10_000_100, "c", "t")])))
+    (v,) = selected
+    assert (v.chrom, v.pos, v.ref, v.alt, v.key) == ("chr20", 10_000_100, "C", "T", "chr20:10000100:C:T")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        rec("chr20", 100, "A", "*"),  # a spanning deletion's placeholder allele
+        rec("chr20", 100, "A", "G", filt="RefCall"),  # DeepVariant's no-call candidates
+        rec("chr20", 100, "A", "G", filt="LowQual"),
+        rec("chr20", 100, "AC", "GT"),  # an MNP: not an SNV
+        rec("chr20", 100, "A", "."),  # no ALT
+    ],
+)
+def test_what_is_never_sent(tmp_path, line):
+    selected, _ = read((tmp_path / "c.vcf", vcf([line])))
+    assert selected == []
+
+
+def test_a_multi_allelic_record_with_a_star_keeps_its_real_alleles(tmp_path):
+    selected, counts = read((tmp_path / "c.vcf", vcf([rec("chr20", 100, "A", "G,*,T")])))
+    assert sorted(v.key for v in selected) == ["chr20:100:A:G", "chr20:100:A:T"] and counts["not_scorable"] == 1
+
+
+def test_a_snv_only_source_spends_its_cap_on_snvs(tmp_path):
+    # T1's HG003 atlas run: bcftools gives indels high QUAL, so 221 of the top 500 were indels atlas can't score.
+    lines = [rec("chr20", 100 + i, "AT", "A", qual=99) for i in range(5)] + [
+        rec("chr20", 200 + i, "A", "G", qual=50) for i in range(5)
+    ]
+    path = tmp_path / "c.vcf"
+    path.write_text(vcf(lines))
+    _, contigs, has_bcsq, records = ag.read_vcf(str(path))
+    selected, counts = ag.select(records, contigs, has_bcsq, 3, kinds=ag.AtlasBackend.KINDS)
+    assert [v.kind for v in selected] == ["snv"] * 3 and counts["other_kind"] == 5 and counts["candidates"] == 5
+    both, _ = ag.select(records, contigs, has_bcsq, 3, kinds=ag.ApiBackend.KINDS)
+    assert [v.kind for v in both] == ["indel"] * 3  # api and fake take both kinds: QUAL decides
+
+
+@pytest.mark.parametrize(
+    "cls,kinds",
+    [
+        ("FakeBackend", {"snv", "indel"}),
+        ("AviFileBackend", {"snv"}),
+        ("AtlasBackend", {"snv"}),
+        ("ApiBackend", {"snv", "indel"}),
+    ],
+)
+def test_each_backend_says_what_it_scores(cls, kinds):
+    assert set(getattr(ag, cls).KINDS) == kinds

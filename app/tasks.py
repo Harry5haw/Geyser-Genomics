@@ -1575,7 +1575,7 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
         backend = ag.backend_for(source, table=table)
 
         header, contigs, has_bcsq, records = ag.read_vcf(local_vcf)
-        selected, counts = ag.select(records, contigs, has_bcsq, max_variants)
+        selected, counts = ag.select(records, contigs, has_bcsq, max_variants, kinds=backend.KINDS)
         print(
             f"AlphaGenome ({source}): {counts['selected']} of {counts['candidates']} candidate variants selected "
             f"({counts['pass']} PASS records; consequences {'used' if has_bcsq else 'not available'}; "

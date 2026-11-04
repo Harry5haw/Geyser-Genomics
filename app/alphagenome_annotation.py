@@ -225,16 +225,23 @@ def _allele_kind(ref: str, alt: str):
     return "indel"
 
 
-def select(records, contigs, has_consequences: bool, max_variants: int):
+def _tie_break(key: str) -> bytes:
+    return hashlib.sha256(key.encode()).digest()[:8]
+
+
+def select(records, contigs, has_consequences: bool, max_variants: int, kinds=("snv", "indel")):
     """The alleles to score, ranked, and the counts behind the choice.
 
     PASS records only ('.' counts as PASS: bcftools call sets no filters). One candidate per scorable ALT
     allele (SNVs and indels; not symbolic ALTs or MNPs). With bcftools csq consequences, only alleles of records
-    with a near-gene non-coding consequence (NEAR_GENE_CONSEQUENCES). Ranked by QUAL (highest first; '.' last),
-    then position, and capped at max_variants.
+    with a near-gene non-coding consequence (NEAR_GENE_CONSEQUENCES). Ranked by QUAL (highest first; '.' last) and
+    capped at max_variants. kinds: what the source can score (the backend's KINDS): atlas and avi-file take SNVs
+    only, so their cap isn't spent on indels they would leave unscored (other_kind counts those). Ties are broken by a stable hash of the variant, not by position: bcftools caps QUAL
+    (~225), so thousands of calls tie at the top, and a positional tie-break would pick the first few hundred along
+    the chromosome instead of a spread. The same calls always give the same selection. (contigs: the VCF's contig
+    order, unused since ties stopped being positional; kept so callers needn't change.)
     """
-    order = {name: i for i, name in enumerate(contigs)}
-    counts = {"records": len(records), "pass": 0, "snvs": 0, "indels": 0, "not_scorable": 0}
+    counts = {"records": len(records), "pass": 0, "snvs": 0, "indels": 0, "not_scorable": 0, "other_kind": 0}
     if has_consequences:
         counts["near_gene"] = 0
     candidates = []
@@ -250,6 +257,9 @@ def select(records, contigs, has_consequences: bool, max_variants: int):
                 counts["not_scorable"] += 1
                 continue
             counts[f"{kind}s"] += 1
+            if kind not in kinds:
+                counts["other_kind"] += 1
+                continue
             if not near_gene:
                 continue
             if has_consequences:
@@ -258,15 +268,7 @@ def select(records, contigs, has_consequences: bool, max_variants: int):
             candidates.append(
                 Variant(rec["chrom"], rec["pos"], rec["ref"], alt, rec["qual"], consequences, genes, bcsq)
             )
-    candidates.sort(
-        key=lambda v: (
-            -(v.qual if v.qual is not None else -math.inf),
-            order.get(v.chrom, len(order)),
-            v.chrom,
-            v.pos,
-            v.alt,
-        )
-    )
+    candidates.sort(key=lambda v: (-(v.qual if v.qual is not None else -math.inf), _tie_break(v.key)))
     selected = candidates[:max_variants]
     counts["candidates"] = len(candidates)
     counts["selected"] = len(selected)
@@ -288,6 +290,7 @@ class FakeBackend:
     """
 
     name = "fake"
+    KINDS = ("snv", "indel")
     model_version = "fake-1"
     TRACKS = ("RNA_SEQ", "CAGE", "DNASE", "ATAC", "CHIP_HISTONE", "CHIP_TF", "SPLICE_SITES", "SPLICE_JUNCTIONS")
     TISSUES = ("liver", "brain_cortex", "whole_blood", "lung", "skeletal_muscle", "K562", "HepG2", "GM12878")
@@ -332,6 +335,7 @@ class AviFileBackend:
     """
 
     name = "avi-file"
+    KINDS = ("snv",)  # the AVI download has SNVs only
 
     def __init__(self, table_path, model_version=None):
         self.table_path = table_path
@@ -497,6 +501,7 @@ class AtlasBackend(_KeyedBackend):
     """
 
     name = "atlas"
+    KINDS = ("snv",)  # precomputed for SNVs; indels go to api
 
     def __init__(self, api_key, client=None, workers=ATLAS_WORKERS, make_variant=None):
         super().__init__(api_key)
@@ -596,6 +601,7 @@ class ApiBackend(_KeyedBackend):
     """
 
     name = "api"
+    KINDS = ("snv", "indel")
     model_version = None
 
     def __init__(self, api_key, interval=API_INTERVAL):
