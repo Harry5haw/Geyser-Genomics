@@ -12,7 +12,7 @@ All are subcommands of `python tasks.py` in the pipeline image, like `regions` a
 | :--- | :--- | :--- |
 | `preflight <srr_id> [--chunks N] [--manifest-key KEY]` | One streaming pass over the raw reads (both mates for paired-end): gzip integrity, read count, mates in step, cut into N chunks of equal read count. Writes the chunks, the manifest and the pre-flight report. N defaults to 24 (1-999). `--manifest-key` defaults to the key below | 0 ok; 1 the input failed the check (`PreflightFailed: …` in the log; the report is still written); 2 usage |
 | `align_chunk <srr_id> <reference_name> --chunk K` | Chunk K of this run's manifest (K is the manifest's `index`, 0-based): `<aligner> mem` with the sample's one read group, `samtools fixmate -m` (paired only), `samtools sort`. **No markdup** (duplicates can sit in different chunks). Writes the chunk BAM | 0 / 1 failure / 2 usage |
-| `align_merge <srr_id> <reference_name>` | `samtools merge` of every chunk BAM in the manifest, read in place (S3: presigned HTTPS URLs; local: the files), then `samtools markdup -s`, then CRAM + `.crai`, flagstat and mosdepth. **The outputs and the run-record part are today's `align`'s**, and the `.crai` records the CRAM's ETag | 0 / 1 failure (a missing chunk BAM is named) / 2 usage |
+| `align_merge <srr_id> <reference_name> [--threads N]` | `samtools merge` of every chunk BAM in the manifest, read in place (S3: presigned HTTPS URLs; local: the files), then `samtools markdup -s`, then CRAM + `.crai`, flagstat and mosdepth, with N samtools threads (default: the job's CPUs). **The outputs and the run-record part are today's `align`'s**, and the `.crai` records the CRAM's ETag | 0 / 1 failure (a missing chunk BAM is named) / 2 usage |
 | `variants <srr_id> <reference_name> --region R` (unchanged CLI) | Now **reads only its region** of the CRAM when the stored `.crai` carries the CRAM's current ETag (htslib over a presigned URL, or the local file). Otherwise, or if streaming fails, it downloads and re-indexes as today. `GEYSER_STREAM_REGIONS=0` turns streaming off | unchanged |
 
 **`RUN_NAME`** (the execution name, which the state machine already sets on every job) names the run folder.
@@ -60,8 +60,10 @@ or `unnamed`.
 - `reads` counts fragments: reads per mate for paired-end, reads for single-end. Chunk sizes differ by at most 1.
 - `keys` uses `keys_for`'s names: `raw` for single-end, `raw_R1` / `raw_R2` for paired-end. `bytes` is the
   chunk's compressed size (both mates).
-- A **Map over `$.chunks`** (after a `getObject` + `States.StringToJson`, as `Read_Regions` does) runs one
-  `align_chunk … --chunk <index>` per item. `index` is an integer: pass it as `States.Format('{}', …)`.
+- The state machine reads the manifest at its documented key, `intermediate/chunks/{srr_id}/{execution name}/manifest.json`
+  (execution names are already in the safe set, so `{run}` is the execution name), with a `getObject` +
+  `States.StringToJson`, as `Read_Regions` does. Then a **Map over `$.chunks`** runs one `align_chunk … --chunk <index>`
+  per item. `index` is an integer: pass it as `States.Format('{}', …)`. Every other key comes from the manifest.
 
 ## The pre-flight report (`qc_reports/{id}.preflight.json`, schema 1)
 
@@ -78,12 +80,27 @@ with different read counts, a malformed FASTQ record), and there is no manifest.
 
 | Stage | Job name (state machine) | `JOB_NAME_STAGES` | Metric | Run-record part |
 | :--- | :--- | :--- | :--- | :--- |
-| preflight | `Preflight-<execution>` | `("Preflight-", "Preflight")` | `Preflight` | `Preflight` (reads, chunks, bytes) |
+| preflight | `Preflight-<srr_id>-<execution>` | `("Preflight-", "Preflight")` | `Preflight` | `Preflight` (reads, chunks, bytes) |
 | align_chunk | `AlignChunk-<index>-<execution>` | `("AlignChunk-", "AlignChunk")` | `AlignChunk` | none (like the calling shards) |
-| align_merge | `AlignMerge-<execution>` | `("AlignMerge-", "Align")` | `Align` (as today) | `Align` (as today, plus `chunks`) |
+| align_merge | `AlignMerge-<srr_id>-<execution>` | `("AlignMerge-", "Align")` | `Align` (as today) | `Align` (as today, plus `chunks`) |
 
 A failed `AlignChunk-…` or `AlignMerge-…` job closes the run as failed in Align. A failed `Preflight-…` closes it
 as failed in Preflight.
+
+## Per-run parallelism (the #192 overrides pattern)
+
+The keys go in the run input's nested `overrides` object. `Run_Setting_Rules` validates them (JSON integers, whole
+numbers), and `Set_Run_Settings` puts them in `$.run_settings`. The bounds are derived in Terraform from the
+**Fargate Spot** cap, so a large run stays on Spot. A faster run needs the user to raise the cap first.
+
+| Key | Default | Bounds | Used by |
+| :--- | ---: | :--- | :--- |
+| `chunk_count` | 24 | 2-96 | `preflight --chunks` (the app accepts 1-999) |
+| `align_concurrency` | 5 | 1 … floor((fargate_spot_max_vcpus − QC_Large's 8) / the chunk's 8 vCPU) = 5 at 48 | the Align_Chunks Map's `MaxConcurrencyPath` |
+| `calling_concurrency` | `variants_max_concurrency` (4) | 1 … floor(fargate_spot_max_vcpus / the shard's vCPU) = 48 | the calling Map's `MaxConcurrencyPath` |
+| `merge_threads` | 8 | 1 … the merge job's vCPU (8) | `align_merge --threads` |
+
+QC_Large runs alongside the chunk Map, so the chunks get 40 of the 48 vCPU: 5 at a time, not the plan's 6.
 
 ## What the jobs need (for the infra half)
 
