@@ -211,6 +211,10 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 
 Real chromosome 20 data (GIAB HG003 and HG005), drawn by scripts from small derived CSVs, never by hand. Sources, commands and the numbers behind each figure are in [docs/figures](docs/figures/README.md). Click a figure for the SVG.
 
+<a href="docs/figures/cost-surface.svg"><img src="docs/figures/cost-surface.png" alt="Heatmaps of cost per run and turnaround over align vCPUs (1, 2, 4) and calling shards (1, 2, 4, 8) for 25 cloud runs of HG003 30x chr20, with the Pareto front: 2 vCPU x 4 shards cheapest, 4 vCPU x 4 shards fastest" width="100%"/></a>
+
+**Cost and turnaround of a real 30x chromosome-20 run, over the two sizing knobs** (25 Fargate runs, 2-3 per setting). Align vCPUs set the turnaround: about 85, 45 and 25 minutes at 1, 2 and 4. Calling shards matter far less: at 2 and 4 vCPUs, 4 shards is both the cheapest and the fastest. The cheapest setting (2 vCPU, 4 shards) costs 6.95¢ a run; the fastest (4 vCPU, 4 shards) costs 7.78¢ and takes 24 minutes. 1 vCPU is both the slowest and the most expensive. Costs are at on-demand list prices, an upper bound, since jobs try Fargate Spot first.
+
 <a href="docs/figures/coverage-terrain.svg"><img src="docs/figures/coverage-terrain.png" alt="Ridgeline of read depth along chr20 for seven alignments of HG003 and HG005: flat along the arms, rising around the centromere at 26-31 Mb with a spike at 31 Mb in every alignment" width="100%"/></a>
 
 **Read depth along chr20, seven alignments.** Coverage is flat along the chromosome arms, but around the centromere (26-31 Mb) reads pile up in every alignment, to about 1.7× the usual depth, and 2-3× in one window at 31 Mb, most likely reads from repeated sequence piling up on the reference's single copy.

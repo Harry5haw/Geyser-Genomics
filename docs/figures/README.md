@@ -14,7 +14,7 @@ Needs `pip install -r requirements-figures.txt` (matplotlib; included in `requir
 | Coverage terrain | `coverage_terrain.py` | mosdepth 0.3.15 `-n --fast-mode --by 500000` on seven chr20 BAMs in `geyser-data/alignments` (Google's HG003 35x / 30x and HG005 30x BWA and HG003 35x vg giraffe; Geyser's bwa, bwa-mem2 and vg giraffe alignments of the HG003 35x reads) | `csv/coverage-terrain.csv` |
 | Per-base quality surface | `quality_surface.py` | fastp JSON of the six overnight real-sample cloud runs (`qc_reports/REAL-*.fastp.json`) | `csv/quality-surface.csv` |
 | Variant density | `variant_density.py` | PASS (DeepVariant) or all (bcftools, unfiltered) records of the #51 benchmark VCFs (bcftools, DeepVariant, pangenome DeepVariant) | `csv/variant-density.csv` |
-| Cost x turnaround (hero) | `cost_surface.py` | `query_pipeline_duration.py --stages-csv` over a grid of cloud runs: **not run yet**, see [cost-surface-grid.md](cost-surface-grid.md) | (once run, with `--table`) `csv/cost-surface.csv` |
+| Cost x turnaround (hero) | `cost_surface.py` | `query_pipeline_duration.py --stages --stages-csv` over the grid of 25 cloud runs of REAL-HG003-30x-chr20 (4 Nov 2026; how it ran: [cost-surface-grid.md](cost-surface-grid.md)) | `csv/cost-surface.csv` (per cell), `csv/cost-surface.stages.csv` (per job; job IDs and log streams dropped), `csv/cost-surface.runs.csv` (per run), `csv/cost-surface.queue-waits.csv` |
 | DeepVariant batch x shards | `dv_batch_shards.py` | `scripts/benchmark_dv_grid.py` on the local RTX 3080: linear DeepVariant 1.10.0 on Google's HG003 chr20 35x BAM, `call_variants` batch 128/256/512/1024 x `make_examples` shards 16/8/4, one run per cell plus a repeat of 256 x 16 (4 Nov 2026) | `csv/dv-batch-shards.csv` (per cell) and `csv/dv-batch-shards.runs.csv` (per run) |
 
 ## Regenerating
@@ -22,6 +22,13 @@ Needs `pip install -r requirements-figures.txt` (matplotlib; included in `requir
 From the repo root, with geyser-data next to the repo (`G=../geyser-data`):
 
 ```bash
+# 1. Cost x turnaround: the grid's stage rows and run times (needs SFN_ARN; the latest executions), then only the
+#    grid's 25 executions (names REAL-HG003-30x-chr20-p<slot>-<time>-a<vcpu>w<Mb>r<n>), without JobId/LogStream
+python scripts/query_pipeline_duration.py --stages --max-results 80 --csv all.csv --stages-csv all.stages.csv
+python scripts/figures/cost_surface.py docs/figures/csv/cost-surface.stages.csv \
+    --durations docs/figures/csv/cost-surface.runs.csv --out docs/figures/cost-surface --surface \
+    --table docs/figures/csv/cost-surface.csv --title "Cost x turnaround: HG003 30x chr20 on Fargate, 25 runs"
+
 # 2. Coverage terrain: windowed depth first (geyser-app image has mosdepth + samtools), then the CSV and figure
 mosdepth -n --fast-mode --by 500000 HG003_chr20 HG003_chr20.bam        # per BAM, in Docker
 python scripts/figures/coverage_terrain.py --from-mosdepth "HG003 35x (bwa)=HG003_chr20.regions.bed.gz" ... \
@@ -92,3 +99,21 @@ The exact label lists used are in the commit that added each CSV (and in the PR)
     records, not even the repeat. PASS counts vary by at most 2 of 105,403 (85,652-85,653 SNPs,
     19,883-19,884 indels). GPU inference isn't bit-reproducible run to run, and the settings themselves
     don't change the calls.
+- **Cost x turnaround.** Cost per run and measured turnaround, median per cell, over align vCPUs x calling
+  shards. HG003 30x chr20, 25 runs, 2 per cell (3 for 4 vCPU x 1 shard). Costs are US cents at Fargate on-demand
+  list prices from `stage_breakdown.py`, an upper bound, since the queue tries Fargate Spot first.
+  - **Align vCPUs set the turnaround:** about 85, 45 and 25 min at 1, 2 and 4 vCPUs.
+  - **1 vCPU is both the slowest and the dearest** (8.8-10.9¢). Align uses about the same vCPU-hours at
+    every size (1.2-1.3), but the 1 vCPU task holds its 4 GiB about four times as long: 5.1 GB-hours of
+    memory, against 2.4-2.5 at 2 and 4 vCPUs. Its runs also varied the most (4,253-6,370 s each).
+  - **Shards matter far less.** At 2 and 4 vCPUs, 4 shards is both the cheapest and the fastest column; 8
+    shards adds a job start-up and Fargate's minimum charge per shard and gains nothing. At 1 vCPU the
+    columns differ by align's run-to-run spread, not by shards.
+  - **The Pareto front:** 2 vCPU x 4 shards is the cheapest (6.95¢, 37 min), 4 vCPU x 4 shards the fastest
+    (7.78¢, 24 min). The cells differ by only 7-11¢ a run, so turnaround decides, not cost.
+  - **Queue waits** (`csv/cost-surface.queue-waits.csv`): 215 of the 216 jobs started within 47 s, with up
+    to 6 runs in parallel: a median of 21.5 s and a p95 of 33.7 s, which is Fargate start-up, not queueing.
+    One align job waited 548 s for a Fargate Spot placement while the caps had room. That run (a4w65r1) is
+    flagged in `csv/cost-surface.runs.csv` and kept in the medians, and its cell has a third run.
+  - **Calls:** the gate passed in all 25 runs (fail mode). SNP counts were 117,049-117,060, against 117,055
+    for the same sample's earlier run (±0.01%; they track bwa-mem2's thread count).
