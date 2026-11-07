@@ -100,9 +100,11 @@ batch 256 of RP-1's amendment A1 is for that study only.
 - **The state machine:**
   - `Choose_Caller` → (deepvariant, split) → a `Map` over `parts` (`make_examples` parts, Spot first, like the
     bcftools shards) → the GPU Task with `--from-examples`;
-  - the same `DEEPVARIANT_*` environment on both (check 4);
-  - a part failure goes through `Prepare_Run_Close` as today;
-  - the bcftools fallback stays on the GPU Task's Catch.
+  - the same `DEEPVARIANT_*` model and flags on both (check 4). The part count and task count (`parts`,
+    `shards`) come from the manifests, so the GPU job's own `DEEPVARIANT_SHARDS` doesn't matter there;
+  - a failed part (the `Map`'s Catch) and a failed GPU Task both fall back to bcftools with
+    `$.deepvariant_error`, as a failed single DeepVariant job does today. DeepVariant is an extra caller
+    (`provenance.EXTRA_CALLERS`), so its failure never fails the run (#236).
 - **The SFN role** needs nothing new: the jobs read and write S3 themselves.
 
 ## Tests
