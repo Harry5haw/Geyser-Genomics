@@ -18,7 +18,7 @@ flowchart LR
 
 | Piece | Today | After |
 | :--- | :--- | :--- |
-| GPU compute environment | private subnet: no route out with the NAT gateway off, so instances can't pull images or reach S3. Instance types `g4dn.xlarge`, `g5.xlarge`, `g5.2xlarge` | **public subnet** (public IPs, like the Fargate jobs; no NAT, no hourly cost). `gpu_instance_types` = `g6.4xlarge`, `g5.4xlarge` since v1.5 (was `g6.xlarge`, `g5.xlarge`). ECS GPU AMI (`ECS_AL2023_NVIDIA`; Batch refuses new Amazon Linux 2 environments), launch template with a 300 GB gp3 root volume (was 100) |
+| GPU compute environment | private subnet: no route out with the NAT gateway off, so instances can't pull images or reach S3. Instance types `g4dn.xlarge`, `g5.xlarge`, `g5.2xlarge` | **public subnet** (public IPs, like the Fargate jobs; no NAT, no hourly cost). `gpu_instance_types` = `g6.4xlarge`, `g5.4xlarge` since v1.5 (was `g6.xlarge`, `g5.xlarge`). ECS GPU AMI (`ECS_AL2023_NVIDIA`; Batch refuses new Amazon Linux 2 environments), launch template with a 500 GB gp3 root volume (was 100) |
 | DeepVariant image | local only | ECR repository `geyser-deepvariant` (keeps 2 images), pushed by hand (~9.8 GB) |
 | Job definition | none | `geyser-deepvariant-job`: EC2, 1 GPU, `deepvariant_resources` (16 vCPU / 56 GiB by default since v1.5; was 4 vCPU / 14 GiB), `DEEPVARIANT_SHARDS` = vCPUs, the same infrastructure-only retry rule as the app job, logs in `/aws/batch/geyser-<env>` |
 | State machine | QC ∥ align → bcftools | QC ∥ align → `Choose_Caller` → DeepVariant on the GPU queue, **falling back to bcftools** if it fails (the reason goes in `$.deepvariant_error`); bcftools only, as today, without a caller |
@@ -80,7 +80,7 @@ time = stage + ~6 min cold start: **~29 min on 4 vCPU, ~14 min on 16 vCPU** (est
 
 **Worst case under the caps:**
 - **Today's cap (4 vCPU):** one `g5.xlarge` at $1.28/h. A single run is bounded by the 1 h attempt limit: $1.28, or $3.83 if all three infrastructure retries happen. A queue kept busy around the clock would cost $30.6/day, which only the one-run-at-a-time hook and an empty queue prevent.
-- **Cap raised to 16** for the measured shape (v1.5, the defaults now): `gpu_instance_types` is limited to `g6.4xlarge`/`g5.4xlarge` at the same time. Otherwise 16 vCPU allows four `xlarge` instances at once, $5.11/h; a precondition in batch_gpu.tf now refuses that. With the 4xlarge types only, it's one at a time, at most $2.06/h (+ ~$0.04/h for the 300 GB root): $2.10 per attempt-limited run, $6.30 with all three infrastructure retries.
+- **Cap raised to 16** for the measured shape (v1.5, the defaults now): `gpu_instance_types` is limited to `g6.4xlarge`/`g5.4xlarge` at the same time. Otherwise 16 vCPU allows four `xlarge` instances at once, $5.11/h; a precondition in batch_gpu.tf now refuses that. With the 4xlarge types only, it's one at a time, at most $2.06/h (+ ~$0.06/h for the 500 GB root), about $2.12/h: a run's GPU cost is that times the DeepVariant attempt limit, times up to three infrastructure retries.
 
 ## Rollout
 

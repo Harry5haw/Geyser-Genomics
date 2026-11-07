@@ -35,7 +35,7 @@ could create a service role without a boundary and attach it to a Lambda.
 |---|---|---|
 | Fargate compute environment | `max_vcpus = var.fargate_max_vcpus` (8, was 16): 8 vCPUs in any mix of stage sizes (align 4 vCPU / 8 GiB, QC and a variant shard 1 / 2 GiB, planner and merge 0.25 / 0.5 GiB) | 8 vCPU + 16 GB ≈ **$0.45/h** |
 | Fargate Spot compute environment (#124, the queue's first choice) | `max_vcpus = var.fargate_spot_max_vcpus` (8) | at Spot prices (~70% off) ≈ **$0.14/h** |
-| GPU compute environment | `max_vcpus = var.gpu_max_vcpus` (16 since v1.5, was 4, before that 64): one g6.4xlarge or g5.4xlarge (`gpu_instance_types`); a precondition keeps the cap at most the smallest type's vCPUs, so it is always one instance | ≈ **$2.1/h** with a 300 GB EBS root (g6 is about 20% less) |
+| GPU compute environment | `max_vcpus = var.gpu_max_vcpus` (16 since v1.5, was 4, before that 64): one g6.4xlarge or g5.4xlarge (`gpu_instance_types`); a precondition keeps the cap at most the smallest type's vCPUs, so it is always one instance | ≈ **$2.1/h** with a 500 GB EBS root (g6 is about 20% less) |
 | Public IPv4 per task or instance | | ~$0.005/h each |
 | **Total at all caps** | | **≈ $2.7/h** |
 

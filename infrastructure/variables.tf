@@ -253,9 +253,9 @@ variable "giraffe_kmc_memory_gb" {
 }
 
 variable "gpu_disk_gb" {
-  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment (~17 GB CRAM for a 30x genome) and DeepVariant's intermediates (or, in v1.5 split mode, every part's examples): 100 GB is enough for a chromosome, a whole genome needs 250+. 300 GB of gp3 is ~$0.04 per instance-hour, billed only while an instance runs."
+  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment (~17 GB CRAM for a 30x genome) and DeepVariant's intermediates (or, in v1.5 split mode, every part's examples): 100 GB is enough for a chromosome, a whole genome needs 250+ (500 leaves room for a 30x genome's examples). 500 GB of gp3 is ~$0.06 per instance-hour, billed only while an instance runs."
   type        = number
-  default     = 300
+  default     = 500
 
   validation {
     condition     = var.gpu_disk_gb >= 100 && var.gpu_disk_gb <= 1000 && floor(var.gpu_disk_gb) == var.gpu_disk_gb
