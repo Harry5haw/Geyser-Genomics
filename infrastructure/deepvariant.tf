@@ -45,9 +45,9 @@ resource "aws_batch_job_definition" "geyser_deepvariant_job_def" {
       # make_examples parallelism = the job's vCPUs (app-deepvariant/README.md).
       { name = "DEEPVARIANT_SHARDS", value = tostring(var.deepvariant_resources.vcpu) },
       # The app's own limits (deepvariant_task.py, feature/dv-robustness): the run stops itself, with the
-      # reason in the log, before the state machine's 3600 s attempt limit kills the container; a run
-      # that prints nothing for 15 minutes is a hang (GPU out of memory), not progress.
-      { name = "DEEPVARIANT_TIMEOUT_SECONDS", value = "3300" },
+      # reason in the log, before the state machine's attempt limit (var.deepvariant_timeout_seconds) kills the
+      # container; a run that prints nothing for 15 minutes is a hang (GPU out of memory), not progress.
+      { name = "DEEPVARIANT_TIMEOUT_SECONDS", value = tostring(var.deepvariant_timeout_seconds - 300) },
       { name = "DEEPVARIANT_IDLE_TIMEOUT_SECONDS", value = "900" },
     ]
     logConfiguration = {
