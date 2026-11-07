@@ -1213,6 +1213,30 @@ def _finish_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) ->
 
 
 STREAM_REGIONS_ENV = "GEYSER_STREAM_REGIONS"  # 0: calling shards always download the CRAM (today's behaviour)
+# A failed in-place read is retried before a shard falls back to downloading the whole CRAM: a genome CRAM
+# (~17 GB) plus the 3.1 GB FASTA doesn't fit the variants job's default 20 GiB disk, so the fallback is a
+# last resort, and one transient network error shouldn't trigger it.
+IN_PLACE_ATTEMPTS = 2
+IN_PLACE_RETRY_SECONDS = 10
+DOWNLOAD_HEADROOM_BYTES = 1 << 30  # the local .crai, bcftools' part and temp files
+
+
+class DiskSpaceError(RuntimeError):
+    """A download that can't fit the job's free disk: raised before it starts, not as ENOSPC part-way through."""
+
+
+def check_room_to_download(key: str, wd: str, why: str) -> None:
+    """Raise DiskSpaceError unless wd has room for key (+5% and DOWNLOAD_HEADROOM_BYTES). Unknown sizes pass."""
+    size = storage().head(key).get("size")
+    if not size:
+        return
+    need = int(size * 1.05) + DOWNLOAD_HEADROOM_BYTES
+    free = shutil.disk_usage(wd).free
+    if free < need:
+        raise DiskSpaceError(
+            f"Not enough disk to download {key} ({size / 1e9:.1f} GB, need {need / 1e9:.1f} GB with headroom; "
+            f"{free / 1e9:.1f} GB free) {why}. Give the job more disk (job_disk_gb) or fix the in-place read."
+        )
 
 
 def streamable_alignment(sample_id: str, wd: str):
@@ -1264,13 +1288,24 @@ def variants_shard_task(sample_id, reference_name, region):
         done = False
         if streamed:
             location, crai = streamed
-            try:
-                call(f"{location}##idx##{crai}")  # htslib reads only the region's slices, through the verified index
-                print("Read the region in place (ETag-verified index)", flush=True)
-                done = True
-            except subprocess.CalledProcessError as err:
-                print(f"WARNING: reading the region in place failed (exit {err.returncode}); downloading", flush=True)
+            for attempt in range(1, IN_PLACE_ATTEMPTS + 1):
+                try:
+                    call(f"{location}##idx##{crai}")  # htslib reads only the region's slices, via the verified index
+                    print("Read the region in place (ETag-verified index)", flush=True)
+                    done = True
+                    break
+                except subprocess.CalledProcessError as err:
+                    last = attempt == IN_PLACE_ATTEMPTS
+                    then = "downloading" if last else f"retrying in {IN_PLACE_RETRY_SECONDS} s"
+                    print(
+                        f"WARNING: reading the region in place failed (exit {err.returncode}, attempt "
+                        f"{attempt}/{IN_PLACE_ATTEMPTS}); {then}",
+                        flush=True,
+                    )
+                    if not last:
+                        time.sleep(IN_PLACE_RETRY_SECONDS)
         if not done:
+            check_room_to_download(alignment_input(sample_id), wd, f"for region {region}")
             call(fetch_alignment(sample_id, wd, need_index=True))  # -r needs random access
         storage().upload(part, region_part_key(sample_id, region))
     finally:
