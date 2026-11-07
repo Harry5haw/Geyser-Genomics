@@ -46,7 +46,8 @@ class LocalStorage:
     def exists(self, key: str) -> bool:
         return os.path.isfile(self._path(key))
 
-    def download(self, key: str, local_path: str) -> None:
+    def download(self, key: str, local_path: str, parallel: bool = False) -> None:
+        """parallel: many concurrent ranged GETs (S3 only; a local copy is one read anyway)."""
         src = self._path(key)
         if not os.path.isfile(src):
             raise ObjectNotFound(key)
@@ -171,6 +172,23 @@ class ForwardOnlyStream:
 
 
 _stream_config = None
+_parallel_config = None
+# Concurrent ranged GETs for a parallel download: one S3 connection tops out at roughly 50-100 MB/s.
+PARALLEL_DOWNLOAD_THREADS = 32
+
+
+def _parallel_transfer_config():
+    """Built once, lazily, so local runs never import boto3."""
+    global _parallel_config
+    if _parallel_config is None:
+        from boto3.s3.transfer import TransferConfig
+
+        _parallel_config = TransferConfig(
+            multipart_threshold=_STREAM_CHUNK_BYTES,
+            multipart_chunksize=_STREAM_CHUNK_BYTES,
+            max_concurrency=PARALLEL_DOWNLOAD_THREADS,
+        )
+    return _parallel_config
 
 
 def _stream_transfer_config():
@@ -267,11 +285,14 @@ class S3Storage:
                 return False
             raise
 
-    def download(self, key: str, local_path: str) -> None:
+    def download(self, key: str, local_path: str, parallel: bool = False) -> None:
+        """parallel: PARALLEL_DOWNLOAD_THREADS concurrent ranged GETs of 64 MiB parts (the large route's
+        pre-flight); otherwise boto3's defaults."""
         from botocore.exceptions import ClientError
 
+        config = {"Config": _parallel_transfer_config()} if parallel else {}
         try:
-            self._client.download_file(self.bucket, key, local_path)
+            self._client.download_file(self.bucket, key, local_path, **config)
         except ClientError as err:
             if self._is_not_found(err):
                 raise ObjectNotFound(key) from err

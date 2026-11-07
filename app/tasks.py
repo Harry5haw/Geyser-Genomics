@@ -1700,7 +1700,7 @@ class _ChunkWriter:
             self._file.close()
 
 
-def split_reads(streams, labels, n_chunks: int, wd: str, layout: str, sample_id: str) -> dict:
+def split_reads(streams, labels, n_chunks: int, wd: str, layout: str, sample_id: str, compressed=True) -> dict:
     """One pass over the raw reads (one stream per mate, gzipped): check them and deal record i to chunk i mod N.
 
     Round-robin keeps chunk sizes within one read of each other without knowing the total in advance, and keeps
@@ -1708,6 +1708,8 @@ def split_reads(streams, labels, n_chunks: int, wd: str, layout: str, sample_id:
     integrity check: a truncated or corrupt file fails here, in minutes, before any alignment. Paired-end mates
     must have the same read names in the same order and the same number of reads. Memory is bounded: one record
     per mate is in flight. Returns {"reads", "chunks": [{"index", "reads", "paths": {name: local path}}]}.
+    compressed=False: the streams are already decompressed (pigz -dc of a local copy, whose exit status the caller
+    checks).
     """
     names = ["raw"] if layout == SINGLE else [f"raw_{m}" for m in MATES]
     chunks = []
@@ -1726,7 +1728,7 @@ def split_reads(streams, labels, n_chunks: int, wd: str, layout: str, sample_id:
         for chunk in chunks:
             chunk["writers"] = {n: _ChunkWriter(p) for n, p in chunk["paths"].items()}
         for stream, label in zip(streams, labels, strict=True):
-            readers.append(_fastq_records(gzip.GzipFile(fileobj=stream, mode="rb"), label))
+            readers.append(_fastq_records(gzip.GzipFile(fileobj=stream, mode="rb") if compressed else stream, label))
         total = 0
         try:
             while True:
