@@ -69,9 +69,10 @@ resource "aws_batch_job_definition" "geyser_deepvariant_cpu_job_def" {
   })
 
   # As the other job definitions: retry infrastructure failures only (a Fargate Spot interruption included), never
-  # the application's own errors.
+  # the application's own errors. 5 attempts, not 3: a genome part runs ~1 h on Fargate Spot, and 4 Nov 2026 saw
+  # ~20 interruptions on ~20-minute chunks, so 3 could run out and send the whole sample to the bcftools fallback.
   retry_strategy {
-    attempts = 3
+    attempts = 5
     evaluate_on_exit {
       on_status_reason = "Host EC2*"
       action           = "RETRY"

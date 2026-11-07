@@ -362,6 +362,26 @@ def test_the_dv_split_lookups_follow_the_part_size_and_the_spot_cap():
     assert "States.ArrayGetItem($.run_rules.dv_shards_by_parts, $.run_settings.dv_parts)" in asl
 
 
+def test_the_definition_is_sent_minified_and_fits_the_providers_64_kb_scanner():
+    # The provider failed with "bufio.Scanner: token too long" once the indented, escaped definition passed
+    # 64 KB (v1.5). step_functions.tf sends it minified; keep the escaped minified form well under the limit.
+    # (Terraform's jsonencode also writes <, > and & as <...: a few hundred bytes more than measured here.)
+    import test_state_machine_local as sfn_local
+
+    assert 'jsonencode(jsondecode(templatefile("${path.module}/state_machine.asl.json"' in _tf("step_functions.tf")
+    minified = json.dumps(json.loads(sfn_local.render_definition()), separators=(",", ":"))
+    assert len(json.dumps(minified)) < 56_000, len(json.dumps(minified))
+
+
+def test_the_dv_part_job_retries_spot_interruptions_five_times():
+    # A genome part runs ~1 h on Fargate Spot: 3 attempts could run out (4 Nov 2026: ~20 interruptions).
+    cpu_tf = _without_comments(_tf("deepvariant_cpu.tf"))
+    block = cpu_tf[cpu_tf.index("retry_strategy {") :]
+    assert re.search(r"attempts\s*=\s*5\b", block[: block.index("evaluate_on_exit")])
+    assert 'on_status_reason = "Your Spot Task was interrupted*"' in block
+    assert re.search(r'on_status_reason = "\*"\s*action\s*=\s*"EXIT"', block)  # application errors still exit
+
+
 def test_from_alignment_checks_the_cram_align_writes_and_may_read_it():
     # v2.0: Check_Alignment's HeadObject is on tasks.keys_for's CRAM key, and the SFN role may read it.
     states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
