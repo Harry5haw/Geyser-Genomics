@@ -90,6 +90,11 @@ resource "aws_batch_job_definition" "geyser_deepvariant_job_def" {
       condition     = var.deepvariant_resources.vcpu <= var.gpu_max_vcpus
       error_message = "deepvariant_resources.vcpu must fit in gpu_max_vcpus, or the job can never be placed."
     }
+    precondition {
+      # Every type the environment may pick must hold the job, with >= 2 GiB left for the ECS agent and OS.
+      condition     = var.deepvariant_resources.vcpu <= local.gpu_min_instance_vcpu && var.deepvariant_resources.memory_mb <= local.gpu_min_instance_mib - 2048
+      error_message = "deepvariant_resources must fit the smallest gpu_instance_types (its vCPUs, and its memory less 2 GiB)."
+    }
   }
   tags = { Name = "${var.project_name}-DeepVariantJobDef" }
 }

@@ -83,7 +83,7 @@ aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-
 | Caller | Where it runs | How to choose it |
 | :--- | :--- | :--- |
 | `bcftools` (default) | Fargate: regions planned, called in parallel by a `Map` state, merged | nothing to do |
-| `deepvariant` | the GPU Batch queue (one g6.xlarge / g5.xlarge, scales to zero); **falls back to bcftools** if it fails | a manual start (below), or Terraform `default_caller = "deepvariant"` for every triggered run |
+| `deepvariant` | the GPU Batch queue (one g6.4xlarge / g5.4xlarge, scales to zero); **falls back to bcftools** if it fails | a manual start (below), or Terraform `default_caller = "deepvariant"` for every triggered run |
 
 **A manual start** runs any sample whose reads are already in `raw_reads/`, with any caller. The input is
 the trigger's document. The name must be 1-80 characters from `A-Z a-z 0-9 _ -`, and it ends up in the job
