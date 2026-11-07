@@ -87,6 +87,9 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
       - run: pytest
+      # The upload page's core (web/samples/static/samples/upload.js) under Node's built-in test runner: no npm,
+      # no dependencies. The runner image's Node is enough (20+).
+      - run: node --test web/tests/js/*.test.js
 
   end-to-end:
     name: Pipeline end-to-end (Docker, synthetic data)
@@ -117,6 +120,12 @@ jobs:
       - run: pytest tests/test_e2e_docker.py -v
         env:
           GEYSER_E2E: "1"
+      # The static publisher's image (W2): geyser-app + the web UI, a pip install on top, so it rides on this job's
+      # geyser-app. FROM geyser-app is the image loaded above, which only the daemon's own builder can see.
+      - run: docker buildx build --builder default --load -f app-publish/Dockerfile -t geyser-publish .
+      - run: pytest tests/test_e2e_publish.py -v
+        env:
+          GEYSER_PUBLISH_E2E: "1"
 
   # The state machine definition (infrastructure/state_machine.asl.json, the file Terraform renders)
   # run in Step Functions Local with Batch and SNS mocked: no AWS, no credentials.
