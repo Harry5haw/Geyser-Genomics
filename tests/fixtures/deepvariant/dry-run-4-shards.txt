@@ -1,0 +1,6 @@
+***** Running the command:*****
+time seq 0 3 | parallel -q --halt 2 --line-buffer /opt/deepvariant/bin/make_examples --mode calling --ref "/w/ref.fa" --reads "/w/S1.cram" --examples "/w/i/make_examples.tfrecord@4.gz" --checkpoint "/opt/models/wgs" --checkpoint_json "/opt/models/wgs/model.example_info.json" --call_small_model_examples --sample_name "S1" --task {}
+***** Running the command:*****
+time /opt/deepvariant/bin/call_variants --outfile "/w/i/call_variants_output.tfrecord.gz" --examples "/w/i/make_examples.tfrecord@4.gz" --checkpoint "/opt/models/wgs"
+***** Running the command:*****
+time /opt/deepvariant/bin/postprocess_variants --ref "/w/ref.fa" --infile "/w/i/call_variants_output.tfrecord.gz" --outfile "/w/out.vcf.gz" --cpus "4" --checkpoint_json "/opt/models/wgs/model.example_info.json" --small_model_cvo_records "/w/i/make_examples_call_variant_outputs.tfrecord@4.gz" --sample_name "S1"
