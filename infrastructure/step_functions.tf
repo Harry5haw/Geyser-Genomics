@@ -47,6 +47,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       # 403, so the run fails with "not found" rather than an access error. As for the trigger Lambda,
       # it can't be narrowed by prefix: HeadObject carries no s3:prefix to match.
       { Sid = "CheckReference", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/reference/*" },
+      # v2.0: Check_Alignment (from_alignment runs) checks the sample's CRAM the same way.
+      { Sid = "CheckAlignment", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/alignments/*.cram" },
       { Sid = "MissingReferenceIs404", Effect = "Allow", Action = "s3:ListBucket", Resource = aws_s3_bucket.data_lake.arn },
       # Close_Run_Record writes a failed run's closing run-record part (#155), and only that object.
       { Sid = "CloseRunRecord", Effect = "Allow", Action = "s3:PutObject", Resource = "${aws_s3_bucket.data_lake.arn}/runs/*.provenance/Finalize.json" },
@@ -152,6 +154,7 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     dv_parts_max                   = local.dv_parts_max
     dv_shards_by_parts             = jsonencode(local.dv_shards_by_parts)
     dv_part_timeout_seconds        = var.dv_part_timeout_seconds
+    deepvariant_timeout_seconds    = var.deepvariant_timeout_seconds
   })
 
   lifecycle {

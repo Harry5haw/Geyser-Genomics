@@ -278,6 +278,17 @@ variable "dv_part_timeout_seconds" {
   }
 }
 
+variable "deepvariant_timeout_seconds" {
+  description = "Attempt limit of the GPU DeepVariant job (the state machine's AttemptDurationSeconds); the app stops itself 300 s before it (DEEPVARIANT_TIMEOUT_SECONDS). Was a fixed 3600: chr20 takes ~8 min on 16 vCPU, but a 30x genome's call_variants + postprocess_variants (split mode) is ~1.5-2.5 h. A hang is still caught by the 15-minute idle timeout, so a long limit only costs anything on a job that keeps making progress."
+  type        = number
+  default     = 14400
+
+  validation {
+    condition     = var.deepvariant_timeout_seconds >= 1500 && floor(var.deepvariant_timeout_seconds) == var.deepvariant_timeout_seconds
+    error_message = "deepvariant_timeout_seconds must be a whole number of at least 1500 (the app's limit, 300 s under it, must exceed its 900 s idle timeout)."
+  }
+}
+
 # --- vg giraffe as the aligner (#146, giraffe.tf) ---
 
 variable "giraffe_image_version" {

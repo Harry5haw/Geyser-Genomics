@@ -362,6 +362,31 @@ def test_the_dv_split_lookups_follow_the_part_size_and_the_spot_cap():
     assert "States.ArrayGetItem($.run_rules.dv_shards_by_parts, $.run_settings.dv_parts)" in asl
 
 
+def test_from_alignment_checks_the_cram_align_writes_and_may_read_it():
+    # v2.0: Check_Alignment's HeadObject is on tasks.keys_for's CRAM key, and the SFN role may read it.
+    states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
+    check = states["Check_Alignment"]
+    assert check["Resource"] == "arn:aws:states:::aws-sdk:s3:headObject"
+    key_format = check["Parameters"]["Key.$"]
+    assert key_format == "States.Format('alignments/{}.cram', $.srr_id)"
+    assert key_format.split("'")[1].replace("{}", "S1") == tasks.keys_for("S1")["cram"]
+    assert "/alignments/*.cram" in _tf("step_functions.tf")
+    assert states["Choose_Start"]["Default"] == "Prepare_From_Alignment_Error"
+    assert check["Next"] == "Choose_Caller"
+
+
+def test_one_variable_sets_both_deepvariant_time_limits():
+    # The state machine's attempt limit and the app's own limit 300 s under it (deepvariant.tf), one variable.
+    asl = asl_text()
+    dv = asl[asl.index('"DeepVariant": {') :]
+    assert '"Timeout": { "AttemptDurationSeconds": ${deepvariant_timeout_seconds} }' in dv[: dv.index('"Retry"')]
+    dv_tf = _without_comments(_tf("deepvariant.tf"))
+    assert re.search(
+        r'name = "DEEPVARIANT_TIMEOUT_SECONDS", value = tostring\(var\.deepvariant_timeout_seconds - 300\)', dv_tf
+    )
+    assert re.search(r"deepvariant_timeout_seconds\s*=\s*var\.deepvariant_timeout_seconds", _tf("step_functions.tf"))
+
+
 def test_neither_deepvariant_job_definition_sets_the_model_type_or_extra_args():
     # The GPU job refuses examples made with another DEEPVARIANT_MODEL_TYPE or DEEPVARIANT_EXTRA_ARGS (#228), so
     # the CPU parts and the GPU job must both run the image's defaults.

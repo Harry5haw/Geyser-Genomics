@@ -253,7 +253,69 @@
         "dv_parts.$": "$.run_check.settings.dv_parts"
       },
       "ResultPath": "$.run_settings",
-      "Next": "Choose_Route"
+      "Next": "Choose_Start"
+    },
+    "Choose_Start": {
+      "Type": "Choice",
+      "Comment": "from_alignment: true (v2.0, a manual start) skips QC and alignment and calls variants from the sample's existing alignments/<id>.cram, e.g. to re-call a genome with DeepVariant without redoing ~2 h of alignment. Absent or false: the normal routes. Anything else fails before any job, so a typo never re-aligns silently.",
+      "Choices": [
+        { "Not": { "Variable": "$.from_alignment", "IsPresent": true }, "Next": "Choose_Route" },
+        {
+          "And": [
+            { "Variable": "$.from_alignment", "IsBoolean": true },
+            { "Variable": "$.from_alignment", "BooleanEquals": true }
+          ],
+          "Next": "Check_Alignment"
+        },
+        {
+          "And": [
+            { "Variable": "$.from_alignment", "IsBoolean": true },
+            { "Variable": "$.from_alignment", "BooleanEquals": false }
+          ],
+          "Next": "Choose_Route"
+        }
+      ],
+      "Default": "Prepare_From_Alignment_Error"
+    },
+    "Prepare_From_Alignment_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "InvalidFromAlignment",
+        "Cause.$": "States.Format('from_alignment {} is not valid: true (call variants from the existing alignments/<id>.cram) or false', States.JsonToString($.from_alignment))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Check_Alignment": {
+      "Type": "Task",
+      "Comment": "The CRAM align wrote (tasks.keys_for: alignments/<id>.cram) must exist before calling starts: a HeadObject, as Check_Reference. The callers re-index it, so a missing or stale .crai is fine. A missing key is S3.NoSuchKeyException and is not retried.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:headObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('alignments/{}.cram', $.srr_id)"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": ["S3.S3Exception", "States.Timeout"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Alignment_Not_Found", "ResultPath": "$.alignment_error" }
+      ],
+      "Next": "Choose_Caller"
+    },
+    "Prepare_Alignment_Not_Found": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "AlignmentNotFound",
+        "Cause.$": "States.Format('from_alignment: alignments/{}.cram could not be read from ${bucket} ({}). Run the sample through alignment first, or start without from_alignment', $.srr_id, $.alignment_error.Error)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Choose_Route": {
       "Type": "Choice",
@@ -309,7 +371,7 @@
       "Comment": "Invalid overrides fail the run before any job, like an unknown gate_profile: never a silent default. Only JsonToString and plain numbers here, so this Pass can't fail.",
       "Parameters": {
         "Error": "InvalidRunOverrides",
-        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}), variant_region_window (a whole number from {} to {}), chunk_count ({} to {}), align_concurrency (1 to {}), calling_concurrency (1 to {}) merge_threads (1 to {}) and dv_parts (1 to {}), all whole numbers', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max, $.run_rules.chunk_count_min, $.run_rules.chunk_count_max, $.run_rules.align_concurrency_max, $.run_rules.calling_concurrency_max, $.run_rules.merge_threads_max, $.run_rules.dv_parts_max)"
+        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}), variant_region_window (a whole number from {} to {}), chunk_count ({} to {}), align_concurrency (1 to {}), calling_concurrency (1 to {}), merge_threads (1 to {}) and dv_parts (1 to {}), all whole numbers', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max, $.run_rules.chunk_count_min, $.run_rules.chunk_count_max, $.run_rules.align_concurrency_max, $.run_rules.calling_concurrency_max, $.run_rules.merge_threads_max, $.run_rules.dv_parts_max)"
       },
       "ResultPath": "$.error",
       "Next": "Prepare_Run_Close"
@@ -749,14 +811,14 @@
     },
     "DeepVariant": {
       "Type": "Task",
-      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead (the scatter-gather path), and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit.",
+      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead (the scatter-gather path), and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit: deepvariant_timeout_seconds (v2.0, long enough for a genome's call_variants; the job's own DEEPVARIANT_TIMEOUT_SECONDS is 300 s under it, and its idle timeout still catches a hang within 15 minutes).",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
         "JobName.$": "$.batch_params.JobName",
         "JobDefinition": "${deepvariant_job_definition}",
         "JobQueue": "${gpu_job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 3600 }
+        "Timeout": { "AttemptDurationSeconds": ${deepvariant_timeout_seconds} }
       },
       "Retry": [
         {
