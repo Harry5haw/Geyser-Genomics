@@ -20,9 +20,18 @@ linear-reference alignment, adding a pangenome graph as a second input:
     writes variants_pangenome/{id}.vcf.gz
 The graph must be built on the same reference as the alignment (e.g. HPRC v1.1 on GRCh38).
 
+Split mode (v1.5: make_examples on CPU jobs, the rest on the GPU job; contract in docs/design/deepvariant-split.md):
+    deepvariant_task.py <id> <ref> --make-examples-part P --parts J   (CPU image, J jobs in parallel)
+        runs make_examples for its share of the DEEPVARIANT_SHARDS tasks and uploads the examples to
+        intermediate/dv/{id}/{RUN_NAME}/shard-P/ (manifest.json last)
+    deepvariant_task.py <id> <ref> --from-examples                     (GPU image, after every part)
+        checks the J manifests, downloads the examples, runs call_variants and postprocess_variants, and
+        writes the same outputs as the single job (variants_deepvariant/{id}.vcf.gz, stats, the GPU figures)
+
 Environment:
     DEEPVARIANT_MODEL_TYPE   default WGS
-    DEEPVARIANT_SHARDS       make_examples parallelism, default: CPUs in the container
+    DEEPVARIANT_SHARDS       make_examples parallelism, default: CPUs in the container (split mode: tasks in all,
+                             default parts x CPUs; the GPU job takes it from the parts' manifests)
     DEEPVARIANT_EXTRA_ARGS   extra run_deepvariant flags, e.g. --disable_small_model=true
     DEEPVARIANT_TIMEOUT_SECONDS       stop the wrapper after this long (default: no limit)
     DEEPVARIANT_IDLE_TIMEOUT_SECONDS  stop it after this long with no output (default: no limit)
@@ -54,6 +63,7 @@ import provenance
 from tasks import (
     _log_summary,
     _run_stats_tool,
+    _safe_name,
     ensure_reference_local,
     fetch_alignment,
     index_alignment,
@@ -965,6 +975,290 @@ def _call_variants(sample_id, reference_name, pangenome=None):
         shutil.rmtree(wd, ignore_errors=True)
 
 
+# ---- Split mode (v1.5, docs/design/deepvariant-split.md): make_examples on CPU jobs, the rest on the GPU job ----
+# make_examples is ~84% of the stage and CPU-only (4 Nov 2026, REAL-HG003-30x-chr20-DV: 1,007 of 1,200 s on a
+# g6.xlarge, GPU idle), so it can run on cheap CPU capacity. Each part job runs a contiguous range of the
+# wrapper's make_examples tasks (the wrapper's own command, with `seq 0 N-1` narrowed to the range) and uploads
+# what they wrote; the GPU job runs the wrapper's own call_variants and postprocess_variants commands on all of it.
+# Examples are per run (RUN_NAME), like the bcftools parts: a re-run never mixes in another run's files, and
+# intermediate/ expires.
+EXAMPLES_PREFIX = "intermediate/dv/{sample_id}/{run}/"
+PART_DIR = "shard-{part}/"
+SPLIT_VERSION = 1
+EXAMPLES_STAGE = "DeepVariantExamples"  # the part jobs' metric; they write no run-record part (one per task name)
+SEQ_RE = re.compile(r"\bseq (\d+) (\d+) \|")
+CPUS_RE = re.compile(r'--cpus "?\d+"?')
+# Fields every part's manifest must share, with each other and (all but the inputs) with the GPU job.
+SPLIT_KEYS = ("deepvariant", "shards", "parts", "model_type", "extra_args", "reference", "alignment")
+# The files make_examples writes per task t of N: the examples (to call_variants) and the small model's calls.
+TASK_FILE_RE = re.compile(r"-(\d{5})-of-(\d{5})")
+
+
+def examples_prefix(sample_id):
+    return EXAMPLES_PREFIX.format(sample_id=sample_id, run=_safe_name(os.environ.get("RUN_NAME") or "unnamed"))
+
+
+def part_tasks(part, parts, shards):
+    """(first, last) task numbers of part `part` of `parts`, contiguous and as even as possible over `shards` tasks."""
+    if not 0 < parts <= shards:
+        raise ValueError(f"need 1 <= parts <= DEEPVARIANT_SHARDS, got {parts} parts for {shards} tasks")
+    if not 0 <= part < parts:
+        raise ValueError(f"part {part} is not one of 0..{parts - 1}")
+    return part * shards // parts, (part + 1) * shards // parts - 1
+
+
+def part_command(command, first, last, shards):
+    """The wrapper's make_examples command for tasks first..last only. Its form (DeepVariant 1.10.0):
+    `seq 0 N-1 | parallel ... make_examples ... --examples ...@N.gz ... --task {}`; anything else is a ValueError
+    rather than a silent run of the wrong tasks."""
+    match = SEQ_RE.search(command)
+    if not match or match.groups() != ("0", str(shards - 1)) or "--task {}" not in command:
+        raise ValueError(
+            f"unexpected make_examples command (expected `seq 0 {shards - 1} | ... --task {{}}`): {command}"
+        )
+    return command[: match.start()] + f"seq {first} {last} |" + command[match.end() :]
+
+
+def split_settings(env=None):
+    env = os.environ if env is None else env
+    return env.get("DEEPVARIANT_MODEL_TYPE", "WGS"), env.get("DEEPVARIANT_EXTRA_ARGS", "")
+
+
+def task_files(names, shards):
+    """{task: [names]} of make_examples' per-task files among names; a file for another shard count is an error."""
+    found = {}
+    for name in names:
+        match = TASK_FILE_RE.search(name)
+        if not match:
+            continue
+        if int(match.group(2)) != shards:
+            raise ValueError(f"{name} is from a run with {int(match.group(2))} tasks, not {shards}")
+        found.setdefault(int(match.group(1)), []).append(name)
+    return found
+
+
+def _make_examples_part(sample_id, reference_name, part, parts):
+    wd = work_dir(sample_id)
+    try:
+        limits = WrapperLimits.from_env()
+        shards = int(os.environ.get("DEEPVARIANT_SHARDS") or parts * (os.cpu_count() or 1))
+        first, last = part_tasks(part, parts, shards)
+        model_type, extra_args = split_settings()
+        intermediate = os.path.join(wd, "intermediate")
+        os.makedirs(intermediate)
+        bam = fetch_alignment(sample_id, wd, need_index=True, indexer=index_bam)
+        ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
+        vcf = os.path.join(wd, f"{sample_id}.deepvariant.vcf.gz")  # never written: only make_examples runs here
+        cmd = build_run_deepvariant_cmd(
+            ref, bam, vcf, intermediate, sample_id, shards, model_type=model_type, extra_args=extra_args
+        )
+        version = wrapper_version(cmd[0])
+        if version is None:
+            raise RuntimeError(f"could not tell the DeepVariant version of {cmd[0]}: parts must record it")
+        commands = [c for n, c in planned_steps(cmd) if n == "make_examples"]
+        if len(commands) != 1:
+            raise RuntimeError(f"{os.path.basename(cmd[0])} --dry_run gave {len(commands)} make_examples commands")
+        command = part_command(commands[0], first, last, shards)
+        print(f"[geyser] make_examples part {part} of {parts}: tasks {first}-{last} of {shards}", flush=True)
+        code, events, end_time = run_steps([("make_examples", command)], limits)
+        if code != 0:
+            raise RuntimeError(f"make_examples (tasks {first}-{last}) exited with code {code}")
+        seconds = parse_step_timings(events, end_time).get("make_examples")
+        counts = parse_example_counts(events)
+        names = sorted(f for f in os.listdir(intermediate) if os.path.isfile(os.path.join(intermediate, f)))
+        per_task = task_files(names, shards)
+        missing = [t for t in range(first, last + 1) if t not in per_task]
+        stray = sorted(t for t in per_task if not first <= t <= last)
+        if missing or stray:
+            raise RuntimeError(f"make_examples wrote files for tasks {sorted(per_task)}; expected {first}-{last}")
+        prefix = examples_prefix(sample_id) + PART_DIR.format(part=part)
+        files = []
+        for name in names:
+            storage().upload(os.path.join(intermediate, name), prefix + name)
+            files.append({"name": name, "bytes": os.path.getsize(os.path.join(intermediate, name))})
+        manifest = {
+            "split_version": SPLIT_VERSION,
+            "sample_id": sample_id,
+            "run_name": os.environ.get("RUN_NAME") or None,
+            "deepvariant": version,
+            "shards": shards,
+            "parts": parts,
+            "part": part,
+            "tasks": [first, last],
+            "model_type": model_type,
+            "extra_args": extra_args,
+            "reference": file_identity(ref),
+            "alignment": file_identity(bam),
+            "files": files,
+            "examples": counts["examples"],
+            "small_model_calls": counts["small_model_calls"],
+            "make_examples_seconds": round(seconds, 1) if seconds is not None else None,
+            "cpus": os.cpu_count(),
+        }
+        storage().upload_stream(io.BytesIO(json.dumps(manifest, indent=2).encode("utf-8")), prefix + MANIFEST)
+        total = sum(f["bytes"] for f in files)
+        print(
+            f"[geyser] part {part}: {len(files)} files ({total / 1e6:,.1f} MB), {counts['examples']} examples, "
+            f"make_examples {seconds or 0:.1f} s -> {storage().describe(prefix)}",
+            flush=True,
+        )
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+
+def read_part_manifests(prefix):
+    """Every part's manifest under the run's examples prefix, by part number."""
+    manifests = {}
+    for key in storage().list_keys(prefix):
+        if key.endswith("/" + MANIFEST):
+            with storage().open_read(key) as fh:
+                manifest = json.load(fh)
+            manifests[manifest.get("part")] = manifest
+    return manifests
+
+
+def check_parts(manifests, version, model_type, extra_args):
+    """The split's settings if the parts are complete and consistent, else a ValueError saying what is wrong:
+    no parts, a part missing, parts that disagree (DeepVariant version, task count, model, flags, inputs), tasks
+    not covered exactly once, or settings that differ from this (GPU) job's."""
+    if not manifests:
+        raise ValueError("no make_examples parts (run the --make-examples-part jobs first)")
+    if any(not isinstance(p, int) for p in manifests):
+        raise ValueError("a manifest has no part number")
+    bad = [p for p, m in manifests.items() if m.get("split_version") != SPLIT_VERSION]
+    if bad:
+        raise ValueError(f"parts {bad} have split_version != {SPLIT_VERSION}")
+    first = manifests[min(manifests)]
+    for key in SPLIT_KEYS:
+        values = {json.dumps(m.get(key), sort_keys=True) for m in manifests.values()}
+        if len(values) > 1:
+            raise ValueError(f"the parts disagree on {key}: {sorted(values)}")
+    parts, shards = first["parts"], first["shards"]
+    if sorted(manifests) != list(range(parts)):
+        raise ValueError(f"parts {sorted(p for p in range(parts) if p not in manifests)} of {parts} are missing")
+    covered = sorted(t for m in manifests.values() for t in range(m["tasks"][0], m["tasks"][1] + 1))
+    if covered != list(range(shards)):
+        raise ValueError(f"the parts' tasks don't cover 0..{shards - 1} exactly once")
+    own = {"deepvariant": version, "model_type": model_type, "extra_args": extra_args}
+    differ = [f"{k} ({first[k]!r} in the parts, {v!r} here)" for k, v in own.items() if first[k] != v]
+    if differ:
+        raise ValueError("this job's settings differ from the parts': " + "; ".join(differ))
+    return first
+
+
+def gpu_steps_from_plan(plan, cpus):
+    """The wrapper's call_variants and postprocess_variants commands, postprocess_variants' --cpus set to this
+    job's CPUs (the wrapper puts the task count there, which the GPU job may not have)."""
+    names = [n for n, _ in plan]
+    if names[-2:] != ["call_variants", "postprocess_variants"] or "make_examples" not in names:
+        raise RuntimeError(f"unexpected DeepVariant plan: {names}")
+    steps = plan[names.index("call_variants") :]
+    return [(n, CPUS_RE.sub(f'--cpus "{cpus}"', c) if n == "postprocess_variants" else c) for n, c in steps]
+
+
+def _call_from_examples(sample_id, reference_name):
+    keys = deepvariant_keys(sample_id)
+    wd = work_dir(sample_id)
+    try:
+        limits = WrapperLimits.from_env()
+        prefix = examples_prefix(sample_id)
+        manifests = read_part_manifests(prefix)
+        model_type, extra_args = split_settings()
+        vcf = os.path.join(wd, f"{sample_id}.deepvariant.vcf.gz")
+        intermediate = os.path.join(wd, "intermediate")
+        os.makedirs(intermediate)
+        version = wrapper_version(RUN_DEEPVARIANT)
+        split = check_parts(manifests, version, model_type, extra_args)  # before any download
+        ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
+        if file_identity(ref) != split["reference"]:
+            raise ValueError(f"reference/{reference_name} differs from the one the parts used")
+        shards, parts = split["shards"], split["parts"]
+        started = time.monotonic()
+        total = 0
+        for part in range(parts):
+            for f in manifests[part]["files"]:
+                storage().download(
+                    prefix + PART_DIR.format(part=part) + f["name"], os.path.join(intermediate, f["name"])
+                )
+                total += f["bytes"]
+        print(
+            f"[geyser] {parts} make_examples parts, {shards} tasks: {total / 1e6:,.1f} MB of examples downloaded in "
+            f"{time.monotonic() - started:.0f} s",
+            flush=True,
+        )
+        provenance.note_input(prefix)
+        # The alignment itself isn't read here; the wrapper's dry run doesn't need the file to exist.
+        reads = os.path.join(wd, split["alignment"][0] if split["alignment"] else "alignment.cram")
+        cmd = build_run_deepvariant_cmd(
+            ref, reads, vcf, intermediate, sample_id, shards, model_type=model_type, extra_args=extra_args
+        )
+        steps = gpu_steps_from_plan(planned_steps(cmd), os.cpu_count() or 1)
+        gpu = gpu_name()
+        sampler = GpuSampler(gpu_sample_interval() if gpu else 0).start()
+        try:
+            code, events, end_time = run_steps(steps, limits)
+        except WrapperStopped as err:
+            sampler.stop()
+            note_gpu(gpu, sampler, err.events, time.time())
+            raise
+        finally:
+            sampler.stop()
+        gpu_steps = note_gpu(gpu, sampler, events, end_time)
+        if code != 0:
+            ran = parse_step_windows(events, end_time)
+            raise RuntimeError(f"{ran[-1][0] if ran else steps[0][0]} exited with code {code}")
+        timings = parse_step_timings(events, end_time)
+        seconds = [m.get("make_examples_seconds") for _, m in sorted(manifests.items())]
+        if all(s is not None for s in seconds):
+            timings = {"make_examples": max(seconds), **timings}  # the parts run in parallel: the slowest counts
+        print(
+            f"\nDeepVariant (split, {parts} parts) step timings for {sample_id} (shards={shards}, gpu={gpu or 'none'}):"
+        )
+        for step, value in timings.items():
+            print(f"  {step:<22}{value:9.1f}s")
+            try:
+                metrics().record(
+                    STEP_METRICS[step], sample_id, "Success", value, usage=gpu_metric_usage(gpu_steps.get(step))
+                )
+            except Exception as err:  # noqa: BLE001 - metrics are best effort
+                print(f"WARNING: could not record metric: {err}", flush=True)
+        examples = sum(m.get("examples") or 0 for m in manifests.values())
+        small = sum(m.get("small_model_calls") or 0 for m in manifests.values())
+        print(
+            f"  examples sent to call_variants: {examples}; called by the small model in make_examples (CPU): {small}"
+        )
+        provenance.note(
+            make_examples={
+                "split": True,
+                "parts": parts,
+                "shards": shards,
+                "examples": examples,
+                "small_model_calls": small,
+                "part_seconds": seconds,
+                "part_cpus": [m.get("cpus") for _, m in sorted(manifests.items())],
+                "bytes": total,
+            }
+        )
+        if not os.path.isfile(vcf) or os.path.getsize(vcf) == 0:
+            raise RuntimeError(f"DeepVariant produced no VCF at {vcf}")
+        for local, key in caller_stats(ref, vcf, wd, keys):  # before the VCF, which marks the stage done
+            upload_output(local, key)
+        upload_output(vcf, keys["vcf"])
+        print(f"Uploaded {storage().describe(keys['vcf'])}")
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+
+@timed_stage(EXAMPLES_STAGE, run_record=False)
+def make_examples_part_task(sample_id, reference_name, part, parts):
+    _make_examples_part(sample_id, reference_name, part, parts)
+
+
+@timed_stage(STAGE_NAME[False])
+def deepvariant_from_examples_task(sample_id, reference_name):
+    _call_from_examples(sample_id, reference_name)
+
+
 @timed_stage(STAGE_NAME[False])
 def deepvariant_task(sample_id, reference_name):
     _call_variants(sample_id, reference_name)
@@ -985,8 +1279,33 @@ def main(argv=None) -> int:
         help="pangenome graph name under pangenome/ (e.g. hprc-v1.1-mc-grch38.gbz): "
         "run pangenome-aware DeepVariant and write variants_pangenome/<id>.vcf.gz",
     )
+    split = parser.add_mutually_exclusive_group()
+    split.add_argument(
+        "--make-examples-part",
+        type=int,
+        metavar="P",
+        help="split mode, CPU image: run make_examples for part P of --parts and upload the examples",
+    )
+    split.add_argument(
+        "--from-examples",
+        action="store_true",
+        help="split mode, GPU image: call_variants + postprocess_variants on every part's examples",
+    )
+    parser.add_argument(
+        "--parts", type=int, metavar="J", help="the number of make_examples parts (with --make-examples-part)"
+    )
     args = parser.parse_args(argv)
-    if args.pangenome:
+    if (args.make_examples_part is not None) != (args.parts is not None):
+        parser.error("--make-examples-part and --parts go together")
+    if args.pangenome and (args.make_examples_part is not None or args.from_examples):
+        parser.error("split mode is for linear DeepVariant only, not --pangenome")
+    if args.make_examples_part is not None:
+        make_examples_part_task(args.srr_id, args.reference_name, args.make_examples_part, args.parts)
+        task = f"deepvariant make_examples part {args.make_examples_part} of {args.parts}"
+    elif args.from_examples:
+        deepvariant_from_examples_task(args.srr_id, args.reference_name)
+        task = "deepvariant (from examples)"
+    elif args.pangenome:
         pangenome_deepvariant_task(args.srr_id, args.reference_name, args.pangenome)
         task = "pangenome"
     else:
