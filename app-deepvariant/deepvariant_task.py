@@ -158,6 +158,32 @@ def caller_stats(ref: str, vcf: str, wd: str, keys: dict, pangenome=None) -> lis
     return [(out, keys["caller_stats"])] + ([(out, keys["bcftools_stats"])] if primary else [])
 
 
+def build_vcf_index(vcf: str, tbi: str) -> None:
+    """bcftools index -t: the tabix index of a bgzipped VCF."""
+    subprocess.run(["bcftools", "index", "-t", "-f", "-o", tbi, vcf], check=True)
+
+
+def upload_vcf_with_index(vcf: str, key: str) -> None:
+    """Upload the VCF's tabix index (key + ".tbi") and then the VCF, which marks the stage done.
+
+    postprocess_variants writes a .tbi beside a .vcf.gz; if it's missing it is built with bcftools. The index is a
+    convenience for readers (hap.py, IGV, region queries), so failing to build it warns rather than failing the stage.
+    """
+    tbi = vcf + ".tbi"
+    if not os.path.isfile(tbi) or os.path.getsize(tbi) == 0:
+        try:
+            build_vcf_index(vcf, tbi)
+        except (OSError, subprocess.CalledProcessError) as err:
+            print(
+                f"WARNING: could not index {os.path.basename(vcf)} ({err}); uploading the VCF without a .tbi",
+                flush=True,
+            )
+            tbi = None
+    if tbi:
+        upload_output(tbi, key + ".tbi")
+    upload_output(vcf, key)
+
+
 def build_run_deepvariant_cmd(
     ref, bam, vcf, intermediate_dir, sample_name, num_shards, model_type="WGS", extra_args="", pangenome=None
 ):
@@ -967,7 +993,7 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             raise RuntimeError(f"{label} produced no VCF at {vcf}")
         for local, key in caller_stats(ref, vcf, wd, keys, pangenome):  # before the VCF, which marks the stage done
             upload_output(local, key)
-        upload_output(vcf, keys["vcf"])
+        upload_vcf_with_index(vcf, keys["vcf"])
         print(f"Uploaded {storage().describe(keys['vcf'])}")
         if resumed:
             retire(prefix, "used")
@@ -1243,7 +1269,7 @@ def _call_from_examples(sample_id, reference_name):
             raise RuntimeError(f"DeepVariant produced no VCF at {vcf}")
         for local, key in caller_stats(ref, vcf, wd, keys):  # before the VCF, which marks the stage done
             upload_output(local, key)
-        upload_output(vcf, keys["vcf"])
+        upload_vcf_with_index(vcf, keys["vcf"])
         print(f"Uploaded {storage().describe(keys['vcf'])}")
     finally:
         shutil.rmtree(wd, ignore_errors=True)
