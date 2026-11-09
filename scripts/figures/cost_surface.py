@@ -327,7 +327,9 @@ def plot_surface(cells, xs, ys, out, title=None):
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.set_pane_color((1, 1, 1, 0))
         axis._axinfo["grid"]["color"] = figkit.GRID
-    ax.set_title((title + ": " if title else "") + "cost (height), turnaround (colour, lighter = slower)", fontsize=9)
+    ax.set_title(
+        (title + ": " if title else "") + "cost (height), turnaround (colour, blue = faster, red = slower)", fontsize=9
+    )
     written = figkit.save(fig, out)
     plt.close(fig)
     return written

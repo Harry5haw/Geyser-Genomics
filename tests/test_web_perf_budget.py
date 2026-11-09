@@ -103,3 +103,10 @@ def test_any_console_error_fails_the_job():
     with open(os.path.join(REPO_ROOT, "lighthouserc.json"), encoding="utf-8") as fh:
         level, options = json.load(fh)["ci"]["assert"]["assertions"]["errors-in-console"]
     assert level == "error" and options == {"minScore": 1, "aggregationMethod": "pessimistic"}
+
+
+def test_accessibility_is_asserted_on_every_page():
+    # The light theme was checked token by token (web/tests/test_web_theme.py); Lighthouse checks the pages.
+    with open(os.path.join(REPO_ROOT, "lighthouserc.json"), encoding="utf-8") as fh:
+        level, options = json.load(fh)["ci"]["assert"]["assertions"]["categories:accessibility"]
+    assert level == "error" and options["minScore"] >= 0.95

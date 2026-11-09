@@ -16,7 +16,8 @@
         "largest-contentful-paint": ["error", { "maxNumericValue": 999, "aggregationMethod": "median-run" }],
         "cumulative-layout-shift": ["error", { "maxNumericValue": 0, "aggregationMethod": "median-run" }],
         "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median-run" }],
-        "errors-in-console": ["error", { "minScore": 1, "aggregationMethod": "pessimistic" }]
+        "errors-in-console": ["error", { "minScore": 1, "aggregationMethod": "pessimistic" }],
+        "categories:accessibility": ["error", { "minScore": 0.95, "aggregationMethod": "median-run" }]
       }
     },
     "upload": {

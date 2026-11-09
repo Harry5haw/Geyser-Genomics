@@ -6,3 +6,6 @@ lambda/** text eol=lf
 # Shell scripts run inside Linux images (app-publish/entrypoint.sh is an ENTRYPOINT): a CRLF checkout breaks the
 # shebang ("exec ...: no such file or directory") in any image built on Windows.
 *.sh text eol=lf
+# Browser scripts: the published bytes (and the renderer's size budget, web/tests/test_web_figures.py) are the LF
+# ones; a CRLF checkout would ship and measure different files from images built on Windows.
+*.js text eol=lf

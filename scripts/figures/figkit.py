@@ -68,23 +68,45 @@ def pyplot():
     return plt
 
 
-# The heat ramp for magnitude (heatmaps, colour bars): cividis from 0.3 to 1, low = dark blue-grey, high = yellow.
+# The heat ramps for magnitude (heatmaps, 3D surfaces, colour bars). The web page uses the same stops
+# (web/samples/figures.py HEAT_TURBO / HEAT_CIVIDIS; tests/test_figures.py checks they agree).
+# HEAT_TURBO, the default "rainbow heatcam": Google's Turbo colormap (Anton Mikhailov, 2019, "Turbo, An Improved
+# Rainbow Colormap for Visualization", Apache License 2.0), all of it, 17 stops from matplotlib's "turbo" table.
+HEAT_TURBO = [
+    "#30123b", "#4040a2", "#466be3", "#4294ff", "#28bceb", "#18ddc2", "#32f298", "#6dfe62", "#a4fc3c", "#cdec34",
+    "#eecf3a", "#fdac34", "#fb7e21", "#eb500e", "#d02f05", "#a91601", "#7a0403",
+]  # fmt: skip
+# HEAT_TURBO_DARK: Turbo from 0.09 to 0.91, for the web page's dark stage (#262626), where both ends clear 2:1.
+HEAT_TURBO_DARK = [
+    "#4454c3", "#477bf2", "#3ba0fd", "#22c5e2", "#19e2bb", "#38f491", "#71fe5f", "#a4fc3c", "#c8ef34", "#e9d539",
+    "#fbb637", "#fd8d27", "#f26014", "#dd3d08", "#be2102",
+]  # fmt: skip
+# HEAT_CIVIDIS, the high-contrast (black-stage) alternative: cividis from 0.20 to 1, slate blue to yellow.
 # Perceptually uniform, lightness rises monotonically (reads in greyscale and with any colour-vision deficiency),
-# and the dark end is trimmed so it still clears 2:1 against the web page's dark stage (#042c20). The web page's
-# 3D figures use the same 13 stops (web/samples/figures.py HEAT; tests/test_figures.py checks they agree).
-HEAT = ["#4f576c", "#5d616e", "#6a6c71", "#777776", "#848279", "#928d78", "#a19975", "#b0a571", "#c0b16a"]
-HEAT += ["#d0be62", "#e0cb56", "#f1d945", "#fee838"]
+# and the dark end is trimmed so it still clears 2:1 against the black stage.
+HEAT_CIVIDIS = [
+    "#35456c", "#575d6d", "#757575", "#948e77", "#b7a96e", "#dbc75a", "#fee838",
+]  # fmt: skip
+HEAT = HEAT_TURBO  # the default ramp
 
 
-def sequential_cmap(name="geyser-heat"):
+def sequential_cmap(name="geyser-heat", stops=None):
     from matplotlib.colors import LinearSegmentedColormap
 
-    return LinearSegmentedColormap.from_list(name, HEAT)
+    return LinearSegmentedColormap.from_list(name, stops or HEAT)
 
 
-def ink_on(fraction):
-    """Text colour on a heat-ramp cell at this fraction of the scale: white on the dark (low) end, ink on the rest."""
-    return "#ffffff" if fraction < 0.4 else INK
+def _luminance(rgb):
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+
+def ink_on(fraction, stops=None):
+    """Text colour on a heat-ramp cell at this fraction of the scale: whichever of white and ink contrasts more
+    with the cell's own colour (Turbo is dark at both ends and bright in the middle)."""
+    rgb = sequential_cmap(stops=stops)(min(1.0, max(0.0, fraction)))[:3]
+    lum = _luminance(rgb)
+    return "#ffffff" if (1.05 / (lum + 0.05)) > ((lum + 0.05) / (_luminance([0.043] * 3) + 0.05)) else INK
 
 
 def tidy(ax, grid_axis="y"):

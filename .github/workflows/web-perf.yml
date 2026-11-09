@@ -11,6 +11,7 @@ name: Web performance
 # Budgets, per page, on Lighthouse's mobile defaults (emulated phone, simulated slow 4G and CPU throttling):
 #   - HTML+CSS+JS <= 30 KB transferred (scripts/web_perf_budget.py; data downloads don't count);
 #   - LCP < 1 s, CLS 0, TBT < 50 ms (lighthouserc.json, asserted by lhci on the median of 3 runs);
+#   - Lighthouse accessibility >= 0.95 (median run);
 #   - no console errors in any run (lhci's errors-in-console): under the strict CSP an inline block without its
 #     hash, or a style="" attribute, is blocked and logged there.
 on:

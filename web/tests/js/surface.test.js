@@ -7,7 +7,8 @@ const vm = require("node:vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "..", "samples", "static", "samples", "surface.js"), "utf8");
 const window = {};
-vm.runInNewContext(src, { window });
+const document = { documentElement: { dataset: {} } }; // data-theme on <html> (theme.js sets it in the page)
+vm.runInNewContext(src, { window, document });
 const { build } = window.GeyserSurface;
 
 const RAMP = ["#000000", "#ffffff"]; // a two-stop ramp: the colour is the value's level on the scale
@@ -48,5 +49,55 @@ test("values above the cap take the top colour; the baseline takes the bottom", 
 test("a grid JSON without a ramp (cached from before) still builds, coloured by the ramp's two ends", () => {
   const { ramp, ...old } = grid([[0, 4, 4]]);
   const g = build(old);
-  assert.ok(Math.abs(g.col[18] / 0.55 - 0x4f / 255) < 1e-3); // level 0: the low end's red channel
+  assert.ok(Math.abs(g.col[20] / 0.55 - 0x4e / 255) < 1e-3); // level 0: the low end's blue channel (#00224e)
+});
+
+// Themes: Turbo ("ramps.turbo") unless data-theme is "contrast", then cividis ("ramps.cividis").
+const firstWall = (g) => [g.col[18], g.col[19], g.col[20]].map((c) => +(c / 0.55).toFixed(3));
+const themed = {
+  ...grid([[0, 4, 4]]),
+  ramps: { turbo: ["#ff0000", "#ff0000"], "turbo-dark": ["#ff00ff", "#ff00ff"], cividis: ["#0000ff", "#0000ff"] },
+};
+
+test("the default, light and retro themes colour by Turbo, the dark theme by Turbo trimmed for its stage", () => {
+  for (const theme of [undefined, "light", "retro"]) {
+    document.documentElement.dataset.theme = theme;
+    assert.deepStrictEqual(firstWall(build(themed)), [1, 0, 0], String(theme));
+  }
+  document.documentElement.dataset.theme = "dark";
+  assert.deepStrictEqual(firstWall(build(themed)), [1, 0, 1]);
+  delete document.documentElement.dataset.theme;
+});
+
+test("the high-contrast theme colours by cividis", () => {
+  document.documentElement.dataset.theme = "contrast";
+  assert.deepStrictEqual(firstWall(build(themed)), [0, 0, 1]);
+  delete document.documentElement.dataset.theme;
+});
+
+test("a grid with one ramp (cached from before the themes) uses it in every theme", () => {
+  document.documentElement.dataset.theme = "contrast";
+  const { ramps, ...old } = themed;
+  assert.deepStrictEqual(firstWall(build({ ...old, ramp: ["#00ff00", "#00ff00"] })), [0, 1, 0]);
+  delete document.documentElement.dataset.theme;
+});
+
+// The colour spans the figure's robust range (z.colour), not the whole height scale: values at or below its
+// low end take the first stop, at or above its high end the last, in between interpolated.
+test("colour follows z.colour, clamped at both ends", () => {
+  const g = build({ ...grid([[0, 1, 2]]), z: { label: "z", unit: "u", max: 4, clip: null, base: 0, colour: [1, 2] } });
+  // segment 0 starts at value 0 (below the range: level 0), segment 1 at value 1 (the range's low end: level 0)
+  assert.deepStrictEqual(wallLevels(g), [0, 0]);
+  const h = build({ ...grid([[1.5, 2, 4]]), z: { label: "z", unit: "u", max: 4, clip: null, base: 0, colour: [1, 2] } });
+  assert.deepStrictEqual(wallLevels(h), [0.5, 1]); // 1.5 is halfway; 2 (and above) is the top
+});
+
+// Ridge labels are numbers just past and above the end of each ridge (x > 1, over its last value); the names are in the
+// template's ridge key (figures.html), so long names never sit on the surface.
+test("ridges are labelled by number, just past and above the end of each ridge", () => {
+  const g = build(grid([[0, 2, 4], [4, 2, 0], [1, 1, 1]]));
+  const rows = g.labels.filter((l) => l.cls === "row");
+  assert.strictEqual(rows.map((l) => l.text).join(","), "1,2,3"); // (arrays from the vm context: compare as text)
+  assert.ok(rows.every((l) => l.p[0] > 1 && l.p[1] > 0));
+  assert.ok(rows[0].p[1] > rows[1].p[1]); // above its own last value (4 vs 0)
 });

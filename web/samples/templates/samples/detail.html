@@ -1,5 +1,8 @@
 {% extends "samples/base.html" %}
 {% load geyser %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% endblock %}
+{% block sprite %}{% include "samples/_dna_sprite.html" %}{% endblock %}
+{% load geyser %}
 {% block title %}{{ sample.sample_id }} · Geyser Genomics{% endblock %}
 {% block content %}
 <p><a href="{% url 'samples:list' %}">← All samples</a></p>
