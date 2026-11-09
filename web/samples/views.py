@@ -219,7 +219,8 @@ def figures_page(request):
                 legend=mark_safe(figures_mod.legend_svg(grid)),  # noqa: S308 - numbers and escaped labels only
             )
         cards.append(card)
-    return render(request, "samples/figures.html", {"cards": cards})
+    bar_defs = mark_safe(figures_mod.bar_defs()) if any(c["grid"] for c in cards) else ""  # noqa: S308 - constants
+    return render(request, "samples/figures.html", {"cards": cards, "bar_defs": bar_defs})
 
 
 def _grid_or_404(name):

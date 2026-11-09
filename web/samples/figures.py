@@ -426,7 +426,7 @@ def poster_svg(grid: Grid) -> str:
     # (CSS: .poster path). Ids are page-wide: several posters share the page.
     gradients = [
         f'<linearGradient id="heat-{f.name}-{ramp}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" '
-        f'y2="{-(top - grid.base) * lift:.1f}">{_stops(ramp)}</linearGradient>'
+        f'y2="{round(-2 * (top - grid.base) * lift)}">{_stops(ramp)}</linearGradient>'
         for ramp in FLAT_RAMPS
     ]
     paths, ridges = {}, []
@@ -439,7 +439,7 @@ def poster_svg(grid: Grid) -> str:
                 continue
             px = MARGIN_L + (grid.x[j] - x0) / (x1 - x0) * plot_w
             py = -max(0.0, min(v, top) - grid.base) * lift
-            points.append(f"{px:.1f},{py:.1f}")
+            points.append(f"{round(2 * px)},{round(2 * py)}")  # half units, as integers (smaller)
         if not points:
             continue
         line = " ".join(points)
@@ -448,7 +448,7 @@ def poster_svg(grid: Grid) -> str:
         ridges.append(f'<path id="{rid}" d="M{first},0 L{line} L{last},0Z"/>')
         for ramp in FLAT_RAMPS:
             paths.setdefault(ramp, []).append(
-                f'<use href="#{rid}" y="{base:.1f}" fill="url(#heat-{f.name}-{ramp})"><title>{escape(name)}</title></use>'
+                f'<use href="#{rid}" y="{round(2 * base)}" fill="url(#heat-{f.name}-{ramp})"><title>{escape(name)}</title></use>'
             )
     ticks = []
     named = grid.x_ticks or [(x0 + (x1 - x0) * k / 4, f"{x0 + (x1 - x0) * k / 4:.3g}") for k in range(5)]
@@ -463,7 +463,9 @@ def poster_svg(grid: Grid) -> str:
     return (
         f'<svg class="poster" viewBox="0 0 {POSTER_W} {POSTER_H}" role="img" aria-label="{label}">'
         + f"<defs>{''.join(gradients)}{''.join(ridges)}</defs>"
-        + "".join(f'<g class="ramp-{ramp}">{"".join(p)}</g>' for ramp, p in paths.items())
+        # The ridges are drawn at twice the scale in whole numbers and scaled back: the same 0.5-unit precision as
+        # one decimal place, in fewer bytes (the page's first-window budget).
+        + "".join(f'<g class="ramp-{ramp}" transform="scale(.5)">{"".join(p)}</g>' for ramp, p in paths.items())
         + f'<g class="ticks">{"".join(ticks)}</g></svg>'
     )
 
@@ -511,6 +513,18 @@ def legend_svg(grid: Grid) -> str:
     )
 
 
+def bar_defs() -> str:
+    """The colour bars' ramps, once per page (every bar is the same horizontal ramp; only the ticks differ): a
+    zero-size SVG whose gradients the bars reference by id. Not display:none, which some browsers treat as unusable
+    gradients."""
+    ramps = {**RAMPS, **FLAT_RAMPS}
+    return (
+        '<svg class="bar-defs" width="0" height="0" aria-hidden="true" focusable="false"><defs>'
+        + "".join(f'<linearGradient id="heat-bar-{r}">{_stops(r)}</linearGradient>' for r in ramps)
+        + "</defs></svg>"
+    )
+
+
 def _bar(f, view: str, ramps: dict, ticks: list, span: str) -> str:
     w, bar_h = 240, 10
     marks = "".join(
@@ -519,12 +533,10 @@ def _bar(f, view: str, ramps: dict, ticks: list, span: str) -> str:
         for k, t in enumerate(ticks)
     )
     label = escape(f"Colour scale ({view.upper()} view): {f.z_label} {span} {f.z_unit}")
-    gid = f"heat-bar-{f.name}-{view}"
     return (
         f'<svg class="colorbar bar-{view}" viewBox="-20 0 {w + 40} {bar_h + 22}" role="img" aria-label="{label}">'
-        + "<defs>"
-        + "".join(f'<linearGradient id="{gid}-{r}">{_stops(r)}</linearGradient>' for r in ramps)
-        + "</defs>"
-        + "".join(f'<rect class="ramp-{r}" width="{w}" height="{bar_h}" rx="3" fill="url(#{gid}-{r})"/>' for r in ramps)
+        + "".join(
+            f'<rect class="ramp-{r}" width="{w}" height="{bar_h}" rx="3" fill="url(#heat-bar-{r})"/>' for r in ramps
+        )
         + f'<g class="ticks">{marks}</g></svg>'
-    )
+    )  # the ramps: bar_defs(), once per page

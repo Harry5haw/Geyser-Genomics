@@ -148,14 +148,14 @@ def test_the_poster_fills_each_ridge_by_value(figdir):
     top = grid.clip or grid.vmax
     lift = (figures.POSTER_H - figures.MARGIN_T - figures.MARGIN_B) / (len(grid.rows) + 1.5) * 2.5 / (top - grid.base)
     for (_, y1, y2, stops), ramp in zip(gradients, figures.FLAT_RAMPS.values(), strict=True):
-        assert float(y1) == 0 and float(y2) == round(-(top - grid.base) * lift, 1)  # baseline to the top: linear
+        assert float(y1) == 0 and float(y2) == round(-2 * (top - grid.base) * lift)  # baseline to the top (2x units)
         assert re.findall(r'stop-color="(#[0-9a-f]{6})"', stops) == ramp
         offsets = [float(o) for o in re.findall(r'offset="([\d.]+)"', stops)]
         assert offsets == [round(k / (len(ramp) - 1), 3) for k in range(len(ramp))]  # evenly spaced
     assert figures.FLAT_RAMPS["flat"] == figures.HEAT_TURBO_DARK  # blue bottoms, as before the rank spread
     assert svg.count("<path ") == 2  # one ridge per row, drawn once
     for ramp in figures.FLAT_RAMPS:
-        group = re.search(rf'<g class="ramp-{ramp}">(.*?)</g>', svg).group(1)
+        group = re.search(rf'<g class="ramp-{ramp}"[^>]*>(.*?)</g>', svg).group(1)
         assert group.count(f'fill="url(#heat-coverage-{ramp})"') == 2
     assert "stop-opacity" not in svg and "style=" not in svg  # no fade; attributes only (CSP)
 
@@ -180,8 +180,15 @@ def test_the_colour_bar_shows_the_scale_with_its_cap(figdir):
     bars = re.findall(r'<svg class="colorbar (bar-\dd)".*?</svg>', coverage)
     assert bars == ["bar-2d", "bar-3d"] and coverage.count('role="img"') == 2
     flat, rank = re.findall(r'<svg class="colorbar bar-\dd".*?</svg>', coverage)
-    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', flat) == [c for r in figures.FLAT_RAMPS.values() for c in r]
-    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', rank) == [c for r in figures.RAMPS.values() for c in r]
+    # The ramps live once per page (bar_defs); each bar only references them.
+    assert "<linearGradient" not in coverage
+    assert re.findall(r'fill="url\(#(heat-bar-[\w-]+)\)"', flat) == [f"heat-bar-{r}" for r in figures.FLAT_RAMPS]
+    assert re.findall(r'fill="url\(#(heat-bar-[\w-]+)\)"', rank) == [f"heat-bar-{r}" for r in figures.RAMPS]
+    defs = figures.bar_defs()
+    for r, ramp in {**figures.RAMPS, **figures.FLAT_RAMPS}.items():
+        grad = re.search(rf'<linearGradient id="heat-bar-{r}">(.*?)</linearGradient>', defs).group(1)
+        assert re.findall(r'stop-color="(#[0-9a-f]{6})"', grad) == ramp
+    assert 'width="0" height="0" aria-hidden="true"' in defs and "display:none" not in defs
     assert re.findall(r">([^<]+)</text>", flat) == ["0", figures._num(grid.clip / 2), f"≥ {figures._num(grid.clip)}"]
     knots = figures.colour_knots(grid)
     assert grid.vmin < knots[0] and grid.vmax > knots[-1]
@@ -430,3 +437,20 @@ def test_the_3d_ridge_key_lists_every_row_in_order_escaped(client, figdir):
     grid = figures.load("coverage")
     key = re.search(r'id="fig-coverage".*?<ol class="ridge-key">(.*?)</ol>', body, re.S).group(1)
     assert re.findall(r"<li>(.*?)</li>", key) == [escape(r) for r in grid.rows]
+
+
+def test_the_bar_ramps_are_defined_once_per_page(client, figdir):
+    body = client.get("/figures/").content.decode()
+    assert body.count('<svg class="bar-defs"') == 1  # shared by every colour bar on the page
+    for r in {**figures.RAMPS, **figures.FLAT_RAMPS}:
+        assert body.count(f'id="heat-bar-{r}"') == 1
+        assert f'fill="url(#heat-bar-{r})"' in body
+
+
+def test_the_poster_draws_in_whole_half_units(figdir):
+    # Ridges at twice the scale in whole numbers inside scale(.5) groups: 0.5-unit precision in fewer bytes.
+    svg = figures.poster_svg(figures.load("coverage"))
+    paths = re.findall(r'<path id="ridge-[^"]+" d="([^"]+)"', svg)
+    assert paths and all(re.fullmatch(r"[MLZ0-9, -]+", d) for d in paths)  # integers only
+    assert all(re.fullmatch(r"\d+", y) for y in re.findall(r'<use href="#ridge-[^"]+" y="([^"]+)"', svg))
+    assert svg.count('transform="scale(.5)"') == len(figures.FLAT_RAMPS)
