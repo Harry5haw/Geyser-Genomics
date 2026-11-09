@@ -108,7 +108,12 @@ class LocalMetrics:
 
 
 class CloudWatchMetrics:
-    """Emits the same metric shape the original tasks.py did, so existing dashboards keep working."""
+    """Publishes per stage, not per sample: dimensions TaskName + Status (FailureCount: TaskName only).
+
+    SampleId was a dimension until Nov 2026 (option B, compared in #54): with it every sample was its own metric, so
+    CloudWatch could not compute p50/p95 across runs and each new sample added billable metrics. The sample is
+    still in the job log, the run record (runs/{id}.provenance.json) and the local metrics.jsonl.
+    """
 
     def __init__(self, region: str):
         import boto3
@@ -118,7 +123,6 @@ class CloudWatchMetrics:
     def record(self, task_name, sample_id, status, duration_seconds, usage=None):
         dimensions = [
             {"Name": "TaskName", "Value": task_name},
-            {"Name": "SampleId", "Value": sample_id},
             {"Name": "Status", "Value": status},
         ]
         data = [{"MetricName": "Duration", "Dimensions": dimensions, "Value": duration_seconds, "Unit": "Seconds"}]
@@ -129,10 +133,7 @@ class CloudWatchMetrics:
             data.append(
                 {
                     "MetricName": "FailureCount",
-                    "Dimensions": [
-                        {"Name": "TaskName", "Value": task_name},
-                        {"Name": "SampleId", "Value": sample_id},
-                    ],
+                    "Dimensions": [{"Name": "TaskName", "Value": task_name}],
                     "Value": 1,
                     "Unit": "Count",
                 }
