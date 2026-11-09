@@ -1,6 +1,6 @@
 """manage.py publish: render the UI to a static site (a folder, or the hosted site's S3 bucket).
 
-    python manage.py publish --all --out site/                     # every sample, the figures; a folder
+    python manage.py publish --all --out site/                     # every sample (and the figures, as always); a folder
     python manage.py publish SRR062634 --out s3://my-site          # one sample's pages and the list (a run's last step)
     python manage.py publish --all --api-base https://….lambda-url.eu-west-2.on.aws --out s3://my-site
 
@@ -36,7 +36,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("sample_ids", nargs="*", help="samples to (re)publish, with the list")
-        parser.add_argument("--all", action="store_true", help="every sample, and the figures if their CSVs are here")
+        parser.add_argument("--all", action="store_true", help="every sample (any publish writes the figures)")
         parser.add_argument("--out", default="", help="a folder, or s3://bucket[/prefix] (default s3://$SITE_BUCKET)")
         parser.add_argument("--api-base", default=None, help="the web API's origin (default $GEYSER_API_BASE)")
         parser.add_argument("--max-pages", type=int, default=20, help="call pages per sample (50 calls each)")

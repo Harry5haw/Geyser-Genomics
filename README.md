@@ -688,7 +688,7 @@ There is no database. Status is worked out from which outputs exist, the local m
 
 ```bash
 cd web
-python manage.py publish --all --out ../site                 # every sample + the 3D figures, into a folder
+python manage.py publish --all --out ../site                 # every sample (each publish also writes the 3D figures), into a folder
 python -m http.server -d ../site                             # browse it: folders serve their index.html
 python manage.py publish SRR062634 --out s3://<site bucket>  # one sample's pages and the list (a run's last step)
 ```

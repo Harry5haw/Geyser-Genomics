@@ -147,7 +147,8 @@ def test_one_sample_publishes_its_pages_and_the_list_only(storage, site):
     finished_sample(storage, "S2")
     root = run_publish(site, "S2")
     assert (root / "samples/S2/index.html").is_file() and (root / "index.html").is_file()
-    assert not (root / "samples/S1").exists() and not (root / "figures").exists()  # figures: --all
+    assert not (root / "samples/S1").exists()
+    assert (root / "figures/index.html").is_file()  # every page links to it, so every publish writes it
     assert 'href="/samples/S1/"' in (root / "index.html").read_text(encoding="utf-8")  # the list has every sample
 
 
@@ -160,14 +161,14 @@ def test_a_running_sample_has_a_row_but_no_page_and_no_link(storage, site):
     assert not (root / "samples/R1").exists()
 
 
-def test_figures_are_published_with_all_when_their_csvs_are_here(storage, tmp_path, settings):
+def test_figures_are_published_with_one_sample_when_their_csvs_are_here(storage, tmp_path, settings):
     from django.conf import settings as live
 
     settings.GEYSER_FIGURES_DIR = Path(live.REPO_ROOT) / "docs" / "figures" / "csv"
     if not settings.GEYSER_FIGURES_DIR.is_dir():
         pytest.skip("no figure CSVs in this checkout")
     finished_sample(storage)
-    root = run_publish(tmp_path / "site", "--all")
+    root = run_publish(tmp_path / "site", "S1")
     assert (root / "figures/index.html").is_file()
     assert sorted(p.suffix for p in (root / "figures").iterdir() if p.stem == "coverage") == [".csv", ".json"]
 
@@ -268,7 +269,7 @@ def test_s3_objects_get_their_type_and_cache_lifetime(site, monkeypatch):
     assert list(fake.objects)[-1] == "pre/index.html"  # the list last, after the pages it links to
     vcf = fake.objects["pre/samples/S1/files/S1.vcf.gz"]
     assert vcf["streamed"] and vcf["ContentType"] == "application/gzip"  # big files: multipart, not in memory
-    assert invalidations == [("E123", ["/", "/index.html", "/404.html", "/samples/S1/*"])]
+    assert invalidations == [("E123", ["/", "/index.html", "/404.html", "/figures/*", "/samples/S1/*"])]
 
 
 def test_out_defaults_to_the_site_bucket(site, monkeypatch):
