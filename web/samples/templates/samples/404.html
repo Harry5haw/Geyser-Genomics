@@ -1,0 +1,9 @@
+{% extends "samples/base.html" %}
+{% block title %}Not found · Geyser Genomics{% endblock %}
+{% block content %}
+<section class="panel">
+  <h1>Not found</h1>
+  <p>There's no page here. A sample's page appears once its run has finished and been published.</p>
+  <p><a href="{% url 'samples:list' %}">← All samples</a> · <a href="{% url 'samples:figures' %}">Results in 3D</a></p>
+</section>
+{% endblock %}

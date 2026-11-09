@@ -131,7 +131,7 @@ def plot(rows, out, title=None, cap=98.0):
     z = np.array(display, dtype=float)
     bin_mb = (starts[1] - starts[0]) / 1e6 if len(starts) > 1 else 1.0
     # A few bins (bcftools near the centromere) are ~4x the rest; a linear scale up to them would wash
-    # out everything else, so the scale stops at the --cap percentile and darker bins are "at least".
+    # out everything else, so the scale stops at the --cap percentile and the brightest bins are "at least".
     vmax = float(np.nanpercentile(z, cap)) if np.isfinite(z).any() else 1.0
     cmap = figkit.sequential_cmap().with_extremes(bad=figkit.SURFACE)
     fig, ax = plt.subplots(figsize=(11, 0.34 * len(names) + 1.5))

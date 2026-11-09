@@ -43,9 +43,9 @@ variable "budget_alert_email" {
 # --- Claude Code guardrails (#73, claude_guardrails.tf) ---
 
 variable "gpu_max_vcpus" {
-  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 4 = one g5.xlarge (or g4dn.xlarge) at a time."
+  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 16 = one g6.4xlarge or g5.4xlarge at a time (at most $2.06/h). batch_gpu.tf refuses a cap above the smallest gpu_instance_types' vCPUs, so it is always one instance at a time."
   type        = number
-  default     = 4
+  default     = 16
 }
 
 variable "fargate_max_vcpus" {
@@ -137,9 +137,9 @@ variable "job_disk_gb" {
 }
 
 variable "pipeline_timeout_hours" {
-  description = "Time limit for a whole pipeline run, queue waits included. The longest path is align (4 h attempt limit) then variants (2 h), so 12 h leaves room for retries and queueing. A run past it ends as TimedOut (no SNS message; it shows on the dashboard)."
+  description = "Time limit for a whole pipeline run, queue waits included. A whole genome on the large route (v1.3) is ~4-4.5 h (pre-flight 2 h, chunks, merge 4 h limits), and v1.5's split DeepVariant adds ~3.7 h, so 24 h leaves room for retries and queueing. A run past it ends as TimedOut (no SNS message; it shows on the dashboard)."
   type        = number
-  default     = 12
+  default     = 24
 
   validation {
     condition     = var.pipeline_timeout_hours >= 1 && var.pipeline_timeout_hours <= 48
@@ -205,15 +205,15 @@ variable "alignment_expiry_days" {
 # --- Cloud DeepVariant (G2: #43, #44; docs/design/cloud-deepvariant.md) ---
 
 variable "gpu_instance_types" {
-  description = "Instance types the GPU Batch environment may launch. Both have a 24 GB-class GPU (call_variants at batch 1024 needs more than 10 GB). g6 (L4) is about 20% cheaper than g5 (A10G) in eu-west-2."
+  description = "Instance types the GPU Batch environment may launch, each in batch_gpu.tf's gpu_instance_shapes. Both have a 24 GB-class GPU (call_variants at batch 1024 needs more than 10 GB). g6 (L4) is about 20% cheaper than g5 (A10G) in eu-west-2. The 4xlarge (16 vCPU / 64 GiB) types are the measured shape (docs/design/cloud-deepvariant.md): cheaper per run than the xlarge, since make_examples runs four times faster."
   type        = list(string)
-  default     = ["g6.xlarge", "g5.xlarge"]
+  default     = ["g6.4xlarge", "g5.4xlarge"]
 }
 
 variable "deepvariant_resources" {
-  description = "vCPU and memory (MiB) per DeepVariant job, plus one GPU. 4 vCPU fits the current gpu_max_vcpus cap; the measured shape (16 vCPU, ~8 min for chr20) needs gpu_max_vcpus = 16 and the 4xlarge types."
+  description = "vCPU and memory (MiB) per DeepVariant job, plus one GPU. The measured shape: 16 vCPU (~8 min for chr20). It must fit gpu_max_vcpus and the smallest gpu_instance_types (deepvariant.tf)."
   type        = object({ vcpu = number, memory_mb = number })
-  default     = { vcpu = 4, memory_mb = 14336 } # 16 GiB instance, ~2 GiB left for the ECS agent and OS
+  default     = { vcpu = 16, memory_mb = 57344 } # 64 GiB instance; 56 GiB leaves room for the ECS agent and OS (need: 0.6 GB per shard + 2 GB)
 }
 
 variable "deepvariant_image_version" {
@@ -222,10 +222,112 @@ variable "deepvariant_image_version" {
   default     = "dev-local"
 }
 
-variable "gpu_disk_gb" {
-  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment and DeepVariant's intermediates: 100 GB for chromosome-scale runs, 250+ for a whole genome."
+# --- DeepVariant split mode (v1.5, deepvariant_cpu.tf): make_examples parts on Fargate, then the GPU job ---
+
+variable "deepvariant_split_parts" {
+  description = "Default dv_parts (a per-run setting): make_examples part jobs on the Fargate queue before the GPU job. 1 = today's single GPU job (no split). At most fargate_spot_max_vcpus / dv_part_resources.vcpu (step_functions.tf)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.deepvariant_split_parts >= 1 && floor(var.deepvariant_split_parts) == var.deepvariant_split_parts
+    error_message = "deepvariant_split_parts must be a whole number >= 1 (1 = no split)."
+  }
+}
+
+variable "deepvariant_cpu_image_version" {
+  description = "Tag of the geyser-deepvariant-cpu image in ECR (app-deepvariant/Dockerfile with --build-arg DV_TAG=1.10.0: the GPU image's DeepVariant version, which the GPU job checks)."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "dv_part_resources" {
+  description = "vCPU and memory (MiB) of each make_examples part job. DEEPVARIANT_SHARDS = parts x vcpu (one make_examples task per vCPU). A chr20 part of 8 tasks peaked at ~1.1 GB RSS (#228); 16 GiB leaves room for a genome's. Fargate pairs: 4 vCPU 8-30 GiB (1 GiB steps), 8 vCPU 16-60 GiB (4 GiB steps), 16 vCPU 32-120 GiB (8 GiB steps)."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 8, memory_mb = 16384 }
+
+  validation {
+    condition = (
+      (var.dv_part_resources.vcpu == 4 && var.dv_part_resources.memory_mb >= 8192 && var.dv_part_resources.memory_mb <= 30720 && var.dv_part_resources.memory_mb % 1024 == 0) ||
+      (var.dv_part_resources.vcpu == 8 && var.dv_part_resources.memory_mb >= 16384 && var.dv_part_resources.memory_mb <= 61440 && var.dv_part_resources.memory_mb % 4096 == 0) ||
+      (var.dv_part_resources.vcpu == 16 && var.dv_part_resources.memory_mb >= 32768 && var.dv_part_resources.memory_mb <= 122880 && var.dv_part_resources.memory_mb % 8192 == 0)
+    )
+    error_message = "dv_part_resources needs a valid Fargate pair: 4 vCPU 8192-30720 MiB (1024 steps), 8 vCPU 16384-61440 (4096 steps), 16 vCPU 32768-122880 (8192 steps)."
+  }
+}
+
+variable "dv_part_disk_gb" {
+  description = "Ephemeral storage of each part job (GiB, Fargate's 21-200, billed per GiB-hour above 20): the whole CRAM (~17 GB for a 30x genome, ~0.4 GB for chr20), the reference and the part's examples."
   type        = number
   default     = 100
+
+  validation {
+    condition     = var.dv_part_disk_gb >= 21 && var.dv_part_disk_gb <= 200
+    error_message = "dv_part_disk_gb must be 21-200 (the Fargate range)."
+  }
+}
+
+variable "dv_part_timeout_seconds" {
+  description = "Attempt limit of each part job (the state machine's AttemptDurationSeconds). The app stops itself 300 s before it (DEEPVARIANT_TIMEOUT_SECONDS). chr20 parts took ~4.5 min (#228); a genome's share is ~50x that per part."
+  type        = number
+  default     = 14400
+
+  validation {
+    condition     = var.dv_part_timeout_seconds >= 900 && floor(var.dv_part_timeout_seconds) == var.dv_part_timeout_seconds
+    error_message = "dv_part_timeout_seconds must be a whole number of at least 900."
+  }
+}
+
+variable "deepvariant_timeout_seconds" {
+  description = "Attempt limit of the GPU DeepVariant job (the state machine's AttemptDurationSeconds); the app stops itself 300 s before it (DEEPVARIANT_TIMEOUT_SECONDS). Was a fixed 3600: chr20 takes ~8 min on 16 vCPU, but a 30x genome's call_variants + postprocess_variants (split mode) is ~1.5-2.5 h. A hang is still caught by the 15-minute idle timeout, so a long limit only costs anything on a job that keeps making progress."
+  type        = number
+  default     = 14400
+
+  validation {
+    condition     = var.deepvariant_timeout_seconds >= 1500 && floor(var.deepvariant_timeout_seconds) == var.deepvariant_timeout_seconds
+    error_message = "deepvariant_timeout_seconds must be a whole number of at least 1500 (the app's limit, 300 s under it, must exceed its 900 s idle timeout)."
+  }
+}
+
+# --- vg giraffe as the aligner (#146, giraffe.tf) ---
+
+variable "giraffe_image_version" {
+  description = "Tag of the geyser-giraffe image (app-giraffe/Dockerfile, built FROM a geyser-app image) in ECR. Build it from the same commit as geyser-app's image_version, so the two run the same tasks.py."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "giraffe_graph" {
+  description = "The pangenome graph giraffe maps to: a .gbz under pangenome/ in the data lake, with its .hapl beside it (GIRAFFE_GRAPH). Empty: the app's default, <reference stem>.gbz. The default is HPRC v1.1's GRCh38 graph cut to chr20, the file the local benchmarks (#129, #191) and the pangenome-aware DeepVariant caller use; the stage refuses a graph whose GRCh38 paths don't match the run's reference."
+  type        = string
+  default     = "hprc-v1.1-mc-grch38.chr20.gbz"
+
+  validation {
+    condition     = var.giraffe_graph == "" || (endswith(var.giraffe_graph, ".gbz") && !strcontains(var.giraffe_graph, "/"))
+    error_message = "giraffe_graph must be empty or a .gbz file name (no directory: it is read from pangenome/)."
+  }
+}
+
+variable "giraffe_kmc_memory_gb" {
+  description = "kmc's memory cap in GB for haplotype sampling (KMC_MEMORY_GB). 4 is the app default; plus ~1 GiB it must fit in the align stage's memory. Larger only saves kmc temp disk: HG003 chr20 at -m8 took 37 s and 7.4 GiB."
+  type        = number
+  default     = 4
+
+  validation {
+    condition     = var.giraffe_kmc_memory_gb >= 1 && floor(var.giraffe_kmc_memory_gb) == var.giraffe_kmc_memory_gb
+    error_message = "giraffe_kmc_memory_gb must be a whole number of GB, at least 1."
+  }
+}
+
+variable "gpu_disk_gb" {
+  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment (~17 GB CRAM for a 30x genome) and DeepVariant's intermediates (or, in v1.5 split mode, every part's examples): 100 GB is enough for a chromosome, a whole genome needs 250+ (500 leaves room for a 30x genome's examples). 500 GB of gp3 is ~$0.06 per instance-hour, billed only while an instance runs."
+  type        = number
+  default     = 500
+
+  validation {
+    condition     = var.gpu_disk_gb >= 100 && var.gpu_disk_gb <= 1000 && floor(var.gpu_disk_gb) == var.gpu_disk_gb
+    error_message = "gpu_disk_gb must be a whole number of GB from 100 (the image alone is ~28 GB) to 1000."
+  }
 }
 
 variable "default_caller" {
@@ -250,70 +352,194 @@ variable "gate_mode" {
   }
 }
 
-# --- 3.0: optional AlphaGenome annotation (alphagenome.tf, the Annotate state) ---------------------------
+# --- the hosted web UI (W3): the API here; the site bucket and CloudFront in infrastructure/web/ -----------
 
-variable "alphagenome_api_key_parameter" {
+variable "web_upload_token_parameter" {
   description = <<-EOT
-    Name of the SSM Parameter Store SecureString that holds the AlphaGenome API key (default KMS key
-    aws/ssm). Terraform never creates, reads or stores the parameter or its value: the user puts the
-    key in (aws ssm put-parameter --type SecureString, with their own identity). Only the annotate job's
-    execution role may read it, and only this one parameter; the job definition maps it into the
-    container's environment. Until the parameter exists, an annotate job fails to start, which the
-    state machine notes without failing the run.
+    Name of the SSM Parameter Store SecureString holding the upload token the web API checks (a long
+    random string, at least 32 characters). Terraform never creates or reads it: the user puts it in
+    with their own identity. Until it exists, uploads answer 503; status and downloads still work.
   EOT
   type        = string
-  default     = "/geyser/alphagenome/api-key"
+  default     = "/geyser/web/upload-token"
 
   validation {
-    condition     = can(regex("^/[A-Za-z0-9_./-]+$", var.alphagenome_api_key_parameter))
-    error_message = "alphagenome_api_key_parameter must be a full parameter name starting with / (letters, digits, _ . - /)."
+    condition     = can(regex("^/[A-Za-z0-9_./-]+$", var.web_upload_token_parameter))
+    error_message = "web_upload_token_parameter must be a full parameter name starting with / (letters, digits, _ . - /)."
   }
 }
 
-variable "annotate_source" {
-  description = <<-EOT
-    Where tasks.py annotate gets its scores in the cloud (its --source, #207's contract):
-    atlas: the AlphaGenome Atlas through the client and the key (top track, gene, RNA LFC; SNVs);
-    avi-file: a local lookup in reference/alphagenome/<reference>.avi.tsv.gz (AVI only; no key needed);
-    api: score_variant through the key (indels too; still TODO in the app).
-  EOT
+variable "web_origin" {
+  description = "The hosted site's origin, e.g. https://d1234abcd.cloudfront.net (infrastructure/web/'s site_origin output). Empty until the web stack exists: then the API allows no browser origin and the data lake gets no CORS rule."
   type        = string
-  default     = "atlas"
+  default     = ""
 
   validation {
-    condition     = contains(["atlas", "avi-file", "api"], var.annotate_source)
-    error_message = "annotate_source must be atlas, avi-file or api (fake is for offline tests only)."
+    condition     = var.web_origin == "" || can(regex("^https://[a-z0-9.-]+$", var.web_origin))
+    error_message = "web_origin must be empty or an https:// origin with no path or trailing slash."
   }
 }
 
-variable "annotate_image_version" {
-  description = "Tag of the geyser-annotate image (app-annotate/Dockerfile, #207: the app image plus the alphagenome client) the annotate job runs, like image_version for the app image."
+variable "publish_enabled" {
+  description = "Publish each run's page to the hosted site at the end of the run (the Publish state). Off until the web stack exists and the image has the publisher (W2); needs web_site_bucket and web_site_distribution_id."
+  type        = bool
+  default     = false
+}
+
+variable "web_site_bucket" {
+  description = "The site bucket's name (infrastructure/web/'s site_bucket output), for the Publish job. Empty while publishing is off."
+  type        = string
+  default     = ""
+}
+
+variable "web_site_distribution_id" {
+  description = "The CloudFront distribution's ID (infrastructure/web/'s distribution_id output): the Publish job invalidates /index.html there. Empty while publishing is off."
+  type        = string
+  default     = ""
+}
+
+variable "web_api_reserved_concurrency" {
+  description = "Reserved concurrency of the web API Lambda: its rate limit. At most this many requests run at once and the rest get 429, so a flood of requests can't run up the bill or starve the account's other functions (the trigger)."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.web_api_reserved_concurrency >= 1 && var.web_api_reserved_concurrency <= 50 && floor(var.web_api_reserved_concurrency) == var.web_api_reserved_concurrency
+    error_message = "web_api_reserved_concurrency must be a whole number from 1 to 50 (0 would disable the API; -1, unreserved, would remove the limit)."
+  }
+}
+
+variable "web_max_upload_gb" {
+  description = "The largest file the web API starts an upload for, in GiB (a 30x paired FASTQ mate is ~30-50 GB)."
+  type        = number
+  default     = 64
+}
+
+variable "publish_image_version" {
+  description = "Tag of the geyser-publish image (app-publish/Dockerfile: the app image plus web/) the Publish job runs, like image_version for the app image."
   type        = string
   default     = "dev-local"
 }
 
-variable "annotate_resources" {
-  description = "vCPU and memory (MiB) of the annotate job. It reads the VCF, selects variants and waits on the API, so it gets the smallest Fargate size (0.25 vCPU / 512 MiB, about $0.012 an hour). A valid Fargate pair, as for stage_resources."
+variable "publish_resources" {
+  description = "vCPU and memory (MiB) of the Publish job: one pass over the VCF and the stats, a few seconds for chr20 and ~2-4 min for a 30x genome at 0.5 vCPU (T3's measurements)."
   type        = object({ vcpu = number, memory_mb = number })
-  default     = { vcpu = 0.25, memory_mb = 512 }
+  default     = { vcpu = 0.5, memory_mb = 1024 }
 
   validation {
-    condition = contains(keys(local.fargate_memory_mb), tostring(var.annotate_resources.vcpu)) && (
-      var.annotate_resources.memory_mb >= local.fargate_memory_mb[tostring(var.annotate_resources.vcpu)][0] &&
-      var.annotate_resources.memory_mb <= local.fargate_memory_mb[tostring(var.annotate_resources.vcpu)][1] &&
-      (var.annotate_resources.memory_mb % 1024 == 0 || (var.annotate_resources.vcpu == 0.25 && var.annotate_resources.memory_mb == 512))
+    condition = (
+      (var.publish_resources.vcpu == 0.25 && contains([512, 1024, 2048], var.publish_resources.memory_mb)) ||
+      (var.publish_resources.vcpu == 0.5 && var.publish_resources.memory_mb >= 1024 && var.publish_resources.memory_mb <= 4096 && var.publish_resources.memory_mb % 1024 == 0) ||
+      (var.publish_resources.vcpu == 1 && var.publish_resources.memory_mb >= 2048 && var.publish_resources.memory_mb <= 8192 && var.publish_resources.memory_mb % 1024 == 0)
     )
-    error_message = "annotate_resources needs a valid Fargate vCPU/memory pair (e.g. 0.25 vCPU with 512, 1024 or 2048 MiB; 0.5 vCPU with 1024-4096)."
+    error_message = "publish_resources needs a valid Fargate pair: 0.25 vCPU with 512/1024/2048 MiB, 0.5 vCPU with 1024-4096, or 1 vCPU with 2048-8192 (1024 steps)."
   }
 }
 
-variable "annotate_timeout_seconds" {
-  description = "Attempt limit of the annotate job. The API is sized for up to thousands of predictions, and ALPHAGENOME_MAX_VARIANTS (default 500) keeps a run's calls well inside this."
+# --- v1.3 Big inputs: the large route (genome_scale.tf, the state machine's Large_QC_and_Align) ------------
+
+variable "large_input_gb" {
+  description = "Uploads at or above this size (GB, 10^9 bytes, both mates added up) take the large route: pre-flight, chunked alignment, a streaming merge. Smaller ones take today's path, unchanged. A manual start can pass input_bytes to choose (e.g. a chr20 canary on the large route)."
   type        = number
-  default     = 1800
+  default     = 5
 
   validation {
-    condition     = var.annotate_timeout_seconds >= 60 && var.annotate_timeout_seconds <= 14400
-    error_message = "annotate_timeout_seconds must be between 60 and 14400 (4 h)."
+    condition     = var.large_input_gb > 0
+    error_message = "large_input_gb must be above 0."
+  }
+}
+
+variable "large_route_resources" {
+  description = <<-EOT
+    vCPU and memory (MiB) of the large route's jobs (docs/design/genome-scale-app.md, the plan's sizes). All run on
+    the large-disk job definition. QC runs alongside the pre-flight and then alongside the chunks, so
+    qc + align_concurrency x chunk must fit in fargate_spot_max_vcpus (step_functions.tf derives the maximum).
+    Fargate pairs: 4 vCPU 8-30 GiB (1 GiB steps), 8 vCPU 16-60 GiB (4 GiB steps), 16 vCPU 32-120 GiB (8 GiB steps).
+  EOT
+  type        = map(object({ vcpu = number, memory_mb = number }))
+  default = {
+    preflight = { vcpu = 8, memory_mb = 16384 } # one streaming pass: gunzip, count, cut, pigz -1
+    qc        = { vcpu = 8, memory_mb = 16384 } # fastp on the whole input (os.cpu_count() threads)
+    chunk     = { vcpu = 8, memory_mb = 32768 } # bwa-mem2 with the GRCh38 index in memory (~16-20 GB: measure on the canary)
+    merge     = { vcpu = 8, memory_mb = 16384 } # samtools merge (streaming) | markdup | CRAM, mosdepth
+  }
+
+  validation {
+    condition     = toset(keys(var.large_route_resources)) == toset(["preflight", "qc", "chunk", "merge"])
+    error_message = "large_route_resources needs exactly preflight, qc, chunk and merge."
+  }
+  validation {
+    condition = alltrue([for r in values(var.large_route_resources) : (
+      (r.vcpu == 4 && r.memory_mb >= 8192 && r.memory_mb <= 30720 && r.memory_mb % 1024 == 0) ||
+      (r.vcpu == 8 && r.memory_mb >= 16384 && r.memory_mb <= 61440 && r.memory_mb % 4096 == 0) ||
+      (r.vcpu == 16 && r.memory_mb >= 32768 && r.memory_mb <= 122880 && r.memory_mb % 8192 == 0)
+    )])
+    error_message = "Each large-route job needs a valid Fargate pair: 4 vCPU 8192-30720 MiB (1024 steps), 8 vCPU 16384-61440 (4096 steps), 16 vCPU 32768-122880 (8192 steps)."
+  }
+}
+
+variable "large_disk_gb" {
+  description = "Ephemeral storage of the large-disk job definition (GiB, Fargate's 21-200, billed per GiB-hour above 20): the pre-flight and QC hold the whole input (~53 GB for a 30x genome), the merge its CRAM and statistics."
+  type        = number
+  default     = 200
+
+  validation {
+    condition     = var.large_disk_gb >= 21 && var.large_disk_gb <= 200
+    error_message = "large_disk_gb must be 21-200 (the Fargate range)."
+  }
+}
+
+variable "genome_chunk_count" {
+  description = "Default chunk_count (a per-run setting, 2-96): how many equal chunks the pre-flight cuts a large input into."
+  type        = number
+  default     = 24
+
+  validation {
+    condition     = var.genome_chunk_count >= 2 && var.genome_chunk_count <= 96 && floor(var.genome_chunk_count) == var.genome_chunk_count
+    error_message = "genome_chunk_count must be a whole number from 2 to 96."
+  }
+}
+
+variable "genome_align_concurrency" {
+  description = "Default align_concurrency (a per-run setting): chunks aligned at once. At most (fargate_spot_max_vcpus - qc) / chunk vCPUs, checked in step_functions.tf: (48 - 8) / 8 = 5."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.genome_align_concurrency >= 1 && floor(var.genome_align_concurrency) == var.genome_align_concurrency
+    error_message = "genome_align_concurrency must be a whole number >= 1."
+  }
+}
+
+variable "genome_merge_threads" {
+  description = "Default merge_threads (a per-run setting): samtools threads in the merge, at most the merge job's vCPUs."
+  type        = number
+  default     = 8
+
+  validation {
+    condition     = var.genome_merge_threads >= 1 && floor(var.genome_merge_threads) == var.genome_merge_threads
+    error_message = "genome_merge_threads must be a whole number >= 1."
+  }
+}
+
+variable "raw_reads_tier_days" {
+  description = "Days before a raw_reads/ object of at least large_input_gb (5 GB: the large route's threshold, the user's decision) moves to S3 Glacier Instant Retrieval (still readable at once, ~80% cheaper to store; a per-GB retrieval charge and a 90-day minimum apply). Smaller uploads stay in Standard. 30 keeps re-runs within a build window free of retrieval charges. 0 turns the rule off."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.raw_reads_tier_days == 0 || var.raw_reads_tier_days >= 1
+    error_message = "raw_reads_tier_days must be 0 (off) or at least 1."
+  }
+}
+
+variable "genome_chunk_expiry_days" {
+  description = "Days before the large route's chunks (intermediate/chunks/, intermediate/aligned/: ~130 GB per 30x genome) expire. Nothing reads them after the merge; shorter than intermediate_expiry_days because of their size."
+  type        = number
+  default     = 3
+
+  validation {
+    condition     = var.genome_chunk_expiry_days >= 1
+    error_message = "genome_chunk_expiry_days must be at least 1: the merge must still find the chunks."
   }
 }

@@ -13,21 +13,30 @@ Figure data: [`accuracy_by_configuration.csv`](accuracy_by_configuration.csv). D
 | bwa + pangenome DV | 0.997575 | 250 / 90 | 0.996235 | 53 / 28 | 421 | 307 | 38 | 277 | 2026-11-02 | #95 |
 | bwa + pangenome DV, MAPQ>=5 | 0.997710 | 251 / 70 | 0.996189 | 53 / 29 | 403 | 285 | 45 | 253 | 2026-11-02 | #51 |
 
+## HG003 30x: pipeline chunked align (v1.3): HG003 30x whole genome, 30 bwa-mem2 chunks, streaming merge
+
+| Configuration | SNP F1 | SNP FN / FP | Indel F1 | Indel FN / FP | Errors | SNP errors, difficult | SNP errors, segdups | SNP errors, low mappability | Scored | Source |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- | :--- |
+| bwa-mem2 + bcftools | 0.990283 | 28579 / 36189 | 0.950572 | 27896 / 22914 | 115578 |  |  |  | 2026-11-07 | #234, #244 |
+| bwa-mem2 + linear DV | 0.995853 | 21481 / 6054 | 0.995038 | 3489 / 1571 | 32595 |  |  |  | 2026-11-07 | #234, #244 |
+
 ## HG003 35x: Google case-study BAM: BWA-MEM, whole genome, cut to chr20
 
 | Configuration | SNP F1 | SNP FN / FP | Indel F1 | Indel FN / FP | Errors | SNP errors, difficult | SNP errors, segdups | SNP errors, low mappability | Scored | Source |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- | :--- |
 | bwa + bcftools | 0.991511 | 361 / 835 | 0.950708 | 582 / 487 | 2265 |  |  |  | 2026-11-01 | #70 |
-| bwa + linear DV | 0.997752 | 263 / 52 | 0.997061 | 48 / 15 | 378 | 281 | 52 | 257 | 2026-11-02 | #70 |
-| bwa + pangenome DV | 0.997718 | 242 / 78 | 0.997206 | 42 / 18 | 380 | 302 | 41 | 266 | 2026-11-02 | #70 |
+| bwa + linear DV | 0.997752 | 263 / 52 | 0.997061 | 48 / 15 | 378 | 281 | 52 | 257 | 2026-11-03 | benchmark_happy.py |
+| bwa + pangenome DV | 0.997718 | 242 / 78 | 0.997206 | 42 / 18 | 380 | 302 | 41 | 266 | 2026-11-03 | benchmark_happy.py |
+| bwa + pangenome DV | 0.993507 | 785 / 122 | 0.993397 | 110 / 31 | 1048 | 710 | 110 | 567 | 2026-11-03 | benchmark_happy.py |
 | bwa + pangenome DV, MAPQ>=5 | 0.997881 | 235 / 62 | 0.997114 | 43 / 19 | 359 | 276 | 46 | 240 | 2026-11-02 | #145 |
 
 ## HG003 35x: Google case-study BAM: vg giraffe, whole genome, cut to chr20
 
 | Configuration | SNP F1 | SNP FN / FP | Indel F1 | Indel FN / FP | Errors | SNP errors, difficult | SNP errors, segdups | SNP errors, low mappability | Scored | Source |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :--- | :--- |
-| vg giraffe + linear DV, VG flags | 0.999152 | 75 / 44 | 0.996899 | 40 / 27 | 186 | 58 | 7 | 46 | 2026-11-02 | #145 |
-| vg giraffe + pangenome DV | 0.998747 | 72 / 104 | 0.997593 | 30 / 22 | 228 | 120 | 69 | 70 | 2026-11-02 | #145 |
+| vg giraffe + linear DV, VG flags | 0.999152 | 75 / 44 | 0.996899 | 40 / 27 | 186 | 58 | 7 | 46 | 2026-11-03 | benchmark_happy.py |
+| vg giraffe + pangenome DV | 0.998747 | 72 / 104 | 0.997593 | 30 / 22 | 228 | 120 | 69 | 70 | 2026-11-03 | benchmark_happy.py |
+| vg giraffe + pangenome DV | 0.995691 | 515 / 88 | 0.994029 | 91 / 37 | 731 | 369 | 60 | 243 | 2026-11-03 | benchmark_happy.py |
 | vg giraffe + pangenome DV, MAPQ>=5 | 0.998697 | 96 / 87 | 0.996949 | 36 / 30 | 249 | 124 | 55 | 79 | 2026-11-02 | #145 |
 
 ## HG003 35x: pipeline align stage on HG003's chr20 reads (19.0 M)
@@ -55,3 +64,16 @@ Figure data: [`accuracy_by_configuration.csv`](accuracy_by_configuration.csv). D
 | bwa + linear DV | 0.997876 | 233 / 58 | 0.996461 | 49 / 11 | 351 | 275 | 77 | 247 | 2026-11-02 | #95 |
 | bwa + pangenome DV | 0.997526 | 244 / 95 | 0.997111 | 39 / 10 | 388 | 331 | 55 | 303 | 2026-11-02 | #95 |
 | bwa + pangenome DV, MAPQ>=5 | 0.998051 | 221 / 46 | 0.996993 | 41 / 10 | 318 | 259 | 62 | 231 | 2026-11-02 | #51 |
+
+## Re-scored configurations
+
+| Configuration | Run | Date | SNP F1 | Indel F1 |
+| :--- | :--- | :--- | ---: | ---: |
+| bwa + linear DV | HG003_chr20 | 2026-11-02 | 0.997752 | 0.997061 |
+| bwa + linear DV | HG003_chr20 | 2026-11-03 | 0.997752 | 0.997061 |
+| bwa + pangenome DV | HG003_chr20 | 2026-11-02 | 0.997718 | 0.997206 |
+| bwa + pangenome DV | HG003_chr20 | 2026-11-03 | 0.997718 | 0.997206 |
+| vg giraffe + linear DV, VG flags | HG003_chr20_vg | 2026-11-02 | 0.999152 | 0.996899 |
+| vg giraffe + linear DV, VG flags | HG003_chr20_vg | 2026-11-03 | 0.999152 | 0.996899 |
+| vg giraffe + pangenome DV | HG003_chr20_vg | 2026-11-02 | 0.998747 | 0.997593 |
+| vg giraffe + pangenome DV | HG003_chr20_vg | 2026-11-03 | 0.998747 | 0.997593 |

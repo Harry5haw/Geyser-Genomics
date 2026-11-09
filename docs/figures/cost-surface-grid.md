@@ -1,8 +1,8 @@
 # Design note: the grid of cloud runs behind the cost x turnaround figure
 
-Status: **design only, no runs made.** Whether and when to run the grid is the user's decision (it costs
-money and needs one infra apply). `scripts/figures/cost_surface.py` is written and tested against the
-output this grid would produce (`query_pipeline_duration.py --stages --stages-csv`).
+Status: **run on 4 Nov 2026: 25 of 25 runs succeeded.** The figure is [`cost-surface.png`](cost-surface.png),
+and the reading notes are in [README.md](README.md). How it actually ran, which differs from the plan, is in
+[As run](#as-run) at the end. The rest of this note is the design as written before the runs.
 
 ## What the figure needs
 
@@ -82,3 +82,30 @@ python scripts/figures/cost_surface.py grid.stages.csv --durations grid.csv \
 
 The stage rows must come from a `stage_breakdown.py` that counts each Map shard as its own row (fixed
 in the same PR as this note; before it, a run's shards after the first were missing from its cost).
+
+## As run
+
+- **The full grid:** all 12 cells x 2 runs, plus a third run of 4 vCPU x 1 shard because one of its runs
+  waited 548 s in the queue. 25 runs in all, on dev-local = main-6431940 (with #204), with the quality gate
+  in fail mode.
+- **Windows:** 65, 33, 17 and 9 Mb gave 1, 2, 4 and 8 shards, checked on every run.
+- **Six runs at a time, not one:** the user raised both Fargate caps to 48 vCPU for the grid.
+  - Concurrent runs of one sample share every per-sample key (stats, run-record parts, the CRAM), and the
+    gate reads the latest run record. So each of the 6 slots got its own sample ID, `REAL-HG003-30x-chr20-p1`
+    to `-p6`: server-side S3 copies of the reads.
+  - The copies carried an invalid `gate-profile`, so the run each copy triggered stopped at
+    `Check_Gate_Profile` before any job.
+  - An ID never had two runs at once, and a cell's second run started only after its first had succeeded.
+- **Checks on every run:**
+  - `run_settings`, the align job's real size and the number of shard jobs;
+  - the gate verdict, and the SNP count within 0.1% of the sample's earlier run;
+  - a time under 2x the estimate;
+  - a watcher that paused new starts if any job sat in RUNNABLE for over 2 min.
+- **What stopped it:**
+  - The first solo run failed in the gate on a double-encoded run-record part. #204 fixed it, and the run
+    was repeated.
+  - The 548 s Spot placement wait paused new starts until the coordinator chose to continue.
+- **Times:** align took about 35% longer than the estimate above (about 1,150 s at 4 vCPU, against 848 s
+  the night before). Every run still finished within 2x its estimate.
+- **Cost:** about $2.18 for the 25 runs at on-demand list prices (`stage_breakdown.py`). The real bill is
+  lower where jobs ran on Fargate Spot.

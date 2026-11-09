@@ -320,7 +320,7 @@ def test_sharded_calling_gives_the_same_calls_as_one_job(tmp_path, capfd, paired
     assert record["status"] == "succeeded"  # the variants-only run inherits QC and align (provenance.UPSTREAM)
     assert record["stages"]["CallVariants"]["run_name"] != record["stages"]["Align"]["run_name"]
     metrics = [json.loads(line) for line in (root / "metrics" / "metrics.jsonl").read_text().splitlines()]
-    assert sum(m["task"] == tasks.SHARD_METRIC for m in metrics) == 8
+    assert sum(m.get("task") == tasks.SHARD_METRIC for m in metrics) == 8  # value lines (QualityGateValue) have no task
 
 
 def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
@@ -350,3 +350,60 @@ def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
     genes = {c.split("|")[1] for c in consequences.values()}
     assert genes == {"SYNTHG1", "SYNTHG2"}
     assert (root / "variants" / "SYNTH001.csq.vcf.gz.tbi").exists()
+
+
+# --- v1.3 "Big inputs": the large route and region-streamed calling (docs/design/genome-scale-app.md) -----------
+
+
+def _flagstat(root, sample):
+    import tasks
+
+    return tasks.parse_flagstat((root / "stats" / sample / "flagstat.txt").read_text())
+
+
+@pytest.mark.parametrize("paired", [False, True])
+def test_the_large_route_gives_the_single_jobs_calls(tmp_path, capfd, paired):
+    # preflight into 4 chunks, align each (no markdup), merge + markdup once: the same CRAM content as one align
+    # job, so the same calls. Duplicate counts may differ by a hair: markdup's choice among equally good
+    # duplicates can depend on input order, which chunking changes (documented tolerance: 1% of duplicates).
+    import tasks
+
+    sample = "PAIRED001" if paired else "SYNTH001"
+    extra = ["--sample", sample, "--paired", "--leading-gap", str(tasks.BWA_MEM2_SAFE_N_PREFIX)] if paired else []
+    single, chunked = tmp_path / "single", tmp_path / "chunked"
+    for root in (single, chunked):
+        make_test_data.main(["--root", str(root), *extra])
+    code, log = _run(single, sample, capfd)
+    assert code == 0, log
+    code, log = _run(chunked, sample, capfd, "--chunks", "4")
+    assert code == 0, log
+    assert "Pre-flight OK" in log and "Merging 4 chunk BAMs" in log
+    assert _vcf_records(chunked / "variants" / f"{sample}.vcf.gz") == _vcf_records(
+        single / "variants" / f"{sample}.vcf.gz"
+    )
+    a, b = _flagstat(single, sample), _flagstat(chunked, sample)
+    for key in ("in_total", "mapped", "primary_mapped") + (("properly_paired",) if paired else ()):
+        assert a[key] == b[key], key
+    assert abs(a["duplicates"] - b["duplicates"]) <= max(1, a["duplicates"] // 100)
+    report = json.loads((chunked / "qc_reports" / f"{sample}.preflight.json").read_text())
+    assert report["ok"] and report["chunk_count"] == 4
+    record = json.loads((chunked / "runs" / f"{sample}.provenance.json").read_text())
+    assert record["status"] == "succeeded" and record["stages"]["Align"]["status"] == "Success"
+
+
+def test_calling_shards_read_their_region_in_place(tmp_path, capfd, monkeypatch):
+    # align writes the CRAM's ETag on its .crai, so every shard reads only its region; the merged calls equal
+    # those of shards that download the CRAM (GEYSER_STREAM_REGIONS=0), which equal the unsharded call.
+    streamed, downloaded = tmp_path / "streamed", tmp_path / "downloaded"
+    for root in (streamed, downloaded):
+        make_test_data.main(["--root", str(root)])
+    code, log = _run(streamed, "SYNTH001", capfd, "--shard-window", "8000")
+    assert code == 0, log
+    assert log.count("Read the region in place") >= 2
+    monkeypatch.setenv("GEYSER_STREAM_REGIONS", "0")
+    code, log = _run(downloaded, "SYNTH001", capfd, "--shard-window", "8000")
+    assert code == 0, log
+    assert "Read the region in place" not in log
+    assert _vcf_records(streamed / "variants" / "SYNTH001.vcf.gz") == _vcf_records(
+        downloaded / "variants" / "SYNTH001.vcf.gz"
+    )

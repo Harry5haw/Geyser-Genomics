@@ -28,14 +28,24 @@ class Variant:
 
 @dataclass
 class VariantTable:
-    rows: list = field(default_factory=list)  # at most `limit` Variants
+    rows: list = field(default_factory=list)  # at most `limit` Variants, from call number `offset` on
     total: int = 0  # every call in the file (filtered records left out)
+    offset: int = 0  # how many calls come before rows[0]
     calls: set = field(default_factory=set)  # {(pos, ref, alt)} for all records, as run_local.read_vcf_calls
     annotated: bool = False  # the file carries bcftools csq consequences (a BCSQ header line)
 
     @property
     def truncated(self) -> bool:
         return self.total > len(self.rows)
+
+    @property
+    def first(self) -> int:
+        """1-based number of the first call shown (0 when none)."""
+        return self.offset + 1 if self.rows else 0
+
+    @property
+    def last(self) -> int:
+        return self.offset + len(self.rows)
 
 
 def _kind(ref: str, alt: str) -> str:
@@ -77,8 +87,10 @@ def _consequence(bcsq, alt: str = None) -> str:
     return ", ".join(seen)
 
 
-def parse_vcf(lines, limit: int = 500) -> VariantTable:
-    table = VariantTable()
+def parse_vcf(lines, limit: int = 500, offset: int = 0, want_calls: bool = True) -> VariantTable:
+    """Every call counted (total); rows only for calls offset+1 .. offset+limit (one page). `calls` (every call's
+    (pos, ref, alt), for the truth check) only with want_calls: a whole genome's ~5M tuples would cost ~1 GB."""
+    table = VariantTable(offset=max(0, offset))
     for line in lines:
         if line.startswith("##INFO=<ID=BCSQ,"):
             table.annotated = True
@@ -101,8 +113,9 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
             if alt in NON_VARIANT_ALTS:
                 continue  # no alternative allele: a placeholder, not a call (as run_local.read_vcf_calls)
             table.total += 1
-            table.calls.add((pos, ref, alt))
-            if len(table.rows) < limit:
+            if want_calls:
+                table.calls.add((pos, ref, alt))
+            if table.total > table.offset and len(table.rows) < limit:
                 table.rows.append(
                     Variant(
                         chrom=chrom,
@@ -119,7 +132,7 @@ def parse_vcf(lines, limit: int = 500) -> VariantTable:
     return table
 
 
-def read_variants(storage, key: str, limit: int = 500):
+def read_variants(storage, key: str, limit: int = 500, offset: int = 0, want_calls: bool = True):
     """Parse a gzipped VCF from storage; None if it doesn't exist."""
     try:
         source = storage.open_read(key)
@@ -127,9 +140,21 @@ def read_variants(storage, key: str, limit: int = 500):
         return None
     try:
         with gzip.GzipFile(fileobj=source, mode="rb") as gz:
-            return parse_vcf(io.TextIOWrapper(gz, encoding="utf-8", errors="replace"), limit)
+            text = io.TextIOWrapper(gz, encoding="utf-8", errors="replace")
+            return parse_vcf(text, limit, offset, want_calls)
     finally:
         source.close()
+
+
+def page_of(table: VariantTable, offset: int, limit: int) -> VariantTable:
+    """One page of a table parsed once from offset 0 (the publisher's): the same totals, that page's rows."""
+    return VariantTable(
+        rows=table.rows[max(0, offset) : max(0, offset) + limit],
+        total=table.total,
+        calls=table.calls,
+        annotated=table.annotated,
+        offset=max(0, offset),
+    )
 
 
 @dataclass
@@ -153,7 +178,7 @@ def read_truth(storage, sample_id: str):
     try:
         with storage.open_read(truth_key(sample_id)) as fh:
             return json.loads(fh.read().decode("utf-8"))
-    except (ObjectNotFound, ValueError):
+    except Exception:  # noqa: BLE001 - extra (demo samples only): missing, unreadable or not ours to read
         return None
 
 
