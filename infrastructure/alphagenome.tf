@@ -55,6 +55,11 @@ resource "aws_ecr_repository" "geyser_annotate" {
   name         = "${var.project_name}-annotate"
   force_delete = true
   tags         = { Name = "${var.project_name}-annotate-ecr-repo" }
+
+  # Basic scanning (free): known CVEs of every pushed image, in the ECR console (#64).
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
 # ECR storage is $0.10/GB-month: keep the five newest images (a few rollbacks' worth).
