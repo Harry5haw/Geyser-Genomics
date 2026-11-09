@@ -2,7 +2,7 @@
 
 <img src="docs/assets/Github social media banner v9.png" alt="Geyser Genomics banner: technologies for DNA sequencing" width="85%"/>
 
-<h1>🌋 Geyser Genomics</h1>
+<h1>🌋 Geyser Genomics🌋</h1>
 
 <p><strong>An event-driven AWS pipeline that turns raw DNA sequencing reads into a list of genetic variants,<br/>built and tested offline first.</strong></p>
 
