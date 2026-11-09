@@ -25,7 +25,9 @@
         <span>{{ card.figure.z_label }} ({{ card.figure.z_unit }})</span>
         {{ card.legend }}
       </div>
-      <p class="howto"><button type="button" class="ghost" data-surface-start>Rotate in 3D</button>
+      <p class="howto"><span class="views" role="group" aria-label="View of {{ card.figure.title }}">
+          <button type="button" class="ghost" data-view="2d" aria-pressed="false">2D</button><button type="button" class="ghost" data-view="3d" aria-pressed="true">3D</button></span>
+        <button type="button" class="ghost" data-surface-start>Reset view</button>
         <small class="muted">Drag to rotate · pinch, or click then scroll, to zoom · double-click to reset ·
           keys: arrows rotate, + − zoom, 0 resets, Shift+arrows read values</small>
         <small class="no3d-note">The 3D view needs WebGL, so this is the flat view; the CSV has every value.</small></p>

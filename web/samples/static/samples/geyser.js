@@ -39,9 +39,16 @@
     };
     setTimeout(tick, every);
   };
-  // 3D figures (/figures/): each shows its inline-SVG poster first. The renderer (surface.js, once) and the
-  // figure's grid load only when it scrolls into view or "Rotate in 3D" is pressed; on any failure (no WebGL,
-  // offline) the poster simply stays.
+  // 3D figures (/figures/): each shows its inline-SVG poster first. The 2D/3D buttons choose the view for the whole
+  // page (remembered in localStorage): 3D by default where WebGL works, else 2D with the 3D button disabled. In 3D,
+  // the renderer (surface.js, once) and the figure's grid load when the figure scrolls into view; on any failure
+  // (offline, a lost context) the figure falls back to 2D the same way.
+  const VIEW = "geyser.figures.view";
+  const stored = () => { try { return localStorage.getItem(VIEW); } catch (_) { return null; } };
+  const remember = (v) => { try { localStorage.setItem(VIEW, v); } catch (_) { /* private mode: not remembered */ } };
+  const hasWebGL = () => {
+    try { return !!document.createElement("canvas").getContext("webgl"); } catch (_) { return false; }
+  };
   let renderer;
   const surface = (fig) => {
     if (fig.dataset.started) return;
@@ -55,17 +62,44 @@
     });
     Promise.all([renderer, fetch(fig.dataset.surface).then((r) => (r.ok ? r.json() : Promise.reject(r.status)))])
       .then(([lib, data]) => lib.mount(fig, data))
-      .catch(() => fig.classList.add("no3d"));
+      .catch(() => no3d(fig));
+  };
+  // flat = the 2D view (CSS: .fig.flat shows the poster, hides the canvas and its overlays).
+  const show = (fig, view) => {
+    const flat = view !== "3d" || fig.classList.contains("no3d");
+    fig.classList.toggle("flat", flat);
+    fig.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String((b.dataset.view === "3d") !== flat)));
+    if (!flat && fig.dataset.seen) surface(fig);
+  };
+  const no3d = (fig) => {
+    fig.classList.add("no3d");
+    fig.querySelectorAll('[data-view="3d"]').forEach((b) => { b.disabled = true; });
+    show(fig, "2d");
   };
   const figures = () => {
+    const figs = document.querySelectorAll("[data-surface]");
+    if (!figs.length) return;
+    const webgl = hasWebGL();
+    const view = webgl ? (stored() === "2d" ? "2d" : "3d") : "2d";
     const io = "IntersectionObserver" in window &&
       new IntersectionObserver((entries) => entries.forEach((e) => {
-        if (e.isIntersecting) { io.unobserve(e.target); surface(e.target); }
+        if (!e.isIntersecting) return;
+        io.unobserve(e.target);
+        e.target.dataset.seen = "1";
+        if (!e.target.classList.contains("flat")) surface(e.target);
       }), { rootMargin: "120px" });
-    document.querySelectorAll("[data-surface]").forEach((fig) => {
+    figs.forEach((fig) => {
+      if (!io) fig.dataset.seen = "1"; // no IntersectionObserver: every figure counts as on screen
+      if (!webgl) no3d(fig);
+      else show(fig, view);
       if (io) io.observe(fig);
-      const button = fig.querySelector("[data-surface-start]");
-      if (button) button.addEventListener("click", () => surface(fig));
+      fig.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => {
+        remember(b.dataset.view);
+        fig.dataset.seen = "1"; // the clicked figure is on screen
+        figs.forEach((f) => show(f, b.dataset.view));
+        // A 3D view hidden while flat redraws on the next frame (surface.js re-uploads on this event).
+        if (b.dataset.view === "3d") document.dispatchEvent(new CustomEvent("geyser:theme", { detail: { theme: document.documentElement.dataset.theme } }));
+      }));
     });
   };
 
