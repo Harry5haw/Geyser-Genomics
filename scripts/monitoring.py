@@ -73,6 +73,8 @@ STAGE_GROUPS = {
     "gate": (Stage("QualityGate"),),
     # The hosted site's Publish job at the end of every run (#213, #257): web/'s manage.py publish.
     "publish": (Stage("Publish"),),
+    # v3.0 (#207/#209, O8): the opt-in AlphaGenome annotation, an extra stage (a failure never fails the run).
+    "annotate": (Stage("Annotate"),),
 }
 GROUP_TITLES = {
     "core": "Core pipeline (bcftools)",
@@ -83,6 +85,7 @@ GROUP_TITLES = {
     "shards": "Variant calling shards (per region)",
     "gate": "Quality gate",
     "publish": "Publish (hosted site)",
+    "annotate": "AlphaGenome annotation (opt-in)",
 }
 
 
@@ -517,6 +520,42 @@ def gate_value_widgets(region: str = DEFAULT_REGION, namespace: str = DEFAULT_NA
             rows(("mean_depth", "tstv")),
             region,
             period=3600,
+        ),
+    ]
+
+
+# O8 (v3.0): the AlphaGenome annotation as COUNTS only (app/tasks.py ANNOTATE_CALLS_METRIC, record_counts by
+# TaskName). Its duration and failures are the Annotate stage group's. No widget ever reads annotation outputs or
+# their logs: AlphaGenome's terms forbid publishing model outputs, and the API key (SSM) is never logged.
+ANNOTATE_CALLS_METRIC = "AnnotateApiCalls"
+
+
+def annotate_widgets(region: str = DEFAULT_REGION, namespace: str = DEFAULT_NAMESPACE) -> list:
+    """How many AlphaGenome API calls the annotations made per day (a cost and quota signal), next to a note on what
+    this row never shows."""
+    return [
+        _text_widget(
+            "## AlphaGenome annotation (opt-in, v3.0)\n"
+            "Counts only: API calls per day here, and the Annotate stage's duration and failures in its stage group. "
+            "Scores, tracks and genes are never shown on the dashboard (AlphaGenome's output terms); the API key is "
+            "an SSM SecureString mapped into the annotate job, never logged.",
+            height=2,
+        ),
+        _metric_widget(
+            "AlphaGenome API calls (per day)",
+            [
+                [
+                    namespace,
+                    ANNOTATE_CALLS_METRIC,
+                    "TaskName",
+                    "Annotate",
+                    {"id": "ag_calls", "stat": "Sum", "label": "calls"},
+                ]
+            ],
+            region,
+            view="bar",
+            period=86400,
+            y_label="calls",
         ),
     ]
 
@@ -975,6 +1014,8 @@ def build_dashboard(
         widgets += web_widgets(region, web_function_name, web_distribution_id)
     if "deepvariant" in groups:
         widgets += gpu_widgets(region, namespace, schema)
+    if "annotate" in groups:
+        widgets += annotate_widgets(region, namespace)
     for name, stages in groups.items():
         widgets.append(
             _metric_widget(
