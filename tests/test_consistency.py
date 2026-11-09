@@ -519,3 +519,40 @@ def test_saved_queries_drop_carriage_returns():
     tf = _without_comments(_tf("logs_insights.tf"))
     assert tf.count("aws_cloudwatch_query_definition") == tf.count("query_string = replace(<<-EOT") > 0
     assert tf.count(r'  , "\r", "")') == tf.count("query_string")
+
+
+def _sfn_policy_statement(sid):
+    tf = _tf("step_functions.tf")
+    policy = tf[tf.index('resource "aws_iam_policy" "geyser_sfn_execution_policy"') :]
+    start = policy.index(f'Sid = "{sid}"')
+    return policy[start : policy.index("\n      },", start)]
+
+
+def test_the_sfn_policy_lets_every_submitjob_through():
+    # Step Functions Local mocks Batch, so it can't see IAM. CLOUD023/024: #149's Stage tags needed
+    # batch:TagResource on the job definition and the queue too; CLOUD025: a stray brace in the annotate job
+    # definition's ARN ("name}}") denied Plan_Annotate. Every job definition and queue the state machine names
+    # must be in the policy, the job definitions both bare and as :* (any revision).
+    tf = _tf("step_functions.tf")
+    submit = _sfn_policy_statement("AWSBatchPermissions")
+    asl = asl_text()
+    template = dict(re.findall(r"(?m)^\s+(\w+)\s+=\s+(aws_batch_job_(?:definition|queue)\.\w+)\.name\s*$", tf))
+    definitions = set(re.findall(r'"JobDefinition": "\$\{(\w+)\}"', asl))
+    queues = set(re.findall(r'"JobQueue": "\$\{(\w+)\}"', asl))
+    assert definitions and queues
+    prefix = "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}"
+    for var in sorted(definitions):
+        resource = template[var]
+        assert f'"{prefix}:job-definition/${{{resource}.name}}",' in submit, (var, resource, "bare")
+        assert f'"{prefix}:job-definition/${{{resource}.name}}:*"' in submit, (var, resource, ":*")
+    for var in sorted(queues):
+        assert f"{template[var]}.arn," in submit, var
+    # No ARN with a stray or missing brace: every ${ closes once, and nothing else has a }.
+    for arn in re.findall(r'"(arn:aws:[^"]*)"', submit):
+        assert arn.count("${") == arn.count("}"), arn
+        assert "}}" not in arn, arn
+    # SubmitJob with Tags: TagResource on the job, the job definition and the queue (CLOUD023/024).
+    tag = _sfn_policy_statement("AWSBatchTagJobs")
+    assert '"batch:TagResource"' in tag
+    for kind in ("job/*", "job-definition/*", "job-queue/*"):
+        assert f'"{prefix}:{kind}"' in tag, kind
