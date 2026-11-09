@@ -148,6 +148,7 @@ def test_batch_job_names_still_fit(trigger):
         "PlanRegions",
         "CallVariants",
         "QualityGate",
+        "Publish",
     ]
     sample_id = "S" * 50
     name = trigger.build_execution_name(sample_id, "2026-11-01T12:34:56Z", "k")
