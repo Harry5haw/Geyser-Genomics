@@ -298,6 +298,48 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
 - The run record's `app_version` is the tag the job was given (`dev-local`). The exact build is the
   `main-<sha>` that `dev-local` pointed to at the time.
 
+## Build a whole-genome reference index
+
+Align and variants read the reference from `reference/<name>`, with its `.fai` and the aligner's index beside
+it. A missing index is built inside the job, which is fine for one chromosome (chr20: about a minute) but not
+for a whole genome: `bwa-mem2 index` needs about 28 GB of RAM per Gb of reference (~87 GB for GRCh38) and runs
+for an hour or more. Build it once, as its own Batch job, with `scripts/build_reference_index.py`:
+
+```bash
+python scripts/build_reference_index.py --dry-run   # print the submit-job request; no AWS calls
+python scripts/build_reference_index.py             # submit it
+aws batch describe-jobs --jobs <job-id>              # watch it (or the Batch console)
+```
+
+The defaults build NCBI's GRCh38 no-alt analysis set (`GCA_000001405.15_GRCh38_no_alt_analysis_set.fna.gz`,
+UCSC contig names, 195 contigs, MD5 `a08035b6a6e31780e96a34008ff21bd6`) as `reference/GRCh38_no_alt.fa`.
+Another reference: `--url`, `--md5` (of the file as downloaded), `--name` and `--expect-contigs`. The job runs
+in the pipeline's own image on the large-disk job definition `geyser-app-large-job` (200 GiB), sized 16 vCPU /
+120 GiB (`--vcpus`, `--memory-mib`: Fargate's largest task), 4 h per attempt (`--timeout-seconds`). It:
+
+1. refuses to start if `reference/<name>` already exists (`--force` rebuilds it);
+2. downloads the URL, checking the MD5 as it streams, and gunzips it if the URL ends in `.gz`;
+3. runs `samtools faidx` and checks the contig count;
+4. checks that the first contig starts with 1,000 Ns, so the align stage will really use bwa-mem2 there
+   (otherwise it uses bwa, bwa-mem2#262, and the index would be wasted);
+5. runs `bwa-mem2 index`;
+6. uploads the `.fai` and the bwa-mem2 index (`.0123 .amb .ann .bwt.2bit.64 .pac`, the align stage's
+   `ALIGNER_INDEX_EXTS`) first and the FASTA **last**, so `reference/<name>` existing means the set is complete.
+
+Things to know:
+
+- **Fargate Spot can interrupt it.** The queue tries Spot first. The job definition retries an interruption
+  (and a task that failed to start), up to 3 attempts in all, and never retries the build's own errors. Each
+  attempt starts again from the download. The first attempt of the GRCh38 build on 4 Nov 2026 was interrupted
+  and the retry carried on by itself.
+- A 16 vCPU job needs a Fargate compute environment allowing at least 16 vCPUs (`fargate_spot_max_vcpus`,
+  `fargate_max_vcpus`). The live environments allow 48.
+- The bwa index (`.bwt .sa`, for `ALIGNER=bwa`) is not built. A run with `ALIGNER=bwa` on this reference
+  builds it inside its align job.
+- Measured, GRCh38 no-alt (`IndexBuild-GRCh38-no-alt-20261104`, 4 Nov 2026): **18.8 min, at most $0.51**
+  (16 vCPU / 120 GiB on Fargate, at on-demand list prices; the Spot interruption above meant a second attempt).
+  It built the reference behind the HG003 30x whole-genome run ([v1.3](releases/v1.3.md)).
+
 ## The hosted site (v1.4, not live yet)
 
 The site is static pages in a private S3 bucket behind CloudFront (`infrastructure/web/`, which the user plans and
