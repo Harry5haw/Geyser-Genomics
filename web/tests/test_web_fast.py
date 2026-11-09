@@ -83,7 +83,7 @@ def test_a_file_missing_from_a_stale_manifest_is_served_plain(client, storage, t
         staticfiles_storage.hashed_files, _ = staticfiles_storage.load_manifest()  # (paths, manifest hash)
         body = client.get("/").content.decode()
         assert 'src="/static/samples/geyser.js"' in body
-        assert re.search(r'src="/static/samples/geyser-mark\.[0-9a-f]{12}\.png"', body)  # the rest stay hashed
+        assert re.search(r'src="/static/samples/geyser-lockup\.[0-9a-f]{12}\.svg"', body)  # the rest stay hashed
         asset = client.get("/static/samples/geyser.js")
         assert asset.status_code == 200
         asset.close()
@@ -134,7 +134,7 @@ def collected(tmp_path, storage):
 
 def test_assets_get_content_hashed_names(client, collected):
     body = client.get("/").content.decode()
-    for name, ext in (("geyser", "js"), ("geyser-mark", "png"), ("favicon-32", "png"), ("apple-touch-icon", "png")):
+    for name, ext in (("geyser", "js"), ("geyser-lockup", "svg"), ("favicon-32", "png"), ("apple-touch-icon", "png")):
         assert re.search(rf'/static/samples/{name}\.[0-9a-f]{{12}}\.{ext}"', body), name
     assert (collected / "staticfiles.json").exists()
 
@@ -176,13 +176,13 @@ def test_no_framework_and_no_stylesheet_request(client, storage):
 
 def test_the_inlined_css_has_no_comments(client, storage):
     style = re.search(r"<style>(.*?)</style>", client.get("/").content.decode(), re.S).group(1)
-    assert "/*" not in style and "--mint" in style and len(style) < 14 * 1024
+    assert "/*" not in style and "--primary" in style and len(style) < 14 * 1024
 
 
 def test_images_have_their_size_so_nothing_shifts(client, storage):
     body = client.get("/").content.decode()
     (img,) = re.findall(r"<img [^>]+>", body)
-    assert 'width="62"' in img and 'height="72"' in img and 'alt=""' in img
+    assert 'width="232"' in img and 'height="40"' in img and 'alt="Geyser Genomics"' in img  # the lockup has the name
 
 
 # ------------------------------------------------------------------ paged tables

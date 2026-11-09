@@ -68,12 +68,11 @@ def pyplot():
     return plt
 
 
-# The heat ramp for magnitude (heatmaps, colour bars): cividis from 0.3 to 1, low = dark blue-grey, high = yellow.
+# The heat ramp for magnitude (heatmaps, colour bars): cividis from 0 to 0.742, low = dark navy, high = khaki.
 # Perceptually uniform, lightness rises monotonically (reads in greyscale and with any colour-vision deficiency),
-# and the dark end is trimmed so it still clears 2:1 against the web page's dark stage (#042c20). The web page's
-# 3D figures use the same 13 stops (web/samples/figures.py HEAT; tests/test_figures.py checks they agree).
-HEAT = ["#4f576c", "#5d616e", "#6a6c71", "#777776", "#848279", "#928d78", "#a19975", "#b0a571", "#c0b16a"]
-HEAT += ["#d0be62", "#e0cb56", "#f1d945", "#fee838"]
+# and the light end is trimmed so it still clears 2:1 against the web page's beige stage (#f3efe6). The web page's
+# 3D figures use the same 7 stops (web/samples/figures.py HEAT; tests/test_figures.py checks they agree).
+HEAT = ["#00224e", "#18376f", "#424e6c", "#5f636f", "#7b7a78", "#999277", "#b9ab6d"]
 
 
 def sequential_cmap(name="geyser-heat"):
@@ -84,7 +83,7 @@ def sequential_cmap(name="geyser-heat"):
 
 def ink_on(fraction):
     """Text colour on a heat-ramp cell at this fraction of the scale: white on the dark (low) end, ink on the rest."""
-    return "#ffffff" if fraction < 0.4 else INK
+    return "#ffffff" if fraction < 0.65 else INK
 
 
 def tidy(ax, grid_axis="y"):

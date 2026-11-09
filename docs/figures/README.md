@@ -5,7 +5,7 @@ derived CSV in `csv/` (per-window or per-bin summaries: no reads, positions or g
 from that CSV to PNG (200 dpi) + SVG. Re-running on the same CSV gives byte-identical files (tested in
 `tests/test_figures.py`). One palette and style for all of them: `scripts/figures/figkit.py` (the
 `dataviz` skill's validated reference palette: categorical slots in fixed order, a cividis heat ramp for
-magnitude (dark blue-grey low, yellow high; the same 13 stops as the 3D figures on the web page's /figures/),
+magnitude (dark navy low, khaki high; the same 7 stops as the 3D figures on the web page's /figures/),
 ink-coloured text, hairline grids).
 
 Needs `pip install -r requirements-figures.txt` (matplotlib; included in `requirements-dev.txt`).

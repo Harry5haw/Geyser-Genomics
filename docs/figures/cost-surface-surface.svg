@@ -316,37 +316,37 @@ L 271.735263 150.102723
 L 242.325569 128.655413 
 L 186.043628 129.120074 
 z
-" clip-path="url(#pd003ae7fa4)" style="fill: #6d6e72; stroke: #fcfcfb; stroke-width: 0.6"/>
+" clip-path="url(#pd003ae7fa4)" style="fill: #1c396f; stroke: #fcfcfb; stroke-width: 0.6"/>
     <path d="M 245.675409 190.784763 
 L 303.2321 142.434186 
 L 271.735263 150.102723 
 L 215.481414 193.130342 
 z
-" clip-path="url(#pd003ae7fa4)" style="fill: #797976; stroke: #fcfcfb; stroke-width: 0.6"/>
+" clip-path="url(#pd003ae7fa4)" style="fill: #30446d; stroke: #fcfcfb; stroke-width: 0.6"/>
     <path d="M 153.323425 105.690053 
 L 215.481414 193.130342 
 L 186.043628 129.120074 
 L 124.850321 106.266643 
 z
-" clip-path="url(#pd003ae7fa4)" style="fill: #f8e23e; stroke: #fcfcfb; stroke-width: 0.6"/>
+" clip-path="url(#pd003ae7fa4)" style="fill: #b2a66f; stroke: #fcfcfb; stroke-width: 0.6"/>
     <path d="M 277.528834 208.266962 
 L 335.679087 165.210594 
 L 303.2321 142.434186 
 L 245.675409 190.784763 
 z
-" clip-path="url(#pd003ae7fa4)" style="fill: #868479; stroke: #fcfcfb; stroke-width: 0.6"/>
+" clip-path="url(#pd003ae7fa4)" style="fill: #444f6c; stroke: #fcfcfb; stroke-width: 0.6"/>
     <path d="M 184.020612 125.984267 
 L 245.675409 190.784763 
 L 215.481414 193.130342 
 L 153.323425 105.690053 
 z
-" clip-path="url(#pd003ae7fa4)" style="fill: #fee838; stroke: #fcfcfb; stroke-width: 0.6"/>
+" clip-path="url(#pd003ae7fa4)" style="fill: #b9ab6d; stroke: #fcfcfb; stroke-width: 0.6"/>
     <path d="M 216.595337 206.153031 
 L 277.528834 208.266962 
 L 245.675409 190.784763 
 L 184.020612 125.984267 
 z
-" clip-path="url(#pd003ae7fa4)" style="fill: #d7c45c; stroke: #fcfcfb; stroke-width: 0.6"/>
+" clip-path="url(#pd003ae7fa4)" style="fill: #918c77; stroke: #fcfcfb; stroke-width: 0.6"/>
    </g>
    <g id="text_19">
     <text style="font-weight: 600; font-size: 9px; font-family: 'Segoe UI', 'Helvetica Neue', 'Arial', 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #0b0b0b" x="226.742344" y="13.862812" transform="rotate(-0 226.742344 13.862812)">Cost x turnaround: HG003 30x chr20 on Fargate, 25 runs: cost (height), turnaround (colour, lighter = slower)</text>

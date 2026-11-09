@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#06382a">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#faf8f3">
   <title>{% block title %}Geyser Genomics{% endblock %}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="{% static 'samples/favicon-32.png' %}">
   <link rel="apple-touch-icon" href="{% static 'samples/apple-touch-icon.png' %}">
@@ -17,8 +17,8 @@
 <body>
   <header class="site-head">
     <nav class="wrap" aria-label="Site">
-      <a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/geyser-mark.png' %}" width="62" height="72" alt="">
-        <span><b>Geyser Genomics</b><i>FASTQ → VCF pipeline</i></span></a>
+      <a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/geyser-lockup.svg' %}" width="232" height="40" alt="Geyser Genomics">
+        <i>FASTQ → VCF pipeline</i></a>
       <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
       <a class="tube" href="{% url 'samples:list' %}#samples">Samples</a>
     </nav>
@@ -30,14 +30,15 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="wrap">
-    {% if published %}
+    <p>{% if published %}
     Each run goes through fastp, an aligner (bwa-mem2 by default; the run record names the one used) and a variant
     caller on AWS Batch, then the quality gate; these pages are published when the run ends.
     {% else %}
     Each upload runs fastp and an aligner (bwa-mem2 by default) on the gzipped reads, then a variant caller, in the
     same container images AWS Batch runs in the cloud. Storage: <code>{{ storage_backend }}</code>.
     {% endif %}
-    <a href="{% url 'samples:figures' %}">Results in 3D</a>.
+    <a href="{% url 'samples:figures' %}">Results in 3D</a>.</p>
+    <p>DeepVariant and AlphaGenome are Google tools; Geyser is an independent project.</p>
   </footer>
 </body>
 </html>

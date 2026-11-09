@@ -5,11 +5,11 @@
 .poster text{fill:var(--muted);font-size:13px}.poster path{stroke:var(--deep);stroke-width:1.5}
 .labels span{position:absolute;left:0;top:0;margin:-.5em 0 0 -1.5em;font-size:.7rem;color:var(--muted);white-space:nowrap;pointer-events:none}
 .labels .row{margin-left:0}.labels .z{margin-left:-2.5em}.labels .axis{color:var(--text);font-weight:600}
-.marker{position:absolute;left:-6px;top:-6px;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 2px var(--ink);pointer-events:none}
-.readout{position:absolute;top:.6rem;left:.6rem;max-width:70%;padding:.4rem .6rem;background:var(--ink);border:1px solid var(--frame);border-radius:.4rem;font-size:.8rem;color:var(--muted);pointer-events:none}
-.readout strong{display:block;font-size:1.05rem;color:#fff}
+.marker{position:absolute;left:-6px;top:-6px;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 2px var(--text);pointer-events:none}
+.readout{position:absolute;top:.6rem;left:.6rem;max-width:70%;padding:.4rem .6rem;background:var(--card);border:1px solid var(--frame);border-radius:.5rem;font-size:.8rem;color:var(--muted);box-shadow:var(--shadow);pointer-events:none}
+.readout strong{display:block;font-size:1.05rem;color:var(--text)}
 .legend{display:grid;grid-template-columns:auto minmax(10rem,18rem);gap:.1rem .75rem;align-items:center;margin:.75rem 0;font-size:.8rem;color:var(--muted)}
 .colorbar{display:block;width:100%;max-width:18rem;height:auto}.colorbar text{fill:var(--muted);font-size:14px}.colorbar line{stroke:var(--muted)}
 .howto{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center}.howto small{flex:1 1 16rem}
-button.ghost{width:auto;padding:.45rem .9rem;background:transparent;border:1px solid var(--mint);color:var(--mint)}button.ghost:hover{background:rgba(134,229,181,.1)}
+button.ghost{width:auto;padding:.45rem 1rem;background:transparent;border:1px solid var(--frame);color:var(--link);box-shadow:none}button.ghost:hover{background:var(--hover)}
 .fig.live .poster,.no3d-note,.fig.live .no3d-note{display:none}.fig.no3d .no3d-note{display:inline}.fig.no3d [data-surface-start]{visibility:hidden}

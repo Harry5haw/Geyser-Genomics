@@ -15,7 +15,7 @@
       return [0, 1, 2].map((k) => R[i][k] + (R[i + 1][k] - R[i][k]) * f);
     };
   };
-  const LINE = [0.18, 0.54, 0.41]; // the table frame colour (#2f8a68): hairlines one step off the surface
+  const LINE = [0.82, 0.8, 0.75]; // the table frame colour (#d2cbbe): hairlines one step off the beige stage
   const H = 0.75, D = 0.9; // terrain height and half depth, in world units (x spans -1..1)
 
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -44,7 +44,7 @@
   function build(data) {
     const xs = data.x.values, rows = data.rows.names, vals = data.values, n = rows.length;
     // A grid JSON cached from before the ramp (max-age 300) has none: use its two ends.
-    const ramp = heat(Array.isArray(data.ramp) && data.ramp.length > 1 ? data.ramp : ["#4f576c", "#fee838"]);
+    const ramp = heat(Array.isArray(data.ramp) && data.ramp.length > 1 ? data.ramp : ["#00224e", "#b9ab6d"]);
     const x0 = xs[0], x1 = xs[xs.length - 1] === x0 ? x0 + 1 : xs[xs.length - 1];
     const top = data.z.clip || data.z.max || 1, base = data.z.base || 0, span = top - base || 1;
     const wx = (v) => -1 + ((v - x0) / (x1 - x0)) * 2;

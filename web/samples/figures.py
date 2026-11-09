@@ -21,25 +21,20 @@ from xml.sax.saxutils import escape
 
 from django.conf import settings
 
-# The heat ramp: cividis from 0.3 to 1 (low = dark blue-grey, high = yellow). Perceptually uniform with lightness
-# rising monotonically, so it reads in greyscale and with any colour-vision deficiency; the dark end is trimmed so
-# the lowest values still clear 2:1 against the dark stage (#042c20). The same 13 stops as scripts/figures/figkit.py
-# HEAT, so a value has the same colour here as in the 2D figures (tests/test_figures.py checks they agree).
+# The heat ramp: cividis from 0 to 0.742 (low = dark navy, high = khaki). Perceptually uniform with lightness rising
+# monotonically, so it reads in greyscale and with any colour-vision deficiency; the light end is trimmed so the
+# highest values still clear 2:1 against the beige stage (#f3efe6). Seven stops, each >= 0.06 apart in lightness;
+# the renderer and the gradients interpolate between them. The same stops as scripts/figures/figkit.py HEAT, so a
+# value has the same colour here as in the 2D figures (tests/test_figures.py checks they agree).
 # surface.js gets them in the grid JSON: this list is the web page's only copy.
 HEAT = [
-    "#4f576c",
-    "#5d616e",
-    "#6a6c71",
-    "#777776",
-    "#848279",
-    "#928d78",
-    "#a19975",
-    "#b0a571",
-    "#c0b16a",
-    "#d0be62",
-    "#e0cb56",
-    "#f1d945",
-    "#fee838",
+    "#00224e",
+    "#18376f",
+    "#424e6c",
+    "#5f636f",
+    "#7b7a78",
+    "#999277",
+    "#b9ab6d",
 ]
 
 
