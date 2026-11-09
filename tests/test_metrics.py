@@ -154,3 +154,22 @@ def test_cloudwatch_counts_send_one_value_per_kind():
 
 def test_null_metrics_ignore_counts():
     NullMetrics().record_counts("ReconcileProblems", "Problem", {"Total": 3})
+
+
+def test_record_counts_takes_a_unit_for_values_that_are_not_counts():
+    m, stub = _stubbed_cloudwatch()
+    expected = {
+        "Namespace": "GeyserGenomics",
+        "MetricData": [
+            {
+                "MetricName": "QualityGateValue",
+                "Dimensions": [{"Name": "Check", "Value": "tstv"}],
+                "Value": 2.0,
+                "Unit": "None",
+            }
+        ],
+    }
+    stub.add_response("put_metric_data", {}, expected)
+    with stub:
+        m.record_counts("QualityGateValue", "Check", {"tstv": 2.0}, unit="None")
+    stub.assert_no_pending_responses()
