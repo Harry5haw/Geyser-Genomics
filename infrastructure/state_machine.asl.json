@@ -1192,12 +1192,12 @@
     },
     "Close_Run_Record": {
       "Type": "Task",
-      "Comment": "Written straight to S3, not by a Batch job: no Fargate start-up on failure, and a retried job's Cause (every attempt's description) can be too big for a command line. Best effort: if this fails, the run still goes on to Notify_Failure with the original $.error.",
+      "Comment": "Body is the object itself: the SDK integration serialises it to JSON once (a JsonToString string would be stored JSON-encoded a second time, #205). Written straight to S3, not by a Batch job: no Fargate start-up on failure, and a retried job's Cause (every attempt's description) can be too big for a command line. Best effort: if this fails, the run still goes on to Notify_Failure with the original $.error.",
       "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
       "Parameters": {
         "Bucket": "${bucket}",
         "Key.$": "States.Format('runs/{}.provenance/Finalize.json', $.srr_id)",
-        "Body.$": "States.JsonToString($.run_close)",
+        "Body.$": "$.run_close",
         "ContentType": "application/json"
       },
       "Retry": [

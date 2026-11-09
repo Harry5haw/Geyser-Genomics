@@ -429,3 +429,34 @@ def test_alignments_expire_by_break_even_and_nothing_else_shares_the_prefix():
         tf = fh.read()
     block = tf[tf.index('variable "alignment_expiry_days"') :]
     assert re.search(r"default\s*=\s*180\b", block[: block.index("validation")])
+
+
+def test_every_s3_put_from_the_state_machine_sends_the_object_not_a_json_string():
+    # #205: aws-sdk:s3:putObject serialises Body to JSON itself, so a States.JsonToString body was stored
+    # double-encoded ("{\"schema\":1,...}"). Step Functions Local mocks the call and can't show it: pin the form.
+    import test_state_machine_local as sfn_local
+
+    puts = []
+
+    def walk(states):
+        for state in states.values():
+            if state.get("Resource", "").endswith(":aws-sdk:s3:putObject"):
+                puts.append(state["Parameters"])
+            for branch in state.get("Branches", []):
+                walk(branch["States"])
+            for key in ("Iterator", "ItemProcessor"):
+                if key in state:
+                    walk(state[key]["States"])
+
+    walk(json.loads(sfn_local.render_definition())["States"])
+    assert puts, "no S3 put in the state machine"
+    for params in puts:
+        body = params.get("Body.$", "")
+        assert body.startswith("$.") and "States." not in body, params
+
+
+def test_saved_queries_drop_carriage_returns():
+    # A CRLF working copy deployed "\r" into the O5 queries, and LF copies then showed 5 updates in every plan (#258).
+    tf = _without_comments(_tf("logs_insights.tf"))
+    assert tf.count("aws_cloudwatch_query_definition") == tf.count("query_string = replace(<<-EOT") > 0
+    assert tf.count(r'  , "\r", "")') == tf.count("query_string")
