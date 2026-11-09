@@ -305,8 +305,8 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
     rules = states["Run_Setting_Rules"]["Result"]
     # Seven since v1.3: the size and window (#192), and the genome's parallelism (chunk_count, align_concurrency,
-    # calling_concurrency, merge_threads).
-    assert rules["setting_count"] == len(rules["defaults"]) == 7
+    # calling_concurrency, merge_threads); eight since v1.5 (dv_parts, the DeepVariant split).
+    assert rules["setting_count"] == len(rules["defaults"]) == 8
     assert set(states["Set_Run_Settings"]["Parameters"]) == {f"{k}.$" for k in rules["defaults"]}
     with open(os.path.join(REPO_ROOT, "infrastructure", "step_functions.tf"), encoding="utf-8") as fh:
         sfn_tf = fh.read()
@@ -320,9 +320,100 @@ def test_run_overrides_agree_with_their_checks_and_terraform():
     for name in ("align_sizes", "variant_region_window_min", "variant_region_window_max"):
         assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=", sfn_tf), name
     # The parallelism maxima are derived in step_functions.tf (from the Fargate Spot cap) and rendered in.
-    for name in ("align_concurrency_max", "calling_concurrency_max", "merge_threads_max", "large_input_bytes"):
+    for name in (
+        "align_concurrency_max",
+        "calling_concurrency_max",
+        "merge_threads_max",
+        "large_input_bytes",
+        "dv_parts_max",
+        "dv_shards_by_parts",
+    ):
         assert f"${{{name}}}" in asl_text() and re.search(rf"\b{name}\s*=\s*\S", sfn_tf), name
     assert "fargate_spot_max_vcpus" in sfn_tf.split("align_concurrency_max")[1].split("\n")[0]
+
+
+def _tf(name):
+    with open(os.path.join(REPO_ROOT, "infrastructure", name), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def _without_comments(tf):
+    return "\n".join(line.split("#", 1)[0] for line in tf.splitlines())
+
+
+def test_the_dv_split_lookups_follow_the_part_size_and_the_spot_cap():
+    # v1.5: DEEPVARIANT_SHARDS for J parts is dv_shards_by_parts[J] = J x the part job's vCPUs (Step Functions
+    # can't multiply), and at most fargate_spot_max_vcpus / that many parts run at once.
+    sfn_tf = _without_comments(_tf("step_functions.tf"))
+    assert re.search(
+        r"dv_parts_max\s*=\s*floor\(var\.fargate_spot_max_vcpus\s*/\s*var\.dv_part_resources\.vcpu\)", sfn_tf
+    )
+    assert re.search(
+        r"dv_shards_by_parts\s*=\s*\[for (\w+) in range\(local\.dv_parts_max \+ 1\)\s*:\s*\1 \* var\.dv_part_resources\.vcpu\]",
+        sfn_tf,
+    )
+    cpu_tf = _without_comments(_tf("deepvariant_cpu.tf"))
+    assert re.search(r'type = "VCPU", value = tostring\(var\.dv_part_resources\.vcpu\)', cpu_tf)
+    assert re.search(r'type = "MEMORY", value = tostring\(var\.dv_part_resources\.memory_mb\)', cpu_tf)
+    # The CPU job definition takes no DEEPVARIANT_SHARDS of its own: the state machine passes every part the same.
+    assert "DEEPVARIANT_SHARDS" not in cpu_tf
+    asl = asl_text()
+    assert '{ "Name": "DEEPVARIANT_SHARDS", "Value.$": "$.shards" }' in asl
+    assert "States.ArrayGetItem($.run_rules.dv_shards_by_parts, $.run_settings.dv_parts)" in asl
+
+
+def test_the_definition_is_sent_minified_and_fits_the_providers_64_kb_scanner():
+    # The provider failed with "bufio.Scanner: token too long" once the indented, escaped definition passed
+    # 64 KB (v1.5). step_functions.tf sends it minified; keep the escaped minified form well under the limit.
+    # (Terraform's jsonencode also writes <, > and & as <...: a few hundred bytes more than measured here.)
+    import test_state_machine_local as sfn_local
+
+    assert 'jsonencode(jsondecode(templatefile("${path.module}/state_machine.asl.json"' in _tf("step_functions.tf")
+    minified = json.dumps(json.loads(sfn_local.render_definition()), separators=(",", ":"))
+    assert len(json.dumps(minified)) < 56_000, len(json.dumps(minified))
+
+
+def test_the_dv_part_job_retries_spot_interruptions_five_times():
+    # A genome part runs ~1 h on Fargate Spot: 3 attempts could run out (4 Nov 2026: ~20 interruptions).
+    cpu_tf = _without_comments(_tf("deepvariant_cpu.tf"))
+    block = cpu_tf[cpu_tf.index("retry_strategy {") :]
+    assert re.search(r"attempts\s*=\s*5\b", block[: block.index("evaluate_on_exit")])
+    assert 'on_status_reason = "Your Spot Task was interrupted*"' in block
+    assert re.search(r'on_status_reason = "\*"\s*action\s*=\s*"EXIT"', block)  # application errors still exit
+
+
+def test_from_alignment_checks_the_cram_align_writes_and_may_read_it():
+    # v2.0: Check_Alignment's HeadObject is on tasks.keys_for's CRAM key, and the SFN role may read it.
+    states = json.loads(re.sub(r"\$\{\w+\}", "0", asl_text()))["States"]
+    check = states["Check_Alignment"]
+    assert check["Resource"] == "arn:aws:states:::aws-sdk:s3:headObject"
+    key_format = check["Parameters"]["Key.$"]
+    assert key_format == "States.Format('alignments/{}.cram', $.srr_id)"
+    assert key_format.split("'")[1].replace("{}", "S1") == tasks.keys_for("S1")["cram"]
+    assert "/alignments/*.cram" in _tf("step_functions.tf")
+    assert states["Choose_Start"]["Default"] == "Prepare_From_Alignment_Error"
+    assert check["Next"] == "Choose_Caller"
+
+
+def test_one_variable_sets_both_deepvariant_time_limits():
+    # The state machine's attempt limit and the app's own limit 300 s under it (deepvariant.tf), one variable.
+    asl = asl_text()
+    dv = asl[asl.index('"DeepVariant": {') :]
+    assert '"Timeout": { "AttemptDurationSeconds": ${deepvariant_timeout_seconds} }' in dv[: dv.index('"Retry"')]
+    dv_tf = _without_comments(_tf("deepvariant.tf"))
+    assert re.search(
+        r'name = "DEEPVARIANT_TIMEOUT_SECONDS", value = tostring\(var\.deepvariant_timeout_seconds - 300\)', dv_tf
+    )
+    assert re.search(r"deepvariant_timeout_seconds\s*=\s*var\.deepvariant_timeout_seconds", _tf("step_functions.tf"))
+
+
+def test_neither_deepvariant_job_definition_sets_the_model_type_or_extra_args():
+    # The GPU job refuses examples made with another DEEPVARIANT_MODEL_TYPE or DEEPVARIANT_EXTRA_ARGS (#228), so
+    # the CPU parts and the GPU job must both run the image's defaults.
+    for name in ("deepvariant.tf", "deepvariant_cpu.tf"):
+        tf = _without_comments(_tf(name))
+        assert "DEEPVARIANT_MODEL_TYPE" not in tf and "DEEPVARIANT_EXTRA_ARGS" not in tf, name
+    assert "DEEPVARIANT_MODEL_TYPE" not in asl_text() and "DEEPVARIANT_EXTRA_ARGS" not in asl_text()
 
 
 def test_alignments_expire_by_break_even_and_nothing_else_shares_the_prefix():
@@ -338,3 +429,34 @@ def test_alignments_expire_by_break_even_and_nothing_else_shares_the_prefix():
         tf = fh.read()
     block = tf[tf.index('variable "alignment_expiry_days"') :]
     assert re.search(r"default\s*=\s*180\b", block[: block.index("validation")])
+
+
+def test_every_s3_put_from_the_state_machine_sends_the_object_not_a_json_string():
+    # #205: aws-sdk:s3:putObject serialises Body to JSON itself, so a States.JsonToString body was stored
+    # double-encoded ("{\"schema\":1,...}"). Step Functions Local mocks the call and can't show it: pin the form.
+    import test_state_machine_local as sfn_local
+
+    puts = []
+
+    def walk(states):
+        for state in states.values():
+            if state.get("Resource", "").endswith(":aws-sdk:s3:putObject"):
+                puts.append(state["Parameters"])
+            for branch in state.get("Branches", []):
+                walk(branch["States"])
+            for key in ("Iterator", "ItemProcessor"):
+                if key in state:
+                    walk(state[key]["States"])
+
+    walk(json.loads(sfn_local.render_definition())["States"])
+    assert puts, "no S3 put in the state machine"
+    for params in puts:
+        body = params.get("Body.$", "")
+        assert body.startswith("$.") and "States." not in body, params
+
+
+def test_saved_queries_drop_carriage_returns():
+    # A CRLF working copy deployed "\r" into the O5 queries, and LF copies then showed 5 updates in every plan (#258).
+    tf = _without_comments(_tf("logs_insights.tf"))
+    assert tf.count("aws_cloudwatch_query_definition") == tf.count("query_string = replace(<<-EOT") > 0
+    assert tf.count(r'  , "\r", "")') == tf.count("query_string")

@@ -15,7 +15,8 @@
       <p><strong>The gate found problems, but it runs in warn mode, so the run still counts as succeeded.</strong>
         Check the reasons before using these results.</p>
     {% elif gate.state == "fail" %}
-      <p><strong>The gate failed this sample</strong> (fail mode: the gate stage itself failed).</p>
+      <p><strong>The gate failed this sample, so the run failed.</strong>
+        {% if gate.enforced %}The pipeline runs the gate in fail mode, so it stopped the run here: don't use these results.{% else %}The gate ran in fail mode, so its stage failed: don't use these results.{% endif %}</p>
     {% else %}
       <p><strong>The gate gave no verdict</strong>, so these results haven't been checked. This is not a pass.</p>
       <p class="muted">{{ gate.error }}</p>
@@ -34,7 +35,7 @@
         </tbody>
       </table>
     {% endif %}
-    <p class="muted"><small>Mode: {{ gate.mode }}{% if gate.config %} · thresholds: {{ gate.config }}{% endif %}{% if gate.gate_version %} · geyser-gate {{ gate.gate_version }}{% endif %}{% if gate.run_name %} · run {{ gate.run_name }}{% endif %}</small></p>
+    <p class="muted"><small>Mode: {{ gate.mode }}{% if gate.enforced %} (set by the pipeline){% endif %}{% if gate.config %} · thresholds: {{ gate.config }}{% endif %}{% if gate.gate_version %} · geyser-gate {{ gate.gate_version }}{% endif %}{% if gate.run_name %} · run {{ gate.run_name }}{% endif %}</small></p>
   </section>
 {% endif %}
 

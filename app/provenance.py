@@ -28,7 +28,21 @@ Record (schema 1):
     app_version (APP_VERSION: the image tag in the cloud), layout, aligner,
     reference {name, md5, bytes}, inputs [{key, bytes}], outputs [{key, bytes}],
     tools {name: version}, stats {flagstat, mosdepth, bcftools_stats: the parsed headline numbers},
-    stages {Task: {status, started, finished, duration_seconds, error, run_name}},
+    stages {Task: {status, started, finished, duration_seconds, error, run_name, batch (in Batch only)}},
+        batch {job_id, attempt}: the stage's AWS Batch job and its attempt number (AWS_BATCH_JOB_ID /
+        AWS_BATCH_JOB_ATTEMPT; absent outside Batch). The job definitions retry infrastructure failures only
+        (a Spot interruption, a host going away), so attempt > 1 means that many attempts were lost to them.
+    route (small | large | from_alignment): how the run got its alignment: Align itself (small), Preflight
+        then chunked align and merge (large), or none, calling from the sample's existing alignment
+        (from_alignment). Absent when the run has none of these stages.
+    caller_outcome (bcftools | deepvariant | pangenome | fallback_bcftools): whose calls the run's VCF holds.
+        fallback_bcftools: the run's caller was DeepVariant but bcftools made the calls (DeepVariant failed and
+        the state machine fell back), a run that still ends "succeeded".
+    infra_retries: the attempts lost to infrastructure failures, summed over the stages' parts (the chunk
+        and shard jobs write no parts, so theirs are only in Batch's job history).
+    make_examples {split, parts, shards, examples, small_model_calls, bytes, ...}: the DeepVariant variant
+        stage's make_examples: one job (split false) or parts on CPU jobs (split true; bytes = examples
+        downloaded by the GPU job). Only when the variant stage is a DeepVariant one.
     failure {stage, error, reason, exit_code, job_id, log_stream} (only for a run closed as failed, below)
     gate {verdict (pass | fail | null when the gate couldn't run), reasons, mode, config, gate_version, key}:
         the quality gate's verdict (tasks.gate_task), once the QualityGate stage has run. It doesn't
@@ -150,6 +164,22 @@ def begin(task: str, sample_id: str) -> None:
         "tools": {},
         "stats": {},
     }
+    batch = batch_job()
+    if batch:
+        _current["batch"] = batch
+
+
+def batch_job(env=None):
+    """{job_id, attempt} of the AWS Batch job this process runs in, or None outside Batch."""
+    env = os.environ if env is None else env
+    job_id = env.get("AWS_BATCH_JOB_ID")
+    if not job_id:
+        return None
+    try:
+        attempt = int(env.get("AWS_BATCH_JOB_ATTEMPT") or 1)
+    except ValueError:
+        attempt = None
+    return {"job_id": job_id, "attempt": attempt}
 
 
 def note(**fields) -> None:
@@ -281,9 +311,25 @@ def finish(storage, status: str, duration: float, error: str = None, usage: dict
     part.update(status=status, finished=_now(), duration_seconds=round(duration, 2), error=error, resources=usage)
     try:
         _put_json(storage, f"{part_prefix(part['sample_id'])}{part['task']}.json", part)
-        assemble(storage, part["sample_id"])
+        record = assemble(storage, part["sample_id"])
+        if record is not None:
+            print(RECORD_LOG_PREFIX + json.dumps(record_summary(record, part["task"])), flush=True)
     except Exception as err:  # noqa: BLE001 - provenance must never fail a stage
         _warn("write the run record", err)
+
+
+# The job-log line the dashboard's run widgets read (scripts/monitoring.py RUN_RECORD_PREFIX): the record as this
+# stage left it, so the latest line of a run is its fullest view.
+RECORD_LOG_PREFIX = "run-record: "
+SUMMARY_FIELDS = ("sample_id", "run_name", "status", "route", "caller_outcome", "infra_retries", "app_version")
+
+
+def record_summary(record: dict, task: str) -> dict:
+    """The record's headline fields for the job log: one flat JSON object (Logs Insights reads its keys)."""
+    summary = {"task": task, **{k: record.get(k) for k in SUMMARY_FIELDS}}
+    summary["reference"] = (record.get("reference") or {}).get("name")
+    summary["gate"] = (record.get("gate") or {}).get("verdict")
+    return summary
 
 
 # The state machine's job names start with these (state_machine.asl.json); the stage (metric) name each runs.
@@ -296,6 +342,7 @@ JOB_NAME_STAGES = (
     ("PlanRegions-", "PlanRegions"),
     ("DeepVariant-", "DeepVariant"),  # G2: the GPU caller; an extra caller, so its failure doesn't fail the run
     ("QualityGate-", "QualityGate"),  # #162: the gate after either caller
+    ("Publish-", "Publish"),  # W3: the hosted site's page, after every run (best effort, never fails a run)
     # v1.3's large route: the pre-flight split, the per-chunk aligners and the merge (the merge is the Align stage).
     ("Preflight-", "Preflight"),
     ("AlignChunk-", "AlignChunk"),
@@ -427,6 +474,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
         p["task"]: {
             k: p.get(k) for k in ("status", "started", "finished", "duration_seconds", "error", "run_name", "resources")
         }
+        | ({"batch": p["batch"]} if p.get("batch") else {})
         for p in run
     }
     failure = _failure_of(final) if final else None
@@ -481,7 +529,33 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
         record["caller"] = caller
     record["variant_stage"] = variant_stage(stages, caller) if caller else _calls_stage(stages, parts)
     record["vcf"] = STAGE_VCF[record["variant_stage"]].format(id=sample_id)
+    route = run_route(in_run)
+    if route:
+        record["route"] = route
+    record["caller_outcome"] = caller_outcome(caller, record["variant_stage"])
+    record["infra_retries"] = sum(max((s.get("batch") or {}).get("attempt") or 1, 1) - 1 for s in stages.values())
+    examples = next((p.get("make_examples") for p in run if p["task"] == record["variant_stage"]), None)
+    if examples is not None:
+        record["make_examples"] = examples
     return record
+
+
+def run_route(own_tasks) -> str:
+    """small | large | from_alignment from the stages the run itself ran (not inherited), or None."""
+    if "Preflight" in own_tasks:
+        return "large"
+    if "Align" in own_tasks:
+        return "small"
+    if own_tasks & ({"CallVariants"} | set(CALLER_STAGES.values())):
+        return "from_alignment"
+    return None
+
+
+def caller_outcome(caller, stage: str) -> str:
+    """Whose calls the run's VCF holds; fallback_bcftools when the run's own caller didn't make them."""
+    if stage == "CallVariants":
+        return "fallback_bcftools" if caller else "bcftools"
+    return next((name for name, s in CALLER_STAGES.items() if s == stage), stage)
 
 
 def _calls_stage(stages: dict, parts: list) -> str:

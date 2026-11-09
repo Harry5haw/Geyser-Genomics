@@ -320,7 +320,7 @@ def test_sharded_calling_gives_the_same_calls_as_one_job(tmp_path, capfd, paired
     assert record["status"] == "succeeded"  # the variants-only run inherits QC and align (provenance.UPSTREAM)
     assert record["stages"]["CallVariants"]["run_name"] != record["stages"]["Align"]["run_name"]
     metrics = [json.loads(line) for line in (root / "metrics" / "metrics.jsonl").read_text().splitlines()]
-    assert sum(m["task"] == tasks.SHARD_METRIC for m in metrics) == 8
+    assert sum(m.get("task") == tasks.SHARD_METRIC for m in metrics) == 8  # value lines (QualityGateValue) have no task
 
 
 def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
