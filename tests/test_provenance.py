@@ -492,3 +492,88 @@ def test_a_failed_bcftools_call_keeps_the_record_on_bcftools(store):
         write_part(store, task, status=status, run_name="R1", finished=f"2026-11-02T10:0{i}:00Z")
     write_part(store, "DeepVariant", run_name="R2", finished="2026-11-02T11:00:00Z")
     assert provenance.build(store, "S1")["vcf"] == "variants/S1.vcf.gz"
+
+
+# ---- O3: route, caller outcome, Batch attempts, make_examples (what the genome runs taught us) ----
+
+
+def test_a_bcftools_run_is_small_route_with_bcftools_calls(store):
+    for i, task in enumerate(provenance.CORE_STAGES):
+        write_part(store, task, run_name="R1", finished=f"2026-11-02T10:0{i}:00Z")
+    record = provenance.build(store, "S1")
+    assert (record["route"], record["caller_outcome"], record["infra_retries"]) == ("small", "bcftools", 0)
+    assert "make_examples" not in record
+
+
+def test_a_large_route_run_is_marked_large(store):
+    write_part(store, "QualityControl", run_name="R1", finished="2026-11-02T10:00:00Z")
+    write_part(store, "Preflight", run_name="R1", finished="2026-11-02T10:01:00Z")
+    write_part(store, "Align", run_name="R1", finished="2026-11-02T10:02:00Z")
+    write_part(store, "CallVariants", run_name="R1", finished="2026-11-02T10:03:00Z")
+    assert provenance.build(store, "S1")["route"] == "large"
+
+
+def test_a_run_calling_from_an_existing_alignment_is_from_alignment(store):
+    dv_only_run(store, run="R0")
+    write_part(store, "DeepVariant", run_name="R1", finished="2026-11-03T10:00:00Z", caller="deepvariant")
+    record = provenance.build(store, "S1")
+    assert record["stages"]["Align"]["run_name"] == "R0"  # inherited, not run
+    assert (record["route"], record["caller_outcome"]) == ("from_alignment", "deepvariant")
+
+
+def test_a_deepvariant_run_that_fell_back_to_bcftools_says_so(store):
+    dv_only_run(store, dv_status="Failure")
+    write_part(store, "CallVariants", run_name="R1", finished="2026-11-02T10:20:00Z")
+    record = provenance.build(store, "S1")
+    assert record["status"] == "succeeded"  # the run still succeeds ...
+    assert record["caller_outcome"] == "fallback_bcftools"  # ... and the record shows whose calls it holds
+
+
+def test_a_pangenome_run_outcome_is_pangenome(store):
+    dv_only_run(store, caller="pangenome", task="PangenomeDeepVariant")
+    assert provenance.build(store, "S1")["caller_outcome"] == "pangenome"
+
+
+def test_batch_attempts_are_kept_per_stage_and_summed(store):
+    write_part(store, "QualityControl", run_name="R1", finished="2026-11-02T10:00:00Z")
+    write_part(store, "Align", run_name="R1", finished="2026-11-02T10:01:00Z", batch={"job_id": "j-a", "attempt": 3})
+    write_part(
+        store, "CallVariants", run_name="R1", finished="2026-11-02T10:02:00Z", batch={"job_id": "j-c", "attempt": 1}
+    )
+    record = provenance.build(store, "S1")
+    assert record["stages"]["Align"]["batch"] == {"job_id": "j-a", "attempt": 3}
+    assert "batch" not in record["stages"]["QualityControl"]  # not in Batch: no key at all
+    assert record["infra_retries"] == 2
+
+
+def test_begin_records_the_batch_job_and_attempt(store, monkeypatch):
+    monkeypatch.setenv("AWS_BATCH_JOB_ID", "job-123")
+    monkeypatch.setenv("AWS_BATCH_JOB_ATTEMPT", "2")
+    provenance.begin("Align", "S1")
+    assert provenance._current["batch"] == {"job_id": "job-123", "attempt": 2}
+    monkeypatch.delenv("AWS_BATCH_JOB_ID")
+    provenance.begin("Align", "S1")
+    assert "batch" not in provenance._current
+
+
+def test_batch_job_tolerates_an_odd_attempt():
+    assert provenance.batch_job({"AWS_BATCH_JOB_ID": "j", "AWS_BATCH_JOB_ATTEMPT": "x"}) == {
+        "job_id": "j",
+        "attempt": None,
+    }
+    assert provenance.batch_job({}) is None
+
+
+def test_make_examples_comes_from_the_variant_stage(store):
+    split = {"split": True, "parts": 4, "shards": 64, "examples": 10, "small_model_calls": 5, "bytes": 123}
+    dv_only_run(store)
+    write_part(
+        store, "DeepVariant", run_name="R1", finished="2026-11-02T10:05:00Z", caller="deepvariant", make_examples=split
+    )
+    assert provenance.build(store, "S1")["make_examples"] == split
+
+
+def test_route_stage_names_match_tasks():
+    import tasks
+
+    assert tasks.PREFLIGHT_METRIC == "Preflight" and tasks.MERGE_METRIC == "Align"

@@ -274,6 +274,9 @@ def test_the_runs_caller_also_writes_the_samples_stats(
     outputs = {o["key"] for o in record["outputs"]}
     assert {"stats/S1/bcftools.stats.txt", f"stats/S1/bcftools.stats.{caller}.txt"} <= outputs
     assert record["stats"]["bcftools_stats"]["tstv"] == 3.0
+    # The single-job make_examples summary reaches the record (the split run's is tested in test_provenance).
+    assert record["make_examples"]["split"] is False
+    assert record["caller_outcome"] == caller
 
 
 def test_another_runs_caller_does_not_claim_the_samples_stats(local_env, dv_inputs, monkeypatch, fake_stats):
