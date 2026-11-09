@@ -1,36 +1,61 @@
 /* Geyser Genomics UI: hand-written, no framework. Inlined into every page by base.html, so first paint needs no
 stylesheet request and nothing shifts when one arrives. Light, Material-3 flavoured: warm off-white page, white cards,
-Google's greys and blue, the four brand colours as accents only. Three themes (theme.js sets <html data-theme>
-before first paint): light (the default), dark (Google's dark surfaces) and high contrast (black on white, no tinted
-surfaces, thicker focus ring). Every text/background pair is >= 4.5:1 in light and dark and >= 7:1 in high contrast
-(web/tests/test_web_theme.py checks every theme's tokens). */
+Google's greys and blue, the four brand colours as accents only. Four themes (theme.js sets <html data-theme>
+before first paint): light (the default), dark (Google's dark surfaces), retro (black on white, bordered, underlined
+links) and high contrast (a low-vision mode: white and yellow on black, larger bolder text, 44 px targets). Every
+text/background pair is >= 4.5:1 in light and dark and >= 7:1 in retro and high contrast (web/tests/test_web_theme.py
+checks every theme's tokens). Windows High Contrast (forced-colors) gets the system's own colours. */
 :root{--bg:#faf8f3;--deep:#f3efe6;--ink:#fff;--card:#fff;--line:#e3ded3;--frame:#d2cbbe;--zebra:#fbfaf7;--hover:#e8f0fe;
 --text:#1f1f1f;--muted:#5f6368;--primary:#1a73e8;--primary-hover:#1765cc;--link:#1a65c9;
 --done:#137333;--done-bg:#e6f4ea;--run:#1967d2;--run-bg:#e8f0fe;--fail:#c5221f;--fail-bg:#fce8e6;
 --warn:#9c5700;--warn-bg:#fef7e0;--warn-line:#f9ab00;--pend:#5f6368;--pend-bg:#f1f3f4;--queue:#9c5700;--queue-bg:#fef7e0;
 --blue:#4285f4;--red:#ea4335;--yellow:#fbbc04;--green:#34a853;--on:#1f1f1f;--on-primary:#fff;--tube-hover:#d2e3fc;--tube-hover-text:#174ea6;
---stage-qc:var(--blue);--stage-align:var(--green);--stage-variants:var(--yellow);--nt-a:#137333;--nt-c:#1967d2;--nt-g:#9c5700;--nt-t:#c5221f;--logo-bg:transparent;
+--stage-qc:var(--blue);--stage-align:var(--green);--stage-variants:var(--yellow);--nt-a:#137333;--nt-c:#1967d2;--nt-g:#9c5700;--nt-t:#c5221f;
 --shadow:0 1px 2px rgba(60,64,67,.15),0 1px 3px 1px rgba(60,64,67,.08);
 --sans:"Google Sans",Roboto,"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
 --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;color-scheme:light}
-/* Dark: Google's dark surfaces, lighter accents and status colours; the navy lockup sits on a beige chip */
+/* Dark: Google's dark surfaces, lighter accents and status colours (and a light-blue lockup) */
 :root[data-theme=dark]{--bg:#1f1f1f;--deep:#262626;--ink:#1f1f1f;--card:#2d2d2d;--line:#3c4043;--frame:#5f6368;--zebra:#292929;
 --hover:#353c48;--text:#e3e3e3;--muted:#bdc1c6;--primary:#8ab4f8;--primary-hover:#aecbfa;--link:#8ab4f8;--on-primary:#1f1f1f;
 --done:#81c995;--done-bg:#24382b;--run:#8ab4f8;--run-bg:#283447;--fail:#f28b82;--fail-bg:#412b2a;--warn:#fdd663;
 --warn-bg:#3d3520;--warn-line:#fdd663;--pend:#bdc1c6;--pend-bg:#3c4043;--queue:#fdd663;--queue-bg:#3d3520;--tube-hover:#344459;--tube-hover-text:#aecbfa;
---nt-a:#81c995;--nt-c:#8ab4f8;--nt-g:#fdd663;--nt-t:#f28b82;--logo-bg:#faf8f3;--shadow:0 1px 3px rgba(0,0,0,.6);color-scheme:dark}
-/* High contrast: black on white, no tinted surfaces, every card bordered, links underlined, a 3 px focus ring */
-:root[data-theme=contrast]{--bg:#fff;--deep:#fff;--ink:#fff;--card:#fff;--line:#000;--frame:#000;--zebra:#fff;--hover:#fff;
+--nt-a:#81c995;--nt-c:#8ab4f8;--nt-g:#fdd663;--nt-t:#f28b82;--shadow:0 1px 3px rgba(0,0,0,.6);color-scheme:dark}
+/* Retro: black on white, no tinted surfaces, every card bordered, links underlined, a 3 px focus ring */
+:root[data-theme=retro]{--bg:#fff;--deep:#fff;--ink:#fff;--card:#fff;--line:#000;--frame:#000;--zebra:#fff;--hover:#fff;
 --text:#000;--muted:#333;--primary:#0842a0;--primary-hover:#062e70;--link:#0842a0;--on-primary:#fff;
 --done:#0b5323;--done-bg:#fff;--run:#0842a0;--run-bg:#fff;--fail:#8c0d0d;--fail-bg:#fff;--warn:#5c3300;--warn-bg:#fff;
 --warn-line:#000;--pend:#333;--pend-bg:#fff;--queue:#5c3300;--queue-bg:#fff;--tube-hover:#fff;--tube-hover-text:#0842a0;--on:#000;
 --stage-qc:#aecbfa;--stage-align:#a8dab5;--stage-variants:#fde293;
 --nt-a:#0b5323;--nt-c:#0842a0;--nt-g:#5c3300;--nt-t:#8c0d0d;--shadow:none;color-scheme:light}
-:root[data-theme=contrast] a:not(.brand){text-decoration:underline}
-:root[data-theme=contrast] :focus-visible{outline:3px solid #000;outline-offset:2px}
-:root[data-theme=contrast] .badge,:root[data-theme=contrast] .tube,:root[data-theme=contrast] .msg,:root[data-theme=contrast] .note,
-:root[data-theme=contrast] .flow b{border:2px solid currentColor}
-:root[data-theme=contrast] .timeline>div{background:var(--card);border-color:#000}
+:root[data-theme=retro] a:not(.brand){text-decoration:underline}
+:root[data-theme=retro] :focus-visible{outline:3px solid #000;outline-offset:2px}
+:root[data-theme=retro] :is(.badge,.tube,.msg,.note,.flow b){border:2px solid currentColor}
+:root[data-theme=retro] .timeline>div{background:var(--card);border-color:#000}
+/* High contrast, for low vision: white text on black, yellow links and focus, cyan accents; state by icon and word
+as well as colour; 2-3 px white borders, no shadows or gradients behind text; text 15% larger, bolder, 1.6 line
+height; every control at least 44 px. Motion already stops under prefers-reduced-motion (the rule at the end). */
+:root[data-theme=contrast]{--bg:#000;--deep:#000;--ink:#000;--card:#000;--line:#fff;--frame:#fff;--zebra:#000;--hover:#262626;
+--text:#fff;--muted:#e6e6e6;--primary:#ffd600;--primary-hover:#fff176;--link:#ffd600;--on-primary:#000;
+--done:#8cff8c;--done-bg:#000;--run:#00e5ff;--run-bg:#000;--fail:#ff8a80;--fail-bg:#000;--warn:#ffd600;--warn-bg:#000;
+--warn-line:#ffd600;--pend:#e6e6e6;--pend-bg:#000;--queue:#ffd600;--queue-bg:#000;--tube-hover:#262626;--tube-hover-text:#ffd600;
+--on:#000;--stage-qc:#00e5ff;--stage-align:#00e5ff;--stage-variants:#00e5ff;
+--nt-a:#8cff8c;--nt-c:#00e5ff;--nt-g:#ffd600;--nt-t:#ff8a80;--shadow:none;color-scheme:dark;font-size:115%}
+:root[data-theme=contrast] body{line-height:1.6;font-weight:500}
+:root[data-theme=contrast] :is(h1,h2,h3,label,legend,th,.badge,.pill,.flow b){font-weight:700}
+:root[data-theme=contrast] a:not(.brand){text-decoration:underline;text-decoration-thickness:2px}
+:root[data-theme=contrast] :focus-visible{outline:4px solid #ffd600;outline-offset:3px}
+:root[data-theme=contrast] :is(.panel,.card,.frame,.files li,.truth,.msg,.note,.timeline>div,input,select,button,.tube,.themes){border:2px solid #fff}
+:root[data-theme=contrast] :is(button,.tube,input,select,.themes button,.pager a){min-height:44px}
+:root[data-theme=contrast] .themes button{min-width:44px;padding:.5rem .9rem}
+:root[data-theme=contrast] :is(.badge,.flow b,.pill){border:2px solid currentColor}
+:root[data-theme=contrast] .timeline>div,:root[data-theme=contrast] .pill.running{background:var(--card)}
+:root[data-theme=contrast] .pill.running::before{content:"▶";width:auto;height:auto;background:none;animation:none}
+:root[data-theme=contrast] .pill.pending::before{content:"…";width:auto;height:auto;border:0}
+:root[data-theme=contrast] .helix{display:none}
+:root[data-theme=contrast] button:hover{color:#000;background:#fff}
+/* Windows High Contrast and other forced palettes: the system chooses the colours; keep shapes and state legible */
+@media (forced-colors:active){:root{--shadow:none}.panel,.card,.frame,.badge,.pill,.tube,.flow b,.msg,.note{border:1px solid CanvasText}
+.themes button[aria-pressed=true]{outline:2px solid Highlight}.brand img{forced-color-adjust:none}}
 *,::before,::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 body{margin:0;min-height:100vh;color:var(--text);font:1rem/1.55 var(--sans);background:var(--bg)}
@@ -49,8 +74,10 @@ small{font-size:.85em}.muted{color:var(--muted)}.error{color:var(--fail)}
 background:linear-gradient(90deg,var(--blue) 0 25%,var(--red) 25% 50%,var(--yellow) 50% 75%,var(--green) 75%)}
 .site-head .wrap{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding-block:.9rem 1.1rem}
 .brand{display:inline-flex;align-items:center;gap:1rem;color:var(--text);text-decoration:none}
-.brand img{display:block;width:auto;height:40px;box-sizing:content-box;background:var(--logo-bg);border-radius:.5rem}
-:root[data-theme=dark] .brand img{padding:3px 8px}
+.brand img{display:block;width:auto;height:40px}
+/* One lockup per theme (static files: no inline SVG, so the CSP is unchanged); only the current one shows */
+.brand .logo-dark,.brand .logo-contrast,:root[data-theme=dark] .brand .logo-light,:root[data-theme=contrast] .brand .logo-light{display:none}
+:root[data-theme=dark] .brand .logo-dark,:root[data-theme=contrast] .brand .logo-contrast{display:block}
 .brand i{display:block;padding-left:1rem;border-left:1px solid var(--line);font:500 .75rem/1 var(--sans);letter-spacing:.12em;
 text-transform:uppercase;font-style:normal;color:var(--muted);white-space:nowrap}
 /* "Samples": a tonal pill with a four-colour dot */

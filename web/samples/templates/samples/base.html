@@ -19,12 +19,12 @@
 <body>
   <header class="site-head">
     <nav class="wrap" aria-label="Site">
-      <a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/geyser-lockup.svg' %}" width="232" height="40" alt="Geyser Genomics">
+      <a class="brand" href="{% url 'samples:list' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" width="232" height="40" alt="Geyser Genomics"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" width="232" height="40" alt="Geyser Genomics"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" width="232" height="40" alt="Geyser Genomics">
         <i>FASTQ → VCF pipeline</i></a>
       <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
       <div class="head-actions">
         <div class="themes" role="group" aria-label="Colour theme">
-          <button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button><button type="button" data-theme-choice="contrast" aria-pressed="false">High contrast</button>
+          <button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button><button type="button" data-theme-choice="retro" aria-pressed="false">Retro</button><button type="button" data-theme-choice="contrast" aria-pressed="false">High contrast</button>
         </div>
         <a class="tube" href="{% url 'samples:list' %}#samples">Samples</a>
       </div>

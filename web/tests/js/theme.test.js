@@ -25,14 +25,16 @@ test("without a saved choice the system decides: contrast first, then dark, else
 
 test("an unknown saved value (an old version, a typo) is ignored", () => {
   assert.equal(T.resolve("sepia", { contrast: false, dark: true }), "dark");
-  assert.deepEqual([...T.THEMES], ["light", "dark", "contrast"]);
+  assert.deepEqual([...T.THEMES], ["light", "dark", "retro", "contrast"]);
+  assert.equal(T.resolve(null, { contrast: false, dark: false }), "light"); // retro only by hand
+  assert.equal(T.resolve("retro", { contrast: true, dark: true }), "retro");
 });
 
 // The browser part: a tiny fake DOM, storage that throws (a private window), a system in dark mode.
 test("in a page it sets data-theme before first paint, marks the pressed button and survives blocked storage", () => {
   const attrs = {};
   const events = [];
-  const buttons = ["light", "dark", "contrast"].map((choice) => {
+  const buttons = ["light", "dark", "retro", "contrast"].map((choice) => {
     const b = { a: { "data-theme-choice": choice } };
     b.getAttribute = (k) => b.a[k];
     b.setAttribute = (k, v) => (b.a[k] = v);
@@ -68,11 +70,11 @@ test("in a page it sets data-theme before first paint, marks the pressed button 
   assert.equal(attrs["data-theme"], "dark"); // set while the script ran, before any paint
   assert.equal(buttons[1].a["aria-pressed"], "true");
   assert.equal(events.at(-1).type, "geyser:theme");
-  listeners.click({ target: buttons[2] }); // choose high contrast: not saved (storage throws), still applied
+  listeners.click({ target: buttons[3] }); // choose high contrast: not saved (storage throws), still applied
   assert.equal(attrs["data-theme"], "contrast");
   assert.deepEqual(
     buttons.map((b) => b.a["aria-pressed"]),
-    ["false", "false", "true"],
+    ["false", "false", "false", "true"],
   );
   assert.equal(events.at(-1).detail.theme, "contrast");
 });

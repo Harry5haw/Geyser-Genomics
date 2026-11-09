@@ -1,4 +1,4 @@
-/* Geyser theme: light, dark or high contrast. Loaded synchronously in <head> (a static file, so the hosted
+/* Geyser theme: light, dark, retro or high contrast (low vision); retro is only ever chosen by hand. Loaded synchronously in <head> (a static file, so the hosted
    site's CSP needs no new hash), it sets <html data-theme> before first paint, so a page never flashes the
    wrong theme. The default follows the system (prefers-contrast / forced-colors, then prefers-color-scheme);
    a choice made with the header buttons persists in localStorage. Storage can be blocked (private windows,
@@ -7,7 +7,7 @@
 (function (global) {
   "use strict";
   var KEY = "geyser-theme";
-  var THEMES = ["light", "dark", "contrast"];
+  var THEMES = ["light", "dark", "retro", "contrast"]; // retro is never chosen automatically
 
   // The pure core (tested in web/tests/js/theme.test.js): the theme to show.
   function resolve(stored, prefs) {

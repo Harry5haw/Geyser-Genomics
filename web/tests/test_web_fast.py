@@ -178,13 +178,15 @@ def test_no_framework_and_no_stylesheet_request(client, storage):
 def test_the_inlined_css_has_no_comments(client, storage):
     style = re.search(r"<style>(.*?)</style>", client.get("/").content.decode(), re.S).group(1)
     assert "/*" not in style and "--primary" in style
-    assert len(style) < 17 * 1024  # three themes; the page budget (HTML+CSS+JS <= 30 KB, gzip) is Lighthouse's check
+    assert len(style) < 20 * 1024  # four themes; the page budget (HTML+CSS+JS <= 30 KB, gzip) is Lighthouse's check
 
 
 def test_images_have_their_size_so_nothing_shifts(client, storage):
     body = client.get("/").content.decode()
-    (img,) = re.findall(r"<img [^>]+>", body)
-    assert 'width="232"' in img and 'height="40"' in img and 'alt="Geyser Genomics"' in img  # the lockup has the name
+    imgs = re.findall(r"<img [^>]+>", body)  # the lockup per theme; CSS shows one
+    assert len(imgs) == 3
+    for img in imgs:
+        assert 'width="232"' in img and 'height="40"' in img and 'alt="Geyser Genomics"' in img
 
 
 # ------------------------------------------------------------------ paged tables
