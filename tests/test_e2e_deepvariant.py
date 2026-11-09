@@ -4,7 +4,8 @@
     GEYSER_DV_E2E=1   CPU image, no GPU needed    (... --build-arg DV_TAG=1.10.0 -t geyser-deepvariant-cpu .)
 
 Both need geyser-app too (docker build -f Dockerfile -t geyser-app .) for the stages before calling.
-GEYSER_DV_IMAGE overrides the DeepVariant image name.
+GEYSER_DV_IMAGE overrides the DeepVariant image name; GEYSER_DV_CPU_IMAGE the split mode's make_examples image
+(default geyser-deepvariant-cpu, needed by the split test in either mode).
 """
 
 import json
@@ -91,6 +92,44 @@ def test_a_deepvariant_only_run_is_complete(tmp_path):
     assert run_status["status"] == "pass", run_status
     # DeepVariant's PASS calls are the 10 planted SNPs: the synthetic thresholds pass the whole run.
     assert verdict["verdict"] == "pass", verdict["reasons"]
+
+
+def test_split_deepvariant_matches_the_single_job(tmp_path, monkeypatch):
+    # v1.5 split mode: 2 make_examples parts in the CPU image, then call_variants + postprocess_variants in the
+    # DeepVariant image on their examples. Same outputs and run record as the single job; the planted SNPs called.
+    monkeypatch.setenv("DEEPVARIANT_SHARDS", "4")
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root)])
+    cpu_image = os.environ.get("GEYSER_DV_CPU_IMAGE", "geyser-deepvariant-cpu")
+    exit_code = run_local.main(
+        [
+            "--root",
+            str(root),
+            "--sample",
+            "SYNTH001",
+            "--reference",
+            "synthetic_ref.fa",
+            "--caller",
+            "deepvariant",
+            "--dv-split",
+            "2",
+            "--dv-cpu-image",
+            cpu_image,
+            "--image",
+            os.environ.get("GEYSER_IMAGE", "geyser-app"),
+        ]
+        + dv_args()
+    )
+    assert exit_code == 0
+    counts = run_local.truth_counts(str(root), "SYNTH001", "deepvariant")
+    assert counts["tp"] == counts["truth"] and not counts["extra"], counts
+    runs = list((root / "intermediate" / "dv" / "SYNTH001").iterdir())
+    assert len(runs) == 1 and sorted(p.name for p in runs[0].iterdir()) == ["shard-0", "shard-1"]
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert (record["status"], record["caller"]) == ("succeeded", "deepvariant")
+    assert "DeepVariantExamples" not in record["stages"]  # the parts write no run-record part
+    part = json.loads((root / "runs" / "SYNTH001.provenance" / "DeepVariant.json").read_text())
+    assert part["make_examples"]["split"] and part["make_examples"]["parts"] == 2
 
 
 def test_image_bcftools_counts_pass_calls_only(tmp_path):

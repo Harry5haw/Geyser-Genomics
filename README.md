@@ -2,7 +2,7 @@
 
 <img src="docs/assets/Github social media banner v9.png" alt="Geyser Genomics banner: technologies for DNA sequencing" width="85%"/>
 
-<h1>🌋 Geyser Genomics</h1>
+<h1>🌋 Geyser Genomics🌋</h1>
 
 <p><strong>An event-driven AWS pipeline that turns raw DNA sequencing reads into a list of genetic variants,<br/>built and tested offline first.</strong></p>
 
@@ -199,7 +199,7 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 | **Cost safety and guardrails** | ☁️ Applied | No NAT gateway, Fargate in a public subnet, capped Batch capacity, ECR and log retention, a $10 monthly budget alert. The role automation uses has a permissions boundary and a $20 project budget that attaches a deny-all policy by itself ([guardrails](docs/design/claude-guardrails.md)). |
 | **Automated deployment** | ⏸️ Manual by design | CI runs tests and checks only. The "Terraform Plan" workflow can only plan, is manual, and is disabled. Applies happen from a reviewed plan. |
 | **Monitoring** | ☁️ Cloud | Each stage emits duration and failure metrics (CloudWatch, or a local file offline). A CloudWatch dashboard (runs, end-to-end time, failures and durations by stage, result quality per sample, data lake size, console links) and one alarm on trigger Lambda errors are deployed by scripts (see [Monitoring](#3-monitoring)). Each job also records its CPU time and peak memory. |
-| **DeepVariant in the cloud** | ☁️ Cloud | A GPU Batch environment (g6.xlarge / g5.xlarge, public subnet, scales to zero, at most one instance) and a DeepVariant stage chosen per run (`caller=deepvariant`), falling back to bcftools if it fails. Verified 2 Nov 2026: 10/10 planted SNPs, 9 min 42 s, about $0.16. Normal runs stay on bcftools until a real-size chr20 DeepVariant run is checked. |
+| **DeepVariant in the cloud** | ☁️ Cloud | A GPU Batch environment (g6.4xlarge / g5.4xlarge since v1.5, public subnet, scales to zero, at most one instance) and a DeepVariant stage chosen per run (`caller=deepvariant`), falling back to bcftools if it fails. Verified 2 Nov 2026: 10/10 planted SNPs, 9 min 42 s, about $0.16. Normal runs stay on bcftools until a real-size chr20 DeepVariant run is checked. |
 | **Pangenome-aware DeepVariant, graph alignment** | ✅ Local GPU | Pangenome-aware DeepVariant (HG003 and HG005 chr20) and vg giraffe alignment (HG003 chr20), benchmarked with hap.py (see below and the [benchmark history](docs/benchmarks/README.md)). |
 | **Quality gate** | ☁️ Cloud | [`gate/`](gate/README.md), a Rust tool: reads a run's fastp report, QC statistics and run record, checks them against thresholds calibrated on HG003/HG005 and fails with named reasons. It runs as a pipeline stage, locally and as a step in the cloud state machine after either caller ([#162](../../pull/162)). In the cloud it runs in fail mode ([#195](../../pull/195)): a failed verdict fails the run. Locally `run_local.py` defaults to warn. The thresholds are chosen per run (`gate_profile`, [#178](../../pull/178)). |
 | **Variant consequences** | ✅ Local | `bcftools csq` when the reference has gene models (`reference/<name>.gff3.gz`), shown in the web UI. The cloud reference has none yet. |
@@ -252,7 +252,7 @@ flowchart TB
     end
 
     SFN ==>|"submitJob.sync, one job per stage<br/>Batch API errors retried"| BATCH["🐳 AWS Batch on Fargate<br/>Spot first, on-demand fallback<br/>one geyser-app image · max 8 + 8 vCPUs<br/>infrastructure failures retried"]
-    SFN ==>|"DeepVariant job"| GPU["🎮 AWS Batch on EC2 GPU<br/>g6.xlarge / g5.xlarge · max 1 instance<br/>scales to zero"]
+    SFN ==>|"DeepVariant job"| GPU["🎮 AWS Batch on EC2 GPU<br/>g6.4xlarge / g5.4xlarge · max 1 instance<br/>scales to zero"]
     SFN -.->|"any failure"| SNS["📣 SNS: Notify_Failure<br/>then the run ends Failed"]
     ECR[("📦 Amazon ECR")] -.->|"image"| BATCH
     ECR -.->|"DeepVariant image"| GPU
@@ -660,7 +660,7 @@ Same machine, median of 3 runs:
 
 </details>
 
-**Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. `GEYSER_PG_E2E=1 pytest tests/test_e2e_pangenome.py` runs the real pangenome-aware image on synthetic data with a synthetic graph (`make_test_data.py --pangenome`): the 10 planted SNPs are called, and none of the 5 SNPs only the graph's panel carries. In the cloud, linear DeepVariant runs on a GPU Batch environment (g6.xlarge / g5.xlarge) when a run is started with `caller=deepvariant`, with bcftools as the fallback ([design](docs/design/cloud-deepvariant.md)). Pangenome-aware DeepVariant is local only for now. Sizing notes: [`app-deepvariant/README.md`](app-deepvariant/README.md).
+**Tests.** `GEYSER_GPU_E2E=1 pytest tests/test_e2e_deepvariant.py` runs the GPU image. `GEYSER_DV_E2E=1` runs the CPU image; CI runs that one on pull requests, because GitHub runners have no GPU. Setting `GEYSER_DV_TESTDATA=<bucket>` also runs the real slice. `GEYSER_PG_E2E=1 pytest tests/test_e2e_pangenome.py` runs the real pangenome-aware image on synthetic data with a synthetic graph (`make_test_data.py --pangenome`): the 10 planted SNPs are called, and none of the 5 SNPs only the graph's panel carries. In the cloud, linear DeepVariant runs on a GPU Batch environment (g6.4xlarge / g5.4xlarge) when a run is started with `caller=deepvariant`, with bcftools as the fallback ([design](docs/design/cloud-deepvariant.md)). Pangenome-aware DeepVariant is local only for now. Sizing notes: [`app-deepvariant/README.md`](app-deepvariant/README.md).
 
 ---
 
@@ -812,7 +812,7 @@ python scripts/deploy_alarms.py
 python scripts/deploy_dashboard.py
 ```
 
-Stage durations show the mean and max across samples. CloudWatch can't calculate percentiles across samples because each `SampleId` is a separate metric. If the metrics stop using the `SampleId` dimension, run with `--schema aggregated` to get real p50/p95. To add a stage or a new variant caller, add it to `STAGE_GROUPS` in `scripts/monitoring.py`.
+Stage durations show p50 and p95 per stage: the metrics are published per stage (dimensions `TaskName` + `Status`), not per sample. Images built before Nov 2026 published a `SampleId` dimension too, which made every sample a separate metric and ruled out percentiles; `--schema per-sample` still reads that older data (mean and max across samples). Per-sample detail is in the job logs and the run record. To add a stage or a new variant caller, add it to `STAGE_GROUPS` in `scripts/monitoring.py`.
 
 Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` also sends the alarm to an SNS topic. Failed runs already publish to the pipeline's SNS topic from the state machine's `Notify_Failure` step.
 

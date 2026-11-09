@@ -20,6 +20,34 @@ def fx(name):
     return os.path.join(FIX, name)
 
 
+# ---- one heat ramp ----
+
+
+def test_the_web_figures_use_the_same_heat_ramp():
+    """The 3D figures on the web page and these 2D figures colour a value the same way."""
+    import ast
+
+    path = os.path.join(os.path.dirname(__file__), "..", "web", "samples", "figures.py")
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    web = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "HEAT" for t in node.targets)
+    )
+    assert web == figkit.HEAT
+
+
+def test_heat_ramp_lightness_rises_and_text_flips_on_the_dark_end():
+    def luminance(h):
+        r, g, b = (int(h[i : i + 2], 16) / 255 for i in (1, 3, 5))
+        lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    lum = [luminance(h) for h in figkit.HEAT]
+    assert lum == sorted(lum) and len(set(lum)) == len(lum)  # low = dark, high = light, every step lighter
+    assert figkit.ink_on(0.0) == "#ffffff" and figkit.ink_on(1.0) == figkit.INK
+
+
 # ---- cost x turnaround ----
 
 
