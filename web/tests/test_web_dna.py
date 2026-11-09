@@ -35,6 +35,8 @@ def test_the_sprite_is_on_the_pages_that_show_stage_status_only(client, storage)
 def test_motion_is_paused_unless_running_and_stops_under_reduced_motion():
     with open(CSS, encoding="utf-8") as fh:
         css = fh.read()
+    with open(CSS.replace("_site.css", "_samples.css"), encoding="utf-8") as fh:
+        css += fh.read()  # the helix rules are the sample pages' CSS; reduced motion is global
     # Only a running stage's helix turns (the <use> element itself: CSS can't reach inside it); the rest stay still.
     animated = re.findall(r"([^{}]+)\{animation:dna-turn", css)
     assert [sel.strip() for sel in animated] == [".dna.running use"]

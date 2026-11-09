@@ -30,6 +30,14 @@ def inline_css(name):
     return mark_safe(_minified_css(name) if settings.DEBUG else _cached_css(name))  # noqa: S308 - our own file
 
 
+@register.simple_tag
+def inline_js(name):
+    """A small script for an inline <script> (the theme boot, samples/_theme_boot.js): run before the first
+    paint without a request. Minified like the CSS, so the file has no // comments. The publisher puts its sha256
+    in csp-hashes.json, as for every inline block."""
+    return mark_safe(_minified_css(name) if settings.DEBUG else _cached_css(name))  # noqa: S308 - our own file
+
+
 @register.filter
 def duration(seconds):
     """12.3 -> '12.3 s', 125 -> '2 m 05 s'."""

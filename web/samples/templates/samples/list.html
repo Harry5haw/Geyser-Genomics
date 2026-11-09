@@ -1,4 +1,6 @@
 {% extends "samples/base.html" %}
+{% load geyser %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% endblock %}
 {% block sprite %}{% include "samples/_dna_sprite.html" %}{% endblock %}
 {% block content %}
 <section>

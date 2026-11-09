@@ -176,8 +176,12 @@ def test_no_framework_and_no_stylesheet_request(client, storage):
     body = client.get("/samples/S1/").content.decode()
     assert "<style>" in body and 'rel="stylesheet"' not in body
     assert "pico" not in body.lower() and "htmx" not in body.lower() and "hx-" not in body
-    assert len(re.findall(r"<script src=", body)) == 2  # theme.js (sync, before first paint) and geyser.js (deferred)
-    assert re.search(r'<script src="[^"]+theme[^"]*\.js"></script>', body)  # not deferred: it must run before paint
+    # The theme boot inline (before the first paint, no request); theme.js and geyser.js deferred.
+    assert len(re.findall(r"<script src=", body)) == 2
+    assert re.search(r'<script src="[^"]+theme[^"]*\.js" defer>', body)
+    assert re.search(
+        r"<script>\(function \(\) \{ var t = null.*?setAttribute\(\"data-theme\", t\); \}\)\(\);</script>", body
+    )
     assert re.search(r'<script src="[^"]+geyser[^"]*\.js" defer>', body)
 
 

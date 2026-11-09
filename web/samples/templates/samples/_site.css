@@ -125,89 +125,10 @@ footer p{margin:0 0 .35rem}
 .msg{padding:.75rem 1rem;margin-bottom:1rem;border-radius:.75rem;background:var(--run-bg);border-left:4px solid var(--primary)}
 .msg.error{background:var(--fail-bg);border-left-color:var(--fail)}
 .lead{color:var(--muted);max-width:46rem}
-.flow{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;margin:.75rem 0 1.5rem;font-size:.85rem}
-.flow b{font-weight:400;background:var(--card);border:1px solid var(--frame);border-radius:999px;padding:.2rem .75rem}
-.flow b[class]{background:var(--stage);border-color:var(--stage);color:var(--on);font-weight:500}.flow i{color:var(--muted);font-style:normal}
-.actions{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin-bottom:2rem}
-.actions .card{margin:0;display:flex;flex-direction:column}.actions p{font-size:.9rem;color:var(--muted)}.actions .card:first-child form{margin-top:auto}
-@media (max-width:768px){.actions{grid-template-columns:1fr}}
-.checklist{padding:0;font-size:.9rem;list-style:none}.checklist li{padding-left:1.5rem;position:relative;margin-bottom:.35rem}
-.checklist li::before{content:"✓";position:absolute;left:0;color:var(--done);font-weight:700}
-/* Forms: rounded fields with a 2 px blue focus ring; pill buttons */
-label{display:block;margin-bottom:1rem;font-weight:500;color:var(--text)}label .muted,label small{font-weight:400}label small{display:block;margin-top:.25rem}
-input,select{display:block;width:100%;margin-top:.35rem;padding:.7rem .9rem;font:inherit;color:var(--text);background:var(--ink);border:1px solid var(--frame);border-radius:.6rem}
-input:hover,select:hover{border-color:var(--muted)}input:focus,select:focus{outline:0;border-color:var(--primary);box-shadow:0 0 0 1px var(--primary)}
-input::placeholder{color:var(--muted)}input[aria-invalid=true]{border-color:var(--fail)}
-input[type=file]{padding:1rem 1.1rem;border-style:dashed;background:var(--zebra)}
-input[type=file]::file-selector-button{margin-right:1rem;padding:.4rem 1rem;font:500 .9rem var(--sans);color:var(--run);background:var(--run-bg);border:0;border-radius:999px;cursor:pointer}
-fieldset{border:0;margin:0 0 1rem;padding:0}legend{font-weight:500;color:var(--text);margin-bottom:.35rem}label.radio{display:inline-flex;align-items:center;margin:0 1.5rem 0 0;font-weight:400}input[type=radio]{display:inline-block;width:auto;margin:0 .45rem 0 0;accent-color:var(--primary)}
-progress{display:block;width:100%;height:.75rem;margin:1rem 0 .5rem;accent-color:var(--primary)}#up-status.ok{color:var(--done)}
+/* Buttons: pills (the forms themselves are in _samples.css) */
 [hidden]{display:none!important}
 button{width:100%;padding:.75rem 1.25rem;font:500 1rem/1.2 var(--sans);color:var(--on-primary);background:var(--primary);border:0;border-radius:999px;cursor:pointer;box-shadow:var(--shadow)}
 button:hover{background:var(--primary-hover)}button.upload{background:var(--primary)}button.upload:hover{background:var(--primary-hover)}
-/* States: run state by chip (tonal fill, dark text), each stage by its own brand colour */
-.badge{display:inline-block;font-size:.8rem;font-weight:500;padding:.2rem .7rem;border-radius:999px;color:var(--pend);background:var(--pend-bg)}
-.badge.succeeded{color:var(--done);background:var(--done-bg)}.badge.running{color:var(--run);background:var(--run-bg)}
-.badge.queued{color:var(--queue);background:var(--queue-bg)}.badge.failed{color:var(--fail);background:var(--fail-bg)}
-.badge.warn{color:var(--warn);background:var(--warn-bg)}
-.s-qc{--stage:var(--stage-qc)}.s-align{--stage:var(--stage-align)}.s-variants{--stage:var(--stage-variants)}
-.pills{display:flex;gap:.3rem;flex-wrap:wrap}
-.pill{display:inline-flex;align-items:center;gap:.3rem;font-size:.75rem;line-height:1;padding:.3rem .6rem;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
-.pill::before{content:"";width:.5rem;height:.5rem;border-radius:50%;background:currentColor}
-.pill.done{color:var(--on);background:var(--stage,var(--green));border-color:var(--stage,var(--green))}
-.pill.done::before,.pill.failed::before{content:"✓";width:auto;height:auto;background:none;font-weight:700}
-.pill.failed{color:var(--fail);background:var(--fail-bg)}.pill.failed::before{content:"✕"}
-.pill.running{color:var(--text);border-color:var(--stage,var(--blue));background:color-mix(in srgb,var(--stage,var(--blue)) 18%,var(--card))}
-.pill.running::before{content:none}
-.pill.pending{color:var(--pend);border-style:dashed}.pill.pending::before{content:none}
-@keyframes pulse{50%{opacity:.25}}
-.gate-warn{border-left:.35rem solid var(--warn-line)}.gate-fail{border-left:.35rem solid var(--fail)}.gate-not_run{border-left:.35rem dashed var(--frame)}
-/* Sample page */
-.head{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}.head h1{margin:0;font-family:var(--mono);overflow-wrap:anywhere}
-.track{display:grid;grid-template-columns:repeat(3,1fr);gap:.3rem;margin:1.25rem 0 .4rem}
-/* Stage status as a double helix (samples/_dna_sprite.html, samples/_dna.html): running turns (in the stage colour), done is a still helix in green, failed is broken apart in red, pending is thin and grey,
-skipped is dotted. Every helix has a text label beside it and an aria-label; motion stops under reduced motion. */
-.sprite{position:absolute;width:0;height:0;overflow:hidden}
-/* Through <use> only inherited properties reach the helix: fill, stroke, width and dash are set here on the svg */
-.dna{display:block;width:100%;height:1.1rem;overflow:visible;fill:none;stroke:currentColor;stroke-width:1.2px;stroke-linecap:round;color:var(--pend)}
-.dna use{transform-box:fill-box;transform-origin:center}
-.dna.running{color:var(--helix,var(--run));stroke-width:2px}.dna.running use{animation:dna-turn 2.4s ease-in-out infinite}
-@keyframes dna-turn{0%,100%{transform:scaleY(1)}50%{transform:scaleY(-1)}}
-.dna.done{color:var(--done);stroke-width:2px}.dna.failed{color:var(--fail);stroke-width:2px}
-.dna.skipped{stroke-dasharray:1 3}
-.s-qc{--helix:var(--helix-qc)}.s-align{--helix:var(--helix-align)}.s-variants{--helix:var(--helix-variants)}
-.pill .dna{display:inline-block;width:1.7rem;height:.75rem;color:inherit}
-.now strong{color:var(--text)}
-.timeline{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin:1rem 0}
-.timeline>div{background:color-mix(in srgb,var(--stage) 10%,var(--card));border:1px solid color-mix(in srgb,var(--stage) 40%,var(--card));
-border-top:4px solid var(--stage);border-radius:.75rem;padding:.75rem}
-.timeline .pending{background:var(--zebra);border-color:var(--line)}.timeline .failed{border-color:var(--fail)}
-.timeline small{display:block;font-weight:500;color:var(--text);letter-spacing:.03em;text-transform:uppercase}
-.timeline p{display:flex;justify-content:space-between;align-items:center;margin:.35rem 0 0;font-size:.85rem}
-@media (max-width:768px){.timeline{grid-template-columns:1fr}}
-.truth{border-left:4px solid var(--done);padding:.9rem 1.1rem;background:var(--card);border-radius:.75rem;margin-bottom:1.5rem;box-shadow:var(--shadow)}
-.truth strong{font-size:1.1rem;color:var(--done)}.truth.imperfect{border-left-color:var(--warn-line)}.truth.imperfect strong{color:var(--warn)}
-summary{cursor:pointer;margin-bottom:.5rem}
-pre.log{max-height:28rem;overflow:auto;padding:.75rem 1rem;font-size:.75rem;white-space:pre-wrap;word-break:break-all;
-background:var(--deep);color:var(--text);border:1px solid var(--line);border-radius:.6rem}
-
-.files{list-style:none;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(15rem,1fr));gap:.6rem}
-.files li{background:var(--zebra);border:1px solid var(--line);border-radius:.75rem;padding:.65rem .85rem}.files li:hover{border-color:var(--primary)}
-.files a{font-weight:500}.files small{display:block;color:var(--muted)}
 .note{border-left:.35rem solid var(--warn-line);padding:.5rem .9rem;background:var(--warn-bg);border-radius:.5rem;font-size:.9rem}
-/* Tables: framed, tinted header, zebra rows, column rules; bases in genome-browser colours (darkened for text) */
-.frame{overflow-x:auto;border:1px solid var(--frame);border-radius:.75rem;margin-bottom:1rem;background:var(--card)}.frame table{margin:0}
-table{border-collapse:collapse;width:100%}th{text-align:left}th,td{padding:.45rem .8rem}
-.kv{width:auto}.kv th{padding-left:0;padding-right:2rem;font-weight:500;color:var(--muted)}
-.data :is(th,td){border-right:1px solid var(--line)}.data :is(th,td):last-child{border-right:0}
-.data thead th{background:var(--deep);color:var(--muted);font-size:.75rem;font-weight:500;text-transform:uppercase;letter-spacing:.05em;border-bottom:1px solid var(--frame);white-space:nowrap}
-.data thead a{color:inherit}.data tbody tr:nth-child(odd) td{background:var(--card)}.data tbody tr:nth-child(even) td{background:var(--zebra)}
-.data tbody tr:hover td{background:var(--hover)}.num{text-align:right;font-variant-numeric:tabular-nums}
-.mono td{font-family:var(--mono);font-size:.85rem;white-space:nowrap}
-/* Long unbroken values (run names, MD5s, file names, the terms URL) wrap rather than widen a phone screen */
-.kv td,.note,.files,.msg,.gate-reasons{overflow-wrap:anywhere}.id a{font-weight:500;font-family:var(--mono)}
-.b{text-align:center;font-weight:700}.nt-A{color:var(--nt-a)}.nt-C{color:var(--nt-c)}.nt-G{color:var(--nt-g)}.nt-T{color:var(--nt-t)}
-tr.planted td:first-child{box-shadow:inset 3px 0 0 var(--warn-line)}tr.planted td:first-child::after{content:" ★";color:var(--warn)}
-.pager{display:flex;gap:1rem;align-items:center;font-size:.9rem}
-.empty{text-align:center;padding:2rem 1rem;color:var(--muted)}
+.note,.msg{overflow-wrap:anywhere}
 @media (prefers-reduced-motion:reduce){*,::before,::after{animation:none!important;transition:none!important}}

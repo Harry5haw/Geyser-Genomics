@@ -1,9 +1,8 @@
-/* Geyser theme: light, dark, retro or high contrast (low vision); retro is only ever chosen by hand. Loaded synchronously in <head> (a static file, so the hosted
-   site's CSP needs no new hash), it sets <html data-theme> before first paint, so a page never flashes the
-   wrong theme. The default follows the system (prefers-contrast / forced-colors, then prefers-color-scheme);
-   a choice made with the header buttons persists in localStorage. Storage can be blocked (private windows,
-   strict settings): every access is wrapped, and the page then simply follows the system.
-   Other scripts listen for "geyser:theme" (detail.theme) to recolour what CSS can't, e.g. the 3D figures. */
+/* Geyser theme: light, dark, retro or high contrast (low vision); retro is only ever chosen by hand.
+   The inline boot in <head> (templates/samples/_theme_boot.js) sets <html data-theme> before the first paint;
+   this deferred file wires the header buttons (aria-pressed), saves a choice in localStorage (wrapped: storage can
+   be blocked), follows the system while nothing is saved, and dispatches "geyser:theme" (detail.theme) for what
+   CSS can't recolour, e.g. the 3D figures. resolve() here and the boot script must agree (theme.test.js). */
 (function (global) {
   "use strict";
   var KEY = "geyser-theme";
@@ -49,7 +48,7 @@
     }
   };
 
-  apply(resolve(stored(), prefs()));
+  apply(root.getAttribute("data-theme") || resolve(stored(), prefs())); // the boot's choice, buttons now marked
   doc.addEventListener("DOMContentLoaded", function () {
     apply(root.getAttribute("data-theme")); // the buttons exist now: mark the current one pressed
   });

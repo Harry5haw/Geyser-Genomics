@@ -78,3 +78,22 @@ test("in a page it sets data-theme before first paint, marks the pressed button 
   );
   assert.equal(events.at(-1).detail.theme, "contrast");
 });
+
+// The inline boot (templates/samples/_theme_boot.js) must pick what resolve() picks, in every case.
+test("the inline boot and resolve() agree", () => {
+  const BOOT = path.join(__dirname, "..", "..", "samples", "templates", "samples", "_theme_boot.js");
+  const boot = fs.readFileSync(BOOT, "utf8");
+  for (const saved of [null, "light", "dark", "retro", "contrast", "sepia"]) {
+    for (const contrast of [false, true]) {
+      for (const dark of [false, true]) {
+        const attrs = {};
+        vm.runInContext(boot, vm.createContext({
+          document: { documentElement: { setAttribute: (k, v) => (attrs[k] = v) } },
+          localStorage: { getItem: () => saved },
+          window: { matchMedia: (q) => ({ matches: (q.includes("contrast") && contrast) || (q.includes("dark") && dark) }) },
+        }));
+        assert.equal(attrs["data-theme"], T.resolve(saved, { contrast, dark }), `${saved} ${contrast} ${dark}`);
+      }
+    }
+  }
+});

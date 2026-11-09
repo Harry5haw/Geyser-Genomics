@@ -14,8 +14,9 @@
   <link rel="icon" type="image/svg+xml" href="{% static 'samples/geyser-icon.svg' %}">
   <link rel="icon" type="image/png" sizes="32x32" href="{% static 'samples/favicon-32.png' %}">
   <link rel="apple-touch-icon" href="{% static 'samples/apple-touch-icon.png' %}">
-  {# Sync and first: sets <html data-theme> before the first paint (a static file: no CSP hash needed). #}
-  <script src="{% static 'samples/theme.js' %}"></script>
+  {# Inline and first: sets <html data-theme> before the first paint with no request (its hash is in the CSP). #}
+  <script>{% inline_js "samples/_theme_boot.js" %}</script>
+  <script src="{% static 'samples/theme.js' %}" defer></script>
   <style>{% inline_css "samples/_site.css" %}{% block page_css %}{% endblock %}</style>
   <script src="{% static 'samples/geyser.js' %}" defer></script>
   {# Chromium prerenders a same-site page on hover (moderate eagerness), so the click shows it at once. #}
