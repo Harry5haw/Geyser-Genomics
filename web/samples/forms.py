@@ -10,6 +10,14 @@ ALLOWED_SUFFIXES = (".fastq.gz", ".fq.gz")
 ID_HELP = "Letters, digits, '-' and '_' only (max 64). Leave blank to use the filename."
 
 
+def upload_limit_label(mb: int) -> str:
+    """A size in MB as a label: whole GB from 1024 MB up ("64 GB"; "1.5 GB" when not whole), else MB."""
+    if mb < 1024:
+        return f"{mb} MB"
+    gb = mb / 1024
+    return f"{gb:g} GB" if gb == int(gb) else f"{gb:.1f} GB"
+
+
 class UploadForm(forms.Form):
     reads = forms.FileField(label="Gzipped FASTQ")
     reads_r2 = forms.FileField(label="Read 2 (paired-end)", required=False)
@@ -20,6 +28,11 @@ class UploadForm(forms.Form):
         self.storage = storage
 
     @staticmethod
+    def limit_label() -> str:
+        """The per-file limit as people read it: "256 GB" from 1024 MB up (as the hosted upload page), else "200 MB"."""
+        return upload_limit_label(settings.GEYSER_MAX_UPLOAD_MB)
+
+    @staticmethod
     def max_bytes() -> int:
         """Per file: a paired-end upload may be up to twice this in total."""
         return settings.GEYSER_MAX_UPLOAD_MB * 1024 * 1024
@@ -28,7 +41,7 @@ class UploadForm(forms.Form):
         if not f.name.lower().endswith(ALLOWED_SUFFIXES):
             raise forms.ValidationError("The file must be a gzipped FASTQ ending in .fastq.gz or .fq.gz.")
         if f.size > self.max_bytes():
-            raise forms.ValidationError(f"The file is larger than the {settings.GEYSER_MAX_UPLOAD_MB} MB limit.")
+            raise forms.ValidationError(f"The file is larger than the {self.limit_label()} limit.")
         f.seek(0)
         magic = f.read(2)
         f.seek(0)

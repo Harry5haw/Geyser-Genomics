@@ -40,7 +40,7 @@
       {% csrf_token %}
       {% if form.non_field_errors %}<p class="error"><small>{{ form.non_field_errors|join:" " }}</small></p>{% endif %}
       <label>
-        {{ form.reads.label }} <span class="muted">(max {{ max_upload_mb }} MB)</span>
+        {{ form.reads.label }} <span class="muted">(up to {{ max_upload_label }})</span>
         <input type="file" name="reads" required accept=".fastq.gz,.fq.gz" data-max-bytes="{{ max_upload_bytes }}"
                {% if form.reads.errors %}aria-invalid="true" aria-describedby="reads-err"{% endif %}>
         {% if form.reads.errors %}<small id="reads-err" class="error">{{ form.reads.errors|join:" " }}</small>{% endif %}
