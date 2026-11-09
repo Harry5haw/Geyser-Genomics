@@ -212,7 +212,7 @@ def start_upload(event: dict) -> tuple:
     sample_id = _sample_id(data.get("sample_id"))
     keys = raw_keys(sample_id, data.get("layout", "single"))
     sizes = data.get("sizes")
-    max_bytes = _env_int("MAX_UPLOAD_BYTES", 64 * 1024 * MiB)
+    max_bytes = _env_int("MAX_UPLOAD_BYTES", 256 * 1024 * MiB)
     if (
         not isinstance(sizes, list)
         or len(sizes) != len(keys)
