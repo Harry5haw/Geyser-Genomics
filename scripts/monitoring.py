@@ -670,6 +670,99 @@ def gpu_widgets(region: str, namespace: str, schema: str) -> list:
     ]
 
 
+# Spend guardrails (O9): the live values, read from AWS Budgets and .claude/hooks/guard_aws.py on 9 Nov 2026.
+# They change rarely and only by the user; update them here (and redeploy) when they do.
+GUARDRAILS = {
+    "checked": "9 Nov 2026",
+    "cap_usd": 30,  # budget geyser-claude-project-cap (CUSTOM period, ends 1 Nov 2027: renew before)
+    "kill_switch_usd": 27,  # its budget action: attaches the deny-all geyser-claude-kill-switch at actual spend
+    "run_block_usd": 24,  # guard_aws.py RUN_BLOCK_USD: no new runs from here
+    "gpu_block_usd": 20,  # guard_aws.py GPU_BLOCK_USD: no GPU jobs from here
+    "monthly_alert_usd": 10,  # budget geyser-monthly-cost
+}
+BUDGETS_URL = "https://us-east-1.console.aws.amazon.com/costmanagement/home#/budgets"
+COST_EXPLORER_URL = "https://us-east-1.console.aws.amazon.com/costmanagement/home#/cost-explorer"
+
+
+def spend_widgets(guardrails: dict = None) -> list:
+    """O9: the account's estimated charges this month (AWS/Billing, published only in us-east-1, free once
+    "Receive Billing Alerts" is on; hours ahead of Budgets) next to the guardrails' lines."""
+    g = guardrails or GUARDRAILS
+    charges = [
+        [
+            "AWS/Billing",
+            "EstimatedCharges",
+            "Currency",
+            "USD",
+            {"id": "charges", "stat": "Maximum", "label": "Estimated charges this month, USD", "region": "us-east-1"},
+        ]
+    ]
+    widget = _metric_widget(
+        "Estimated charges this month, USD (us-east-1, every ~6 h)", charges, "us-east-1", period=21600, y_label="USD"
+    )
+    widget["properties"]["annotations"] = {
+        "horizontal": [
+            {"label": f"kill switch ${g['kill_switch_usd']}", "value": g["kill_switch_usd"]},
+            {"label": f"no new runs ${g['run_block_usd']}", "value": g["run_block_usd"]},
+            {"label": f"no GPU jobs ${g['gpu_block_usd']}", "value": g["gpu_block_usd"]},
+        ]
+    }
+    lines = [
+        "### Spend guardrails",
+        "",
+        f"- Project cap **${g['cap_usd']}** (budget `geyser-claude-project-cap`, ends 1 Nov 2027: renew before)",
+        f"- Kill switch at **${g['kill_switch_usd']}** actual: attaches deny-all `geyser-claude-kill-switch` "
+        "(Budgets action status STANDBY = armed)",
+        f"- Guard hook: no new runs from **${g['run_block_usd']}**, no GPU jobs from **${g['gpu_block_usd']}**",
+        f"- Monthly alert ${g['monthly_alert_usd']} (`geyser-monthly-cost`)",
+        "",
+        f"[Budgets and actions]({BUDGETS_URL}) · [Cost Explorer]({COST_EXPLORER_URL}). "
+        f"Values checked {g['checked']}; Budgets lags hours, the estimate is the earlier hint.",
+    ]
+    text = _text_widget(
+        "\n".join(lines),
+        width=12,
+        height=6,
+    )
+    return [widget, text]
+
+
+def running_now_widgets(region: str) -> list:
+    """O10: what bills while idle. Running vCPUs from the free AWS/Usage metrics (EC2 by instance class: G/VT
+    is the GPU environment; Fargate on-demand and Spot), and every bucket's size (AWS/S3, daily)."""
+    usage = (
+        'SEARCH(\'{AWS/Usage,Class,Resource,Service,Type} Service="EC2" Type="Resource" Resource="vCPU"\', '
+        "'Maximum', 300)"
+    )
+    fargate = "SEARCH('{AWS/Usage,Class,Resource,Service,Type} Service=\"Fargate\" Type=\"Resource\"', 'Maximum', 300)"
+    buckets = (
+        'SEARCH(\'{AWS/S3,BucketName,StorageType} MetricName="BucketSizeBytes" StorageType="StandardStorage"\', '
+        "'Average', 86400)"
+    )
+    return [
+        _metric_widget(
+            "Running now: EC2 vCPUs by class (G/VT = GPU env) and Fargate tasks",
+            [
+                [{"expression": usage, "id": "ec2_vcpu", "label": "EC2 vCPUs"}],
+                [{"expression": fargate, "id": "fargate", "label": "Fargate"}],
+            ],
+            region,
+            period=300,
+            y_label="count",
+        ),
+        _metric_widget(
+            "S3 storage by bucket, GB (Standard, daily)",
+            [
+                [{"expression": buckets, "id": "bucket_bytes", "visible": False}],
+                [{"expression": "bucket_bytes / 1000000000", "id": "bucket_gb", "label": "GB"}],
+            ],
+            region,
+            period=86400,
+            y_label="GB",
+        ),
+    ]
+
+
 BENCHMARKS_URL = "https://github.com/Harry5haw/Geyser-Genomics/blob/main/docs/benchmarks/README.md"
 
 
@@ -723,6 +816,7 @@ def build_dashboard(
     queue_wait: bool = True,
     batch_events_log_group: str = BATCH_EVENTS_LOG_GROUP,
     runs: bool = True,
+    spend: bool = True,
 ) -> dict:
     """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, result
     quality (from the Batch job logs), data lake storage (with a bucket name), stage durations."""
@@ -781,6 +875,8 @@ def build_dashboard(
             width=GRID_WIDTH,
         )
     )
+    if spend:
+        widgets += spend_widgets() + running_now_widgets(region)
     if runs:
         widgets += run_widgets(region, batch_log_group, batch_events_log_group)
     if quality:

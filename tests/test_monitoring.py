@@ -124,7 +124,9 @@ def test_dashboard_shape(schema, sfn_arn):
             assert any(props["query"].startswith(f"SOURCE '{g}' | ") for g in groups)
         if w["type"] == "metric":
             props = w["properties"]
-            assert props["region"] == "eu-west-2" and props["metrics"]
+            # AWS/Billing exists only in us-east-1: the one cross-region widget (O9).
+            billing = props["metrics"][0][:2] == ["AWS/Billing", "EstimatedCharges"]
+            assert props["region"] == ("us-east-1" if billing else "eu-west-2") and props["metrics"]
             ids = [row_options(r).get("id") for r in props["metrics"]]
             assert all(METRIC_ID_RE.match(i) for i in ids), ids
             assert len(ids) == len(set(ids)), f"duplicate ids in {props['title']}"
@@ -729,3 +731,23 @@ def test_gpu_widgets_only_with_the_aggregated_schema_and_deepvariant():
 def test_header_links_the_benchmark_history():
     header = monitoring.build_dashboard()["widgets"][0]["properties"]["markdown"]
     assert monitoring.BENCHMARKS_URL in header
+
+
+def test_spend_row_shows_charges_and_the_guardrail_lines():
+    charges, text = monitoring.spend_widgets()
+    assert charges["properties"]["region"] == "us-east-1"
+    assert charges["properties"]["metrics"][0][:4] == ["AWS/Billing", "EstimatedCharges", "Currency", "USD"]
+    lines = {a["value"] for a in charges["properties"]["annotations"]["horizontal"]}
+    g = monitoring.GUARDRAILS
+    assert lines == {g["kill_switch_usd"], g["run_block_usd"], g["gpu_block_usd"]}
+    assert g["gpu_block_usd"] < g["run_block_usd"] < g["kill_switch_usd"] < g["cap_usd"]
+    md = text["properties"]["markdown"]
+    assert f"${g['cap_usd']}" in md and "geyser-claude-kill-switch" in md and monitoring.BUDGETS_URL in md
+    assert not [w for w in monitoring.build_dashboard(spend=False)["widgets"] if "Estimated charges" in str(w)]
+
+
+def test_running_now_reads_usage_and_every_bucket():
+    vcpus, buckets = monitoring.running_now_widgets("eu-west-2")
+    exprs = " ".join(r[0]["expression"] for r in vcpus["properties"]["metrics"])
+    assert 'Service="EC2"' in exprs and 'Resource="vCPU"' in exprs and 'Service="Fargate"' in exprs
+    assert 'MetricName="BucketSizeBytes"' in buckets["properties"]["metrics"][0][0]["expression"]
