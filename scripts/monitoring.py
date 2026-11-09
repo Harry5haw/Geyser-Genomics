@@ -4,15 +4,15 @@ The deploy scripts (deploy_dashboard.py, runtime_deploy_pipeline_dashboard.py, d
 their JSON here and only touch AWS when run without --dry-run.
 
 Metric shapes (see app/metrics.py):
-  Duration      dims TaskName, SampleId, Status   (every stage run)
-  FailureCount  dims TaskName, SampleId           (only when a stage fails)
+  Duration      dims TaskName, Status   (every stage run)
+  FailureCount  dims TaskName           (only when a stage fails)
 
 Two metric schemas are supported:
-  per-sample  what app/metrics.py publishes today. Each sample is its own metric, so CloudWatch cannot
-              compute percentiles across runs; durations are shown as mean and max of the per-sample
-              series (SEARCH).
-  aggregated  the same metrics without the SampleId dimension (a proposed change, not made yet). One
-              series per stage gives real p50/p95 durations.
+  aggregated  what app/metrics.py publishes (the default). One series per stage gives real p50/p95 durations.
+  per-sample  the shape published before Nov 2026, with a SampleId dimension. Each sample was its own metric,
+              so CloudWatch could not compute percentiles across runs; durations are shown as mean and max of
+              the per-sample series (SEARCH). Kept to read data recorded by older images (CloudWatch keeps
+              1-hour points for 455 days).
 
 Result quality (mapped %, duplicate %, mean depth, variant counts, Ti/Tv) is read from the Batch job logs
 with Logs Insights widgets, not from custom metrics; see the "quality" section below.
@@ -569,7 +569,7 @@ def build_dashboard(
     namespace: str = DEFAULT_NAMESPACE,
     *,
     state_machine_arn: str = None,
-    schema: str = "per-sample",
+    schema: str = "aggregated",
     groups=None,
     lookback: str = "-P14D",
     alarm_arns=None,

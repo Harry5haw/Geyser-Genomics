@@ -150,9 +150,17 @@ def test_dashboard_has_the_widgets_from_issue_48():
 
 
 def test_every_stage_appears_in_the_duration_widgets():
-    text = json.dumps(monitoring.build_dashboard())
+    per_sample = json.dumps(monitoring.build_dashboard(schema="per-sample"))
+    aggregated = json.dumps(monitoring.build_dashboard())  # the default: what app/metrics.py publishes
     for name in all_stage_names():
-        assert f'TaskName=\\"{name}\\"' in text
+        assert f'TaskName=\\"{name}\\"' in per_sample
+        assert f'"TaskName", "{name}"' in aggregated
+
+
+def test_dashboard_default_schema_matches_what_metrics_publishes():
+    # app/metrics.py publishes Duration with TaskName + Status only; the default dashboard must read that shape.
+    body = monitoring.build_dashboard()
+    assert "SampleId" not in json.dumps(body)
 
 
 def test_per_sample_duration_uses_exact_success_search():

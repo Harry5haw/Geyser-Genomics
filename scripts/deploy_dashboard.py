@@ -11,7 +11,7 @@ The JSON is built in scripts/monitoring.py.
 
 Preview (no AWS calls):
   python scripts/deploy_dashboard.py --dry-run
-  python scripts/deploy_dashboard.py --dry-run --state-machine-arn <arn> --schema aggregated
+  python scripts/deploy_dashboard.py --dry-run --state-machine-arn <arn> [--schema per-sample]
 
 Deploy (uses your ambient AWS credentials):
   SFN_ARN=<state machine arn> python scripts/deploy_dashboard.py
@@ -53,9 +53,9 @@ def parse_args(argv=None):
     p.add_argument(
         "--schema",
         choices=monitoring.SCHEMAS,
-        default="per-sample",
-        help="Metric dimensions to read: per-sample (what app/metrics.py publishes today) "
-        "or aggregated (no SampleId; gives real p50/p95)",
+        default="aggregated",
+        help="Metric dimensions to read: aggregated (what app/metrics.py publishes; real p50/p95, the default) "
+        "or per-sample (the SampleId shape of images built before Nov 2026)",
     )
     p.add_argument(
         "--groups",
