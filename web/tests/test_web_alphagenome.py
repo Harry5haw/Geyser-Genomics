@@ -300,3 +300,19 @@ def test_the_panel_adds_no_inline_style_so_the_csp_hashes_stay_the_same(storage,
     plain = publish_mod.csp_hashes({"p": published_page(storage, tmp_path / "a", run_record=record())})
     annotated = published_page(storage, tmp_path / "b", fixture_text(), record({"status": "Success"}))
     assert publish_mod.csp_hashes({"p": annotated}) == plain and ' style="' not in annotated
+
+
+def test_atlas_only_rows_without_an_avi_keep_the_tables_rank(client, storage):
+    # #207's cloud rework: Atlas scores only, so avi and avi_raw are empty; the file's rank is the order.
+    lines = [
+        "#AlphaGenomeTerms=x",
+        "rank chrom pos ref alt avi avi_raw gene rna_lfc source",
+        "1 synth1 900 A G _ _ GENEB -2.5 atlas",
+        "2 synth1 50 C T _ _ GENEA 0.4 atlas",
+    ]
+    text = "".join(line.replace(" ", chr(9)).replace("_", "") + chr(10) for line in lines)
+    sample_with(storage, text, record({"status": "Success"}))
+    view = read_annotation(storage, "S1", record({"status": "Success"}), "asc")
+    assert not view.scored and [r.gene for r in view.rows] == ["GENEB", "GENEA"]
+    body = client.get("/samples/S1/?avi=asc").content.decode()
+    assert body.index("GENEB") < body.index("GENEA") and "?avi=" not in body and "keep the table's ranking" in body

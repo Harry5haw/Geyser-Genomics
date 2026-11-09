@@ -82,6 +82,7 @@ class AnnotationView:
     sources: list = field(default_factory=list)  # [(source, count)], most first
     error: str = ""  # failed / unreadable: why
     stage: dict = field(default_factory=dict)  # the run record's Annotate stage, as recorded
+    scored: bool = True  # some row has an AVI; cloud runs (Atlas only, #207's rework) have none: the file's rank
 
     @property
     def truncated(self) -> bool:
@@ -199,4 +200,5 @@ def read_annotation(storage, sample_id: str, record=None, order: str = "desc", l
         sort=order,
         sources=sorted(counts.items(), key=lambda item: (-item[1], item[0])),
         stage=stage,
+        scored=any(row.avi is not None for row in rows),
     )
