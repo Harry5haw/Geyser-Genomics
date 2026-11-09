@@ -453,3 +453,10 @@ def test_every_s3_put_from_the_state_machine_sends_the_object_not_a_json_string(
     for params in puts:
         body = params.get("Body.$", "")
         assert body.startswith("$.") and "States." not in body, params
+
+
+def test_saved_queries_drop_carriage_returns():
+    # A CRLF working copy deployed "\r" into the O5 queries, and LF copies then showed 5 updates in every plan (#258).
+    tf = _without_comments(_tf("logs_insights.tf"))
+    assert tf.count("aws_cloudwatch_query_definition") == tf.count("query_string = replace(<<-EOT") > 0
+    assert tf.count(r'  , "\r", "")') == tf.count("query_string")
