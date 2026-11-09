@@ -1053,11 +1053,12 @@ def test_from_alignment_without_a_cram_fails_the_run_before_any_job(request, mac
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
     assert not batch_parameters(events)  # no job ran
-    assert states[-5:] == [
+    assert states[-6:] == [
         "Prepare_Alignment_Not_Found",
         "Prepare_Run_Close",
         "Close_Run_Record",
         "Notify_Failure",
+        "Publish_Run",
         "Pipeline_Failed",
     ]
     assert len(sdk_calls(events, "Check_Alignment")) == 1  # a missing key is not retried
