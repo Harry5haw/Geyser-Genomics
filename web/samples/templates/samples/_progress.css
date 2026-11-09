@@ -1,0 +1,27 @@
+/* The run's progress as one double helix (samples/_progress.html, samples/progress.py): it grows from the left as the
+stages run, in Turbo while running (its strands flow), green when done, red and broken where a run failed. Stage
+ticks sit at equal shares, with the labels in an equal grid below. Only the sample page carries this. */
+.hp{margin:1.25rem 0 .5rem}
+.hp-svg{display:block;width:100%;height:2.6rem;overflow:visible}
+.hp-svg path{fill:none;stroke-linecap:round}
+.hp-rail{stroke:var(--line);stroke-width:2px}
+.hp-strand{stroke:url(#hp-turbo);stroke-width:3px;transition:stroke .6s}
+.hp-rung{stroke:url(#hp-turbo);stroke-width:1.5px;opacity:.7}
+.hp-tick{stroke:var(--frame);stroke-width:2px}
+.hp-break{stroke:var(--fail);stroke-width:3px}
+.hp.running .hp-flow{animation:hp-flow 1.8s linear infinite}
+@keyframes hp-flow{to{transform:translateX(40px)}}
+.hp.succeeded .hp-strand,.hp.succeeded .hp-rung{stroke:var(--done)}
+.hp.failed .hp-strand,.hp.failed .hp-rung{stroke:var(--fail)}
+.hp.queued .hp-rail{stroke-dasharray:4 6}
+.hp-labels{display:grid;gap:.3rem;margin:.35rem 0 0;padding:0;list-style:none;font-size:.8rem;color:var(--muted)}
+.hp-labels.n1{grid-template-columns:1fr}.hp-labels.n2{grid-template-columns:repeat(2,1fr)}.hp-labels.n3{grid-template-columns:repeat(3,1fr)}
+.hp-labels.n4{grid-template-columns:repeat(4,1fr)}.hp-labels.n5{grid-template-columns:repeat(5,1fr)}.hp-labels.n6{grid-template-columns:repeat(6,1fr)}
+.hp-labels li{text-align:center}.hp-labels .running{color:var(--text);font-weight:600}
+.hp-labels .done::before{content:"✓ ";color:var(--done)}.hp-labels .failed{color:var(--fail)}.hp-labels .failed::before{content:"✕ "}
+.hp-now{margin:.4rem 0 0;font-size:.9rem;color:var(--text)}
+:root[data-theme=dark] .hp.running .hp-strand,:root[data-theme=dark] .hp.running .hp-rung{stroke:url(#hp-turbo-dark)}
+:root[data-theme=retro] .hp-strand{stroke:#000}:root[data-theme=retro] .hp-tick{stroke:#000}
+:root[data-theme=contrast] .hp.running .hp-strand,:root[data-theme=contrast] .hp.running .hp-rung{stroke:#ffd600}
+:root[data-theme=contrast] .hp.succeeded .hp-strand,:root[data-theme=contrast] .hp.succeeded .hp-rung{stroke:#fff}
+:root[data-theme=contrast] .hp-tick,:root[data-theme=contrast] .hp-rail{stroke:#fff}

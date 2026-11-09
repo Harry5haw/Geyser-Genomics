@@ -6,13 +6,7 @@
     {% if sample.duration %}<span class="muted">{{ sample.done_count }}/{{ sample.stages|length }} stages · {{ sample.duration|duration }}</span>{% endif %}
   </div>
 
-  <div class="track" role="progressbar" aria-label="Pipeline progress"
-       aria-valuemin="0" aria-valuemax="{{ sample.stages|length }}" aria-valuenow="{{ sample.done_count }}">
-    {% for st in sample.stages %}{% include "samples/_dna.html" with state=st.state name=st.name label=st.label %}{% endfor %}
-  </div>
-  {% for st in sample.stages %}{% if st.state == "running" %}
-    <p class="now">Now running: <strong class="s-{{ st.name }}">{{ st.label }}</strong></p>
-  {% endif %}{% endfor %}
+  {% include "samples/_progress.html" with p=progress %}
 
   <div class="timeline">
     {% for st in sample.stages %}

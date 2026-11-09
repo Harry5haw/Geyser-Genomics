@@ -34,6 +34,7 @@ from geyser_web.pipeline import (
 
 from . import alphagenome as alphagenome_mod
 from . import figures as figures_mod
+from . import progress as progress_mod
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
@@ -282,11 +283,24 @@ def _log_tail(storage, sample_id):
 def _status_context(storage, sample, static=None):
     return {
         "sample": sample,
+        **_progress_context(storage, sample),
         "static": static,
         # The static site shows no run log (it can carry paths and commands) and polls the web API, if any.
         "log": None if static else _log_tail(storage, sample.sample_id),
         "status_api": static.status_url(sample.sample_id) if static and sample.active else "",
         "poll_seconds": settings.GEYSER_POLL_SECONDS,
+    }
+
+
+def _progress_context(storage, sample):
+    """The one-helix progress bar (samples/_progress.html): where the run is, from this site's earlier stage times."""
+    stops = lambda colours: [(round(i / (len(colours) - 1), 4), c) for i, c in enumerate(colours)]  # noqa: E731
+    expected = progress_mod.expected_durations(status_mod.read_metrics(storage)) if sample.active else None
+    return {
+        "progress": progress_mod.progress(sample, expected),
+        "helix": progress_mod.HELIX,
+        "turbo": stops(figures_mod.HEAT_TURBO),
+        "turbo_dark": stops(figures_mod.HEAT_TURBO_DARK),
     }
 
 

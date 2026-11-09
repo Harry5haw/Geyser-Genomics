@@ -36,19 +36,7 @@ progress{display:block;width:100%;height:.75rem;margin:1rem 0 .5rem;accent-color
 .gate-warn{border-left:.35rem solid var(--warn-line)}.gate-fail{border-left:.35rem solid var(--fail)}.gate-not_run{border-left:.35rem dashed var(--frame)}
 /* Sample page */
 .head{display:flex;align-items:center;gap:.75rem;flex-wrap:wrap}.head h1{margin:0;font-family:var(--mono);overflow-wrap:anywhere}
-.track{display:grid;grid-template-columns:repeat(3,1fr);gap:.3rem;margin:1.25rem 0 .4rem}
-/* Stage status as a double helix (samples/_dna_sprite.html, samples/_dna.html): running turns (in the stage colour), done is a still helix in green, failed is broken apart in red, pending is thin and grey,
-skipped is dotted. Every helix has a text label beside it and an aria-label; motion stops under reduced motion. */
-.sprite{position:absolute;width:0;height:0;overflow:hidden}
-/* Through <use> only inherited properties reach the helix: fill, stroke, width and dash are set here on the svg */
-.dna{display:block;width:100%;height:1.1rem;overflow:visible;fill:none;stroke:currentColor;stroke-width:1.2px;stroke-linecap:round;color:var(--pend)}
-.dna use{transform-box:fill-box;transform-origin:center}
-.dna.running{color:var(--helix,var(--run));stroke-width:2px}.dna.running use{animation:dna-turn 2.4s ease-in-out infinite}
-@keyframes dna-turn{0%,100%{transform:scaleY(1)}50%{transform:scaleY(-1)}}
-.dna.done{color:var(--done);stroke-width:2px}.dna.failed{color:var(--fail);stroke-width:2px}
-.dna.skipped{stroke-dasharray:1 3}
-.s-qc{--helix:var(--helix-qc)}.s-align{--helix:var(--helix-align)}.s-variants{--helix:var(--helix-variants)}
-.now strong{color:var(--text)}
+
 .timeline{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin:1rem 0}
 .timeline>div{background:color-mix(in srgb,var(--stage) 10%,var(--card));border:1px solid color-mix(in srgb,var(--stage) 40%,var(--card));
 border-top:4px solid var(--stage);border-radius:.75rem;padding:.75rem}

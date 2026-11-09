@@ -24,7 +24,6 @@
   <script type="speculationrules">{"prerender":[{"where":{"and":[{"or":[{"href_matches":"/*"},{"href_matches":"/*\\?*"}]},{"not":{"href_matches":"/samples/*/files/*"}},{"not":{"href_matches":"/samples/*/status/*"}},{"not":{"href_matches":"/samples/rows/*"}},{"not":{"href_matches":"/upload/*"}},{"not":{"href_matches":"/demo/*"}},{"not":{"href_matches":"/figures/*.csv"}},{"not":{"selector_matches":"[download], [rel~=nofollow], [target=_blank]"}}]},"eagerness":"moderate"}]}</script>
 </head>
 <body>
-  {% block sprite %}{% endblock %}
   <header class="site-head">
     <nav class="wrap" aria-label="Site">
       <a class="brand" href="{% url 'samples:list' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" width="180" height="40" alt="Geyser Genomics"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-retro" src="{% static 'samples/geyser-lockup-retro.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy">
