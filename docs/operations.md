@@ -173,7 +173,12 @@ small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its jo
   ```bash
   python scripts/reconcile.py --bucket <data-lake>                    # add $SFN_ARN to see open runs too
   python scripts/reconcile.py --bucket <data-lake> --json --fail-on-problems
+  python scripts/reconcile.py --bucket <data-lake> --publish-metrics  # CloudWatch GeyserGenomics/ReconcileProblems
   ```
+  `--publish-metrics` sends the problem count by kind (dimension `Problem`: `LoneMate`, `Ignored` (non-.gz
+  uploads that start nothing), `ConcurrentRuns` (duplicate runs, needs `$SFN_ARN`), ..., `Total`), zeros included.
+  It is best effort: a CloudWatch error is a warning. With `--local-dir` the counts go to `metrics/metrics.jsonl`.
+  Nothing runs it on a schedule; it is run by hand.
 - **Logs:** Batch jobs in `/aws/batch/geyser-<env>`, the trigger in `/aws/lambda/geyser-sfn-trigger-<env>`
   (kept 30 days, `log_retention_days`).
 
