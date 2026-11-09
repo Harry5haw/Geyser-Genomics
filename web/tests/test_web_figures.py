@@ -134,30 +134,30 @@ def test_the_poster_is_one_ridge_per_row_with_escaped_labels(figdir):
 
 
 def test_the_poster_fills_each_ridge_by_value(figdir):
+    # The 2D view keeps the linear colouring (the user's choice): a vertical gradient from each ridge's baseline to
+    # the top of the scale, evenly spaced stops, Turbo 0.09-0.91 (or cividis in high contrast). One gradient per ramp
+    # for the whole poster: each ridge is drawn once from y=0 and placed by its <use>.
     grid = figures.load("coverage")
     svg = figures.poster_svg(grid)
-    # One gradient per ramp for the whole poster, over the colour range's heights (each ridge is drawn from y=0 and
-    # placed by its <use>, so one gradient fits all); the theme's CSS shows one group per ramp.
     gradients = re.findall(
         r'<linearGradient id="(heat-coverage-[\w-]+)" gradientUnits="userSpaceOnUse" x1="0" y1="([-\d.]+)" '
         r'x2="0" y2="([-\d.]+)">(.*?)</linear',
         svg,
     )
-    assert [g[0] for g in gradients] == ["heat-coverage-turbo", "heat-coverage-turbo-dark", "heat-coverage-cividis"]
-    for (_, _, _, stops), ramp in zip(gradients, figures.RAMPS.values(), strict=True):
-        # a transparent first stop at the baseline (the body under a ridge fades out), then the ramp
-        assert re.findall(r'stop-color="(#[0-9a-f]{6})"', stops) == [ramp[0], *ramp]
-        assert stops.startswith('<stop offset="0" stop-color="' + ramp[0] + '" stop-opacity="0"/>')
-    c0, c1 = figures.colour_range(grid)
+    assert [g[0] for g in gradients] == ["heat-coverage-flat", "heat-coverage-cividis"]
     top = grid.clip or grid.vmax
     lift = (figures.POSTER_H - figures.MARGIN_T - figures.MARGIN_B) / (len(grid.rows) + 1.5) * 2.5 / (top - grid.base)
-    assert float(gradients[0][1]) == 0  # from each ridge's baseline...
-    assert float(gradients[0][2]) == round(-(c1 - grid.base) * lift, 1)
+    for (_, y1, y2, stops), ramp in zip(gradients, figures.FLAT_RAMPS.values(), strict=True):
+        assert float(y1) == 0 and float(y2) == round(-(top - grid.base) * lift, 1)  # baseline to the top: linear
+        assert re.findall(r'stop-color="(#[0-9a-f]{6})"', stops) == ramp
+        offsets = [float(o) for o in re.findall(r'offset="([\d.]+)"', stops)]
+        assert offsets == [round(k / (len(ramp) - 1), 3) for k in range(len(ramp))]  # evenly spaced
+    assert figures.FLAT_RAMPS["flat"] == figures.HEAT_TURBO_DARK  # blue bottoms, as before the rank spread
     assert svg.count("<path ") == 2  # one ridge per row, drawn once
-    for ramp in figures.RAMPS:
+    for ramp in figures.FLAT_RAMPS:
         group = re.search(rf'<g class="ramp-{ramp}">(.*?)</g>', svg).group(1)
         assert group.count(f'fill="url(#heat-coverage-{ramp})"') == 2
-    assert "style=" not in svg  # attributes only (CSP)
+    assert "stop-opacity" not in svg and "style=" not in svg  # no fade; attributes only (CSP)
 
 
 def test_the_colour_range_is_the_robust_range_inside_the_height_scale():
@@ -174,24 +174,26 @@ def test_the_colour_range_is_the_robust_range_inside_the_height_scale():
 
 
 def test_the_colour_bar_shows_the_scale_with_its_cap(figdir):
-    coverage = figures.legend_svg(figures.load("coverage"))
-    assert coverage.startswith('<svg class="colorbar"') and 'role="img"' in coverage
-    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', coverage) == [c for r in figures.RAMPS.values() for c in r]
-    assert re.findall(r'<rect class="(ramp-[\w-]+)"', coverage) == ["ramp-turbo", "ramp-turbo-dark", "ramp-cividis"]
-    # The bar shows the colour range actually used (the robust range), with <= / >= where the data goes beyond it.
+    # One bar per view: 2D linear (baseline to the cap), 3D by rank (the knots); CSS shows the one in use.
     grid = figures.load("coverage")
-    c0, c1 = figures.colour_range(grid)
-    assert grid.vmin < c0 and grid.vmax > c1
-    assert [t for t in re.findall(r">([^<]+)</text>", coverage)] == [
-        f"≤ {figures._num(c0)}",
-        figures._num(figures.colour_knots(grid)[2]),  # by rank: the middle of the bar is the median
-        f"≥ {figures._num(c1)}",
+    coverage = figures.legend_svg(grid)
+    bars = re.findall(r'<svg class="colorbar (bar-\dd)".*?</svg>', coverage)
+    assert bars == ["bar-2d", "bar-3d"] and coverage.count('role="img"') == 2
+    flat, rank = re.findall(r'<svg class="colorbar bar-\dd".*?</svg>', coverage)
+    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', flat) == [c for r in figures.FLAT_RAMPS.values() for c in r]
+    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', rank) == [c for r in figures.RAMPS.values() for c in r]
+    assert re.findall(r">([^<]+)</text>", flat) == ["0", figures._num(grid.clip / 2), f"≥ {figures._num(grid.clip)}"]
+    knots = figures.colour_knots(grid)
+    assert grid.vmin < knots[0] and grid.vmax > knots[-1]
+    assert re.findall(r">([^<]+)</text>", rank) == [
+        f"≤ {figures._num(knots[0])}",
+        figures._num(knots[2]),  # by rank: the middle of the bar is the median
+        f"≥ {figures._num(knots[-1])}",
     ]
-    assert f"from {figures._num(c0)} to {figures._num(c1)}" in coverage
-    quality = figures.legend_svg(figures.load("quality"))  # a range the data stays inside: no <= / >=
-    q0, q1 = figures.colour_range(figures.load("quality"))
-    texts = re.findall(r">([^<]+)</text>", quality)
-    assert texts[0].endswith(figures._num(q0)) and texts[2].endswith(figures._num(q1))
+    quality = figures.legend_svg(figures.load("quality"))  # narrow range, from the stated baseline, no cap
+    flat_q = re.findall(r'<svg class="colorbar bar-2d".*?</svg>', quality)[0]
+    assert re.findall(r">([^<]+)</text>", flat_q) == ["32", "34", "36"]
+    assert "Mean base quality from 32 to 36 Phred" in flat_q
 
 
 def test_ticks_read_like_the_3d_labels():
@@ -236,7 +238,7 @@ def test_grid_json_is_what_the_renderer_reads(figdir):
 def test_the_page_shows_posters_and_defers_the_3d(client, figdir):
     body = client.get("/figures/").content.decode()
     assert body.count('<svg class="poster"') == 2  # coverage and quality: this folder has only those two CSVs
-    assert body.count('<svg class="colorbar"') == 2  # each with its colour bar
+    assert body.count('<svg class="colorbar bar-2d"') == 2 and body.count('<svg class="colorbar bar-3d"') == 2
     assert len(set(re.findall(r'<linearGradient id="([^"]+)"', body))) == body.count("<linearGradient ")  # ids unique
     assert 'data-surface="/figures/coverage.json"' in body and 'data-surface="/figures/quality.json"' in body
     assert re.search(r'data-surface-js="/static/samples/surface[^"]*\.js"', body)
@@ -372,7 +374,7 @@ def test_surface_js_never_shadows_its_own_helpers():
 
 def test_colour_knots_spread_the_ramp_by_rank():
     G, f = figures.Grid, figures.FIGURES["coverage"]
-    # 96 values at 30-33 and a few spikes: the knots sit in the dense band, so it gets most of the rainbow.
+    # 96 values at 30-33 and a few spikes: the knots sit in the dense band, so it gets most of the rainbow (3D).
     values = [[30.0 + (k % 4) for k in range(96)] + [60.0, 80.0, 90.0, 99.0]]
     grid = G(f, list(range(100)), ["a"], values, base=0.0, vmin=30.0, vmax=99.0)
     knots = figures.colour_knots(grid)
@@ -380,12 +382,44 @@ def test_colour_knots_spread_the_ramp_by_rank():
     assert knots[1] >= 30 and knots[3] <= 33  # the middle half of the ramp covers 30-33
     assert figures._value_at(knots, 0) == knots[0] and figures._value_at(knots, 1) == knots[-1]
     assert figures._value_at(knots, 0.5) == knots[2]
-    # The poster's stops sit at the knots' values: offsets rise from 0 to 1 and bunch where the data is dense.
-    offsets = [float(o) for o in re.findall(r'offset="([\d.]+)"', figures._stops("turbo", knots))]
-    assert offsets[0] == 0 and offsets[-1] == 1 and offsets == sorted(offsets)
-    # No spread: the height scale, two knots.
     flat = G(f, [1, 2], ["a"], [[3.0, 3.0]], base=3.0, vmin=3.0, vmax=3.0)
-    assert figures.colour_knots(flat) == [3.0, 3.0]
+    assert figures.colour_knots(flat) == [3.0, 3.0]  # no spread: the height scale, two knots
+
+
+def _tone(knots, v):
+    """surface.js's tone(): the ramp fraction of v, an equal share between consecutive knots."""
+    q, i = len(knots) - 1, 0
+    while i < q - 1 and v > knots[i + 1]:
+        i += 1
+    return max(0.0, min(1.0, (i + (v - knots[i]) / ((knots[i + 1] - knots[i]) or 1)) / q))
+
+
+def test_the_3d_coverage_colours_span_at_least_five_turbo_bands(settings):
+    # The real coverage data: by rank (3D) the values reach >= 5 of Turbo's 16 bands; a linear 0..cap mapping
+    # (the old 3D colouring, "mostly green") reaches fewer. The 2D poster keeps the linear look on purpose.
+    settings.GEYSER_FIGURES_DIR = settings.REPO_ROOT / "docs" / "figures" / "csv"
+    figures._load.cache_clear()
+    grid = figures.load("coverage")
+    figures._load.cache_clear()
+    vals = [v for line in grid.values for v in line if v is not None]
+    bands = len(figures.HEAT_TURBO) - 1
+    by_rank = {min(bands - 1, int(_tone(figures.colour_knots(grid), v) * bands)) for v in vals}
+    top = grid.clip or grid.vmax
+    linear = {min(bands - 1, int(max(0, min(v, top) - grid.base) / (top - grid.base) * bands)) for v in vals}
+    assert len(by_rank) >= 5 and len(by_rank) > len(linear), (sorted(by_rank), sorted(linear))
+    # surface.js gets exactly these knots
+    assert json.loads(figures.grid_json(grid))["z"]["colour"] == [round(c, 4) for c in figures.colour_knots(grid)]
+
+
+def test_the_js_fixture_is_the_real_coverage_grid(settings):
+    # web/tests/js/surface-bands.test.js builds the 3D geometry from this file; keep it in step with figures.py.
+    settings.GEYSER_FIGURES_DIR = settings.REPO_ROOT / "docs" / "figures" / "csv"
+    figures._load.cache_clear()
+    want = json.loads(figures.grid_json(figures.load("coverage")))
+    figures._load.cache_clear()
+    path = os.path.join(os.path.dirname(__file__), "js", "fixtures", "coverage-grid.json")
+    with open(path, encoding="utf-8") as fh:
+        assert json.load(fh) == want, "regenerate it from figures.grid_json(figures.load('coverage'))"
 
 
 def test_the_3d_ridge_key_lists_every_row_in_order_escaped(client, figdir):

@@ -14,10 +14,12 @@
 button.ghost{width:auto;padding:.45rem 1rem;background:transparent;border:1px solid var(--frame);color:var(--link);box-shadow:none}button.ghost:hover{background:var(--hover)}
 .fig.live .poster,.no3d-note,.fig.live .no3d-note{display:none}.fig.no3d .no3d-note{display:inline}.fig.no3d [data-surface-start]{visibility:hidden}
 /* The heat ramp per theme (figures.py, surface.js): Turbo; Turbo trimmed on the dark stage; cividis in high contrast */
-.ramp-turbo-dark,.ramp-cividis,:root[data-theme=dark] .ramp-turbo,:root[data-theme=contrast] .ramp-turbo{display:none}:root[data-theme=dark] .ramp-turbo-dark,:root[data-theme=contrast] .ramp-cividis{display:inline}
+.ramp-turbo-dark,.ramp-cividis,:root[data-theme=dark] .ramp-turbo,:root[data-theme=contrast] .ramp-turbo,:root[data-theme=contrast] .ramp-flat{display:none}:root[data-theme=dark] .ramp-turbo-dark,:root[data-theme=contrast] .ramp-cividis{display:inline}
 /* 2D/3D (geyser.js): .flat shows the poster and hides the canvas, its overlays, the 3D how-to and Reset view */
 .views{display:inline-flex}.views button{border-radius:0}.views button:first-child{border-radius:.5rem 0 0 .5rem}.views button+button{border-radius:0 .5rem .5rem 0;margin-left:-1px}
 .views button[aria-pressed=true]{background:var(--hover);color:var(--text);font-weight:600}.views button:disabled{opacity:.5;cursor:not-allowed}
 .fig.flat .poster{display:block}.fig.flat .stage>canvas,.fig.flat .labels,.fig.flat .marker,.fig.flat .readout,.fig.flat .howto small.muted,.fig.flat [data-surface-start],.fig:not(.live) [data-surface-start]{display:none}
 /* 3D ridge key (figures.html): the ridges are numbered at their far end, beyond the mesh; names are listed here */
 .ridge-key{display:none;position:absolute;top:.6rem;right:.6rem;max-width:45%;margin:0;padding:.35rem .6rem .35rem 1.9rem;background:var(--card);border:1px solid var(--frame);border-radius:.5rem;font-size:.72rem;color:var(--text);pointer-events:none}.fig.live:not(.flat) .ridge-key{display:block}
+/* One colour bar per view (figures.py legend_svg): the 3D one only while the 3D view is live */
+.fig .bar-3d,.fig.live:not(.flat) .bar-2d{display:none}.fig.live:not(.flat) .bar-3d{display:block}
