@@ -92,6 +92,7 @@ def fake_gate(monkeypatch):
                         "verdict": state["verdict"],
                         "reasons": ["tstv 1.5 is below the minimum 1.7"] if failed else [],
                         "config": args.get("--config", "built-in default"),
+                        "metrics": state.get("metrics", {}),
                     },
                     fh,
                 )
@@ -284,3 +285,52 @@ def test_the_gate_sees_a_deepvariant_only_run_as_succeeded(sample, fake_gate):
     tasks.gate_task("S1")
     given = fake_gate["calls"][0]["record"]
     assert given["status"] == "succeeded" and given["caller"] == "deepvariant"
+
+
+class RecordingMetrics:
+    def __init__(self):
+        self.counts = []
+
+    def record(self, *args, **kwargs):
+        pass
+
+    def record_counts(self, metric_name, dimension, counts):
+        self.counts.append((metric_name, dimension, dict(counts)))
+
+
+def test_the_gates_key_values_are_published_as_metrics(sample, fake_gate, monkeypatch):
+    sent = RecordingMetrics()
+    monkeypatch.setattr(tasks, "metrics", lambda: sent)
+    fake_gate["metrics"] = {
+        "mapped_pct": 99.57,
+        "duplicate_pct": 9.9,
+        "mean_depth": 29.29,
+        "breadth_10x_pct": 93,
+        "tstv": None,  # not measured: left out, not sent as 0
+        "reads": 718619796,  # not one of the five
+    }
+    tasks.gate_task("S1")
+    assert sent.counts == [
+        (
+            "QualityGateValue",
+            "Check",
+            {"mapped_pct": 99.57, "duplicate_pct": 9.9, "mean_depth": 29.29, "breadth_10x_pct": 93.0},
+        )
+    ]
+
+
+def test_gate_values_are_sent_before_a_fail_mode_failure_and_never_break_the_stage(sample, fake_gate, monkeypatch):
+    class Broken(RecordingMetrics):
+        def record_counts(self, *args):
+            raise RuntimeError("CloudWatch is down")
+
+    monkeypatch.setattr(tasks, "metrics", lambda: Broken())
+    fake_gate["metrics"] = {"tstv": 1.5}
+    tasks.gate_task("S1")  # warn mode: the stage still succeeds
+    sent = RecordingMetrics()
+    monkeypatch.setattr(tasks, "metrics", lambda: sent)
+    monkeypatch.setenv("GATE_MODE", "fail")
+    fake_gate["verdict"] = "fail"
+    with pytest.raises(tasks.GateFailed):
+        tasks.gate_task("S1")
+    assert sent.counts == [("QualityGateValue", "Check", {"tstv": 1.5})]
