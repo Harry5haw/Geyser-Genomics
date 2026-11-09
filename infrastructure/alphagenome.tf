@@ -74,6 +74,7 @@ resource "aws_batch_job_definition" "geyser_annotate_job_def" {
   name                  = "${var.project_name}-annotate-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
+  propagate_tags        = true # the Stage tag (annotate) reaches the Fargate task (#149)
   container_properties = jsonencode({
     # The annotate image (the app image plus the alphagenome client).
     image            = "${aws_ecr_repository.geyser_annotate.repository_url}:${var.annotate_image_version}"

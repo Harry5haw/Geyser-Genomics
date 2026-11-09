@@ -29,6 +29,9 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           # W3: the Publish job (publish.tf), on the same Fargate queue.
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}:*",
+          # v3.0: the optional AlphaGenome annotation (alphagenome.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}:*",
           # v1.3: the large route's jobs (genome_scale.tf), on the same Fargate queue.
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*",
@@ -181,6 +184,11 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     dv_shards_by_parts             = jsonencode(local.dv_shards_by_parts)
     dv_part_timeout_seconds        = var.dv_part_timeout_seconds
     deepvariant_timeout_seconds    = var.deepvariant_timeout_seconds
+    # The optional AlphaGenome annotation (v3.0, alphagenome.tf).
+    annotate_job_definition  = aws_batch_job_definition.geyser_annotate_job_def.name
+    annotate_vcpu            = var.annotate_resources.vcpu
+    annotate_memory_mb       = var.annotate_resources.memory_mb
+    annotate_timeout_seconds = var.annotate_timeout_seconds
   }), "/\"Comment\":\\s*\"(?:[^\"\\\\]|\\\\.)*\",\\s*/", "")))
 
   lifecycle {

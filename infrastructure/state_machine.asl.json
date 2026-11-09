@@ -14,7 +14,7 @@
             { "Variable": "$.gate_profile", "StringEquals": "synthetic" },
             { "Variable": "$.gate_profile", "StringEquals": "smoke" }
           ],
-          "Next": "Check_Reference_Name"
+          "Next": "Check_Annotate"
         }
       ],
       "Default": "Prepare_Profile_Error"
@@ -23,7 +23,37 @@
       "Type": "Pass",
       "Result": "default",
       "ResultPath": "$.gate_profile",
+      "Next": "Check_Annotate"
+    },
+    "Check_Annotate": {
+      "Type": "Choice",
+      "Comment": "Optional AlphaGenome annotation after the quality gate (v3.0): annotate in the input (the trigger takes it from the upload's S3 metadata annotate). none or unset: no annotation. Any other value fails the run here, before any job, like gate_profile.",
+      "Choices": [
+        { "Not": { "Variable": "$.annotate", "IsPresent": true }, "Next": "No_Annotation" },
+        {
+          "Or": [
+            { "Variable": "$.annotate", "StringEquals": "none" },
+            { "Variable": "$.annotate", "StringEquals": "alphagenome" }
+          ],
+          "Next": "Check_Reference_Name"
+        }
+      ],
+      "Default": "Prepare_Annotate_Error"
+    },
+    "No_Annotation": {
+      "Type": "Pass",
+      "Result": "none",
+      "ResultPath": "$.annotate",
       "Next": "Check_Reference_Name"
+    },
+    "Prepare_Annotate_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "UnknownAnnotation",
+        "Cause.$": "States.Format('annotate {} is not one of: none, alphagenome', States.JsonToString($.annotate))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Prepare_Profile_Error": {
       "Type": "Pass",
@@ -1083,7 +1113,7 @@
       "Type": "Choice",
       "Comment": "pass: done. fail (with its reasons): the mode decides. Anything else (verdict null: the gate couldn't judge) is a gate problem.",
       "Choices": [
-        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Publish_Run" },
+        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Choose_Annotation" },
         {
           "And": [
             { "Variable": "$.gate.verdict.verdict", "StringEquals": "fail" },
@@ -1128,11 +1158,62 @@
     "Gate_Warned": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate failed the sample: recorded (qc_reports/{id}.gate.json, the run record, the job log, this execution's output) and the run still succeeds.",
-      "Next": "Publish_Run"
+      "Next": "Choose_Annotation"
     },
     "Gate_Skipped": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate gave no verdict ($.gate_error or a null verdict says why). The run succeeds, but it was never judged: it doesn't count toward the switch to fail (#157). The QualityGate stage's FailureCount metric shows a failed gate job on the dashboard.",
+      "Next": "Choose_Annotation"
+    },
+    "Choose_Annotation": {
+      "Type": "Choice",
+      "Comment": "Every run that is going to succeed comes here after the quality gate (a pass; in warn mode also Gate_Warned and Gate_Skipped), on either route and with either caller. annotate = alphagenome annotates; none goes straight to Publish_Run.",
+      "Choices": [{ "Variable": "$.annotate", "StringEquals": "alphagenome", "Next": "Prepare_Annotate_Command" }],
+      "Default": "Publish_Run"
+    },
+    "Prepare_Annotate_Command": {
+      "Type": "Pass",
+      "Comment": "tasks.py annotate (#207) with the AlphaGenome Atlas, the only source in the cloud (no AVI file in S3). Own ResultPath, so $.batch_params stays as the gate left it.",
+      "Parameters": {
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'annotate', $.srr_id, $.reference_name, '--source', 'atlas')",
+          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value": "${annotate_vcpu}" },
+            { "Type": "MEMORY", "Value": "${annotate_memory_mb}" }
+          ]
+        }
+      },
+      "ResultPath": "$.annotate_params",
+      "Next": "Annotate"
+    },
+    "Annotate": {
+      "Type": "Task",
+      "Comment": "Its own job definition, the only one that maps the API key (SSM SecureString). Never fatal: any failure (the job's, a missing key, a timeout) is caught and noted in $.annotate_error, and the run keeps the core pipeline's status.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('Annotate-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobDefinition": "${annotate_job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides.$": "$.annotate_params.ContainerOverrides",
+        "Timeout": { "AttemptDurationSeconds": ${annotate_timeout_seconds} },
+        "Tags": { "Stage": "annotate" }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.annotate_output",
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "Annotation_Failed", "ResultPath": "$.annotate_error" }],
+      "Next": "Publish_Run"
+    },
+    "Annotation_Failed": {
+      "Type": "Pass",
       "Next": "Publish_Run"
     },
     "Publish_Run": {
@@ -1185,7 +1266,7 @@
       "Default": "Pipeline_Succeeded"
     },
     "Pipeline_Succeeded": {
-      "Comment": "Every successful run ends here, after the quality gate. (Comment first: step_functions.tf removes Comment keys with their trailing comma.)",
+      "Comment": "Every successful run ends here, after the quality gate and the optional annotation. (Comment first: step_functions.tf removes Comment keys with their trailing comma.)",
       "Type": "Succeed"
     },
     "Prepare_Run_Close": {
