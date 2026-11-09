@@ -13,7 +13,7 @@ import pytest
 CSS = os.path.join(os.path.dirname(__file__), "..", "samples", "templates", "samples", "_site.css")
 TARGET = {"light": 4.5, "dark": 4.5, "retro": 7.0, "contrast": 7.0}
 # Each theme's lockup wordmark colours (static/samples/geyser-lockup[-dark|-contrast].svg), on the header (--card)
-LOGO = {"light": ("#174ea6",), "retro": ("#174ea6",), "dark": ("#8ab4f8", "#e3e3e3"), "contrast": ("#ffffff",)}
+LOGO = {"light": ("#174ea6",), "retro": ("#000000",), "dark": ("#ffffff",), "contrast": ("#ffffff",)}
 
 
 def _block(css: str, selector: str) -> dict:
@@ -65,6 +65,8 @@ def pairs(t: dict, name: str) -> list:
     out += [(f"done pill on --stage-{s}", t["on"], t[f"stage-{s}"]) for s in ("qc", "align", "variants")]
     out += [(f"base {b} on --{bg}", t[f"nt-{b}"], t[bg]) for b in "acgt" for bg in ("card", "zebra")]
     out += [("lockup wordmark", colour, t["card"]) for colour in LOGO[name]]
+    if "nt-a-bg" in t:  # retro's base chips: a black letter on each tinted fill
+        out += [(f"base {b} chip", t[f"nt-{b}"], t[f"nt-{b}-bg"]) for b in "acgt"]
     return out
 
 
@@ -96,3 +98,12 @@ def test_every_theme_sets_the_same_tokens():
     assert colours - set(dark) - {"on"} == set()  # dark keeps the brand quartet and the dark label on the pills
     for name in ("retro", "contrast"):
         assert colours - set(_block(css, f":root[data-theme={name}]")) == set(), name
+
+
+def test_retro_base_chips_are_four_distinct_tints_with_their_own_edges():
+    t = theme("retro")
+    fills = [t[f"nt-{b}-bg"] for b in "acgt"]
+    lines = [t[f"nt-{b}-line"] for b in "acgt"]
+    assert len(set(fills)) == 4 and len(set(lines)) == 4
+    # each edge stands out from its fill, so a chip reads as a chip
+    assert all(contrast(line, fill) >= 3 for line, fill in zip(lines, fills, strict=True))

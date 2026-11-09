@@ -6,6 +6,12 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#faf8f3">
   <title>{% block title %}Geyser Genomics{% endblock %}</title>
+  <meta property="og:title" content="Geyser Genomics">
+  <meta property="og:description" content="An open-source cloud pipeline from DNA reads (FASTQ) to variants (VCF), with its results published.">
+  <meta property="og:image" content="{% static 'samples/geyser-social.png' %}">
+  {# The vector icon first (crisp at any size); the PNG for browsers without SVG favicons. Both go through static, #}
+  {# so the published site serves content-hashed names: a new design is a new URL, never a stale cached icon. #}
+  <link rel="icon" type="image/svg+xml" href="{% static 'samples/geyser-icon.svg' %}">
   <link rel="icon" type="image/png" sizes="32x32" href="{% static 'samples/favicon-32.png' %}">
   <link rel="apple-touch-icon" href="{% static 'samples/apple-touch-icon.png' %}">
   {# Sync and first: sets <html data-theme> before the first paint (a static file: no CSP hash needed). #}
@@ -17,9 +23,10 @@
   <script type="speculationrules">{"prerender":[{"where":{"and":[{"or":[{"href_matches":"/*"},{"href_matches":"/*\\?*"}]},{"not":{"href_matches":"/samples/*/files/*"}},{"not":{"href_matches":"/samples/*/status/*"}},{"not":{"href_matches":"/samples/rows/*"}},{"not":{"href_matches":"/upload/*"}},{"not":{"href_matches":"/demo/*"}},{"not":{"href_matches":"/figures/*.csv"}},{"not":{"selector_matches":"[download], [rel~=nofollow], [target=_blank]"}}]},"eagerness":"moderate"}]}</script>
 </head>
 <body>
+  {% block sprite %}{% endblock %}
   <header class="site-head">
     <nav class="wrap" aria-label="Site">
-      <a class="brand" href="{% url 'samples:list' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" width="232" height="40" alt="Geyser Genomics"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" width="232" height="40" alt="Geyser Genomics"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" width="232" height="40" alt="Geyser Genomics">
+      <a class="brand" href="{% url 'samples:list' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" width="180" height="40" alt="Geyser Genomics"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-retro" src="{% static 'samples/geyser-lockup-retro.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy">
         <i>FASTQ → VCF pipeline</i></a>
       <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
       <div class="head-actions">

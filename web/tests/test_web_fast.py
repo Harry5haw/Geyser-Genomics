@@ -134,7 +134,13 @@ def collected(tmp_path, storage):
 
 def test_assets_get_content_hashed_names(client, collected):
     body = client.get("/").content.decode()
-    for name, ext in (("geyser", "js"), ("geyser-lockup", "svg"), ("favicon-32", "png"), ("apple-touch-icon", "png")):
+    for name, ext in (
+        ("geyser", "js"),
+        ("geyser-lockup", "svg"),
+        ("geyser-icon", "svg"),
+        ("favicon-32", "png"),
+        ("apple-touch-icon", "png"),
+    ):
         assert re.search(rf'/static/samples/{name}\.[0-9a-f]{{12}}\.{ext}"', body), name
     assert (collected / "staticfiles.json").exists()
 
@@ -184,9 +190,9 @@ def test_the_inlined_css_has_no_comments(client, storage):
 def test_images_have_their_size_so_nothing_shifts(client, storage):
     body = client.get("/").content.decode()
     imgs = re.findall(r"<img [^>]+>", body)  # the lockup per theme; CSS shows one
-    assert len(imgs) == 3
+    assert len(imgs) == 4
     for img in imgs:
-        assert 'width="232"' in img and 'height="40"' in img and 'alt="Geyser Genomics"' in img
+        assert 'width="180"' in img and 'height="40"' in img and 'alt="Geyser Genomics"' in img
 
 
 # ------------------------------------------------------------------ paged tables
@@ -252,3 +258,11 @@ def test_html_is_gzipped_and_downloads_are_not(client, storage):
     download = client.get("/samples/S1/files/vcf/", HTTP_ACCEPT_ENCODING="gzip, br")
     assert not download.has_header("Content-Encoding")  # a .vcf.gz is sent as it is, never recompressed
     download.close()  # a FileResponse holds the file open until closed
+
+
+def test_the_svg_favicon_comes_first_with_the_png_as_fallback(client, storage):
+    head = client.get("/").content.decode().split("</head>")[0]
+    icons = re.findall(r'<link rel="icon" type="([^"]+)"[^>]*href="([^"]+)"', head)
+    assert [t for t, _ in icons] == ["image/svg+xml", "image/png"]
+    assert "geyser-icon" in icons[0][1] and "favicon-32" in icons[1][1]
+    assert 'rel="apple-touch-icon"' in head

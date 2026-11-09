@@ -8,7 +8,7 @@
 
   <div class="track" role="progressbar" aria-label="Pipeline progress"
        aria-valuemin="0" aria-valuemax="{{ sample.stages|length }}" aria-valuenow="{{ sample.done_count }}">
-    {% for st in sample.stages %}<div class="s-{{ st.name }} {{ st.state }}" title="{{ st.label }}: {{ st.state }}"></div>{% endfor %}
+    {% for st in sample.stages %}{% include "samples/_dna.html" with state=st.state name=st.name label=st.label %}{% endfor %}
   </div>
   {% for st in sample.stages %}{% if st.state == "running" %}
     <p class="now">Now running: <strong class="s-{{ st.name }}">{{ st.label }}</strong></p>
@@ -19,7 +19,7 @@
       <div class="s-{{ st.name }} {{ st.state }}">
         <small>Stage {{ forloop.counter }}</small>
         <strong>{{ st.label }}</strong>
-        <p><span class="pill s-{{ st.name }} {{ st.state }}">{{ st.state }}</span><span>{{ st.duration|duration }}</span></p>
+        <p><span class="pill s-{{ st.name }} {{ st.state }}">{% include "samples/_dna.html" with state=st.state name="" label=st.label %}{{ st.state }}</span><span>{{ st.duration|duration }}</span></p>
       </div>
     {% endfor %}
   </div>

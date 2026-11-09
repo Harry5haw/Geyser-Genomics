@@ -1,1 +1,90 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Geyser Genomics"><title>Geyser Genomics</title><defs><symbol id="helix-bold" viewBox="-7 -2 14 38" overflow="visible"><path d="M3.54 3.40 L-3.54 3.40 M3.54 10.20 L-3.54 10.20 M-3.54 17.00 L3.54 17.00 M-3.54 23.80 L3.54 23.80 M3.54 30.60 L-3.54 30.60" stroke-width="2.2" stroke-linecap="round"/><path d="M0.00 0.00 L0.98 0.85 L1.91 1.70 L2.78 2.55 L3.54 3.40 L4.16 4.25 L4.62 5.10 L4.90 5.95 L5.00 6.80 L4.90 7.65 L4.62 8.50 L4.16 9.35 L3.54 10.20 L2.78 11.05 L1.91 11.90 L0.98 12.75 L0.00 13.60 L-0.98 14.45 L-1.91 15.30 L-2.78 16.15 L-3.54 17.00 L-4.16 17.85 L-4.62 18.70 L-4.90 19.55 L-5.00 20.40 L-4.90 21.25 L-4.62 22.10 L-4.16 22.95 L-3.54 23.80 L-2.78 24.65 L-1.91 25.50 L-0.98 26.35 L-0.00 27.20 L0.98 28.05 L1.91 28.90 L2.78 29.75 L3.54 30.60 L4.16 31.45 L4.62 32.30 L4.90 33.15 L5.00 34.00" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M-0.00 0.00 L-0.98 0.85 L-1.91 1.70 L-2.78 2.55 L-3.54 3.40 L-4.16 4.25 L-4.62 5.10 L-4.90 5.95 L-5.00 6.80 L-4.90 7.65 L-4.62 8.50 L-4.16 9.35 L-3.54 10.20 L-2.78 11.05 L-1.91 11.90 L-0.98 12.75 L-0.00 13.60 L0.98 14.45 L1.91 15.30 L2.78 16.15 L3.54 17.00 L4.16 17.85 L4.62 18.70 L4.90 19.55 L5.00 20.40 L4.90 21.25 L4.62 22.10 L4.16 22.95 L3.54 23.80 L2.78 24.65 L1.91 25.50 L0.98 26.35 L0.00 27.20 L-0.98 28.05 L-1.91 28.90 L-2.78 29.75 L-3.54 30.60 L-4.16 31.45 L-4.62 32.30 L-4.90 33.15 L-5.00 34.00" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></symbol></defs><path d="M28 45 Q22 40 12 42" fill="none" stroke="#174EA6" stroke-width="2.4" stroke-linecap="round"/><path d="M32 45 L32 36" fill="none" stroke="#174EA6" stroke-width="2.4" stroke-linecap="round"/><path d="M36 45 Q42 40 52 42" fill="none" stroke="#174EA6" stroke-width="2.4" stroke-linecap="round"/><use href="#helix-bold" x="-7" y="-19" width="14" height="38" stroke="#4285F4" transform="translate(32.0 17.0) rotate(8) scale(0.78)"/><use href="#helix-bold" x="-7" y="-19" width="14" height="38" stroke="#EA4335" transform="translate(14.0 24.0) rotate(-32) scale(0.70)"/><use href="#helix-bold" x="-7" y="-19" width="14" height="38" stroke="#34A853" transform="translate(50.0 24.0) rotate(32) scale(0.70)"/><path d="M4.0 60.0 C14.1 57.9 19.0 50.9 22.0 46.0 L42.0 46.0 C45.0 50.9 49.9 57.9 60.0 60.0 Z" fill="#174EA6"/><ellipse cx="32.0" cy="46.0" rx="10.0" ry="1.7" fill="#4285F4" fill-opacity="0.35"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="Geyser Genomics" fill="none"><!-- Geyser Genomics logo (from the user's stacked design). Wordmark outlined from Outfit ExtraBold, SIL Open Font License 1.1, Copyright 2021 The Outfit Project Authors. --><title>Geyser Genomics</title><defs><linearGradient id="coneGrad-i" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A5BC4"/>
+      <stop offset="55%" stop-color="#174EA6"/>
+      <stop offset="100%" stop-color="#0D3373"/>
+    </linearGradient><radialGradient id="ventGlow-i" cx="50%" cy="55%" r="55%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="1"/>
+      <stop offset="55%" stop-color="#D2E3FC" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#174EA6" stop-opacity="0"/>
+    </radialGradient><linearGradient id="jetGrad-i" x1="50%" y1="100%" x2="50%" y2="0%">
+      <stop offset="0%" stop-color="#174EA6"/>
+      <stop offset="65%" stop-color="#1A73E8"/>
+      <stop offset="100%" stop-color="#669DF6"/>
+    </linearGradient><g id="helix-blue-i">
+      <g transform="translate(1.8, 2.6)" stroke="#1967D2" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#4285F4" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#1967D2" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#8AB4F8" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g><g id="helix-red-i">
+      <g transform="translate(1.8, 2.6)" stroke="#B31412" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#EA4335" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#B31412" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#F28B82" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g><g id="helix-yellow-i">
+      <g transform="translate(1.8, 2.6)" stroke="#EA8600" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#FBBC04" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#EA8600" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#FDE293" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g><g id="helix-green-i">
+      <g transform="translate(1.8, 2.6)" stroke="#137333" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#34A853" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#137333" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#81C995" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g></defs><g transform="translate(-228.13, -211.40) scale(0.98400)">
+    <ellipse cx="492" cy="708" rx="206" ry="14" fill="#0D3373" opacity="0.18"/>
+    <path d="M 284 700 C 308 692, 366 664, 412 598 C 418 590, 448 584, 492 584 C 536 584, 566 590, 572 598 C 618 664, 676 692, 700 700 C 712 705, 696 716, 668 717 C 590 721, 394 721, 316 717 C 288 716, 272 705, 284 700 Z"
+          fill="url(#coneGrad-i)" stroke="#0D3373" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M 304 702 C 344 684, 392 644, 424 602 C 434 606, 456 610, 474 612 C 454 654, 422 694, 384 712 C 346 712, 318 708, 304 702 Z"
+          fill="#2B7DE9" opacity="0.42"/>
+    <path d="M 454 614 C 442 652, 416 692, 392 710" stroke="#2B7DE9" stroke-width="8" stroke-linecap="round" opacity="0.45"/>
+    <path d="M 488 618 C 484 656, 476 690, 468 712" stroke="#2B7DE9" stroke-width="6" stroke-linecap="round" opacity="0.3"/>
+    <path d="M 548 606 C 584 654, 634 688, 686 703 C 666 712, 608 716, 558 716 C 568 688, 548 644, 526 614 Z"
+          fill="#0D3373" opacity="0.55"/>
+    <ellipse cx="492" cy="602" rx="74" ry="18" fill="#D2E3FC" stroke="#0D3373" stroke-width="3.5"/>
+    <ellipse cx="492" cy="598" rx="64" ry="26" fill="url(#ventGlow-i)"/>
+
+    
+    <g fill="url(#jetGrad-i)">
+      <path d="M 446 604 C 424 536, 378 482, 344 468 C 334 464, 328 474, 336 480 C 372 500, 412 546, 436 606 Z"/>
+      <path d="M 454 606 C 426 502, 362 426, 290 416 C 278 414, 276 428, 288 432 C 354 446, 412 514, 442 606 Z"/>
+      <path d="M 464 604 C 444 504, 396 418, 320 378 C 310 373, 304 385, 314 391 C 382 430, 430 510, 452 604 Z"/>
+      <path d="M 474 568 C 468 522, 452 478, 428 446 C 421 438, 413 446, 419 454 C 442 484, 456 526, 464 570 Z"/>
+      <path d="M 486 606 C 485 572, 485 546, 486 528 C 487 518, 496 518, 496 528 C 496 546, 495 572, 494 606 Z" fill="#1A73E8"/>
+      <path d="M 508 606 C 524 508, 562 436, 616 386 C 624 378, 614 368, 605 376 C 548 426, 512 504, 498 604 Z"/>
+      <path d="M 526 606 C 554 514, 608 452, 668 442 C 680 440, 682 426, 668 426 C 598 434, 542 504, 514 604 Z"/>
+      <path d="M 548 508 C 568 474, 594 452, 618 446 C 626 444, 624 432, 614 434 C 586 440, 558 466, 540 502 Z" fill="#1A73E8"/>
+    </g>
+
+    <use href="#helix-blue-i" transform="translate(500, 300) rotate(4) scale(1.25)"/><use href="#helix-red-i" transform="translate(596, 372) rotate(34) scale(1.05)"/><use href="#helix-yellow-i" transform="translate(392, 378) rotate(-30) scale(1.05)"/></g></svg>
