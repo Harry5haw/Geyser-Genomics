@@ -86,7 +86,7 @@ SAMPLE_FILES = ("truth", "log", "run_record")
 # AlphaGenome's outputs (3.0): offered only when the panel shows this run's annotation (AnnotationView.current),
 # and only by the local UI: the hosted site's downloads are PUBLIC_KINDS (the web API's allowlist), which leaves
 # them out, so AlphaGenome output reaches hosted visitors only as the panel, with its terms notice.
-ALPHAGENOME_KINDS = tuple(alphagenome_mod.FILES)
+ALPHAGENOME_KINDS = alphagenome_mod.KINDS
 LOG_TAIL_LINES = 300
 
 
@@ -106,15 +106,13 @@ def _file_key(sample_id, kind, keys):
         return log_key(sample_id)
     if kind == "run_record":
         return record_key(sample_id)
-    if kind in ALPHAGENOME_KINDS:
-        return alphagenome_mod.file_key(sample_id, kind)
     return keys.get(kind)
 
 
 def _download_kinds(keys):
     """(kind, label, description) for every file a sample can have, both mates for paired-end."""
     for kind, (label, description) in FILE_KINDS.items():
-        if kind in keys or kind in SAMPLE_FILES or kind in ALPHAGENOME_KINDS:
+        if kind in keys or kind in SAMPLE_FILES:
             yield kind, label, description
         elif kind in PER_MATE_KEYS:
             for mate in MATES:

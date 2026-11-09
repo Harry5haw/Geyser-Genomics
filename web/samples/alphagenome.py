@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from geyser_web.pipeline import ObjectNotFound, keys_for
 
 STAGE = "Annotate"  # the run-record part's task name
-KEY_NAME = "alphagenome_tsv"  # keys_for() name from #207; until that merges, the path below
+KEY_NAME = "alphagenome_tsv"  # keys_for() name (#207)
 TERMS_URL = "https://deepmind.google.com/science/alphagenome/output-terms"  # shown with every published table
 MAX_TSV_BYTES = 20 * 1024 * 1024  # capped at ALPHAGENOME_MAX_VARIANTS rows (500 by default): ~100 KB
 
@@ -41,21 +41,13 @@ REQUIRED = ("chrom", "pos", "ref", "alt", "avi")
 SORTS = ("desc", "asc")  # by AVI; rows without a score go last either way
 
 
-# The annotate stage's outputs (#207): keys_for() names them once it merges; these paths until then.
-FILES = {
-    "alphagenome_tsv": "stats/{id}/alphagenome.tsv",
-    "alphagenome_vcf": "variants/{id}.alphagenome.vcf.gz",
-    "alphagenome_tbi": "variants/{id}.alphagenome.vcf.gz.tbi",
-}
-
-
-def file_key(sample_id: str, kind: str) -> str:
-    return keys_for(sample_id).get(kind) or FILES[kind].format(id=sample_id)
+# The annotate stage's outputs (#207), by their keys_for() names.
+KINDS = ("alphagenome_tsv", "alphagenome_vcf", "alphagenome_tbi")
 
 
 def annotation_key(sample_id: str) -> str:
-    """Where the annotate stage writes the table: keys_for()'s name for it, or stats/<id>/alphagenome.tsv."""
-    return file_key(sample_id, KEY_NAME)
+    """Where the annotate stage writes the table: stats/<id>/alphagenome.tsv."""
+    return keys_for(sample_id)[KEY_NAME]
 
 
 @dataclass(frozen=True)
@@ -112,15 +104,17 @@ def parse_tsv(text: str) -> tuple[list, str]:
     A row with an unreadable position is a broken file; one without a usable AVI keeps its place, unscored.
     Comment lines before the header ('#', e.g. AlphaGenome's terms notice) are skipped."""
     lines = text.splitlines(keepends=True)
+    comments = 0
     while lines and lines[0].startswith("#"):
         lines.pop(0)
+        comments += 1
     reader = csv.DictReader(io.StringIO("".join(lines)), delimiter="\t")
     header = [h.strip() for h in reader.fieldnames or []]
     missing = [name for name in REQUIRED if name not in header]
     if missing:
         return [], f"columns missing: {', '.join(missing)}"
     rows = []
-    for line, raw in enumerate(reader, start=2):
+    for line, raw in enumerate(reader, start=comments + 2):  # the file's line, header and comments counted
         values = {COLUMNS[k.strip()]: (v or "").strip() for k, v in raw.items() if k and k.strip() in COLUMNS}
         try:
             pos = int(values["pos"])
