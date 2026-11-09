@@ -19,7 +19,7 @@ maintainer's decision. Each page ends with what was (or is still) open at its ta
 
 Each tagged release has a banner in [`docs/assets/`](../assets/) (`<name>-<version>-release`), also shown on
 its GitHub Release. v1.0 "The Upgrade Release" uses `upgrade-1.0-release.jpg`, 2.0 "XLR8"
-`xlr8-2.0-release.png`. 3.0 "Project Alpha Genome" `alpha-genome-3.0-release.jpg`.
+`xlr8-2.0-release.png` and 3.0 "Project Alpha Genome" `alpha-genome-3.0-release.jpg`.
 
 The [changelog](../../changelog.md) lists the same changes by date. These pages group them by version.
 Some early pull requests have no milestone; they are listed under the version their content belongs
