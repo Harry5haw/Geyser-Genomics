@@ -130,6 +130,7 @@ def _list_context(storage, form, static=None):
         "poll_seconds": settings.GEYSER_POLL_SECONDS,
         "stages": status_mod.STAGES,
         "max_upload_mb": settings.GEYSER_MAX_UPLOAD_MB,
+        "max_upload_label": UploadForm.limit_label(),
         "max_upload_bytes": UploadForm.max_bytes(),
     }
 
@@ -159,7 +160,7 @@ def upload(request):
     except ValueError:
         declared = 0
     if declared > 2 * UploadForm.max_bytes() + 1024 * 1024:  # up to two files (paired-end)
-        messages.error(request, f"That file is larger than the {settings.GEYSER_MAX_UPLOAD_MB} MB limit.")
+        messages.error(request, f"That file is larger than the {UploadForm.limit_label()} limit.")
         return redirect("samples:list")
 
     form = UploadForm(request.POST, request.FILES, storage=storage)

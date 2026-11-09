@@ -76,3 +76,45 @@ def test_csrf_is_enforced(storage):
 def test_upload_and_demo_are_post_only(client, storage):
     assert client.get("/upload/").status_code == 405
     assert client.get("/demo/").status_code == 405
+
+
+def test_the_default_limit_matches_the_hosted_upload_page():
+    # 256 GiB per file, as the hosted upload page (web_max_upload_gb); still set by the env var.
+    from django.conf import settings
+
+    from samples.forms import UploadForm
+
+    assert settings.GEYSER_MAX_UPLOAD_MB == 256 * 1024
+    assert UploadForm.max_bytes() == 256 * 1024**3
+    assert UploadForm.limit_label() == "256 GB"
+
+
+@pytest.mark.parametrize(
+    "mb,label",
+    [
+        (1, "1 MB"),
+        (200, "200 MB"),
+        (1023, "1023 MB"),
+        (1024, "1 GB"),
+        (1536, "1.5 GB"),
+        (65536, "64 GB"),
+        (262144, "256 GB"),
+    ],
+)
+def test_the_limit_reads_in_gb_from_1024_mb(mb, label):
+    from samples.forms import upload_limit_label
+
+    assert upload_limit_label(mb) == label
+
+
+def test_the_list_page_shows_the_limit_in_gb(client, storage, settings):
+    settings.GEYSER_MAX_UPLOAD_MB = 256 * 1024
+    page = client.get("/").content.decode()
+    assert "(up to 256 GB)" in page and f'data-max-bytes="{256 * 1024**3}"' in page
+
+
+def test_an_oversized_file_names_the_limit_in_gb(client, storage, settings):
+    settings.GEYSER_MAX_UPLOAD_MB = 1024
+    resp = client.post("/upload/", {"sample_id": ""}, CONTENT_LENGTH=str(3 * 1024**3))
+    assert resp.status_code == 302 and resp["Location"] == "/"
+    assert "larger than the 1 GB limit" in str([m.message for m in resp.wsgi_request._messages])
