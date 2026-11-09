@@ -209,7 +209,9 @@ def test_the_page_shows_posters_and_defers_the_3d(client, figdir):
     assert 'data-surface="/figures/coverage.json"' in body and 'data-surface="/figures/quality.json"' in body
     assert re.search(r'data-surface-js="/static/samples/surface[^"]*\.js"', body)
     assert re.search(r'data-surface-gl="/static/samples/surface-gl[^"]*\.js"', body)  # the WebGL half, for the worker
-    assert "<script src=" in body and body.count("<script src=") == 1  # surface.js is not loaded with the page
+    scripts = re.findall(r'<script src="([^"]+)"', body)
+    assert len(scripts) == 2 and not any("surface" in src for src in scripts)
+    # theme.js and geyser.js only: surface.js is not loaded with the page
     assert "No data yet: cost-surface.csv" in body  # the grid's CSV isn't in this test folder
     assert 'href="/figures/coverage.csv" download' in body
     assert "Heights start at 32 Phred, not 0" in body and "drawn at that cap" in body
