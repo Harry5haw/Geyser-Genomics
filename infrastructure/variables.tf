@@ -543,3 +543,55 @@ variable "genome_chunk_expiry_days" {
     error_message = "genome_chunk_expiry_days must be at least 1: the merge must still find the chunks."
   }
 }
+
+# --- 3.0: optional AlphaGenome annotation (alphagenome.tf, the Annotate state) ---------------------------
+
+variable "alphagenome_api_key_parameter" {
+  description = <<-EOT
+    Name of the SSM Parameter Store SecureString that holds the AlphaGenome API key (default KMS key
+    aws/ssm). Terraform never creates, reads or stores the parameter or its value: the user puts the
+    key in (aws ssm put-parameter --type SecureString, with their own identity). Only the annotate job's
+    execution role may read it, and only this one parameter; the job definition maps it into the
+    container's environment. Until the parameter exists, an annotate job fails to start, which the
+    state machine notes without failing the run.
+  EOT
+  type        = string
+  default     = "/geyser/alphagenome/api-key"
+
+  validation {
+    condition     = can(regex("^/[A-Za-z0-9_./-]+$", var.alphagenome_api_key_parameter))
+    error_message = "alphagenome_api_key_parameter must be a full parameter name starting with / (letters, digits, _ . - /)."
+  }
+}
+
+variable "annotate_image_version" {
+  description = "Tag of the geyser-annotate image (app-annotate/Dockerfile, #207: the app image plus the alphagenome client) the annotate job runs, like image_version for the app image."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "annotate_plan_resources" {
+  description = "vCPU and memory (MiB) of the Plan_Annotate job (tasks.py annotate --plan, #207: sizes the annotation, annotates nothing): the smallest Fargate size. The Annotate job itself takes its size and time limit from the plan. A valid Fargate pair, as for stage_resources."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 0.25, memory_mb = 512 }
+
+  validation {
+    condition = contains(keys(local.fargate_memory_mb), tostring(var.annotate_plan_resources.vcpu)) && (
+      var.annotate_plan_resources.memory_mb >= local.fargate_memory_mb[tostring(var.annotate_plan_resources.vcpu)][0] &&
+      var.annotate_plan_resources.memory_mb <= local.fargate_memory_mb[tostring(var.annotate_plan_resources.vcpu)][1] &&
+      (var.annotate_plan_resources.memory_mb % 1024 == 0 || (var.annotate_plan_resources.vcpu == 0.25 && var.annotate_plan_resources.memory_mb == 512))
+    )
+    error_message = "annotate_plan_resources needs a valid Fargate vCPU/memory pair (e.g. 0.25 vCPU with 512, 1024 or 2048 MiB; 0.5 vCPU with 1024-4096)."
+  }
+}
+
+variable "annotate_disk_gb" {
+  description = "Ephemeral disk (GiB) of the annotate job definition. Fargate can't override it per job, so it is fixed at the plan's largest need: #207's disk_gib = max(21, 3 x VCF GB + 5), so 30 covers a VCF up to ~8 GB (a whole genome's is ~0.3-0.5 GB)."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.annotate_disk_gb >= 21 && var.annotate_disk_gb <= 200
+    error_message = "annotate_disk_gb must be 21-200 (Fargate's ephemeral storage)."
+  }
+}

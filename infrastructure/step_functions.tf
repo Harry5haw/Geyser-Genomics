@@ -29,6 +29,9 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           # W3: the Publish job (publish.tf), on the same Fargate queue.
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}:*",
+          # v3.0: the optional AlphaGenome annotation (alphagenome.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}:*",
           # v1.3: the large route's jobs (genome_scale.tf), on the same Fargate queue.
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*",
@@ -38,9 +41,15 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
         ]
       },
       {
-        # SubmitJob with Tags (the Stage tag per job, #64) also needs TagResource on the new job.
-        Sid      = "AWSBatchTagJobs", Effect = "Allow", Action = "batch:TagResource",
-        Resource = "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job/*"
+        # SubmitJob with Tags (the Stage tag per job, #64) also needs TagResource on the new job, and Batch
+        # checks it on the job definition and the job queue named in the call too (CLOUD023 and CLOUD024 failed
+        # with AccessDenied on job-definition/geyser-app-job, then job-queue/geyser-job-queue, after #149's apply).
+        Sid = "AWSBatchTagJobs", Effect = "Allow", Action = "batch:TagResource",
+        Resource = [
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job/*",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/*",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-queue/*",
+        ]
       },
       {
         Sid = "CloudWatchLogsPermissions", Effect = "Allow", Action = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"], Resource = "*"
@@ -48,6 +57,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
       # Read_Regions reads the planner's output (tasks.py regions --output-key) straight from S3.
       { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/variant-regions/*" },
+      # v3.0: the annotation's plan (Plan_Annotate writes it, Read_Annotate_Plan reads it).
+      { Sid = "ReadAnnotatePlan", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/annotate-plan/*" },
       # Read_Manifest reads the pre-flight's chunk manifest (tasks.py preflight) on the large route, and only that.
       { Sid = "ReadChunkManifests", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/chunks/*/manifest.json" },
       # Check_Reference checks the run's reference/<name> exists before any job (HeadObject needs
@@ -121,8 +132,12 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   # the very same file in Step Functions Local (Docker, no AWS). Only these values are filled in.
   # jsonencode(jsondecode(...)) sends it minified, the same document: the provider's request decomposer reads the
   # escaped definition with a 64 KB bufio.Scanner, and the indented file passed that in v1.5 ("token too long").
-  # Minified and escaped it is ~52 KB; tests/test_consistency.py keeps it under 56 KB.
-  definition = jsonencode(jsondecode(templatefile("${path.module}/state_machine.asl.json", {
+  # Minified and escaped it was ~55 KB with comments by v3.0 (#209), so the "Comment" keys are removed on the
+  # way (the regex below, at any depth: states, Parallel branches, Map iterators): ~41 KB. The source file keeps
+  # every comment; the console doesn't show them. tests/test_consistency.py keeps the rendered definition under
+  # 56 KB and checks it equals the source with only the Comment keys removed (every Comment is followed by
+  # another key, so the regex takes its trailing comma too).
+  definition = jsonencode(jsondecode(replace(templatefile("${path.module}/state_machine.asl.json", {
     job_definition             = aws_batch_job_definition.geyser_app_job_def.name
     job_queue                  = aws_batch_job_queue.geyser_queue.name
     deepvariant_job_definition = aws_batch_job_definition.geyser_deepvariant_job_def.name
@@ -177,7 +192,11 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     dv_shards_by_parts             = jsonencode(local.dv_shards_by_parts)
     dv_part_timeout_seconds        = var.dv_part_timeout_seconds
     deepvariant_timeout_seconds    = var.deepvariant_timeout_seconds
-  })))
+    # The optional AlphaGenome annotation (v3.0, alphagenome.tf).
+    annotate_job_definition = aws_batch_job_definition.geyser_annotate_job_def.name
+    annotate_plan_vcpu      = var.annotate_plan_resources.vcpu
+    annotate_plan_memory_mb = var.annotate_plan_resources.memory_mb
+  }), "/\"Comment\":\\s*\"(?:[^\"\\\\]|\\\\.)*\",\\s*/", "")))
 
   lifecycle {
     precondition {
