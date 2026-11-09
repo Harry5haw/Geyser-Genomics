@@ -621,7 +621,9 @@ def run_close(events) -> dict:
         e for e in events if e["type"] == "TaskScheduled" and names.get(e["previousEventId"]) == "Close_Run_Record"
     ]
     params = json.loads(put["taskScheduledEventDetails"]["parameters"])
-    return {**params, "Body": json.loads(params["Body"])}
+    # The object itself, not a JSON string: the integration serialises it once (#205).
+    assert isinstance(params["Body"], dict), params["Body"]
+    return params
 
 
 def assert_closed_before_notifying(desc, events, error="States.TaskFailed"):
