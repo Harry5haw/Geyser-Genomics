@@ -323,3 +323,16 @@ def test_the_committed_dv_grid_loads(settings):
         "1024",
     ]
     assert all(v is not None for line in grid.values for v in line)  # 12 cells, all succeeded
+
+
+def test_surface_js_never_shadows_its_own_helpers():
+    # A module-level helper redeclared inside a function is in its temporal dead zone there until that line runs:
+    # `const frame` (the --frame reader) vs mount's `let ... frame = 0` broke every 3D view (8ea0918).
+    with open(os.path.join(STATIC, "surface.js"), encoding="utf-8") as fh:
+        src = fh.read()
+    helpers = set(re.findall(r"(?m)^  const (\w+) = ", src))
+    inner = set()
+    for line in re.findall(r"(?m)^ {4,}(?:const|let|var) (.+)$", src):
+        inner |= set(re.findall(r"(?:^|,\s*)(\w+) = ", line))
+    assert "rgb" in helpers and "frame" in inner  # the patterns still see both levels
+    assert not helpers & inner, helpers & inner

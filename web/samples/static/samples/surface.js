@@ -11,7 +11,7 @@
     const s = (d.ramps || {})[document.documentElement.dataset.theme === "contrast" ? "cividis" : "turbo"] || d.ramp;
     return s && s.length > 1 ? s : ["#00224e", "#b9ab6d"]; // a grid cached from before: one ramp, or none
   };
-  const frame = () => { // hairlines in the theme's CSS --frame
+  const hairline = () => { // the theme's CSS --frame
     const v = getComputedStyle(document.documentElement).getPropertyValue("--frame").trim();
     return /^#[0-9a-f]{6}$/i.test(v) ? rgb(v) : [0.82, 0.8, 0.75];
   };
@@ -158,7 +158,7 @@
     const geometry = () => { // the first call reuses g's arrays; later ones (fallback, theme) build new ones
       const src = built ? build(data) : g;
       built = true;
-      const lineCol = new Float32Array(src.lines.length), line = frame();
+      const lineCol = new Float32Array(src.lines.length), line = hairline();
       for (let k = 0; k < lineCol.length; k += 3) lineCol.set(line, k);
       return { pos: src.pos, col: src.col, lines: src.lines, lineCol };
     };
