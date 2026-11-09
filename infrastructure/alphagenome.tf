@@ -83,10 +83,13 @@ resource "aws_batch_job_definition" "geyser_annotate_job_def" {
     jobRoleArn                   = aws_iam_role.geyser_batch_task_role.arn
     fargatePlatformConfiguration = { platformVersion = "LATEST" }
     networkConfiguration         = { assignPublicIp = "ENABLED" } # no NAT: the public IP reaches ECR, S3 and the API
+    # The plan job's size; Annotate overrides it with the plan's (#207: 1 vCPU / 2 GiB or 2 / 3 GiB).
     resourceRequirements = [
-      { type = "VCPU", value = tostring(var.annotate_resources.vcpu) },
-      { type = "MEMORY", value = tostring(var.annotate_resources.memory_mb) }
+      { type = "VCPU", value = tostring(var.annotate_plan_resources.vcpu) },
+      { type = "MEMORY", value = tostring(var.annotate_plan_resources.memory_mb) }
     ]
+    # Fargate's disk can't be overridden per job: fixed at the plan's largest need (disk_gib advisory, #207).
+    ephemeralStorage = { sizeInGiB = var.annotate_disk_gb }
     environment = [
       { name = "BUCKET_NAME", value = aws_s3_bucket.data_lake.bucket },
       { name = "APP_VERSION", value = var.annotate_image_version }

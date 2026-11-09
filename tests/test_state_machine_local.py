@@ -71,9 +71,8 @@ TEMPLATE_VARS = {
     "gate_mode": "warn",
     # The optional annotation (v3.0, alphagenome.tf): its job definition and variables.tf's defaults.
     "annotate_job_definition": "geyser-annotate-job",
-    "annotate_vcpu": "0.25",
-    "annotate_memory_mb": "512",
-    "annotate_timeout_seconds": "1800",
+    "annotate_plan_vcpu": "0.25",
+    "annotate_plan_memory_mb": "512",
     # The hosted site (W3): publishing off, as variables.tf's default. MACHINE_PUBLISH renders it on.
     "publish_enabled": "false",
     "publish_job_definition": "geyser-publish-job",
@@ -196,6 +195,21 @@ VERDICTS = {
 OK, FAIL = "BatchSucceeded", "BatchFailed"
 # Every case plans, reads and calls its regions unless it says otherwise.
 SCATTER = {"Plan_Regions": OK, "Read_Regions": "RegionsRead", "Call_Shard": "ShardsOk", "Close_Run_Record": "Closed"}
+# tasks.py annotate --plan (#207): what Plan_Annotate writes and Read_Annotate_Plan reads.
+ANNOTATE_PLAN = {
+    "schema": 1,
+    "run": True,
+    "source": "atlas",
+    "max_variants": 500,
+    "input_bytes": 123456,
+    "vcpus": 2,
+    "memory_mib": 3072,
+    "timeout_seconds": 1200,
+    "disk_gib": 21,
+}
+ANNOTATE_SKIP = {"schema": 1, "run": False, "reason": "no PASS variants to annotate"}
+ANNOTATE_PLANNED = {"Plan_Annotate": OK, "Read_Annotate_Plan": "AnnotatePlanRun"}
+
 TEST_CASES = {
     "HappyPath": {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK},
     "QCFails": {"Quality_Control": FAIL, "Align_Genome": OK, "Call_Variants": OK, "Notify_Failure": "Published"},
@@ -254,7 +268,11 @@ TEST_CASES = {
     # S3 errors on the HeadObject once (e.g. a 503), then answers: retried, the run goes on.
     "ReferenceFlakyOnce": {"Check_Reference": "ReferenceFlakyThenFound"},
     # The optional annotation (v3.0), for runs started with annotate = alphagenome.
-    "AnnotateOk": {"Annotate": OK},
+    "AnnotateOk": {**ANNOTATE_PLANNED, "Annotate": OK},
+    # The plan finds nothing to annotate: no Annotate job, the reason kept in the output.
+    "AnnotateNothing": {"Plan_Annotate": OK, "Read_Annotate_Plan": "AnnotatePlanSkip"},
+    # The plan job itself fails: noted, never fatal.
+    "AnnotatePlanFails": {"Plan_Annotate": FAIL, "Notify_Failure": "Published"},
     # The large route (v1.3) with the annotation: both routes end at the same gate.
     "LargeRouteAnnotateOk": {
         "Quality_Control_Large": OK,
@@ -262,12 +280,18 @@ TEST_CASES = {
         "Read_Manifest": "ManifestRead",
         "Align_Chunk": "ChunksOk",
         "Align_Merge": OK,
+        **ANNOTATE_PLANNED,
         "Annotate": OK,
     },
     # The job fails (the app's own error, or the API key parameter missing: the task never starts).
-    "AnnotateFails": {"Annotate": FAIL, "Notify_Failure": "Published"},
+    "AnnotateFails": {**ANNOTATE_PLANNED, "Annotate": FAIL, "Notify_Failure": "Published"},
     # warn mode, the gate fails the sample: the run still succeeds, so it is annotated too.
-    "AnnotateAfterGateWarning": {"Read_Gate_Verdict": "VerdictFail", "Annotate": OK, "Notify_Failure": "Published"},
+    "AnnotateAfterGateWarning": {
+        "Read_Gate_Verdict": "VerdictFail",
+        **ANNOTATE_PLANNED,
+        "Annotate": OK,
+        "Notify_Failure": "Published",
+    },
     # The hosted site (W3), on MACHINE_PUBLISH: every run ends with Publish, succeeded or failed.
     "PublishOk": {"Publish": OK},
     "PublishFails": {"Publish": FAIL},
@@ -344,6 +368,9 @@ MOCK_CONFIG = {
         },
         "AlwaysThrottled": {"0-3": {"Throw": {"Error": "Batch.AWSBatchException", "Cause": "Too Many Requests"}}},
         "RegionsRead": {"0": {"Return": {"Body": json.dumps(REGIONS), "ContentType": "application/json"}}},
+        # The annotation's plan (#207, schema 1): sized, or nothing to annotate.
+        "AnnotatePlanRun": {"0": {"Return": {"Body": json.dumps(ANNOTATE_PLAN), "ContentType": "application/json"}}},
+        "AnnotatePlanSkip": {"0": {"Return": {"Body": json.dumps(ANNOTATE_SKIP), "ContentType": "application/json"}}},
         # The pre-flight's manifest (docs/design/genome-scale-app.md, schema 1), abridged to what the Map reads.
         "ManifestRead": {"0": {"Return": {"Body": json.dumps(MANIFEST), "ContentType": "application/json"}}},
         "ChunksOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
@@ -2040,27 +2067,52 @@ def test_annotate_alphagenome_runs_after_the_gate_passes_with_the_atlas(request,
     desc, events = run_case(request.getfixturevalue(machine), "AnnotateOk", annotate="alphagenome", sample="SAMPLE7")
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
-    assert states[-6:] == [
+    assert states[-8:] == [
         "Gate_Decision",
         "Choose_Annotation",
-        "Prepare_Annotate_Command",
+        "Plan_Annotate",
+        "Read_Annotate_Plan",
+        "Check_Annotate_Plan",
         "Annotate",
         "Publish_Run",
         "Pipeline_Succeeded",
     ]
-    params = _annotate_params(events)
-    assert params["JobDefinition"] == TEMPLATE_VARS["annotate_job_definition"]  # the one that maps the key
-    assert params["JobQueue"] == TEMPLATE_VARS["job_queue"]
-    assert params["Timeout"] == {"AttemptDurationSeconds": 1800}
-    assert params["Tags"] == {"Stage": "annotate"}
+    jobs = batch_parameters(events)
+    plan_job, params = jobs["Plan_Annotate"], jobs["Annotate"]
+    for job in (plan_job, params):
+        assert job["JobDefinition"] == TEMPLATE_VARS["annotate_job_definition"]  # the one that maps the key
+        assert job["JobQueue"] == TEMPLATE_VARS["job_queue"]
+        assert job["Tags"] == {"Stage": "annotate"}
+        assert job["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
+    # The plan: the smallest size, its own key, the Atlas (the only source in the cloud: no AVI file in S3).
+    key = f"intermediate/annotate-plan/SAMPLE7/{desc['name']}.json"
+    assert plan_job["ContainerOverrides"]["Command"] == [
+        "python",
+        "tasks.py",
+        "annotate",
+        "SAMPLE7",
+        "chr20.fa",
+        "--source",
+        "atlas",
+        "--plan",
+        "--output-key",
+        key,
+    ]
+    assert plan_job["ContainerOverrides"]["ResourceRequirements"] == [
+        {"Type": "VCPU", "Value": "0.25"},
+        {"Type": "MEMORY", "Value": "512"},
+    ]
+    assert plan_job["JobName"] == f"AnnotatePlan-SAMPLE7-{desc['name']}"
+    assert sdk_calls(events, "Read_Annotate_Plan") == [{"Bucket": TEMPLATE_VARS["bucket"], "Key": key}]
+    # The annotation: its size and time limit from the plan.
     overrides = params["ContainerOverrides"]
-    # The Atlas is the only source in the cloud (v3.0: no AVI file in S3).
     assert overrides["Command"] == ["python", "tasks.py", "annotate", "SAMPLE7", "chr20.fa", "--source", "atlas"]
-    assert overrides["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
-    assert overrides["ResourceRequirements"] == [{"Type": "VCPU", "Value": "0.25"}, {"Type": "MEMORY", "Value": "512"}]
+    assert overrides["ResourceRequirements"] == [{"Type": "VCPU", "Value": "2"}, {"Type": "MEMORY", "Value": "3072"}]
+    assert params["Timeout"] == {"AttemptDurationSeconds": 1200}
     assert params["JobName"] == f"Annotate-SAMPLE7-{desc['name']}"
     output = json.loads(desc["output"])
     assert output["annotate"] == "alphagenome" and output["annotate_output"]["Status"] == "SUCCEEDED"
+    assert output["annotate_plan"]["plan"] == ANNOTATE_PLAN
     # Its own ResultPath: the gate's parameters (and mode) are as the gate left them.
     assert output["batch_params"]["Mode"] == ("fail" if machine == "sfn_fail" else "warn")
 
@@ -2109,3 +2161,22 @@ def test_the_annotate_check_runs_after_the_gate_profile_and_before_the_reference
     _, events = run_case(sfn, "HappyPath", annotate="nope", reference="sub/x.fa")
     assert published_message(events)["ErrorDetails"]["Error"] == "UnknownAnnotation"
     assert "Check_Reference_Name" not in entered(events)
+
+
+def test_a_plan_with_nothing_to_annotate_skips_the_job_and_keeps_the_reason(sfn):
+    desc, events = run_case(sfn, "AnnotateNothing", annotate="alphagenome")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states[-4:] == ["Read_Annotate_Plan", "Check_Annotate_Plan", "Publish_Run", "Pipeline_Succeeded"]
+    assert "Annotate" not in states and "Annotation_Failed" not in states
+    assert json.loads(desc["output"])["annotate_plan"]["plan"] == ANNOTATE_SKIP
+
+
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_a_failing_plan_job_leaves_the_run_succeeded(request, machine):
+    desc, events = run_case(request.getfixturevalue(machine), "AnnotatePlanFails", annotate="alphagenome")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states[-4:] == ["Plan_Annotate", "Annotation_Failed", "Publish_Run", "Pipeline_Succeeded"]
+    assert "Annotate" not in states and "Notify_Failure" not in states
+    assert json.loads(desc["output"])["annotate_error"]["Error"] == "States.TaskFailed"

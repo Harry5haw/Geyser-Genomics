@@ -1168,44 +1168,78 @@
     "Choose_Annotation": {
       "Type": "Choice",
       "Comment": "Every run that is going to succeed comes here after the quality gate (a pass; in warn mode also Gate_Warned and Gate_Skipped), on either route and with either caller. annotate = alphagenome annotates; none goes straight to Publish_Run.",
-      "Choices": [{ "Variable": "$.annotate", "StringEquals": "alphagenome", "Next": "Prepare_Annotate_Command" }],
+      "Choices": [{ "Variable": "$.annotate", "StringEquals": "alphagenome", "Next": "Plan_Annotate" }],
       "Default": "Publish_Run"
     },
-    "Prepare_Annotate_Command": {
-      "Type": "Pass",
-      "Comment": "tasks.py annotate (#207) with the AlphaGenome Atlas, the only source in the cloud (no AVI file in S3). Own ResultPath, so $.batch_params stays as the gate left it.",
+    "Plan_Annotate": {
+      "Type": "Task",
+      "Comment": "tasks.py annotate --plan (#207): sizes the annotation from the run's calls (the formula lives in Python) and writes the plan to S3; annotates nothing. The annotate job definition at its smallest size, so the plan and the annotation come from the same image. The Atlas is the only source in the cloud (no AVI file in S3).",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
+        "JobName.$": "States.Format('AnnotatePlan-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobDefinition": "${annotate_job_definition}",
+        "JobQueue": "${job_queue}",
         "ContainerOverrides": {
-          "Command.$": "States.Array('python', 'tasks.py', 'annotate', $.srr_id, $.reference_name, '--source', 'atlas')",
+          "Command.$": "States.Array('python', 'tasks.py', 'annotate', $.srr_id, $.reference_name, '--source', 'atlas', '--plan', '--output-key', States.Format('intermediate/annotate-plan/{}/{}.json', $.srr_id, $$.Execution.Name))",
           "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
           "ResourceRequirements": [
-            { "Type": "VCPU", "Value": "${annotate_vcpu}" },
-            { "Type": "MEMORY", "Value": "${annotate_memory_mb}" }
+            { "Type": "VCPU", "Value": "${annotate_plan_vcpu}" },
+            { "Type": "MEMORY", "Value": "${annotate_plan_memory_mb}" }
           ]
-        }
+        },
+        "Timeout": { "AttemptDurationSeconds": 900 },
+        "Tags": { "Stage": "annotate" }
       },
-      "ResultPath": "$.annotate_params",
-      "Next": "Annotate"
+      "Retry": [
+        { "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"], "IntervalSeconds": 10, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "Annotation_Failed", "ResultPath": "$.annotate_error" }],
+      "Next": "Read_Annotate_Plan"
+    },
+    "Read_Annotate_Plan": {
+      "Type": "Task",
+      "Comment": "The plan, read straight from S3 like Read_Regions: {schema, run, vcpus, memory_mib, timeout_seconds, ...}, or {schema, run: false, reason}.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('intermediate/annotate-plan/{}/{}.json', $.srr_id, $$.Execution.Name)"
+      },
+      "ResultSelector": { "plan.$": "States.StringToJson($.Body)" },
+      "ResultPath": "$.annotate_plan",
+      "Retry": [
+        { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "Annotation_Failed", "ResultPath": "$.annotate_error" }],
+      "Next": "Check_Annotate_Plan"
+    },
+    "Check_Annotate_Plan": {
+      "Type": "Choice",
+      "Comment": "run: false (nothing to annotate; the reason stays in $.annotate_plan.plan) goes straight to Publish_Run. A plan that isn't run: true fails the Annotate submit, which is caught like any annotation failure.",
+      "Choices": [{ "Variable": "$.annotate_plan.plan.run", "BooleanEquals": false, "Next": "Publish_Run" }],
+      "Default": "Annotate"
     },
     "Annotate": {
       "Type": "Task",
-      "Comment": "Its own job definition, the only one that maps the API key (SSM SecureString). Never fatal: any failure (the job's, a missing key, a timeout) is caught and noted in $.annotate_error, and the run keeps the core pipeline's status.",
+      "Comment": "Its own job definition, the only one that maps the API key (SSM SecureString). Size and time limit from the plan. Never fatal: any failure (the job's, a missing key, a timeout, a bad plan) is caught and noted in $.annotate_error, and the run keeps the core pipeline's status.",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
         "JobName.$": "States.Format('Annotate-{}-{}', $.srr_id, $$.Execution.Name)",
         "JobDefinition": "${annotate_job_definition}",
         "JobQueue": "${job_queue}",
-        "ContainerOverrides.$": "$.annotate_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": ${annotate_timeout_seconds} },
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'annotate', $.srr_id, $.reference_name, '--source', 'atlas')",
+          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value.$": "States.Format('{}', $.annotate_plan.plan.vcpus)" },
+            { "Type": "MEMORY", "Value.$": "States.Format('{}', $.annotate_plan.plan.memory_mib)" }
+          ]
+        },
+        "Timeout": { "AttemptDurationSeconds.$": "$.annotate_plan.plan.timeout_seconds" },
         "Tags": { "Stage": "annotate" }
       },
       "Retry": [
-        {
-          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
-          "IntervalSeconds": 10,
-          "MaxAttempts": 3,
-          "BackoffRate": 2
-        }
+        { "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"], "IntervalSeconds": 10, "MaxAttempts": 3, "BackoffRate": 2 }
       ],
       "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
       "ResultPath": "$.annotate_output",

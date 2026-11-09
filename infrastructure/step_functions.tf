@@ -51,6 +51,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
       # Read_Regions reads the planner's output (tasks.py regions --output-key) straight from S3.
       { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/variant-regions/*" },
+      # v3.0: the annotation's plan (Plan_Annotate writes it, Read_Annotate_Plan reads it).
+      { Sid = "ReadAnnotatePlan", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/annotate-plan/*" },
       # Read_Manifest reads the pre-flight's chunk manifest (tasks.py preflight) on the large route, and only that.
       { Sid = "ReadChunkManifests", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/chunks/*/manifest.json" },
       # Check_Reference checks the run's reference/<name> exists before any job (HeadObject needs
@@ -185,10 +187,9 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     dv_part_timeout_seconds        = var.dv_part_timeout_seconds
     deepvariant_timeout_seconds    = var.deepvariant_timeout_seconds
     # The optional AlphaGenome annotation (v3.0, alphagenome.tf).
-    annotate_job_definition  = aws_batch_job_definition.geyser_annotate_job_def.name
-    annotate_vcpu            = var.annotate_resources.vcpu
-    annotate_memory_mb       = var.annotate_resources.memory_mb
-    annotate_timeout_seconds = var.annotate_timeout_seconds
+    annotate_job_definition = aws_batch_job_definition.geyser_annotate_job_def.name
+    annotate_plan_vcpu      = var.annotate_plan_resources.vcpu
+    annotate_plan_memory_mb = var.annotate_plan_resources.memory_mb
   }), "/\"Comment\":\\s*\"(?:[^\"\\\\]|\\\\.)*\",\\s*/", "")))
 
   lifecycle {
