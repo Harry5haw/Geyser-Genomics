@@ -78,6 +78,55 @@
   </section>
 {% endif %}
 
+{% if alphagenome %}
+  <section class="panel" id="alphagenome" aria-labelledby="alphagenome-heading">
+    <h2 id="alphagenome-heading">Variants of interest <small class="muted">(AlphaGenome{% if alphagenome.total %}, {{ alphagenome.total }} scored{% endif %})</small>
+      {% if alphagenome.test_data %}<span class="badge warn">Test data</span>{% endif %}</h2>
+    <p class="note" role="note"><strong>Research use only, not for clinical use.</strong>
+      These are AlphaGenome's predictions of how each variant may change gene regulation (expression, splicing, chromatin).
+      They are not a diagnosis and have not been clinically validated.</p>
+    {% if alphagenome.state == "rows" %}
+      <div class="frame">
+      <table class="data mono alphagenome">
+        <thead><tr><th>Gene</th><th>Chrom</th><th class="num">Position</th><th class="b">Ref</th><th class="b">Alt</th>
+          {% if not alphagenome.scored %}<th class="num">AVI</th>{% else %}<th class="num" aria-sort="{% if alphagenome.sort == 'asc' %}ascending{% else %}descending{% endif %}">
+            {% if published %}AVI ▼{% else %}<a href="?avi={% if alphagenome.sort == 'asc' %}desc{% else %}asc{% endif %}#alphagenome"
+               title="Sort by AVI, {% if alphagenome.sort == 'asc' %}highest{% else %}lowest{% endif %} first">AVI {% if alphagenome.sort == "asc" %}▲{% else %}▼{% endif %}</a>{% endif %}</th>{% endif %}
+          <th>Top track</th><th class="num" title="Predicted RNA-seq log fold change (ALT vs REF) of the gene's expression: below 0 down, above 0 up (Atlas scores only)">RNA LFC</th>
+          <th>Consequence (csq)</th><th>Source</th></tr></thead>
+        <tbody>
+        {% for v in alphagenome.rows %}
+          <tr>
+            <td>{{ v.gene|default:"–" }}</td><td>{{ v.chrom }}</td><td class="num">{{ v.pos }}</td>
+            <td class="b nt-{{ v.ref }}">{{ v.ref }}</td><td class="b nt-{{ v.alt }}">{{ v.alt }}</td>
+            <td class="num">{% if v.avi is None %}–{% else %}{{ v.avi|floatformat:"-3" }}{% endif %}</td>
+            <td>{{ v.top_track|default:"–" }}</td>
+            <td class="num">{% if v.rna_lfc is None %}–{% else %}{{ v.rna_lfc|floatformat:"-3" }}{% endif %}</td>
+            <td>{{ v.consequence|default:"–" }}</td><td>{{ v.source|default:"–" }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+      </div>
+      {% if alphagenome.truncated %}<p class="muted"><small>Showing {{ alphagenome.rows|length }} of {{ alphagenome.total }}, {% if alphagenome.scored %}by AVI{% else %}in the table's order{% endif %}.{% if not published %} Download the table for the rest.{% endif %}</small></p>{% endif %}
+      <p class="muted"><small>Sources: {% for source, n in alphagenome.sources %}{{ source }} {{ n }}{% if not forloop.last %}, {% endif %}{% endfor %}.
+        AVI: AlphaGenome Variant Impact, PHRED-scaled (20 = top 1% genome-wide); higher means a larger predicted effect.
+        {% if not alphagenome.scored %}These scores came without an AVI, so the rows keep the table's ranking (by the size of the predicted RNA change, then quality).{% endif %}</small></p>
+      <p class="note" role="note"><strong>By using this information, you agree to AlphaGenome Output Terms of Use found at
+        <a href="{{ alphagenome_terms_url }}" rel="noopener noreferrer" target="_blank">{{ alphagenome_terms_url }}</a></strong>.
+        Modifications: this page shows a subset of the columns of the AlphaGenome table{% if not published and alphagenome.scored %}, re-sortable by AVI{% endif %}; the values are unchanged.</p>
+    {% elif alphagenome.state == "empty" %}
+      <p class="muted">AlphaGenome annotated this run, but none of its variants were selected as of interest.</p>
+    {% elif alphagenome.state == "failed" %}
+      <p><strong>AlphaGenome annotation failed for this run.</strong> The calls above are unaffected: annotation never fails a run.</p>
+      <p class="muted">{{ alphagenome.error }}</p>
+    {% elif alphagenome.state == "unreadable" %}
+      <p><strong>The AlphaGenome table can't be shown.</strong> The calls above are unaffected.</p>
+      <p class="muted">{{ alphagenome.error }}</p>
+    {% endif %}
+  </section>
+{% endif %}
+
 {% if qc_summary or qc_report %}
   <section class="panel">
     <h2>Quality control</h2>
