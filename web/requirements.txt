@@ -1,4 +1,4 @@
 # Exact pins; Dependabot (.github/dependabot.yml) proposes updates weekly.
 # Django stays on 5.2 LTS: 6.x needs Python 3.12 and the image and CI run 3.11.
-Django==5.2.18
+Django==5.2.19
 whitenoise==6.12.0

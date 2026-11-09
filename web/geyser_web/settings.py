@@ -119,7 +119,9 @@ GEYSER_S3_ENDPOINT_URL = next(
 )
 GEYSER_S3_ADDRESSING_STYLE = os.environ.get("S3_ADDRESSING_STYLE", "")
 
-GEYSER_MAX_UPLOAD_MB = int(os.environ.get("GEYSER_MAX_UPLOAD_MB", "200"))
+# Per file, in MB (1024 x 1024 bytes): 256 GiB by default, the hosted upload page's limit (Terraform's
+# web_max_upload_gb). Uploads stream to a temporary file past FILE_UPLOAD_MAX_MEMORY_SIZE, never into memory.
+GEYSER_MAX_UPLOAD_MB = int(os.environ.get("GEYSER_MAX_UPLOAD_MB", str(256 * 1024)))
 # Rows per page of the variant and AlphaGenome tables (the first page is inline; the rest are prerenderable links).
 # GEYSER_VARIANT_ROWS is the old name (it capped the one inline table); still honoured. At least 1.
 GEYSER_TABLE_ROWS = max(1, int(os.environ.get("GEYSER_TABLE_ROWS") or os.environ.get("GEYSER_VARIANT_ROWS") or "50"))

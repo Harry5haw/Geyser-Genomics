@@ -220,7 +220,7 @@ def test_an_unsafe_sample_id_is_refused(api, sample_id):
         {"sample_id": "S1", "sizes": [0]},
         {"sample_id": "S1", "sizes": [True]},
         {"sample_id": "S1", "sizes": ["10"]},
-        {"sample_id": "S1", "sizes": [64 * 1024**3 + 1]},  # over MAX_UPLOAD_BYTES
+        {"sample_id": "S1", "sizes": [256 * 1024**3 + 1]},  # over MAX_UPLOAD_BYTES
         {"sample_id": "S1", "layout": "interleaved", "sizes": [10]},
         {"sample_id": "S1", "sizes": [10], "metadata": {"gate_profile": "smoke"}},  # not the trigger's spelling
         {"sample_id": "S1", "sizes": [10], "metadata": {"caller": "deepvariant"}},
