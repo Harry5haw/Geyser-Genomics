@@ -311,9 +311,25 @@ def finish(storage, status: str, duration: float, error: str = None, usage: dict
     part.update(status=status, finished=_now(), duration_seconds=round(duration, 2), error=error, resources=usage)
     try:
         _put_json(storage, f"{part_prefix(part['sample_id'])}{part['task']}.json", part)
-        assemble(storage, part["sample_id"])
+        record = assemble(storage, part["sample_id"])
+        if record is not None:
+            print(RECORD_LOG_PREFIX + json.dumps(record_summary(record, part["task"])), flush=True)
     except Exception as err:  # noqa: BLE001 - provenance must never fail a stage
         _warn("write the run record", err)
+
+
+# The job-log line the dashboard's run widgets read (scripts/monitoring.py RUN_RECORD_PREFIX): the record as this
+# stage left it, so the latest line of a run is its fullest view.
+RECORD_LOG_PREFIX = "run-record: "
+SUMMARY_FIELDS = ("sample_id", "run_name", "status", "route", "caller_outcome", "infra_retries", "app_version")
+
+
+def record_summary(record: dict, task: str) -> dict:
+    """The record's headline fields for the job log: one flat JSON object (Logs Insights reads its keys)."""
+    summary = {"task": task, **{k: record.get(k) for k in SUMMARY_FIELDS}}
+    summary["reference"] = (record.get("reference") or {}).get("name")
+    summary["gate"] = (record.get("gate") or {}).get("verdict")
+    return summary
 
 
 # The state machine's job names start with these (state_machine.asl.json); the stage (metric) name each runs.

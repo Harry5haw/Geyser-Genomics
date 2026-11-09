@@ -577,3 +577,13 @@ def test_route_stage_names_match_tasks():
     import tasks
 
     assert tasks.PREFLIGHT_METRIC == "Preflight" and tasks.MERGE_METRIC == "Align"
+
+
+def test_finish_logs_the_records_headline_for_the_dashboard(store, capsys):
+    provenance.begin("Align", "S1")
+    provenance.note(reference={"name": "chr20.fa", "md5": "x", "bytes": 1})
+    provenance.finish(store, "Success", 1.0)
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith(provenance.RECORD_LOG_PREFIX))
+    summary = json.loads(line[len(provenance.RECORD_LOG_PREFIX) :])
+    assert summary["task"] == "Align" and summary["sample_id"] == "S1" and summary["reference"] == "chr20.fa"
+    assert summary["route"] == "small" and summary["caller_outcome"] == "bcftools" and summary["gate"] is None
