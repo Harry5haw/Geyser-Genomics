@@ -86,7 +86,7 @@ def test_a_flat_grid_draws_instead_of_failing(client, figdir):
     # Every value the same whole number: a stated baseline would equal the top (a division by zero before).
     flat = "label,read,cycle,mean,A,C,G,T\n" + "".join(f"S1,R1,{c},36,36,36,36,36\n" for c in range(1, 4))
     (figdir / "quality-surface.csv").write_bytes(flat.encode())
-    assert figures.poster_svg(figures.load("quality")).count("<path ") == 1
+    assert figures.poster_svg(figures.load("quality")).count("<path ") == 2  # one ridge per ramp
     assert client.get("/figures/").status_code == 200
 
 
@@ -129,26 +129,35 @@ def test_the_poster_is_one_ridge_per_row_with_escaped_labels(figdir):
     (figdir / "coverage-terrain.csv").write_bytes(COVERAGE.replace("B · giraffe", "<b>x</b>").encode())
     svg = figures.poster_svg(figures.load("coverage"))
     assert svg.startswith('<svg class="poster"') and 'role="img"' in svg and "aria-label=" in svg
-    assert svg.count("<path ") == 2
+    assert svg.count("<path ") == 4  # one ridge per row per ramp (turbo, cividis)
     assert "<b>x</b>" not in svg and "&lt;b&gt;x&lt;/b&gt;" in svg
 
 
 def test_the_poster_fills_each_ridge_by_value(figdir):
     svg = figures.poster_svg(figures.load("coverage"))
     # One heat gradient per ridge, from the ridge's baseline (bottom of the scale) up to the top of the scale.
+    # One per ramp: the theme's CSS shows one group (.ramp-turbo, or .ramp-cividis under data-theme=contrast).
     gradients = re.findall(
-        r'<linearGradient id="(heat-coverage-\d+)" gradientUnits="userSpaceOnUse"[^>]*>(.*?)</linear', svg
+        r'<linearGradient id="(heat-coverage-\d+-\w+)" gradientUnits="userSpaceOnUse"[^>]*>(.*?)</linear', svg
     )
-    assert [g for g, _ in gradients] == ["heat-coverage-0", "heat-coverage-1"]
-    stops = re.findall(r'stop-color="(#[0-9a-f]{6})"', gradients[0][1])
-    assert stops == figures.HEAT  # dark (low) at the baseline, light (high) at the top
-    assert svg.count('fill="url(#heat-coverage-') == 2
+    assert [g for g, _ in gradients] == [
+        "heat-coverage-0-turbo",
+        "heat-coverage-0-cividis",
+        "heat-coverage-1-turbo",
+        "heat-coverage-1-cividis",
+    ]
+    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', gradients[0][1]) == figures.HEAT_TURBO
+    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', gradients[1][1]) == figures.HEAT_CIVIDIS
+    for ramp in ("turbo", "cividis"):
+        group = re.search(rf'<g class="ramp-{ramp}">(.*?)</g>', svg).group(1)
+        assert group.count(f'-{ramp})"') == 2 and "style=" not in svg  # attributes only (CSP)
 
 
 def test_the_colour_bar_shows_the_scale_with_its_cap(figdir):
     coverage = figures.legend_svg(figures.load("coverage"))
     assert coverage.startswith('<svg class="colorbar"') and 'role="img"' in coverage
-    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', coverage) == figures.HEAT
+    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', coverage) == figures.HEAT_TURBO + figures.HEAT_CIVIDIS
+    assert re.findall(r'<rect class="(ramp-\w+)"', coverage) == ["ramp-turbo", "ramp-cividis"]
     grid = figures.load("coverage")
     assert [t for t in re.findall(r">([^<]+)</text>", coverage)] == [
         "0",
@@ -174,8 +183,10 @@ def test_the_poster_resamples_long_rows(figdir):
 
 def test_grid_json_is_what_the_renderer_reads(figdir):
     data = json.loads(figures.grid_json(figures.load("quality")))
-    assert set(data) == {"title", "x", "rows", "z", "values", "ramp"}
-    assert data["ramp"] == figures.HEAT  # surface.js colours by the same stops as the poster and the colour bar
+    assert set(data) == {"title", "x", "rows", "z", "values", "ramp", "ramps"}
+    assert data["ramp"] == figures.HEAT == figures.HEAT_TURBO  # the default, for a page cached before the themes
+    # surface.js picks one by data-theme: the same stops as the poster and the colour bar.
+    assert data["ramps"] == {"turbo": figures.HEAT_TURBO, "cividis": figures.HEAT_CIVIDIS}
     assert data["x"] == {
         "label": "Sequencing cycle",
         "unit": "cycle",

@@ -29,23 +29,60 @@ def test_the_web_figures_use_the_same_heat_ramp():
 
     path = os.path.join(os.path.dirname(__file__), "..", "web", "samples", "figures.py")
     tree = ast.parse(open(path, encoding="utf-8").read())
-    web = next(
-        ast.literal_eval(node.value)
+    lists = {
+        t.id: ast.literal_eval(node.value)
         for node in tree.body
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "HEAT" for t in node.targets)
-    )
-    assert web == figkit.HEAT
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.List)
+        for t in node.targets
+        if getattr(t, "id", "").startswith("HEAT_")
+    }
+    assert lists == {"HEAT_TURBO": figkit.HEAT_TURBO, "HEAT_CIVIDIS": figkit.HEAT_CIVIDIS}
+    assert figkit.HEAT == figkit.HEAT_TURBO  # the default ramp, on both sides (web: HEAT = HEAT_TURBO)
 
 
-def test_heat_ramp_lightness_rises_and_text_flips_on_the_dark_end():
-    def luminance(h):
-        r, g, b = (int(h[i : i + 2], 16) / 255 for i in (1, 3, 5))
-        lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
-        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+def _luminance(h):
+    r, g, b = (int(h[i : i + 2], 16) / 255 for i in (1, 3, 5))
+    lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
 
-    lum = [luminance(h) for h in figkit.HEAT]
+
+def _contrast(a, b):
+    hi, lo = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def test_cividis_lightness_rises_and_text_flips_on_the_dark_end():
+    # The high-contrast ramp only: Turbo is a rainbow, dark at both ends by design.
+    lum = [_luminance(h) for h in figkit.HEAT_CIVIDIS]
     assert lum == sorted(lum) and len(set(lum)) == len(lum)  # low = dark, high = light, every step lighter
-    assert figkit.ink_on(0.0) == "#ffffff" and figkit.ink_on(1.0) == figkit.INK
+    assert figkit.ink_on(0.0, figkit.HEAT_CIVIDIS) == "#ffffff"
+    assert figkit.ink_on(1.0, figkit.HEAT_CIVIDIS) == figkit.INK
+
+
+def test_turbo_is_googles_turbo_sampled_from_010_to_090():
+    # The reference: matplotlib's "turbo", Google's lookup table (Mikhailov 2019, Apache 2.0).
+    from matplotlib import colormaps
+    from matplotlib.colors import to_hex
+
+    turbo, n = colormaps["turbo"], len(figkit.HEAT_TURBO)
+    assert n == 15
+    assert figkit.HEAT_TURBO == [to_hex(turbo(0.10 + 0.80 * k / (n - 1))) for k in range(n)]
+
+
+@pytest.mark.parametrize("stage", ["#f3efe6", "#262626", "#ffffff"])  # --deep: light, dark, high contrast
+def test_both_ends_of_turbo_clear_2_to_1_on_each_stage(stage):
+    assert _contrast(figkit.HEAT_TURBO[0], stage) >= 2.0
+    assert _contrast(figkit.HEAT_TURBO[-1], stage) >= 2.0
+
+
+def test_cividis_clears_2_to_1_on_the_high_contrast_stage():
+    assert min(_contrast(c, "#ffffff") for c in figkit.HEAT_CIVIDIS) >= 2.0  # data-theme="contrast": #fff
+
+
+def test_text_on_turbo_cells_is_whichever_contrasts_more():
+    # Dark at both ends (white text), bright in the middle (ink).
+    assert figkit.ink_on(0.0) == "#ffffff" and figkit.ink_on(1.0) == "#ffffff"
+    assert figkit.ink_on(0.5) == figkit.INK
 
 
 # ---- cost x turnaround ----

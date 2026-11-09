@@ -21,13 +21,37 @@ from xml.sax.saxutils import escape
 
 from django.conf import settings
 
-# The heat ramp: cividis from 0 to 0.742 (low = dark navy, high = khaki). Perceptually uniform with lightness rising
-# monotonically, so it reads in greyscale and with any colour-vision deficiency; the light end is trimmed so the
-# highest values still clear 2:1 against the beige stage (#f3efe6). Seven stops, each >= 0.06 apart in lightness;
-# the renderer and the gradients interpolate between them. The same stops as scripts/figures/figkit.py HEAT, so a
-# value has the same colour here as in the 2D figures (tests/test_figures.py checks they agree).
-# surface.js gets them in the grid JSON: this list is the web page's only copy.
-HEAT = [
+# The heat ramps. The same stops as scripts/figures/figkit.py (tests/test_figures.py checks they agree), so a value
+# has the same colour here as in the 2D figures. surface.js gets both in the grid JSON and picks one by the page's
+# theme (data-theme on <html>: Turbo, or cividis under "contrast"); the poster and colour bar carry both, and the
+# theme's CSS shows one (.ramp-turbo / .ramp-cividis).
+#
+# HEAT_TURBO, the default "rainbow heatcam": Google's Turbo colormap (Anton Mikhailov, 2019, "Turbo, An Improved
+# Rainbow Colormap for Visualization", Apache License 2.0), 15 stops sampled from 0.10 to 0.90 of its lookup table
+# (matplotlib's "turbo"). The ends are trimmed so the lowest and highest values both clear 2:1 against the light
+# (#f3efe6) and the dark (#262626) stage.
+HEAT_TURBO = [
+    "#4559cb",
+    "#4680f6",
+    "#3aa3fc",
+    "#20c7df",
+    "#19e3b9",
+    "#38f491",
+    "#71fe5f",
+    "#a4fc3c",
+    "#c8ef34",
+    "#e9d539",
+    "#fbb838",
+    "#fe9029",
+    "#f36315",
+    "#e14109",
+    "#c32503",
+]
+# HEAT_CIVIDIS, for the high-contrast theme: cividis from 0 to 0.742 (low = dark navy, high = khaki). Perceptually
+# uniform with lightness rising monotonically, so it reads in greyscale and with any colour-vision deficiency; the
+# light end is trimmed so the highest values still clear 2:1 against the beige stage. Seven stops, each >= 0.06
+# apart in lightness.
+HEAT_CIVIDIS = [
     "#00224e",
     "#18376f",
     "#424e6c",
@@ -36,6 +60,8 @@ HEAT = [
     "#999277",
     "#b9ab6d",
 ]
+HEAT = HEAT_TURBO  # the default ramp
+RAMPS = {"turbo": HEAT_TURBO, "cividis": HEAT_CIVIDIS}
 
 
 @dataclass(frozen=True)
@@ -305,7 +331,8 @@ def grid_json(grid: Grid) -> str:
                 "base": grid.base,
             },
             "values": [[None if v is None else round(v, 2) for v in line] for line in grid.values],
-            "ramp": HEAT,
+            "ramp": HEAT,  # the default; kept for a page cached before the theme switch
+            "ramps": RAMPS,  # surface.js picks one by data-theme
         },
         separators=(",", ":"),
     )
@@ -331,7 +358,7 @@ def poster_svg(grid: Grid) -> str:
     span = (
         top - grid.base
     ) or 1.0  # a flat grid (every value equal to the baseline) draws flat, not a ZeroDivisionError
-    paths, gradients = [], []
+    paths, gradients = {}, []
     for i, name in enumerate(grid.rows):
         base = MARGIN_T + band * (i + 2.5)
         points = []
@@ -346,16 +373,18 @@ def poster_svg(grid: Grid) -> str:
             continue
         line = " ".join(points)
         first, last = points[0].split(",")[0], points[-1].split(",")[0]
-        gid = f"heat-{f.name}-{i}"  # ids are page-wide: several posters share the page
-        gradients.append(
-            f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="0" y1="{base:.1f}" x2="0" '
-            f'y2="{base - band * 2.5:.1f}">{_stops()}</linearGradient>'
-        )
         # The stroke is the stage colour: a gap that keeps overlapping ridges apart (CSS: .poster path).
-        paths.append(
-            f'<path d="M{first},{base:.1f} L{line} L{last},{base:.1f}Z" fill="url(#{gid})">'
-            f"<title>{escape(name)}</title></path>"
-        )
+        # One gradient and one ridge per ramp; the theme's CSS shows one group (.ramp-turbo / .ramp-cividis).
+        for ramp in RAMPS:
+            gid = f"heat-{f.name}-{i}-{ramp}"  # ids are page-wide: several posters share the page
+            gradients.append(
+                f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="0" y1="{base:.1f}" x2="0" '
+                f'y2="{base - band * 2.5:.1f}">{_stops(ramp)}</linearGradient>'
+            )
+            paths.setdefault(ramp, []).append(
+                f'<path d="M{first},{base:.1f} L{line} L{last},{base:.1f}Z" fill="url(#{gid})">'
+                f"<title>{escape(name)}</title></path>"
+            )
     ticks = []
     named = grid.x_ticks or [(x0 + (x1 - x0) * k / 4, f"{x0 + (x1 - x0) * k / 4:.3g}") for k in range(5)]
     for value, text in named:
@@ -369,14 +398,15 @@ def poster_svg(grid: Grid) -> str:
     return (
         f'<svg class="poster" viewBox="0 0 {POSTER_W} {POSTER_H}" role="img" aria-label="{label}">'
         + f"<defs>{''.join(gradients)}</defs>"
-        + "".join(paths)
+        + "".join(f'<g class="ramp-{ramp}">{"".join(p)}</g>' for ramp, p in paths.items())
         + f'<g class="ticks">{"".join(ticks)}</g></svg>'
     )
 
 
-def _stops() -> str:
-    last = len(HEAT) - 1
-    return "".join(f'<stop offset="{k / last:.3f}" stop-color="{c}"/>' for k, c in enumerate(HEAT))
+def _stops(ramp: str = "turbo") -> str:
+    stops = RAMPS[ramp]
+    last = len(stops) - 1
+    return "".join(f'<stop offset="{k / last:.3f}" stop-color="{c}"/>' for k, c in enumerate(stops))
 
 
 def _num(v: float) -> str:
@@ -409,7 +439,12 @@ def legend_svg(grid: Grid) -> str:
     label = escape(f"Colour scale: {f.z_label} from {_num(grid.base)} to {_num(top)} {f.z_unit}")
     return (
         f'<svg class="colorbar" viewBox="-20 0 {w + 40} {bar_h + 22}" role="img" aria-label="{label}">'
-        f'<defs><linearGradient id="heat-bar-{f.name}">{_stops()}</linearGradient></defs>'
-        f'<rect width="{w}" height="{bar_h}" rx="3" fill="url(#heat-bar-{f.name})"/>'
-        f'<g class="ticks">{"".join(ticks)}</g></svg>'
+        + "<defs>"
+        + "".join(f'<linearGradient id="heat-bar-{f.name}-{r}">{_stops(r)}</linearGradient>' for r in RAMPS)
+        + "</defs>"
+        + "".join(
+            f'<rect class="ramp-{r}" width="{w}" height="{bar_h}" rx="3" fill="url(#heat-bar-{f.name}-{r})"/>'
+            for r in RAMPS
+        )
+        + f'<g class="ticks">{"".join(ticks)}</g></svg>'
     )
