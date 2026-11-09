@@ -47,18 +47,17 @@ HEAT_TURBO = [
     "#e14109",
     "#c32503",
 ]
-# HEAT_CIVIDIS, for the high-contrast theme: cividis from 0 to 0.742 (low = dark navy, high = khaki). Perceptually
-# uniform with lightness rising monotonically, so it reads in greyscale and with any colour-vision deficiency; the
-# light end is trimmed so the highest values still clear 2:1 against the beige stage. Seven stops, each >= 0.06
-# apart in lightness.
+# HEAT_CIVIDIS, for the high-contrast (low-vision, black-stage) theme: cividis from 0.20 to 1 (low = slate blue,
+# high = yellow). Perceptually uniform with lightness rising monotonically, so it reads in greyscale and with any
+# colour-vision deficiency; the dark end is trimmed so the lowest values still clear 2:1 against the black stage.
 HEAT_CIVIDIS = [
-    "#00224e",
-    "#18376f",
-    "#424e6c",
-    "#5f636f",
-    "#7b7a78",
-    "#999277",
-    "#b9ab6d",
+    "#35456c",
+    "#575d6d",
+    "#757575",
+    "#948e77",
+    "#b7a96e",
+    "#dbc75a",
+    "#fee838",
 ]
 HEAT = HEAT_TURBO  # the default ramp
 RAMPS = {"turbo": HEAT_TURBO, "cividis": HEAT_CIVIDIS}
