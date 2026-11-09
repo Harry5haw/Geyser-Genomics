@@ -91,3 +91,13 @@ test("colour follows z.colour, clamped at both ends", () => {
   const h = build({ ...grid([[1.5, 2, 4]]), z: { label: "z", unit: "u", max: 4, clip: null, base: 0, colour: [1, 2] } });
   assert.deepStrictEqual(wallLevels(h), [0.5, 1]); // 1.5 is halfway; 2 (and above) is the top
 });
+
+// Ridge labels are numbers just past and above the end of each ridge (x > 1, over its last value); the names are in the
+// template's ridge key (figures.html), so long names never sit on the surface.
+test("ridges are labelled by number, just past and above the end of each ridge", () => {
+  const g = build(grid([[0, 2, 4], [4, 2, 0], [1, 1, 1]]));
+  const rows = g.labels.filter((l) => l.cls === "row");
+  assert.strictEqual(rows.map((l) => l.text).join(","), "1,2,3"); // (arrays from the vm context: compare as text)
+  assert.ok(rows.every((l) => l.p[0] > 1 && l.p[1] > 0));
+  assert.ok(rows[0].p[1] > rows[1].p[1]); // above its own last value (4 vs 0)
+});

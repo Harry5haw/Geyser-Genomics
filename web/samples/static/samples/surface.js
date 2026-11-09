@@ -108,7 +108,7 @@
     labels.push({ p: [0, 0, D + 0.32], text: `${data.x.label} (${data.x.unit})`, cls: "axis" });
     for (let k = 0; k <= 2; k++) labels.push({ p: [-1.06, (H * k) / 2, -D], text: fmt(base + (span * k) / 2), cls: "z" });
     labels.push({ p: [-1, H + 0.12, -D], text: `${data.z.label} (${data.z.unit})`, cls: "axis" });
-    rows.forEach((name, i) => labels.push({ p: [1.04, 0, zc(i)], text: name, cls: "row" }));
+    rows.forEach((_, i) => labels.push({ p: [1.07, height(vals[i][m - 1] ?? base) + 0.07, zc(i)], text: `${i + 1}`, cls: "row" }));
     return { pos, col, lines: new Float32Array(lines), labels, points, top, xs, rows, vals };
   }
 
@@ -182,7 +182,7 @@
     const HOME = { yaw: -0.55, pitch: 0.5, dist: 3.3 };
     const view = { ...HOME };
     let matrix = null, frame = 0, cursor = null, W = 1, Hpx = 1; // the stage's size, read once per draw
-    const at = [0, H * 0.2, 0.12]; // below and in front of the centre: the floor edge and ticks stay in the box
+    const at = [0, H * 0.2, 0.12]; // the floor edge and ticks stay in the box
 
     const project = (p) => {
       const m = matrix, x = p[0], y = p[1], z = p[2];
@@ -197,7 +197,7 @@
         at[2] + view.dist * Math.cos(view.pitch) * Math.cos(view.yaw)];
       matrix = mul(perspective(0.75, w / h || 1, 0.1, 50), lookAt(eye, at));
       gl.draw({ matrix, width: Math.round(w * dpr), height: Math.round(h * dpr) });
-      let lastRowY = -1e9; // skip row labels < 16 px from the last one shown
+      let lastRowY = -1e9; // skip row labels < 16 px apart
       overlay.childNodes.forEach((s, k) => {
         const [x, y, depth] = project(g.labels[k].p);
         s.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px)`;

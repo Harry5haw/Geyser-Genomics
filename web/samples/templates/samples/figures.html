@@ -20,6 +20,7 @@
         <div class="labels" aria-hidden="true"></div>
         <span class="marker" hidden></span>
         <div class="readout" role="status" aria-live="polite" hidden></div>
+        <ol class="ridge-key">{% for row in card.grid.rows %}<li>{{ row }}</li>{% endfor %}</ol>
       </div>
       <div class="legend">
         <span>{{ card.figure.z_label }} ({{ card.figure.z_unit }})</span>

@@ -386,3 +386,13 @@ def test_colour_knots_spread_the_ramp_by_rank():
     # No spread: the height scale, two knots.
     flat = G(f, [1, 2], ["a"], [[3.0, 3.0]], base=3.0, vmin=3.0, vmax=3.0)
     assert figures.colour_knots(flat) == [3.0, 3.0]
+
+
+def test_the_3d_ridge_key_lists_every_row_in_order_escaped(client, figdir):
+    # surface.js numbers the ridges at their far end; the names are this key (shown only in a live 3D view).
+    from django.utils.html import escape
+
+    body = client.get("/figures/").content.decode()
+    grid = figures.load("coverage")
+    key = re.search(r'id="fig-coverage".*?<ol class="ridge-key">(.*?)</ol>', body, re.S).group(1)
+    assert re.findall(r"<li>(.*?)</li>", key) == [escape(r) for r in grid.rows]
