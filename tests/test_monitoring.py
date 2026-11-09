@@ -124,7 +124,9 @@ def test_dashboard_shape(schema, sfn_arn):
             assert any(props["query"].startswith(f"SOURCE '{g}' | ") for g in groups)
         if w["type"] == "metric":
             props = w["properties"]
-            assert props["region"] == "eu-west-2" and props["metrics"]
+            # AWS/Billing exists only in us-east-1: the one cross-region widget (O9).
+            billing = props["metrics"][0][:2] == ["AWS/Billing", "EstimatedCharges"]
+            assert props["region"] == ("us-east-1" if billing else "eu-west-2") and props["metrics"]
             ids = [row_options(r).get("id") for r in props["metrics"]]
             assert all(METRIC_ID_RE.match(i) for i in ids), ids
             assert len(ids) == len(set(ids)), f"duplicate ids in {props['title']}"
@@ -550,16 +552,20 @@ def test_quality_trend_query_bins_by_day():
 
 
 def test_dashboard_quality_widgets_on_by_default_and_optional():
-    logs = [w for w in monitoring.build_dashboard(queue_wait=False)["widgets"] if w["type"] == "log"]
+    logs = [w for w in monitoring.build_dashboard(queue_wait=False, runs=False)["widgets"] if w["type"] == "log"]
     assert [w["properties"]["view"] for w in logs] == ["table", "table", "timeSeries"]
     assert "outside quality thresholds" in logs[1]["properties"]["title"]
-    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod", queue_wait=False)
+    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod", queue_wait=False, runs=False)
     assert all(
         w["properties"]["query"].startswith("SOURCE '/aws/batch/geyser-prod' | ")
         for w in custom["widgets"]
         if w["type"] == "log"
     )
-    assert not [w for w in monitoring.build_dashboard(quality=False, queue_wait=False)["widgets"] if w["type"] == "log"]
+    assert not [
+        w
+        for w in monitoring.build_dashboard(quality=False, queue_wait=False, runs=False)["widgets"]
+        if w["type"] == "log"
+    ]
 
 
 def test_dashboard_cli_quality_options(capsys, monkeypatch):
@@ -567,7 +573,7 @@ def test_dashboard_cli_quality_options(capsys, monkeypatch):
     deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/other"])
     body = json.loads(capsys.readouterr().out)
     assert any(w["type"] == "log" and "SOURCE '/aws/batch/other'" in w["properties"]["query"] for w in body["widgets"])
-    deploy_dashboard.main(["--dry-run", "--no-quality"])
+    deploy_dashboard.main(["--dry-run", "--no-quality", "--no-runs"])
     quality = [
         w
         for w in json.loads(capsys.readouterr().out)["widgets"]
@@ -688,3 +694,60 @@ def test_dashboard_cli_no_queue_wait(capsys, monkeypatch):
     monkeypatch.delenv("SFN_ARN", raising=False)
     deploy_dashboard.main(["--dry-run", "--no-queue-wait"])
     assert "Batch wait" not in capsys.readouterr().out
+
+
+def test_run_widgets_read_the_run_record_line_and_spot_retries():
+    widgets = {w["properties"]["title"]: w for w in monitoring.run_widgets()}
+    runs = widgets["Recent runs (from the run record)"]["properties"]["query"]
+    assert runs.startswith(f"SOURCE '{monitoring.BATCH_LOG_GROUP}' | filter @message like /^run-record:/")
+    for field in ("caller_outcome", "route", "infra_retries", "gate", "reference", "app_version"):
+        assert f'"{field}"' in runs
+    outcome = next(w for t, w in widgets.items() if t.startswith("Whose calls"))["properties"]["query"]
+    assert "stats count(*) as runs by outcome" in outcome
+    spot = next(w for t, w in widgets.items() if t.startswith("Jobs retried"))["properties"]["query"]
+    assert spot.startswith(f"SOURCE '{monitoring.BATCH_EVENTS_LOG_GROUP}' | ")
+    assert "ispresent(detail.attempts.0.statusReason)" in spot
+
+
+def test_run_record_parse_matches_the_apps_log_line():
+    # The line app/provenance.py writes: the prefix and its JSON keys (json.dumps: '"key": value').
+    import provenance
+
+    if not hasattr(provenance, "RECORD_LOG_PREFIX"):
+        pytest.skip("the run-record log line comes with #251")
+    assert provenance.RECORD_LOG_PREFIX == monitoring.RUN_RECORD_PREFIX
+    assert set(monitoring.RUN_RECORD_FIELDS) == {"task", *provenance.SUMMARY_FIELDS, "reference", "gate"}
+
+
+def test_gpu_widgets_only_with_the_aggregated_schema_and_deepvariant():
+    titles = [w["properties"].get("title", "") for w in monitoring.build_dashboard()["widgets"]]
+    assert sum("on the GPU" in t for t in titles) == 2
+    per_sample = monitoring.build_dashboard(schema="per-sample")["widgets"]
+    assert not [w for w in per_sample if "on the GPU" in w["properties"].get("title", "")]
+    core_only = monitoring.build_dashboard(groups=["core"])["widgets"]
+    assert not [w for w in core_only if "on the GPU" in w["properties"].get("title", "")]
+
+
+def test_header_links_the_benchmark_history():
+    header = monitoring.build_dashboard()["widgets"][0]["properties"]["markdown"]
+    assert monitoring.BENCHMARKS_URL in header
+
+
+def test_spend_row_shows_charges_and_the_guardrail_lines():
+    charges, text = monitoring.spend_widgets()
+    assert charges["properties"]["region"] == "us-east-1"
+    assert charges["properties"]["metrics"][0][:4] == ["AWS/Billing", "EstimatedCharges", "Currency", "USD"]
+    lines = {a["value"] for a in charges["properties"]["annotations"]["horizontal"]}
+    g = monitoring.GUARDRAILS
+    assert lines == {g["kill_switch_usd"], g["run_block_usd"], g["gpu_block_usd"]}
+    assert g["gpu_block_usd"] < g["run_block_usd"] < g["kill_switch_usd"] < g["cap_usd"]
+    md = text["properties"]["markdown"]
+    assert f"${g['cap_usd']}" in md and "geyser-claude-kill-switch" in md and monitoring.BUDGETS_URL in md
+    assert not [w for w in monitoring.build_dashboard(spend=False)["widgets"] if "Estimated charges" in str(w)]
+
+
+def test_running_now_reads_usage_and_every_bucket():
+    vcpus, buckets = monitoring.running_now_widgets("eu-west-2")
+    exprs = " ".join(r[0]["expression"] for r in vcpus["properties"]["metrics"])
+    assert 'Service="EC2"' in exprs and 'Resource="vCPU"' in exprs and 'Service="Fargate"' in exprs
+    assert 'MetricName="BucketSizeBytes"' in buckets["properties"]["metrics"][0][0]["expression"]
