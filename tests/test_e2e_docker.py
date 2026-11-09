@@ -320,7 +320,7 @@ def test_sharded_calling_gives_the_same_calls_as_one_job(tmp_path, capfd, paired
     assert record["status"] == "succeeded"  # the variants-only run inherits QC and align (provenance.UPSTREAM)
     assert record["stages"]["CallVariants"]["run_name"] != record["stages"]["Align"]["run_name"]
     metrics = [json.loads(line) for line in (root / "metrics" / "metrics.jsonl").read_text().splitlines()]
-    assert sum(m["task"] == tasks.SHARD_METRIC for m in metrics) == 8
+    assert sum(m.get("task") == tasks.SHARD_METRIC for m in metrics) == 8  # value lines (QualityGateValue) have no task
 
 
 def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
@@ -350,3 +350,87 @@ def test_gene_models_give_consequences_for_genic_snps_only(tmp_path, capfd):
     genes = {c.split("|")[1] for c in consequences.values()}
     assert genes == {"SYNTHG1", "SYNTHG2"}
     assert (root / "variants" / "SYNTH001.csq.vcf.gz.tbi").exists()
+
+
+def test_alphagenome_annotation_with_the_fake_backend(tmp_path, capfd):
+    # 3.0: run_local --annotate alphagenome (fake by default offline) after the gate. The annotated VCF must be
+    # one bcftools reads back, with its index serving a region query, and the run stays succeeded.
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root)])
+    exit_code, log = _run(root, "SYNTH001", capfd, "--annotate", "alphagenome")
+    assert exit_code == 0, log
+    assert "AlphaGenome (fake): 10 of 10 candidate variants selected" in log
+    script = (
+        "set -e; cd /data; "
+        "bcftools query -r synth1 -f '%POS\t%INFO/AG_AVI\t%INFO/AG_SOURCE\n' variants/SYNTH001.alphagenome.vcf.gz"
+    )
+    out = subprocess.run(
+        run_local.docker_command(["bash", "-c", script], str(root), os.environ.get("GEYSER_IMAGE", "geyser-app")),
+        capture_output=True,
+        text=True,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    rows = [line.split("\t") for line in out.stdout.splitlines()]
+    assert len(rows) == 10 and {r[2] for r in rows} == {"fake"} and all(float(r[1]) >= 0 for r in rows)
+    tsv = (root / "stats" / "SYNTH001" / "alphagenome.tsv").read_text().splitlines()
+    assert len([line for line in tsv if not line.startswith("#")]) == 11  # the column header + 10 variants
+    record = json.loads((root / "runs" / "SYNTH001.provenance.json").read_text())
+    assert record["status"] == "succeeded" and record["stages"]["Annotate"]["status"] == "Success"
+    assert record["alphagenome"]["source"] == "fake" and record["alphagenome"]["scored"] == 10
+
+
+# --- v1.3 "Big inputs": the large route and region-streamed calling (docs/design/genome-scale-app.md) -----------
+
+
+def _flagstat(root, sample):
+    import tasks
+
+    return tasks.parse_flagstat((root / "stats" / sample / "flagstat.txt").read_text())
+
+
+@pytest.mark.parametrize("paired", [False, True])
+def test_the_large_route_gives_the_single_jobs_calls(tmp_path, capfd, paired):
+    # preflight into 4 chunks, align each (no markdup), merge + markdup once: the same CRAM content as one align
+    # job, so the same calls. Duplicate counts may differ by a hair: markdup's choice among equally good
+    # duplicates can depend on input order, which chunking changes (documented tolerance: 1% of duplicates).
+    import tasks
+
+    sample = "PAIRED001" if paired else "SYNTH001"
+    extra = ["--sample", sample, "--paired", "--leading-gap", str(tasks.BWA_MEM2_SAFE_N_PREFIX)] if paired else []
+    single, chunked = tmp_path / "single", tmp_path / "chunked"
+    for root in (single, chunked):
+        make_test_data.main(["--root", str(root), *extra])
+    code, log = _run(single, sample, capfd)
+    assert code == 0, log
+    code, log = _run(chunked, sample, capfd, "--chunks", "4")
+    assert code == 0, log
+    assert "Pre-flight OK" in log and "Merging 4 chunk BAMs" in log
+    assert _vcf_records(chunked / "variants" / f"{sample}.vcf.gz") == _vcf_records(
+        single / "variants" / f"{sample}.vcf.gz"
+    )
+    a, b = _flagstat(single, sample), _flagstat(chunked, sample)
+    for key in ("in_total", "mapped", "primary_mapped") + (("properly_paired",) if paired else ()):
+        assert a[key] == b[key], key
+    assert abs(a["duplicates"] - b["duplicates"]) <= max(1, a["duplicates"] // 100)
+    report = json.loads((chunked / "qc_reports" / f"{sample}.preflight.json").read_text())
+    assert report["ok"] and report["chunk_count"] == 4
+    record = json.loads((chunked / "runs" / f"{sample}.provenance.json").read_text())
+    assert record["status"] == "succeeded" and record["stages"]["Align"]["status"] == "Success"
+
+
+def test_calling_shards_read_their_region_in_place(tmp_path, capfd, monkeypatch):
+    # align writes the CRAM's ETag on its .crai, so every shard reads only its region; the merged calls equal
+    # those of shards that download the CRAM (GEYSER_STREAM_REGIONS=0), which equal the unsharded call.
+    streamed, downloaded = tmp_path / "streamed", tmp_path / "downloaded"
+    for root in (streamed, downloaded):
+        make_test_data.main(["--root", str(root)])
+    code, log = _run(streamed, "SYNTH001", capfd, "--shard-window", "8000")
+    assert code == 0, log
+    assert log.count("Read the region in place") >= 2
+    monkeypatch.setenv("GEYSER_STREAM_REGIONS", "0")
+    code, log = _run(downloaded, "SYNTH001", capfd, "--shard-window", "8000")
+    assert code == 0, log
+    assert "Read the region in place" not in log
+    assert _vcf_records(streamed / "variants" / "SYNTH001.vcf.gz") == _vcf_records(
+        downloaded / "variants" / "SYNTH001.vcf.gz"
+    )

@@ -1,0 +1,138 @@
+name: Web performance
+
+# Lighthouse CI on the web UI with performance budgets that fail the job (W4 of the web plan). Offline only:
+# no AWS credentials, no OIDC, nothing deployed. The UI runs on the runner against a local storage folder
+# that a real pipeline run (synthetic data, Docker) has just filled, so the pages carry real results.
+# Two sites are measured from that one folder: the live Django UI (port 8000), and the static site that
+# `manage.py publish` writes for hosting (port 8001: list, detail, figures and the upload page, which exists only
+# there), served by scripts/serve_site.py as S3 + CloudFront serve it: the publisher's Cache-Control, gzip, and the
+# hosted site's strict CSP from csp-hashes.json.
+#
+# Budgets, per page, on Lighthouse's mobile defaults (emulated phone, simulated slow 4G and CPU throttling):
+#   - HTML+CSS+JS <= 30 KB transferred (scripts/web_perf_budget.py; data downloads don't count);
+#   - LCP < 1 s, CLS 0, TBT < 50 ms (lighthouserc.json, asserted by lhci on the median of 3 runs);
+#   - no console errors in any run (lhci's errors-in-console): under the strict CSP an inline block without its
+#     hash, or a style="" attribute, is blocked and logged there.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - "lighthouserc.json"
+      - "scripts/web_perf_budget.py"
+      - "scripts/serve_site.py"
+      - ".github/workflows/web-perf.yml"
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "web/**"
+      - "lighthouserc.json"
+      - "scripts/web_perf_budget.py"
+      - "scripts/serve_site.py"
+      - ".github/workflows/web-perf.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-perf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lighthouse:
+    name: Lighthouse CI (the live UI and the published site, mobile)
+    # Draft PRs too: measuring a UI change before it's ready is the point. The image build reads main's cache.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - run: pip install -r requirements-dev.txt
+
+      # Seed: one synthetic sample through the real pipeline (QC report, CRAM, VCF, stats, gate verdict,
+      # run record), exactly as the demo button would leave it.
+      - uses: docker/setup-buildx-action@v4
+      - name: Build geyser-app (cached)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          tags: geyser-app
+          load: true
+          cache-from: type=gha,scope=geyser-app
+      - name: Seed demo data (one synthetic sample, the real pipeline)
+        run: |
+          python scripts/make_test_data.py --root local_bucket
+          python scripts/run_local.py --root local_bucket --sample SYNTH001 --reference synthetic_ref.fa --check
+
+      # Production mode, as users get it: `web/dev.py --production` (W1, #214) turns DEBUG off and serves
+      # collectstatic's hashed, precompressed, immutable assets. Before it exists, the fallback is runserver with
+      # DEBUG off and WhiteNoise serving the plain static files. Either way a throwaway key and no worker.
+      - name: Start the web UI (DEBUG off)
+        env:
+          DJANGO_DEBUG: "0"
+          STORAGE_BACKEND: local
+          LOCAL_STORAGE_DIR: ${{ github.workspace }}/local_bucket
+        run: |
+          export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          if python web/dev.py --help | grep -q -- "--production"; then
+            mode="web/dev.py --production (collectstatic: hashed, compressed, immutable assets)"
+            nohup python web/dev.py --production --no-worker --root local_bucket --port 8000 > web-server.log 2>&1 &
+          else
+            mode="manage.py runserver, DEBUG off (plain static files; dev.py has no --production yet)"
+            nohup python web/manage.py runserver 127.0.0.1:8000 --noreload > web-server.log 2>&1 &
+          fi
+          echo "Server: $mode" | tee -a "$GITHUB_STEP_SUMMARY"
+          for url in http://127.0.0.1:8000/ http://127.0.0.1:8000/samples/SYNTH001/ http://127.0.0.1:8000/figures/; do
+            for i in $(seq 1 30); do curl -fsS -o /dev/null "$url" && break; sleep 1; done
+            curl -fsS -o /dev/null "$url" || { cat web-server.log; exit 1; }
+          done
+
+      # The hosted site as visitors get it: `publish --all` with a web API (so the upload page is published too),
+      # served on 8001 with a stub of the API's status call on the same origin. The data-lake origin in the CSP is
+      # a placeholder: nothing here talks to S3.
+      - name: Publish the static site and serve it as the hosted site does
+        env:
+          DJANGO_DEBUG: "0"
+          STORAGE_BACKEND: local
+          LOCAL_STORAGE_DIR: ${{ github.workspace }}/local_bucket
+        run: |
+          export DJANGO_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          python web/manage.py publish --all --out "$RUNNER_TEMP/site" --api-base http://127.0.0.1:8001/api
+          nohup python scripts/serve_site.py "$RUNNER_TEMP/site" --port 8001 --api-prefix /api \
+            --connect https://data-lake.s3.eu-west-2.amazonaws.com > site-server.log 2>&1 &
+          for url in http://127.0.0.1:8001/ http://127.0.0.1:8001/samples/SYNTH001/ http://127.0.0.1:8001/figures/ \
+                     http://127.0.0.1:8001/uploads/; do
+            for i in $(seq 1 30); do curl -fsS -o /dev/null "$url" && break; sleep 1; done
+            curl -fsS -o /dev/null "$url" || { cat site-server.log; exit 1; }
+          done
+
+      - name: Lighthouse (3 runs per page)
+        id: collect
+        run: npx --yes @lhci/cli@0.16.0 collect --config=lighthouserc.json
+      - name: Page weight budget and summary
+        if: always() && steps.collect.outcome == 'success'
+        run: python scripts/web_perf_budget.py --dir .lighthouseci --budget-kb 30 --config lighthouserc.json
+      - name: Timing budgets (LCP, CLS, TBT) and console errors
+        if: always() && steps.collect.outcome == 'success'
+        run: npx --yes @lhci/cli@0.16.0 assert --config=lighthouserc.json
+      - name: Write the HTML reports
+        if: always() && steps.collect.outcome == 'success'
+        run: npx --yes @lhci/cli@0.16.0 upload --config=lighthouserc.json
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: lighthouse-${{ github.run_id }}
+          path: |
+            .lighthouseci/
+            web-server.log
+            site-server.log
+          if-no-files-found: warn
+          include-hidden-files: true  # .lighthouseci/ (upload-artifact skips dot-directories by default)
+          retention-days: 30

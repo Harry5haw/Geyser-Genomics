@@ -26,6 +26,7 @@ for _sub in ("app", "scripts"):
 
 import make_test_data  # noqa: E402
 import run_local  # noqa: E402
+from metrics import metrics_from_env  # noqa: E402
 from provenance import STAGE_VCF, read_part, read_record, record_key, sample_vcf_key  # noqa: E402
 from storage import LocalStorage, ObjectNotFound, storage_from_env  # noqa: E402
 from tasks import (  # noqa: E402
@@ -58,6 +59,7 @@ def _load_trigger():
 _trigger = _load_trigger()
 parse_sample_id = _trigger.parse_sample_id
 parse_raw_key = _trigger.parse_raw_key
+DEFAULT_REFERENCE_GENOME = _trigger.DEFAULT_REFERENCE_GENOME  # a run's reference without `reference` metadata
 
 
 @lru_cache(maxsize=4)
@@ -80,6 +82,20 @@ def get_storage():
     return _build_storage(tuple(sorted(env.items())))
 
 
+def get_metrics():
+    """The metrics backend that goes with get_storage(): app/metrics.py's own rule applied to the UI's storage
+    settings (local storage -> metrics.jsonl beside it, S3 on AWS -> CloudWatch), so a UI that defaults to local
+    storage never sends CloudWatch metrics by accident. METRICS_BACKEND / METRICS_FILE still override."""
+    env = {
+        "STORAGE_BACKEND": settings.GEYSER_STORAGE_BACKEND,
+        "LOCAL_STORAGE_DIR": str(settings.GEYSER_LOCAL_STORAGE_DIR),
+        "AWS_REGION": settings.GEYSER_AWS_REGION,
+        "S3_ENDPOINT_URL": settings.GEYSER_S3_ENDPOINT_URL or "",
+    }
+    env.update({k: os.environ[k] for k in ("METRICS_BACKEND", "METRICS_FILE") if os.environ.get(k)})
+    return metrics_from_env(env)
+
+
 __all__ = [
     "ALIGNMENT_FORMS",
     "LayoutError",
@@ -92,6 +108,7 @@ __all__ = [
     "RUN_LOCAL_PATH",
     "REPO_ROOT",
     "SINGLE",
+    "get_metrics",
     "get_storage",
     "keys_for",
     "keys_of",

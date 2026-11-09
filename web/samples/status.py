@@ -168,11 +168,19 @@ def build_sample(
         if task not in latest or ts >= (latest[task].get("timestamp") or 0):
             latest[task] = rec
 
+    # In the cloud (no worker record) there are no local metrics: a stage's time comes from its run record part.
+    recorded = ((record or {}).get("stages") or {}) if run is None else {}
+    from_record = False  # some stage's time came from the run record (a cloud run): no sequential total then
     stages = []
     for st in STAGES:
         variants = st.name == "variants" and vcf_key != keys["vcf"]
-        rec = latest.get(variant_metric if variants else st.metric)
+        metric = variant_metric if variants else st.metric
+        rec = latest.get(metric)
         duration = rec.get("duration_seconds") if rec else None
+        part = recorded.get(metric) or {}
+        if rec is None and part.get("status") == "Success" and part.get("duration_seconds") is not None:
+            duration = part["duration_seconds"]
+            from_record = True
         if variants:
             done = vcf_key in present
         else:
@@ -197,9 +205,17 @@ def build_sample(
         if view.state == "pending" and all(dep in done for dep in st.after)
     ]
     first_pending = ready[0] if ready else None
-    if all(s.state == "done" for s in stages):
+    # In the cloud there are no local metrics or worker records: a failed run shows only in its run record, which
+    # the state machine closes with status "failed" (#155). Without this it would look "in progress" for ever.
+    # Only without a worker record: locally, a re-run's record is the previous run's until its first stage writes a
+    # part, and the worker's own state (queued/running) is the truth. (A cloud re-run of a sample whose last run
+    # failed shows failed until its first stage finishes.)
+    # That holds even when every stage's output exists: a step after them (the quality gate in fail mode, the
+    # finalising steps) can still fail the run, and the record's close is the run's real outcome.
+    record_failed = run is None and (record or {}).get("status") == "failed"
+    if all(s.state == "done" for s in stages) and not record_failed:
         state = "succeeded"
-    elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded"):
+    elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded") or record_failed:
         # 'succeeded' with outputs missing means they were removed afterwards; don't claim success.
         state = "failed"
         if not any(s.state == "failed" for s in stages) and first_pending:
@@ -222,8 +238,9 @@ def build_sample(
         stages=stages,
         run=run,
         updated=max(times) if any(times) else None,
-        # Local runs are sequential, so the stage times add up; in the cloud there are no local metrics.
-        duration=sum(durations) if durations else None,
+        # Local runs are sequential, so their metric times add up. In the cloud QC and align run side by side, so a sum
+        # of the record's stage times would overstate the run: no total there (each stage shows its own time).
+        duration=sum(durations) if durations and not from_record else None,
         keys={**keys, "vcf": vcf_key},
         layout=layout,
     )
@@ -248,16 +265,19 @@ def _load_record(storage, sample_id):
         return None
 
 
-# A run record part of a stage that can be a run's caller: runs/<id>.provenance/<Stage>.json.
+# Run record parts that change what the list shows: a stage that can be a run's caller
+# (runs/<id>.provenance/<Stage>.json), and Finalize, the part the state machine writes when it closes a failed run.
 CALLER_PART_NAMES = tuple(f"/{stage}.json" for stage in STAGE_VCF if stage != "CallVariants")
+RECORD_PART_NAMES = (*CALLER_PART_NAMES, "/Finalize.json")
 
 
 def _samples_with_caller_parts(storage) -> set:
-    """Samples whose run record can make DeepVariant's VCF their calls: those with a DeepVariant or pangenome
-    part. One LIST of runs/, so the list page reads records for these samples only, not one per sample."""
+    """Samples whose run record changes their row: a DeepVariant or pangenome part (DeepVariant's VCF can be their
+    calls) or a Finalize part (the run failed; the cloud has no other sign of it). One LIST of runs/, so the list
+    page reads records for these samples only, not one per sample."""
     found = set()
     for key in storage.list_keys("runs/"):
-        if key.endswith(CALLER_PART_NAMES) and ".provenance/" in key:
+        if key.endswith(RECORD_PART_NAMES) and ".provenance/" in key:
             found.add(key[len("runs/") :].split(".provenance/", 1)[0])
     return found
 

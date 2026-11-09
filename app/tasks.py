@@ -45,6 +45,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zlib
 from functools import wraps
 
 import provenance
@@ -163,6 +164,10 @@ def keys_for(sample_id: str, layout: str = SINGLE) -> dict:
     # Consequence annotation (bcftools csq), written only when the reference has a GFF (annotate_vcf).
     keys["csq_vcf"] = f"variants/{sample_id}.csq.vcf.gz"
     keys["csq_tbi"] = f"variants/{sample_id}.csq.vcf.gz.tbi"
+    # AlphaGenome regulatory-effect scores (annotate_task, opt-in): the scored variants and the ranked table.
+    keys["alphagenome_vcf"] = f"variants/{sample_id}.alphagenome.vcf.gz"
+    keys["alphagenome_tbi"] = f"variants/{sample_id}.alphagenome.vcf.gz.tbi"
+    keys["alphagenome_tsv"] = f"stats/{sample_id}/alphagenome.tsv"
     # QC statistics (#101): written by align (flagstat, mosdepth) and variants (bcftools stats).
     for name, filename in STATS_FILES.items():
         keys[name] = f"stats/{sample_id}/{filename}"
@@ -1035,8 +1040,8 @@ def align_task(sample_id, reference_name):
         # On a re-run that fails between the two uploads, the stored pair can disagree (new .crai,
         # old CRAM; the job role can't delete objects to avoid it). The pipeline's own readers are
         # immune, as fetch_alignment re-indexes; for people and browsers it is fixed by the next run.
-        upload_output(crai, keys["crai"])
-        upload_output(cram, keys["cram"])
+        # upload_alignment then records the CRAM's ETag on the .crai, so calling shards can stream regions.
+        upload_alignment(cram, crai, keys)
     finally:
         shutil.rmtree(wd, ignore_errors=True)
 
@@ -1211,19 +1216,101 @@ def _finish_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) ->
     upload_output(vcf, keys["vcf"])
 
 
+STREAM_REGIONS_ENV = "GEYSER_STREAM_REGIONS"  # 0: calling shards always download the CRAM (today's behaviour)
+# A failed in-place read is retried before a shard falls back to downloading the whole CRAM: a genome CRAM
+# (~17 GB) plus the 3.1 GB FASTA doesn't fit the variants job's default 20 GiB disk, so the fallback is a
+# last resort, and one transient network error shouldn't trigger it.
+IN_PLACE_ATTEMPTS = 2
+IN_PLACE_RETRY_SECONDS = 10
+DOWNLOAD_HEADROOM_BYTES = 1 << 30  # the local .crai, bcftools' part and temp files
+
+
+class DiskSpaceError(RuntimeError):
+    """A download that can't fit the job's free disk: raised before it starts, not as ENOSPC part-way through."""
+
+
+def check_room_to_download(key: str, wd: str, why: str) -> None:
+    """Raise DiskSpaceError unless wd has room for key (+5% and DOWNLOAD_HEADROOM_BYTES). Unknown sizes pass."""
+    size = storage().head(key).get("size")
+    if not size:
+        return
+    need = int(size * 1.05) + DOWNLOAD_HEADROOM_BYTES
+    free = shutil.disk_usage(wd).free
+    if free < need:
+        raise DiskSpaceError(
+            f"Not enough disk to download {key} ({size / 1e9:.1f} GB, need {need / 1e9:.1f} GB with headroom; "
+            f"{free / 1e9:.1f} GB free) {why}. Give the job more disk (job_disk_gb) or fix the in-place read."
+        )
+
+
+def streamable_alignment(sample_id: str, wd: str):
+    """(where to read the CRAM in place, the local .crai) when the stored .crai is provably the CRAM's, else None.
+
+    A calling shard used to download the whole CRAM and re-index it, never trusting the stored .crai (a re-run
+    that failed between its uploads can leave a .crai for a different CRAM). For a genome CRAM that is ~17 GB per
+    shard, so now the stored .crai is trusted when its cram-etag metadata (upload_alignment) equals the CRAM's
+    current ETag, checked again after the .crai is downloaded. Anything else (a BAM, an old CRAM without the
+    metadata, a mismatch, GEYSER_STREAM_REGIONS=0) returns None: the caller downloads, as before.
+    """
+    if os.environ.get(STREAM_REGIONS_ENV, "1").strip() == "0":
+        return None
+    key = alignment_input(sample_id)
+    if not key.endswith(".cram"):
+        return None
+    crai_key = key + ".crai"
+    try:
+        etag = storage().head(key)["etag"]
+        if storage().head(crai_key)["metadata"].get(CRAI_ETAG_METADATA) != etag:
+            print("The stored index isn't recorded as this CRAM's: downloading the CRAM", flush=True)
+            return None
+        crai = os.path.join(wd, os.path.basename(crai_key))
+        storage().download(crai_key, crai)
+        if storage().head(crai_key)["metadata"].get(CRAI_ETAG_METADATA) != etag:  # replaced while we read it
+            return None
+        return storage().presigned_url(key), crai
+    except (ObjectNotFound, AttributeError) as err:  # AttributeError: a storage backend without head()
+        print(f"Can't read the region in place ({type(err).__name__}): downloading the CRAM", flush=True)
+        return None
+
+
 @timed_stage(SHARD_METRIC, run_record=False)
 def variants_shard_task(sample_id, reference_name, region):
     """bcftools on one region of the sample's alignment -> intermediate/variant-parts/{id}/<run>/<region>.vcf.gz."""
     wd = work_dir(sample_id)
     try:
-        alignment = fetch_alignment(sample_id, wd, need_index=True)  # -r needs random access
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         part = os.path.join(wd, "part.vcf.gz")
         print(f"Calling region {region}", flush=True)
-        run_shell(
-            f"bcftools mpileup -f {shlex.quote(ref)} -r {shlex.quote(region)} {shlex.quote(alignment)} "
-            f"| bcftools call -mv -Oz -o {shlex.quote(part)}"
-        )
+
+        def call(source):
+            run_shell(
+                f"bcftools mpileup -f {shlex.quote(ref)} -r {shlex.quote(region)} {shlex.quote(source)} "
+                f"| bcftools call -mv -Oz -o {shlex.quote(part)}"
+            )
+
+        streamed = streamable_alignment(sample_id, wd)
+        done = False
+        if streamed:
+            location, crai = streamed
+            for attempt in range(1, IN_PLACE_ATTEMPTS + 1):
+                try:
+                    call(f"{location}##idx##{crai}")  # htslib reads only the region's slices, via the verified index
+                    print("Read the region in place (ETag-verified index)", flush=True)
+                    done = True
+                    break
+                except subprocess.CalledProcessError as err:
+                    last = attempt == IN_PLACE_ATTEMPTS
+                    then = "downloading" if last else f"retrying in {IN_PLACE_RETRY_SECONDS} s"
+                    print(
+                        f"WARNING: reading the region in place failed (exit {err.returncode}, attempt "
+                        f"{attempt}/{IN_PLACE_ATTEMPTS}); {then}",
+                        flush=True,
+                    )
+                    if not last:
+                        time.sleep(IN_PLACE_RETRY_SECONDS)
+        if not done:
+            check_room_to_download(alignment_input(sample_id), wd, f"for region {region}")
+            call(fetch_alignment(sample_id, wd, need_index=True))  # -r needs random access
         storage().upload(part, region_part_key(sample_id, region))
     finally:
         shutil.rmtree(wd, ignore_errors=True)
@@ -1368,6 +1455,10 @@ GATE_BINARY = "geyser-gate"
 # Its stage name (metrics, run record part): an extra stage after the core three, like the shards
 # (scripts/monitoring.py STAGE_GROUPS["gate"]).
 GATE_METRIC = "QualityGate"
+# O11: the gate's key values as one metric per value (dimension Check), so a change of image or reference that
+# shifts quality shows as a step on a line, not only as pass/fail. Five values keep the custom metrics few.
+GATE_VALUES_METRIC = "QualityGateValue"
+GATE_VALUE_CHECKS = ("mapped_pct", "duplicate_pct", "mean_depth", "breadth_10x_pct", "tstv")
 GATE_TIMEOUT_SECONDS = 300  # it parses a few small files; minutes means something is wrong
 # keys_for names the gate reads (the run record comes from provenance.read_record, assembled fresh).
 GATE_INPUTS = ("qc_json", "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats")
@@ -1441,6 +1532,23 @@ def _gate_problem(sample_id: str, key: str, wd: str, mode: str, message: str) ->
     print(f"WARNING: quality gate: {message} (GATE_MODE=warn: the run continues)", flush=True)
 
 
+def publish_gate_values(verdict: dict) -> dict:
+    """Send the verdict's GATE_VALUE_CHECKS (the numbers it measured) as metrics; best effort, never raises.
+    Returns what was sent (values the gate couldn't measure are left out, not sent as 0)."""
+    measured = verdict.get("metrics") or {}
+    values = {
+        name: float(measured[name])
+        for name in GATE_VALUE_CHECKS
+        if isinstance(measured.get(name), (int, float)) and not isinstance(measured.get(name), bool)
+    }
+    if values:
+        try:
+            metrics().record_counts(GATE_VALUES_METRIC, "Check", values, unit="None")
+        except Exception as err:  # noqa: BLE001 - metrics are best effort
+            print(f"WARNING: could not record the gate values: {err}", flush=True)
+    return values
+
+
 def _read_verdict(path: str) -> dict:
     """The verdict JSON, or ValueError if it isn't one (missing file, bad JSON, missing fields)."""
     try:
@@ -1495,6 +1603,7 @@ def gate_task(sample_id):
         except ValueError as err:
             return _gate_problem(sample_id, key, wd, mode, str(err))
         upload_output(verdict_path, key)
+        publish_gate_values(verdict)
         summary = {
             "verdict": verdict["verdict"],
             "reasons": verdict["reasons"],
@@ -1514,11 +1623,690 @@ def gate_task(sample_id):
         shutil.rmtree(wd, ignore_errors=True)
 
 
+# --- AlphaGenome annotation (3.0, opt-in; app/alphagenome_annotation.py) ---------------------------------------------
+
+ANNOTATE_METRIC = "Annotate"  # an extra stage: provenance.EXTRA_STAGES, so a failure never fails the run
+ANNOTATE_CALLS_METRIC = "AnnotateApiCalls"  # a count by TaskName (record_counts): the backend calls one annotation made
+ALPHAGENOME_PREFIX = (
+    REFERENCE_PREFIX + "alphagenome/"
+)  # offline AVI tables per reference (never in S3, never committed)
+
+
+def alphagenome_avi_key(reference_name: str) -> str:
+    """The AVI table for a reference (--source avi-file, offline only): an extract of the official download for its
+    contigs, as bgzip TSV `#CHROM POS REF ALT raw_score PHRED` (ag.AviFileBackend). Never uploaded to S3: on S3
+    storage avi-file is refused (ag.check_source_for_storage)."""
+    return f"{ALPHAGENOME_PREFIX}{reference_name}.avi.tsv.gz"
+
+
+def annotate_input(sample_id: str) -> str:
+    """The calls to annotate: the run record's VCF (whichever caller made it), or its bcftools csq copy when
+    that is the VCF and the csq copy exists (the same calls plus consequences, which the selection uses)."""
+    keys = keys_for(sample_id)
+    vcf = provenance.sample_vcf_key(provenance.read_record(storage(), sample_id), sample_id)
+    if vcf == keys["vcf"] and storage().exists(keys["csq_vcf"]):
+        return keys["csq_vcf"]
+    return vcf
+
+
+@timed_stage(ANNOTATE_METRIC)
+def annotate_task(sample_id, reference_name, source, max_variants=None):
+    """AlphaGenome scores for the sample's selected variants -> variants/{id}.alphagenome.vcf.gz (+ .tbi) and
+    stats/{id}/alphagenome.tsv. Research use only. An extra stage: a failure here is noted, never fatal.
+
+    max_variants: the selection cap (default $ALPHAGENOME_MAX_VARIANTS, else ag.DEFAULT_MAX_VARIANTS).
+    """
+    import alphagenome_annotation as ag  # only this stage needs it
+
+    if source not in ag.SOURCES:  # before any download
+        raise ValueError(f"unknown AlphaGenome source {source!r}; expected one of {ag.SOURCES}")
+    ag.check_source_for_storage(source, storage_backend_name())
+    max_variants = ag.max_variants_from_env() if max_variants is None else ag.check_max_variants(max_variants)
+    keys = keys_for(sample_id)
+    wd = work_dir(sample_id)
+    backend = None
+    try:
+        input_key = annotate_input(sample_id)
+        if not storage().exists(input_key):
+            raise FileNotFoundError(f"no calls to annotate: {storage().describe(input_key)} does not exist")
+        local_vcf = os.path.join(wd, os.path.basename(input_key))
+        storage().download(input_key, local_vcf)
+        provenance.note_input(input_key, local_vcf)
+        table = None
+        if source == "avi-file":
+            avi_key = alphagenome_avi_key(reference_name)
+            table = os.path.join(wd, os.path.basename(avi_key))
+            storage().download(avi_key, table)
+            provenance.note_input(avi_key, table)
+        backend = ag.backend_for(source, table=table)
+
+        header, contigs, has_bcsq, records = ag.scan_vcf(
+            local_vcf
+        )  # streamed: a whole genome selects in bounded memory
+        selected, counts = ag.select(records, contigs, has_bcsq, max_variants, kinds=backend.KINDS)
+        print(
+            f"AlphaGenome ({source}): {counts['selected']} of {counts['candidates']} candidate variants selected "
+            f"({counts['pass']} PASS records; consequences {'used' if has_bcsq else 'not available'}; "
+            f"cap {max_variants})",
+            flush=True,
+        )
+        scores = backend.score(selected)
+        rows = ag.scored_rows(selected, scores)
+        print(f"AlphaGenome: {len(rows)} scored, {len(selected) - len(rows)} not scored", flush=True)
+        unscored = [v for v in selected if v.key not in scores]
+        summary = {
+            "source": backend.name,
+            "model_version": backend.model_version,
+            "input": input_key,
+            "consequences": has_bcsq,
+            "max_variants": max_variants,
+            "selection": counts,
+            "scored": len(rows),
+            "not_scored": len(unscored),
+            # Why: indels a source doesn't take (atlas, avi-file), or variants the service answered NOT_FOUND /
+            # INVALID_ARGUMENT for (its messages, grouped, and a few examples), or that an AVI table lacks.
+            "not_scored_by_kind": {kind: sum(v.kind == kind for v in unscored) for kind in ("snv", "indel")},
+            "api_calls": backend.api_calls,
+            **(backend.diagnostics() if hasattr(backend, "diagnostics") else {}),
+            "vcf": "pending",
+            "terms": ag.TERMS_NOTICE,  # the Output Terms notice travels with the record as with the VCF and the TSV
+        }
+        provenance.note(alphagenome=summary)
+
+        # The table and the record first: they don't need bcftools, so a missing htslib (a run outside the image)
+        # costs only the VCF.
+        tsv = os.path.join(wd, os.path.basename(keys["alphagenome_tsv"]))
+        with open(tsv, "w", encoding="utf-8") as fh:
+            fh.write(ag.tsv_text(rows))
+        upload_output(tsv, keys["alphagenome_tsv"])
+
+        if not shutil.which("bcftools"):
+            summary["vcf"] = "failed: bcftools not found"
+            raise RuntimeError(
+                "bcftools/bgzip not found: run inside the image or install htslib "
+                f"(the table {keys['alphagenome_tsv']} and the run record were written; the VCF was not)"
+            )
+        plain = os.path.join(wd, "alphagenome.vcf")
+        with open(plain, "w", encoding="utf-8") as fh:
+            fh.write(ag.vcf_text(rows, header, contigs, reference_name, backend.name, backend.model_version))
+        vcf = os.path.join(wd, os.path.basename(keys["alphagenome_vcf"]))
+        tbi = os.path.join(wd, os.path.basename(keys["alphagenome_tbi"]))
+        try:
+            run_shell(f"bcftools view -Oz -o {shlex.quote(vcf)} {shlex.quote(plain)}")
+            run_shell(f"bcftools index -t -o {shlex.quote(tbi)} {shlex.quote(vcf)}")
+        except subprocess.CalledProcessError as err:
+            summary["vcf"] = f"failed: bcftools exited {err.returncode}"
+            raise RuntimeError(
+                f"bcftools could not write the annotated VCF (exit {err.returncode}); "
+                f"the table {keys['alphagenome_tsv']} and the run record were written"
+            ) from None
+        upload_output(tbi, keys["alphagenome_tbi"])
+        upload_output(vcf, keys["alphagenome_vcf"])  # last, as elsewhere: the VCF marks the stage done
+        summary["vcf"] = "written"
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+        calls = getattr(backend, "api_calls", 0)
+        try:  # best effort, like every metric; counted even when scoring failed part-way
+            metrics().record_counts(ANNOTATE_CALLS_METRIC, "TaskName", {ANNOTATE_METRIC: calls})
+        except Exception as err:  # noqa: BLE001
+            print(f"WARNING: could not record metric {ANNOTATE_CALLS_METRIC}: {err}", flush=True)
+
+
+ALPHAGENOME_SOURCE_ENV = "ALPHAGENOME_SOURCE"
+
+
+def storage_backend_name(env=None) -> str:
+    """STORAGE_BACKEND as storage.py reads it (default s3)."""
+    env = os.environ if env is None else env
+    return env.get("STORAGE_BACKEND", "s3").strip().lower()
+
+
+def annotate_plan(sample_id: str, source: str, max_variants: int) -> dict:
+    """The Annotate job's size for this sample (ag.plan_resources), from the size of the VCF it would read.
+
+    Never raises for a missing input: {"run": false, "reason": ...} tells the state machine to skip the
+    annotation (an extra stage), so planning can't fail a run either."""
+    import alphagenome_annotation as ag
+
+    try:
+        input_key = annotate_input(sample_id)
+        head = storage().head(input_key)
+    except Exception as err:  # noqa: BLE001 - no calls to annotate, or no record: skip, never fail
+        return {"schema": ag.PLAN_SCHEMA, "run": False, "reason": f"no calls to annotate: {err}"[:500]}
+    return {"run": True, "input": input_key, **ag.plan_resources(head.get("size") or 0, max_variants, source)}
+
+
+def annotate_main(argv) -> int:
+    """tasks.py annotate <srr_id> <reference_name> [--source atlas|api|fake|avi-file] [--max-variants N]
+    [--plan [--output-key KEY]]: AlphaGenome regulatory-effect scores. Opt-in, research use only.
+
+    In the cloud (S3 storage) the source must be atlas (ag.CLOUD_SOURCES); avi-file and fake are offline only.
+    --plan doesn't annotate: it prints the job's size as JSON (annotate_plan; also written to KEY), for the state
+    machine to size the Annotate job by the VCF and the cap. It exits 0 even with nothing to annotate ("run": false).
+
+    --source defaults to $ALPHAGENOME_SOURCE; with neither it is a usage error, so a run never falls back to fake
+    scores unnoticed (run_local.py --annotate alphagenome picks fake offline). --max-variants defaults to
+    $ALPHAGENOME_MAX_VARIANTS, else 500. The API key comes from $ALPHAGENOME_API_KEY and is never logged.
+
+    Exit codes: 0 when the annotation ran, and also when it failed (an extra stage: the failure is in the run
+    record and the log, never fatal to the run); 2 only for usage errors (arguments, a source or cap that isn't
+    valid), before anything runs.
+    """
+    import alphagenome_annotation as ag
+
+    parser = argparse.ArgumentParser(prog="tasks.py annotate", description=annotate_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("reference_name")
+    parser.add_argument("--source", help=f"one of {', '.join(ag.SOURCES)}; default ${ALPHAGENOME_SOURCE_ENV}")
+    parser.add_argument(
+        "--max-variants", type=int, help=f"selection cap (1-{ag.MAX_VARIANTS_LIMIT}); default ${ag.MAX_VARIANTS_ENV}"
+    )
+    parser.add_argument("--plan", action="store_true", help="print the job's size as JSON instead of annotating")
+    parser.add_argument("--output-key", help="with --plan: also write the JSON to this storage key")
+    args = parser.parse_args(argv)
+    if args.output_key and not args.plan:
+        parser.error("--output-key needs --plan")
+    source = (args.source or os.environ.get(ALPHAGENOME_SOURCE_ENV, "")).strip().lower()
+    if source not in ag.SOURCES:
+        parser.error(f"--source (or ${ALPHAGENOME_SOURCE_ENV}) must be one of {ag.SOURCES}, got {source!r}")
+    max_variants = args.max_variants
+    if max_variants is None:
+        try:
+            max_variants = ag.max_variants_from_env()
+        except ValueError as err:
+            parser.error(str(err))
+    else:
+        try:
+            ag.check_max_variants(max_variants)
+        except ValueError as err:
+            parser.error(str(err))
+    try:
+        ag.check_source_for_storage(source, storage_backend_name())
+    except ValueError as err:
+        parser.error(str(err))
+    if args.plan:
+        plan = annotate_plan(args.srr_id, source, max_variants)
+        text = json.dumps(plan, indent=1)
+        if args.output_key:
+            wd = work_dir(args.srr_id)
+            try:
+                path = os.path.join(wd, "annotate-plan.json")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                storage().upload(path, args.output_key)
+            finally:
+                shutil.rmtree(wd, ignore_errors=True)
+        print(text, flush=True)
+        return 0
+    try:
+        annotate_task(args.srr_id, args.reference_name, source, max_variants)
+    except Exception as err:  # noqa: BLE001 - noted in the run record (timed_stage); never fatal
+        print(f"WARNING: annotation failed for '{args.srr_id}' (noted; the run is unaffected): {err}", flush=True)
+        return 0
+    print(f"Task 'annotate' completed for sample '{args.srr_id}'.")
+    return 0
+
+
+# --- v1.3 "Big inputs": pre-flight, chunked alignment, the streaming merge (docs/design/genome-scale-app.md) -----
+#
+# A genome too big for one align job takes the large route: preflight checks and splits the raw reads in one
+# streaming pass, align_chunk aligns each chunk (no duplicate marking: duplicates can sit in different chunks),
+# and align_merge merges the chunk BAMs in place, marks duplicates once over all of them and writes exactly what
+# align_task writes. Everything lives under the run's folder (RUN_NAME), so one run never reads another's chunks.
+
+PREFLIGHT_METRIC = "Preflight"
+CHUNK_METRIC = "AlignChunk"
+MERGE_METRIC = "Align"
+DEFAULT_CHUNKS = 24
+MAX_CHUNKS = 999
+MANIFEST_SCHEMA = 1
+CHUNKS_PREFIX = INTERMEDIATE_PREFIX + "chunks/{sample_id}/{run}/"
+ALIGNED_PREFIX = INTERMEDIATE_PREFIX + "aligned/{sample_id}/{run}/"
+CHUNK_GZIP_LEVEL = 1  # chunks live for days and are read once: speed over size (pigz -1 when the image has it)
+CRAI_ETAG_METADATA = "cram-etag"  # the .crai's object metadata: the ETag of the CRAM it indexes
+
+
+class PreflightFailed(RuntimeError):
+    """The raw reads failed the pre-flight check (corrupt or truncated gzip, malformed FASTQ, mates out of step)."""
+
+
+def _run_folder() -> str:
+    return _safe_name(os.environ.get("RUN_NAME") or "unnamed")
+
+
+def chunks_prefix(sample_id: str) -> str:
+    return CHUNKS_PREFIX.format(sample_id=sample_id, run=_run_folder())
+
+
+def aligned_prefix(sample_id: str) -> str:
+    return ALIGNED_PREFIX.format(sample_id=sample_id, run=_run_folder())
+
+
+def manifest_key(sample_id: str) -> str:
+    return chunks_prefix(sample_id) + "manifest.json"
+
+
+def preflight_report_key(sample_id: str) -> str:
+    return f"qc_reports/{sample_id}.preflight.json"
+
+
+def chunk_name(index: int) -> str:
+    return f"chunk-{index:03d}"
+
+
+def chunk_keys(sample_id: str, index: int, layout: str) -> dict:
+    """keys_for-style names of one chunk's reads: raw (single-end) or raw_R1/raw_R2 (paired-end)."""
+    base = chunks_prefix(sample_id) + chunk_name(index)
+    if layout == SINGLE:
+        return {"raw": base + ".fastq.gz"}
+    return {f"raw_{m}": f"{base}_{m}.fastq.gz" for m in MATES}
+
+
+def _read_name(header: bytes) -> bytes:
+    """A FASTQ header's read name, for checking mates: up to the first space, without a /1 or /2 suffix."""
+    name = header[1:].split(None, 1)[0] if header[1:].strip() else b""
+    return name[:-2] if name[-2:] in (b"/1", b"/2") else name
+
+
+def _fastq_records(fh, label: str):
+    """Yield one 4-line FASTQ record (bytes) at a time, checking its shape. Raises PreflightFailed."""
+    number = 0
+    while True:
+        header = fh.readline()
+        if not header:
+            return
+        seq, plus, qual = fh.readline(), fh.readline(), fh.readline()
+        number += 1
+        if not header.startswith(b"@") or not plus.startswith(b"+") or not qual:
+            raise PreflightFailed(f"{label}: record {number} is not a FASTQ record")
+        if len(seq.rstrip(b"\r\n")) != len(qual.rstrip(b"\r\n")):
+            raise PreflightFailed(f"{label}: record {number} has a sequence and quality of different lengths")
+        yield header, header + seq + plus + qual
+
+
+class _ChunkWriter:
+    """A gzip file written at CHUNK_GZIP_LEVEL: through pigz when it is installed (much faster), else gzip."""
+
+    def __init__(self, path: str):
+        self.path = path
+        if shutil.which("pigz"):
+            self._file = open(path, "wb")
+            self._proc = subprocess.Popen(
+                ["pigz", f"-{CHUNK_GZIP_LEVEL}", "-c"], stdin=subprocess.PIPE, stdout=self._file
+            )
+            self._out = self._proc.stdin
+        else:
+            self._file = self._proc = None
+            self._out = gzip.open(path, "wb", compresslevel=CHUNK_GZIP_LEVEL)
+
+    def write(self, data: bytes) -> None:
+        self._out.write(data)
+
+    def close(self) -> None:
+        self._out.close()
+        if self._proc:
+            if self._proc.wait() != 0:
+                raise RuntimeError(f"pigz failed writing {os.path.basename(self.path)}")
+            self._file.close()
+
+
+def split_reads(streams, labels, n_chunks: int, wd: str, layout: str, sample_id: str) -> dict:
+    """One pass over the raw reads (one stream per mate, gzipped): check them and deal record i to chunk i mod N.
+
+    Round-robin keeps chunk sizes within one read of each other without knowing the total in advance, and keeps
+    mates together (record i of R1 and R2 go to the same chunk, in the same order). Decompressing is the gzip
+    integrity check: a truncated or corrupt file fails here, in minutes, before any alignment. Paired-end mates
+    must have the same read names in the same order and the same number of reads. Memory is bounded: one record
+    per mate is in flight. Returns {"reads", "chunks": [{"index", "reads", "paths": {name: local path}}]}.
+    """
+    names = ["raw"] if layout == SINGLE else [f"raw_{m}" for m in MATES]
+    chunks = []
+    for i in range(n_chunks):
+        keys = chunk_keys(sample_id, i, layout)
+        chunks.append(
+            {
+                "index": i,
+                "reads": 0,
+                "paths": {n: os.path.join(wd, os.path.basename(keys[n])) for n in names},
+                "writers": None,
+            }
+        )
+    readers = []
+    try:
+        for chunk in chunks:
+            chunk["writers"] = {n: _ChunkWriter(p) for n, p in chunk["paths"].items()}
+        for stream, label in zip(streams, labels, strict=True):
+            readers.append(_fastq_records(gzip.GzipFile(fileobj=stream, mode="rb"), label))
+        total = 0
+        try:
+            while True:
+                records = [next(r, None) for r in readers]
+                if all(r is None for r in records):
+                    break
+                if any(r is None for r in records):
+                    shorter = labels[records.index(None)]
+                    raise PreflightFailed(f"the mates have different read counts ({shorter} ends first, after {total})")
+                if len(records) == 2 and _read_name(records[0][0]) != _read_name(records[1][0]):
+                    raise PreflightFailed(
+                        f"mates out of step at read {total + 1}: "
+                        f"{_read_name(records[0][0]).decode(errors='replace')} vs "
+                        f"{_read_name(records[1][0]).decode(errors='replace')}"
+                    )
+                chunk = chunks[total % n_chunks]
+                for name, (_, record) in zip(names, records, strict=True):
+                    chunk["writers"][name].write(record)
+                chunk["reads"] += 1
+                total += 1
+        except (EOFError, OSError, gzip.BadGzipFile, zlib.error) as err:
+            raise PreflightFailed(f"the gzip stream is truncated or corrupt: {type(err).__name__}: {err}") from err
+        if total == 0:
+            raise PreflightFailed("the input has no reads")
+        return {"reads": total, "chunks": chunks}
+    finally:
+        for chunk in chunks:
+            for writer in (chunk.get("writers") or {}).values():
+                try:
+                    writer.close()
+                except Exception:  # noqa: BLE001 - closing after a failure; the first error is the one raised
+                    pass
+
+
+def _preflight_report(sample_id, layout, input_keys, input_bytes, ok, error, reads, n_chunks, manifest, seconds):
+    return {
+        "schema": MANIFEST_SCHEMA,
+        "sample_id": sample_id,
+        "run_name": os.environ.get("RUN_NAME") or None,
+        "layout": layout,
+        "ok": ok,
+        "error": error,
+        "input": {"keys": input_keys, "bytes": input_bytes},
+        "reads": reads,
+        "chunk_count": n_chunks if ok else None,
+        "manifest": manifest if ok else None,
+        "seconds": round(seconds, 1),
+    }
+
+
+@timed_stage(PREFLIGHT_METRIC)
+def preflight_task(sample_id, n_chunks=DEFAULT_CHUNKS, manifest_out=None):
+    """Check the raw reads and split them into n_chunks chunks: the chunks, the manifest, the pre-flight report."""
+    if not 1 <= n_chunks <= MAX_CHUNKS:
+        raise ValueError(f"--chunks must be 1-{MAX_CHUNKS}, got {n_chunks}")
+    started = time.time()
+    layout = sample_layout(sample_id)  # a lone mate or both layouts is a LayoutError, before any read
+    input_keys = keys_of(keys_for(sample_id, layout), "raw")
+    input_bytes = sum(storage().head(k)["size"] or 0 for k in input_keys)
+    manifest_out = manifest_out or manifest_key(sample_id)
+    provenance.note(layout=layout)
+    for key in input_keys:
+        provenance.note_input(key)
+    wd = work_dir(sample_id)
+    error, result = None, None
+    try:
+        streams = [storage().open_read(k) for k in input_keys]
+        try:
+            result = split_reads(streams, input_keys, n_chunks, wd, layout, sample_id)
+        except PreflightFailed as err:
+            error = str(err)
+            raise
+        finally:
+            for s in streams:
+                close = getattr(s, "close", None)
+                if close:
+                    close()
+        chunks = []
+        for chunk in result["chunks"]:
+            keys = chunk_keys(sample_id, chunk["index"], layout)
+            size = 0
+            for name, path in chunk["paths"].items():
+                size += os.path.getsize(path)
+                storage().upload(path, keys[name])
+                os.remove(path)  # free the disk as we go
+            chunks.append(
+                {
+                    "index": chunk["index"],
+                    "name": chunk_name(chunk["index"]),
+                    "reads": chunk["reads"],
+                    "bytes": size,
+                    "keys": keys,
+                    "aligned": aligned_prefix(sample_id) + chunk_name(chunk["index"]) + ".bam",
+                }
+            )
+        manifest = {
+            "schema": MANIFEST_SCHEMA,
+            "sample_id": sample_id,
+            "run_name": os.environ.get("RUN_NAME") or None,
+            "layout": layout,
+            "reads": result["reads"],
+            "chunk_count": n_chunks,
+            "input": {"keys": input_keys, "bytes": input_bytes},
+            "aligned_prefix": aligned_prefix(sample_id),
+            "chunks": chunks,
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        path = os.path.join(wd, "manifest.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh, indent=1)
+        storage().upload(path, manifest_out)
+        provenance.note(preflight={"reads": result["reads"], "chunks": n_chunks, "input_bytes": input_bytes})
+        print(f"Pre-flight OK: {result['reads']} reads ({layout}) in {n_chunks} chunks -> {manifest_out}", flush=True)
+    finally:
+        report = _preflight_report(
+            sample_id,
+            layout,
+            input_keys,
+            input_bytes,
+            error is None and result is not None,
+            error,
+            result["reads"] if result else None,
+            n_chunks,
+            manifest_out,
+            time.time() - started,
+        )
+        report_path = os.path.join(wd, "preflight.json")
+        try:
+            with open(report_path, "w", encoding="utf-8") as fh:
+                json.dump(report, fh, indent=1)
+            upload_output(report_path, preflight_report_key(sample_id))
+        except Exception as err:  # noqa: BLE001 - the report must not hide the check's own error
+            print(f"WARNING: could not write the pre-flight report: {err}", flush=True)
+        shutil.rmtree(wd, ignore_errors=True)
+
+
+def read_manifest(sample_id: str) -> dict:
+    """This run's manifest (RUN_NAME). A missing one names the key: preflight didn't run for this run."""
+    key = manifest_key(sample_id)
+    try:
+        fh = storage().open_read(key)
+        try:
+            manifest = json.loads(fh.read())
+        finally:
+            fh.close()
+    except ObjectNotFound:
+        raise FileNotFoundError(f"no chunk manifest at {storage().describe(key)}: run preflight first") from None
+    if manifest.get("schema") != MANIFEST_SCHEMA:
+        raise ValueError(f"unknown manifest schema {manifest.get('schema')!r} at {key}")
+    return manifest
+
+
+def chunk_align_command(
+    ref: str, fastqs: list, out: str, threads: int, tmp_dir: str, sample_id: str, aligner: str
+) -> str:
+    """align_command without markdup: <aligner> mem (the sample's one read group) | [fixmate -m] | sort -> BAM.
+
+    Duplicates are marked once, over all chunks, in align_merge (a duplicate's twin can sit in another chunk).
+    The read group is the sample's, as in align_command, so the merged CRAM has one read group, as a single job's.
+    """
+    check_aligner(aligner)
+    if aligner == GIRAFFE:
+        raise ValueError("the chunked route aligns with bwa-mem2 or bwa; giraffe isn't supported there yet")
+    read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"
+    sort_threads = max(1, min(threads, SORT_MAX_THREADS))
+    tmp = os.path.join(tmp_dir, "tmp")
+    stages = [
+        f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+        + " ".join(shlex.quote(f) for f in fastqs)
+    ]
+    if len(fastqs) == 2:
+        stages.append("samtools fixmate -m -u - -")
+    stages.append(
+        f"samtools sort -l 1 -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} "
+        f"-o {shlex.quote(out)} -"
+    )
+    return " | ".join(stages)
+
+
+@timed_stage(CHUNK_METRIC, run_record=False)
+def align_chunk_task(sample_id, reference_name, chunk):
+    """Chunk `chunk` of this run's manifest -> its coordinate-sorted BAM (no markdup) under intermediate/aligned/."""
+    aligner = aligner_from_env()
+    manifest = read_manifest(sample_id)
+    entry = next((c for c in manifest["chunks"] if c["index"] == chunk), None)
+    if entry is None:
+        raise ValueError(f"chunk {chunk} is not in the manifest (it has {manifest['chunk_count']} chunks)")
+    names = ["raw"] if manifest["layout"] == SINGLE else [f"raw_{m}" for m in MATES]
+    wd = work_dir(sample_id)
+    try:
+        fastqs = []
+        for name in names:
+            fastqs.append(os.path.join(wd, os.path.basename(entry["keys"][name])))
+            storage().download(entry["keys"][name], fastqs[-1])
+        threads = os.cpu_count() or 1
+        ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
+        aligner = prepare_aligner(reference_name, ref, aligner)
+        out = os.path.join(wd, os.path.basename(entry["aligned"]))
+        print(f"Aligning {entry['name']} ({entry['reads']} reads) with {aligner}", flush=True)
+        run_shell(chunk_align_command(ref, fastqs, out, threads, wd, sample_id, aligner))
+        storage().upload(out, entry["aligned"])
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+
+def merge_command(ref: str, inputs_file: str, out: str, threads: int, tmp_dir: str) -> str:
+    """samtools merge (the chunk BAMs, read in place: the paths or presigned URLs in inputs_file) | markdup -> CRAM.
+
+    The chunks are each coordinate-sorted, so merge keeps the order; markdup then sees every read of the sample
+    at once, as in a single job (it needs the fixmate tags, which align_chunk added for paired-end reads).
+    """
+    tmp = os.path.join(tmp_dir, "tmp")
+    return (
+        f"samtools merge -@ {threads} -u -b {shlex.quote(inputs_file)} - "  # the first positional: the output, stdout
+        f"| samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} "
+        f"--reference {shlex.quote(ref)} -O cram - {shlex.quote(out)}"
+    )
+
+
+def upload_alignment(cram: str, crai: str, keys: dict) -> None:
+    """The .crai, then the CRAM (the stage-done marker), then the .crai again with the CRAM's ETag as metadata.
+
+    Readers that stream a region (variants --region) trust a stored .crai only if its cram-etag equals the CRAM's
+    current ETag. Between the two .crai uploads it has none, so they fall back to downloading: no window in which a
+    stale index is trusted, and the index-before-CRAM order (#99) is kept."""
+    upload_output(crai, keys["crai"])
+    upload_output(cram, keys["cram"])
+    try:
+        etag = storage().head(keys["cram"])["etag"]
+        storage().upload(crai, keys["crai"], metadata={CRAI_ETAG_METADATA: etag})
+    except Exception as err:  # noqa: BLE001 - only streaming needs it; readers fall back without it
+        print(f"WARNING: could not record the CRAM's ETag on its index ({err}); calling will download", flush=True)
+
+
+@timed_stage(MERGE_METRIC)  # the Align stage's own metric and run-record part: the merge *is* the sample's align
+def align_merge_task(sample_id, reference_name, threads=None):
+    """Every chunk BAM of this run -> the sample's duplicate-marked CRAM + .crai and stats: align_task's outputs.
+
+    threads: samtools merge/markdup/index and the stats tools (default: the job's CPUs; a run's merge_threads)."""
+    manifest = read_manifest(sample_id)
+    missing = [c["aligned"] for c in manifest["chunks"] if not storage().exists(c["aligned"])]
+    if missing:
+        raise FileNotFoundError(f"{len(missing)} chunk BAM(s) missing, e.g. {', '.join(missing[:3])}")
+    layout = manifest["layout"]
+    keys = keys_for(sample_id, layout)
+    provenance.note(aligner=aligner_from_env(), layout=layout, chunks=manifest["chunk_count"])
+    provenance.note_tools(aligner_from_env(), "samtools", "mosdepth")
+    for c in manifest["chunks"]:
+        provenance.note_input(c["aligned"])
+    wd = work_dir(sample_id)
+    try:
+        threads = threads or os.cpu_count() or 1
+        ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
+        inputs = os.path.join(wd, "chunks.txt")
+        with open(inputs, "w", encoding="utf-8") as fh:  # in place: local paths, or presigned HTTPS URLs on S3
+            fh.write("\n".join(storage().presigned_url(c["aligned"]) for c in manifest["chunks"]) + "\n")
+        cram = os.path.join(wd, os.path.basename(keys["cram"]))
+        crai = os.path.join(wd, os.path.basename(keys["crai"]))
+        print(f"Merging {manifest['chunk_count']} chunk BAMs ({manifest['reads']} reads)", flush=True)
+        run_shell(merge_command(ref, inputs, cram, threads, wd))
+        run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
+        for path, key in alignment_stats(ref, cram, wd, threads, keys):
+            upload_output(path, key)
+        upload_alignment(cram, crai, keys)
+    finally:
+        shutil.rmtree(wd, ignore_errors=True)
+
+
+def preflight_main(argv) -> int:
+    """tasks.py preflight <srr_id> [--chunks N] [--manifest-key KEY]: check and split the raw reads (large route)."""
+    parser = argparse.ArgumentParser(prog="tasks.py preflight", description=preflight_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("--chunks", type=int, default=DEFAULT_CHUNKS)
+    parser.add_argument("--manifest-key", help="where to write the manifest (default: the run's chunk folder)")
+    args = parser.parse_args(argv)
+    if not 1 <= args.chunks <= MAX_CHUNKS:
+        parser.error(f"--chunks must be 1-{MAX_CHUNKS}")
+    try:
+        preflight_task(args.srr_id, args.chunks, args.manifest_key)
+    except PreflightFailed as err:
+        print(f"PreflightFailed: {err}", flush=True)
+        return 1
+    return 0
+
+
+def align_chunk_main(argv) -> int:
+    """tasks.py align_chunk <srr_id> <reference_name> --chunk K: align one chunk of this run's manifest."""
+    parser = argparse.ArgumentParser(prog="tasks.py align_chunk", description=align_chunk_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("reference_name")
+    parser.add_argument("--chunk", type=int, required=True, help="the manifest's chunk index (0-based)")
+    args = parser.parse_args(argv)
+    if args.chunk < 0:
+        parser.error("--chunk must be >= 0")
+    align_chunk_task(args.srr_id, args.reference_name, args.chunk)
+    return 0
+
+
+def align_merge_main(argv) -> int:
+    """tasks.py align_merge <srr_id> <reference_name>: merge this run's chunk BAMs into the sample's CRAM."""
+    parser = argparse.ArgumentParser(prog="tasks.py align_merge", description=align_merge_main.__doc__)
+    parser.add_argument("srr_id")
+    parser.add_argument("reference_name")
+    parser.add_argument("--threads", type=int, help="samtools threads (default: the job's CPUs)")
+    args = parser.parse_args(argv)
+    if args.threads is not None and args.threads < 1:
+        parser.error("--threads must be >= 1")
+    align_merge_task(args.srr_id, args.reference_name, args.threads)
+    return 0
+
+
 TASKS = {
     "qc": (qc_task, False),
     "align": (align_task, True),
     "variants": (variants_task, True),
     "gate": (gate_task, False),
+    # 3.0: the CLI is annotate_main (--source, --max-variants, exit codes); listed here so the state machine's
+    # Annotate step (#209) and tasks.py agree on the stage and its reference argument (tests/test_consistency.py).
+    "annotate": (annotate_task, True),
+    # v1.3's large route (docs/design/genome-scale-app.md). Their CLIs are their own *_main (other options and exit
+    # codes); listed here so the state machine and tasks.py agree on the stages (tests/test_consistency.py).
+    "preflight": (preflight_task, False),
+    "align_chunk": (align_chunk_task, True),
+    "align_merge": (align_merge_task, True),
+}
+SUBCOMMANDS = {
+    "preflight": preflight_main,
+    "align_chunk": align_chunk_main,
+    "align_merge": align_merge_main,
+    "annotate": annotate_main,  # 3.0: its own options and exit codes
 }
 
 
@@ -1526,6 +2314,8 @@ def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else list(argv)
     if argv[:1] == ["regions"]:
         return regions_main(argv[1:])
+    if argv[:1] and argv[0] in SUBCOMMANDS:
+        return SUBCOMMANDS[argv[0]](argv[1:])
     if argv[:1] == ["finalize"]:
         return finalize_main(argv[1:])
     parser = argparse.ArgumentParser(description="Run one Geyser Genomics pipeline stage.")

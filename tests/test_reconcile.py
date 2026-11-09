@@ -1,6 +1,7 @@
 """scripts/reconcile.py on a temporary local bucket and a fake Step Functions client (no AWS)."""
 
 import json
+from collections import Counter
 from unittest import mock
 
 import reconcile
@@ -477,3 +478,78 @@ def test_a_deepvariant_vcf_does_not_complete_a_sample_whose_bcftools_call_failed
     )
     row = report(store)["S1"]
     assert row["status"] == "incomplete" and not row["outputs"]["vcf"] and row["extra_outputs"]["dv"]
+
+
+# ---- --publish-metrics (O13) ----
+
+
+def test_problem_counts_by_kind_include_zeros_and_the_total(tmp_path):
+    keys = KEYS + ["raw_reads/P1_R1.fastq.gz"]  # a lone mate
+    result = reconcile.reconcile(make_bucket(tmp_path, keys).list_keys(""), Counter({"S2": 2}))
+    counts = reconcile.problem_counts(result)
+    assert counts == {
+        "Ignored": 1,  # notes.txt: not .gz, starts nothing
+        "Refused": 0,
+        "WillFail": 3,
+        "LoneMate": 1,
+        "BothLayouts": 0,
+        "NotStarted": 0,
+        "Incomplete": 2,  # S3, S10
+        "RunFailed": 0,
+        "ConcurrentRuns": 1,  # S2 twice: the trigger's dedupe missed
+        "Total": result["problem_count"],
+    }
+    assert counts["Total"] == sum(v for k, v in counts.items() if k != "Total")
+
+
+def test_an_unknown_problem_kind_is_still_counted():
+    result = {"upload_problems": [], "samples": [{"problem": "brand new"}], "problem_count": 1}
+    assert reconcile.problem_counts(result)["BrandNew"] == 1
+
+
+def test_publish_metrics_writes_the_counts_beside_the_local_bucket(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    for name in ("METRICS_BACKEND", "METRICS_FILE", "STORAGE_BACKEND", "LOCAL_STORAGE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    make_bucket(tmp_path, full_sample("S1") + ["raw_reads/P1_R2.fastq.gz"])
+    assert reconcile.main(["--local-dir", str(tmp_path), "--publish-metrics", "--fail-on-problems"]) == 1
+    lines = [json.loads(x) for x in (tmp_path / "metrics" / "metrics.jsonl").read_text().splitlines()]
+    published = {r["dimensions"]["Problem"]: r["value"] for r in lines if r.get("metric") == "ReconcileProblems"}
+    assert published["LoneMate"] == 1 and published["Total"] == 1 and published["Ignored"] == 0
+    assert "Published ReconcileProblems: LoneMate 1, Total 1" in capsys.readouterr().err
+    # The metrics file doesn't change the reconcile itself.
+    assert reconcile.main(["--local-dir", str(tmp_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["problem_count"] == 1
+
+
+def test_without_the_option_nothing_is_published(tmp_path, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    make_bucket(tmp_path, full_sample("S1"))
+    backend = mock.Mock()
+    reconcile.main(["--local-dir", str(tmp_path)], metrics=backend)
+    backend.record_counts.assert_not_called()
+
+
+def test_a_metrics_failure_is_a_warning_not_a_failed_reconcile(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("SFN_ARN", raising=False)
+    make_bucket(tmp_path, full_sample("S1"))
+    backend = mock.Mock()
+    backend.record_counts.side_effect = RuntimeError("CloudWatch down")
+    assert (
+        reconcile.main(["--local-dir", str(tmp_path), "--publish-metrics", "--fail-on-problems"], metrics=backend) == 0
+    )
+    assert "WARNING: couldn't publish ReconcileProblems: RuntimeError: CloudWatch down" in capsys.readouterr().err
+    name, dimension, counts = backend.record_counts.call_args.args
+    assert (name, dimension, counts["Total"]) == ("ReconcileProblems", "Problem", 0)
+
+
+def test_the_backend_follows_where_the_data_lake_is(tmp_path):
+    from metrics import CloudWatchMetrics, LocalMetrics, NullMetrics
+
+    local = reconcile.metrics_backend(reconcile.parse_args(["--local-dir", str(tmp_path)]), env={})
+    assert isinstance(local, LocalMetrics) and local.path.startswith(str(tmp_path))
+    with mock.patch("boto3.client") as client:
+        cloud = reconcile.metrics_backend(reconcile.parse_args(["--bucket", "b", "--region", "eu-west-1"]), env={})
+    assert isinstance(cloud, CloudWatchMetrics) and client.call_args.kwargs["region_name"] == "eu-west-1"
+    off = reconcile.metrics_backend(reconcile.parse_args(["--bucket", "b"]), env={"METRICS_BACKEND": "none"})
+    assert isinstance(off, NullMetrics)  # METRICS_BACKEND always wins

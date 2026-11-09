@@ -4,15 +4,15 @@ The deploy scripts (deploy_dashboard.py, runtime_deploy_pipeline_dashboard.py, d
 their JSON here and only touch AWS when run without --dry-run.
 
 Metric shapes (see app/metrics.py):
-  Duration      dims TaskName, SampleId, Status   (every stage run)
-  FailureCount  dims TaskName, SampleId           (only when a stage fails)
+  Duration      dims TaskName, Status   (every stage run)
+  FailureCount  dims TaskName           (only when a stage fails)
 
 Two metric schemas are supported:
-  per-sample  what app/metrics.py publishes today. Each sample is its own metric, so CloudWatch cannot
-              compute percentiles across runs; durations are shown as mean and max of the per-sample
-              series (SEARCH).
-  aggregated  the same metrics without the SampleId dimension (a proposed change, not made yet). One
-              series per stage gives real p50/p95 durations.
+  aggregated  what app/metrics.py publishes (the default). One series per stage gives real p50/p95 durations.
+  per-sample  the shape published before Nov 2026, with a SampleId dimension. Each sample was its own metric,
+              so CloudWatch could not compute percentiles across runs; durations are shown as mean and max of
+              the per-sample series (SEARCH). Kept to read data recorded by older images (CloudWatch keeps
+              1-hour points for 455 days).
 
 Result quality (mapped %, duplicate %, mean depth, variant counts, Ti/Tv) is read from the Batch job logs
 with Logs Insights widgets, not from custom metrics; see the "quality" section below.
@@ -33,6 +33,8 @@ DEFAULT_REGION = "eu-west-2"
 DEFAULT_NAMESPACE = "GeyserGenomics"  # app/metrics.py METRIC_NAMESPACE
 SCHEMAS = ("per-sample", "aggregated")
 GRID_WIDTH = 24
+# The hosted site's web API Lambda (infrastructure/web_api.tf: "${var.project_name}-web-api-${var.environment}").
+DEFAULT_WEB_FUNCTION = "geyser-web-api-dev"
 # Expression/metric ids: CloudWatch requires a lowercase first letter, then letters, digits, underscores.
 _ID_RE = re.compile(r"[^a-zA-Z0-9_]")
 
@@ -59,19 +61,31 @@ def caller_stages(prefix: str) -> tuple:
 # To add a stage or caller, add it here: dashboards, alarms and tests pick it up.
 STAGE_GROUPS = {
     "core": (Stage("QualityControl"), Stage("Align"), Stage("CallVariants")),
+    # v1.3's large route: the pre-flight split and one AlignChunk per chunk; the merge is the core Align.
+    "genome": (Stage("Preflight"), Stage("AlignChunk")),
     "deepvariant": caller_stages("DeepVariant"),
+    # v1.5: make_examples split over CPU part jobs (no run-record part); the GPU job is the DeepVariant stage.
+    "dv_split": (Stage("DeepVariantExamples"),),
     "pangenome": caller_stages("PangenomeDeepVariant"),
     # Scatter-gather calling (#108): one CallVariantsShard per region; the merge is the core CallVariants.
     "shards": (Stage("CallVariantsShard"),),
     # The quality gate after variant calling (#144): its run time, and its failures (GATE_MODE=fail).
     "gate": (Stage("QualityGate"),),
+    # The hosted site's Publish job at the end of every run (#213, #257): web/'s manage.py publish.
+    "publish": (Stage("Publish"),),
+    # v3.0 (#207/#209, O8): the opt-in AlphaGenome annotation, an extra stage (a failure never fails the run).
+    "annotate": (Stage("Annotate"),),
 }
 GROUP_TITLES = {
     "core": "Core pipeline (bcftools)",
+    "genome": "Large route (pre-flight and align chunks)",
+    "dv_split": "DeepVariant make_examples parts (CPU)",
     "deepvariant": "DeepVariant",
     "pangenome": "Pangenome-aware DeepVariant",
     "shards": "Variant calling shards (per region)",
     "gate": "Quality gate",
+    "publish": "Publish (hosted site)",
+    "annotate": "AlphaGenome annotation (opt-in)",
 }
 
 
@@ -478,6 +492,74 @@ def quality_widgets(
     ]
 
 
+# O11: the quality gate's key values (app/tasks.py GATE_VALUES_METRIC / GATE_VALUE_CHECKS), one series per check.
+GATE_VALUES_METRIC = "QualityGateValue"
+GATE_VALUE_CHECKS = ("mapped_pct", "duplicate_pct", "mean_depth", "breadth_10x_pct", "tstv")
+
+
+def gate_value_widgets(region: str = DEFAULT_REGION, namespace: str = DEFAULT_NAMESPACE) -> list:
+    """The gate's measured values per run (one point per gate run), so a change of image or reference that
+    shifts quality shows as a step. Percentages on one widget; depth and Ti/Tv (other scales) on another."""
+
+    def rows(checks):
+        return [
+            [namespace, GATE_VALUES_METRIC, "Check", c, {"id": f"gate_{c}", "stat": "Average", "label": c}]
+            for c in checks
+        ]
+
+    return [
+        _metric_widget(
+            "Quality gate: mapped %, duplicate %, breadth at 10x % (per run)",
+            rows(("mapped_pct", "duplicate_pct", "breadth_10x_pct")),
+            region,
+            period=3600,
+            y_label="%",
+        ),
+        _metric_widget(
+            "Quality gate: mean depth and Ti/Tv (per run)",
+            rows(("mean_depth", "tstv")),
+            region,
+            period=3600,
+        ),
+    ]
+
+
+# O8 (v3.0): the AlphaGenome annotation as COUNTS only (app/tasks.py ANNOTATE_CALLS_METRIC, record_counts by
+# TaskName). Its duration and failures are the Annotate stage group's. No widget ever reads annotation outputs or
+# their logs: AlphaGenome's terms forbid publishing model outputs, and the API key (SSM) is never logged.
+ANNOTATE_CALLS_METRIC = "AnnotateApiCalls"
+
+
+def annotate_widgets(region: str = DEFAULT_REGION, namespace: str = DEFAULT_NAMESPACE) -> list:
+    """How many AlphaGenome API calls the annotations made per day (a cost and quota signal), next to a note on what
+    this row never shows."""
+    return [
+        _text_widget(
+            "## AlphaGenome annotation (opt-in, v3.0)\n"
+            "Counts only: API calls per day here, and the Annotate stage's duration and failures in its stage group. "
+            "Scores, tracks and genes are never shown on the dashboard (AlphaGenome's output terms); the API key is "
+            "an SSM SecureString mapped into the annotate job, never logged.",
+            height=2,
+        ),
+        _metric_widget(
+            "AlphaGenome API calls (per day)",
+            [
+                [
+                    namespace,
+                    ANNOTATE_CALLS_METRIC,
+                    "TaskName",
+                    "Annotate",
+                    {"id": "ag_calls", "stat": "Sum", "label": "calls"},
+                ]
+            ],
+            region,
+            view="bar",
+            period=86400,
+            y_label="calls",
+        ),
+    ]
+
+
 # The stage is the job name's first word: the state machine names jobs <Stage>-<sample>-<execution>
 # (QualityControl, AlignGenome, PlanRegions, CallVariantsShard, CallVariants; DeepVariant on the GPU queue).
 QUEUE_WAIT_PARSE = (
@@ -531,6 +613,235 @@ def queue_wait_widgets(region: str = DEFAULT_REGION, log_group: str = BATCH_EVEN
     ]
 
 
+# The job-log line every stage writes after updating the run record (app/provenance.py RECORD_LOG_PREFIX).
+RUN_RECORD_PREFIX = "run-record: "
+RUN_RECORD_FIELDS = (
+    "task",
+    "sample_id",
+    "run_name",
+    "status",
+    "route",
+    "caller_outcome",
+    "infra_retries",
+    "app_version",
+    "reference",
+    "gate",
+)
+
+
+def _run_record_parse() -> list:
+    """Logs Insights lines that pull the run-record line's fields out (strings, numbers or null)."""
+    lines = [f"filter @message like /^{RUN_RECORD_PREFIX.strip()}/"]
+    for field in RUN_RECORD_FIELDS:
+        lines.append(f'| parse @message /"{field}": "?(?<r_{field}>[^",}}]*)"?/')
+    return lines
+
+
+def recent_runs_query() -> str:
+    """One row per run: its latest record line (the fullest view), newest first. Shows the route, whose calls
+    the VCF holds (a DeepVariant run that fell back to bcftools reads fallback_bcftools), the reference, the
+    image, the gate verdict and the attempts lost to Spot."""
+    return "\n".join(
+        [
+            *_run_record_parse(),
+            "| stats latest(r_sample_id) as sample, latest(r_status) as status, latest(r_route) as route, "
+            "latest(r_caller_outcome) as calls, latest(r_reference) as reference, latest(r_gate) as gate, "
+            "max(r_infra_retries) as spot_retries, latest(r_app_version) as image, latest(r_task) as last_stage, "
+            "max(@timestamp) as updated by r_run_name",
+            "| sort updated desc",
+            "| limit 50",
+        ]
+    )
+
+
+def caller_outcome_query() -> str:
+    """Runs per caller outcome (bcftools, deepvariant, pangenome, fallback_bcftools), from each run's latest line."""
+    return "\n".join(
+        [
+            *_run_record_parse(),
+            "| stats latest(r_caller_outcome) as outcome by r_run_name",
+            "| stats count(*) as runs by outcome",
+        ]
+    )
+
+
+def spot_retry_query() -> str:
+    """Jobs that started again after a lost attempt: Batch retries only infrastructure failures (Spot
+    interruptions, a host going away), and the RUNNING event of a retry lists the earlier attempt's reason."""
+    return "\n".join(
+        [
+            "fields detail.jobName as job, detail.attempts.0.statusReason as reason",
+            "| filter ispresent(detail.attempts.0.statusReason)",
+            *QUEUE_WAIT_PARSE[:1],
+            "| stats count(*) as retried_jobs by stage, reason",
+            "| sort retried_jobs desc",
+        ]
+    )
+
+
+def run_widgets(
+    region: str = DEFAULT_REGION,
+    batch_log_group: str = BATCH_LOG_GROUP,
+    batch_events_log_group: str = BATCH_EVENTS_LOG_GROUP,
+) -> list:
+    """Per-run widgets from the run-record log lines (#251) and the Batch RUNNING events."""
+    return [
+        _log_widget("Recent runs (from the run record)", recent_runs_query(), region, batch_log_group, height=7),
+        _log_widget(
+            "Whose calls: runs by caller outcome (fallback_bcftools = the run's own caller failed)",
+            caller_outcome_query(),
+            region,
+            batch_log_group,
+            width=12,
+        ),
+        _log_widget(
+            "Jobs retried after a lost attempt (Spot interruptions), by stage",
+            spot_retry_query(),
+            region,
+            batch_events_log_group,
+            width=12,
+        ),
+    ]
+
+
+def gpu_widgets(region: str, namespace: str, schema: str) -> list:
+    """DeepVariant's GPU step: utilisation and peak memory (#139). Aggregated schema only (one series per step)."""
+    if schema != "aggregated":
+        return []
+    task = "DeepVariant.CallVariants"
+    dims = ["TaskName", task, "Status", "Success"]
+    return [
+        _metric_widget(
+            "DeepVariant call_variants on the GPU: utilisation % (mean, peak)",
+            [
+                [
+                    namespace,
+                    "GpuUtilization",
+                    *dims,
+                    {"id": "gpu_util_mean", "stat": "Average", "label": "mean utilisation"},
+                ],
+                [
+                    namespace,
+                    "GpuUtilizationPeak",
+                    *dims,
+                    {"id": "gpu_util_peak", "stat": "Maximum", "label": "peak utilisation"},
+                ],
+            ],
+            region,
+            y_label="%",
+        ),
+        _metric_widget(
+            "DeepVariant call_variants on the GPU: peak memory, MiB",
+            [
+                [
+                    namespace,
+                    "GpuPeakMemory",
+                    *dims,
+                    {"id": "gpu_mem_peak", "stat": "Maximum", "label": "peak GPU memory"},
+                ]
+            ],
+            region,
+            y_label="MiB",
+        ),
+    ]
+
+
+# Spend guardrails (O9): the live values, read from AWS Budgets and .claude/hooks/guard_aws.py on 9 Nov 2026.
+# They change rarely and only by the user; update them here (and redeploy) when they do.
+GUARDRAILS = {
+    "checked": "9 Nov 2026",
+    "cap_usd": 30,  # budget geyser-claude-project-cap (CUSTOM period, ends 1 Nov 2027: renew before)
+    "kill_switch_usd": 27,  # its budget action: attaches the deny-all geyser-claude-kill-switch at actual spend
+    "run_block_usd": 24,  # guard_aws.py RUN_BLOCK_USD: no new runs from here
+    "gpu_block_usd": 20,  # guard_aws.py GPU_BLOCK_USD: no GPU jobs from here
+    "monthly_alert_usd": 10,  # budget geyser-monthly-cost
+}
+BUDGETS_URL = "https://us-east-1.console.aws.amazon.com/costmanagement/home#/budgets"
+COST_EXPLORER_URL = "https://us-east-1.console.aws.amazon.com/costmanagement/home#/cost-explorer"
+
+
+def spend_widgets(guardrails: dict = None) -> list:
+    """O9: the account's estimated charges this month (AWS/Billing, published only in us-east-1, free once
+    "Receive Billing Alerts" is on; hours ahead of Budgets) next to the guardrails' lines."""
+    g = guardrails or GUARDRAILS
+    charges = [
+        [
+            "AWS/Billing",
+            "EstimatedCharges",
+            "Currency",
+            "USD",
+            {"id": "charges", "stat": "Maximum", "label": "Estimated charges this month, USD", "region": "us-east-1"},
+        ]
+    ]
+    widget = _metric_widget(
+        "Estimated charges this month, USD (us-east-1, every ~6 h)", charges, "us-east-1", period=21600, y_label="USD"
+    )
+    widget["properties"]["annotations"] = {
+        "horizontal": [
+            {"label": f"kill switch ${g['kill_switch_usd']}", "value": g["kill_switch_usd"]},
+            {"label": f"no new runs ${g['run_block_usd']}", "value": g["run_block_usd"]},
+            {"label": f"no GPU jobs ${g['gpu_block_usd']}", "value": g["gpu_block_usd"]},
+        ]
+    }
+    lines = [
+        "### Spend guardrails",
+        "",
+        f"- Project cap **${g['cap_usd']}** (budget `geyser-claude-project-cap`, ends 1 Nov 2027: renew before)",
+        f"- Kill switch at **${g['kill_switch_usd']}** actual: attaches deny-all `geyser-claude-kill-switch` "
+        "(Budgets action status STANDBY = armed)",
+        f"- Guard hook: no new runs from **${g['run_block_usd']}**, no GPU jobs from **${g['gpu_block_usd']}**",
+        f"- Monthly alert ${g['monthly_alert_usd']} (`geyser-monthly-cost`)",
+        "",
+        f"[Budgets and actions]({BUDGETS_URL}) · [Cost Explorer]({COST_EXPLORER_URL}). "
+        f"Values checked {g['checked']}; Budgets lags hours, the estimate is the earlier hint.",
+    ]
+    text = _text_widget(
+        "\n".join(lines),
+        width=12,
+        height=6,
+    )
+    return [widget, text]
+
+
+def running_now_widgets(region: str) -> list:
+    """O10: what bills while idle. Running vCPUs from the free AWS/Usage metrics (EC2 by instance class: G/VT
+    is the GPU environment; Fargate on-demand and Spot), and every bucket's size (AWS/S3, daily)."""
+    usage = (
+        'SEARCH(\'{AWS/Usage,Class,Resource,Service,Type} Service="EC2" Type="Resource" Resource="vCPU"\', '
+        "'Maximum', 300)"
+    )
+    fargate = "SEARCH('{AWS/Usage,Class,Resource,Service,Type} Service=\"Fargate\" Type=\"Resource\"', 'Maximum', 300)"
+    buckets = (
+        'SEARCH(\'{AWS/S3,BucketName,StorageType} MetricName="BucketSizeBytes" StorageType="StandardStorage"\', '
+        "'Average', 86400)"
+    )
+    return [
+        _metric_widget(
+            "Running now: EC2 vCPUs by class (G/VT = GPU env) and Fargate tasks",
+            [
+                [{"expression": usage, "id": "ec2_vcpu", "label": "EC2 vCPUs"}],
+                [{"expression": fargate, "id": "fargate", "label": "Fargate"}],
+            ],
+            region,
+            period=300,
+            y_label="count",
+        ),
+        _metric_widget(
+            "S3 storage by bucket, GB (Standard, daily)",
+            [
+                [{"expression": buckets, "id": "bucket_bytes", "visible": False}],
+                [{"expression": "bucket_bytes / 1000000000", "id": "bucket_gb", "label": "GB"}],
+            ],
+            region,
+            period=86400,
+            y_label="GB",
+        ),
+    ]
+
+
+BENCHMARKS_URL = "https://github.com/Harry5haw/Geyser-Genomics/blob/main/docs/benchmarks/README.md"
+
+
 def storage_widgets(region: str, bucket: str) -> list:
     """Data lake size and object count (#62), from the free daily S3 storage metrics (AWS/S3, one
     datapoint a day per bucket and storage class, about a day behind). The lifecycle rules in
@@ -564,12 +875,60 @@ def storage_widgets(region: str, bucket: str) -> list:
     ]
 
 
+def web_widgets(region: str, function_name: str = DEFAULT_WEB_FUNCTION, distribution_id: str = None) -> list:
+    """The hosted site (O7): the web API Lambda's errors, throttles and duration (free AWS/Lambda metrics) and,
+    with a distribution ID, CloudFront's 4xx/5xx error rates. CloudFront publishes its metrics only in us-east-1
+    (dimension Region=Global), so that widget reads us-east-1 whatever the dashboard's region."""
+    fn = ["FunctionName", function_name]
+    calls = [
+        ["AWS/Lambda", "Invocations", *fn, {"id": "invocations", "stat": "Sum", "label": "Requests"}],
+        ["AWS/Lambda", "Errors", *fn, {"id": "errors", "stat": "Sum", "label": "Errors"}],
+        # Throttles: requests turned away by the reserved concurrency (web_api_reserved_concurrency): the 429s.
+        ["AWS/Lambda", "Throttles", *fn, {"id": "throttles", "stat": "Sum", "label": "Throttled (429)"}],
+    ]
+    duration = [
+        ["AWS/Lambda", "Duration", *fn, {"id": f"d_{stat}", "stat": stat, "label": f"Duration {stat}"}]
+        for stat in ("p50", "p95")
+    ]
+    widgets = [
+        _text_widget(
+            f"## Hosted site\nThe web API Lambda `{function_name}` (uploads, status, downloads)"
+            + (", and the CloudFront distribution in front of the site." if distribution_id else ".")
+            + " The Publish job's run time and failures are in the stage widgets (group *Publish*).",
+        ),
+        _metric_widget(f"Web API requests, errors, throttles: {function_name}", calls, region, view="bar", period=3600),
+        _metric_widget("Web API duration, ms (p50, p95)", duration, region, period=3600, y_label="ms"),
+    ]
+    if distribution_id:
+        cf = ["DistributionId", distribution_id, "Region", "Global"]
+        rates = [
+            ["AWS/CloudFront", "4xxErrorRate", *cf, {"id": "e4xx", "stat": "Average", "label": "4xx %"}],
+            ["AWS/CloudFront", "5xxErrorRate", *cf, {"id": "e5xx", "stat": "Average", "label": "5xx %"}],
+            [
+                "AWS/CloudFront",
+                "Requests",
+                *cf,
+                {"id": "requests", "stat": "Sum", "label": "Requests", "yAxis": "right"},
+            ],
+        ]
+        widgets.append(
+            _metric_widget(
+                "Site (CloudFront): error rates, % (requests on the right)",
+                rates,
+                "us-east-1",
+                period=3600,
+                width=GRID_WIDTH,
+            )
+        )
+    return widgets
+
+
 def build_dashboard(
     region: str = DEFAULT_REGION,
     namespace: str = DEFAULT_NAMESPACE,
     *,
     state_machine_arn: str = None,
-    schema: str = "per-sample",
+    schema: str = "aggregated",
     groups=None,
     lookback: str = "-P14D",
     alarm_arns=None,
@@ -580,6 +939,11 @@ def build_dashboard(
     bucket: str = None,
     queue_wait: bool = True,
     batch_events_log_group: str = BATCH_EVENTS_LOG_GROUP,
+    runs: bool = True,
+    spend: bool = True,
+    web: bool = True,
+    web_function_name: str = DEFAULT_WEB_FUNCTION,
+    web_distribution_id: str = None,
 ) -> dict:
     """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, result
     quality (from the Batch job logs), data lake storage (with a bucket name), stage durations."""
@@ -603,7 +967,8 @@ def build_dashboard(
             "# Geyser Genomics pipeline\n"
             f"{link_line}\n\n"
             f"Generated by `scripts/deploy_dashboard.py` (schema: **{schema}**). Edits made in the console are "
-            f"overwritten on the next deploy. Stage durations show {duration_note}; successful runs only.",
+            f"overwritten on the next deploy. Stage durations show {duration_note}; successful runs only. "
+            f"Accuracy (hap.py against GIAB) per configuration: [benchmark history]({BENCHMARKS_URL}).",
             width=GRID_WIDTH - 6 if alarm_arns else GRID_WIDTH,
             height=4,
         )
@@ -637,10 +1002,20 @@ def build_dashboard(
             width=GRID_WIDTH,
         )
     )
+    if spend:
+        widgets += spend_widgets() + running_now_widgets(region)
+    if runs:
+        widgets += run_widgets(region, batch_log_group, batch_events_log_group)
     if quality:
-        widgets += quality_widgets(region, batch_log_group, thresholds)
+        widgets += quality_widgets(region, batch_log_group, thresholds) + gate_value_widgets(region, namespace)
     if bucket:
         widgets += storage_widgets(region, bucket)
+    if web:
+        widgets += web_widgets(region, web_function_name, web_distribution_id)
+    if "deepvariant" in groups:
+        widgets += gpu_widgets(region, namespace, schema)
+    if "annotate" in groups:
+        widgets += annotate_widgets(region, namespace)
     for name, stages in groups.items():
         widgets.append(
             _metric_widget(
