@@ -550,16 +550,20 @@ def test_quality_trend_query_bins_by_day():
 
 
 def test_dashboard_quality_widgets_on_by_default_and_optional():
-    logs = [w for w in monitoring.build_dashboard(queue_wait=False)["widgets"] if w["type"] == "log"]
+    logs = [w for w in monitoring.build_dashboard(queue_wait=False, runs=False)["widgets"] if w["type"] == "log"]
     assert [w["properties"]["view"] for w in logs] == ["table", "table", "timeSeries"]
     assert "outside quality thresholds" in logs[1]["properties"]["title"]
-    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod", queue_wait=False)
+    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod", queue_wait=False, runs=False)
     assert all(
         w["properties"]["query"].startswith("SOURCE '/aws/batch/geyser-prod' | ")
         for w in custom["widgets"]
         if w["type"] == "log"
     )
-    assert not [w for w in monitoring.build_dashboard(quality=False, queue_wait=False)["widgets"] if w["type"] == "log"]
+    assert not [
+        w
+        for w in monitoring.build_dashboard(quality=False, queue_wait=False, runs=False)["widgets"]
+        if w["type"] == "log"
+    ]
 
 
 def test_dashboard_cli_quality_options(capsys, monkeypatch):
@@ -567,7 +571,7 @@ def test_dashboard_cli_quality_options(capsys, monkeypatch):
     deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/other"])
     body = json.loads(capsys.readouterr().out)
     assert any(w["type"] == "log" and "SOURCE '/aws/batch/other'" in w["properties"]["query"] for w in body["widgets"])
-    deploy_dashboard.main(["--dry-run", "--no-quality"])
+    deploy_dashboard.main(["--dry-run", "--no-quality", "--no-runs"])
     quality = [
         w
         for w in json.loads(capsys.readouterr().out)["widgets"]
@@ -688,3 +692,40 @@ def test_dashboard_cli_no_queue_wait(capsys, monkeypatch):
     monkeypatch.delenv("SFN_ARN", raising=False)
     deploy_dashboard.main(["--dry-run", "--no-queue-wait"])
     assert "Batch wait" not in capsys.readouterr().out
+
+
+def test_run_widgets_read_the_run_record_line_and_spot_retries():
+    widgets = {w["properties"]["title"]: w for w in monitoring.run_widgets()}
+    runs = widgets["Recent runs (from the run record)"]["properties"]["query"]
+    assert runs.startswith(f"SOURCE '{monitoring.BATCH_LOG_GROUP}' | filter @message like /^run-record:/")
+    for field in ("caller_outcome", "route", "infra_retries", "gate", "reference", "app_version"):
+        assert f'"{field}"' in runs
+    outcome = next(w for t, w in widgets.items() if t.startswith("Whose calls"))["properties"]["query"]
+    assert "stats count(*) as runs by outcome" in outcome
+    spot = next(w for t, w in widgets.items() if t.startswith("Jobs retried"))["properties"]["query"]
+    assert spot.startswith(f"SOURCE '{monitoring.BATCH_EVENTS_LOG_GROUP}' | ")
+    assert "ispresent(detail.attempts.0.statusReason)" in spot
+
+
+def test_run_record_parse_matches_the_apps_log_line():
+    # The line app/provenance.py writes: the prefix and its JSON keys (json.dumps: '"key": value').
+    import provenance
+
+    if not hasattr(provenance, "RECORD_LOG_PREFIX"):
+        pytest.skip("the run-record log line comes with #251")
+    assert provenance.RECORD_LOG_PREFIX == monitoring.RUN_RECORD_PREFIX
+    assert set(monitoring.RUN_RECORD_FIELDS) == {"task", *provenance.SUMMARY_FIELDS, "reference", "gate"}
+
+
+def test_gpu_widgets_only_with_the_aggregated_schema_and_deepvariant():
+    titles = [w["properties"].get("title", "") for w in monitoring.build_dashboard()["widgets"]]
+    assert sum("on the GPU" in t for t in titles) == 2
+    per_sample = monitoring.build_dashboard(schema="per-sample")["widgets"]
+    assert not [w for w in per_sample if "on the GPU" in w["properties"].get("title", "")]
+    core_only = monitoring.build_dashboard(groups=["core"])["widgets"]
+    assert not [w for w in core_only if "on the GPU" in w["properties"].get("title", "")]
+
+
+def test_header_links_the_benchmark_history():
+    header = monitoring.build_dashboard()["widgets"][0]["properties"]["markdown"]
+    assert monitoring.BENCHMARKS_URL in header

@@ -95,6 +95,11 @@ def parse_args(argv=None):
         help=f"Batch job log group the quality widgets query (default: {monitoring.BATCH_LOG_GROUP})",
     )
     p.add_argument(
+        "--no-runs",
+        action="store_true",
+        help="Leave out the run widgets (recent runs and caller outcomes from the run-record log line, Spot retries)",
+    )
+    p.add_argument(
         "--no-queue-wait",
         action="store_true",
         help="Leave out the Batch wait widgets (Logs Insights over the Batch job-event log group, #138)",
@@ -174,6 +179,7 @@ def main(argv=None, client=None, sts_client=None) -> int:
             bucket=args.bucket,
             batch_log_group=args.batch_log_group,
             queue_wait=not args.no_queue_wait,
+            runs=not args.no_runs,
         )
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}") from err
