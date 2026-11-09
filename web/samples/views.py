@@ -32,6 +32,7 @@ from geyser_web.pipeline import (
     sample_vcf_key,
 )
 
+from . import alphagenome as alphagenome_mod
 from . import figures as figures_mod
 from . import status as status_mod
 from .demo import DemoError, create_demo_sample
@@ -64,6 +65,15 @@ FILE_KINDS = {
     "mosdepth_dist": ("Coverage distribution", "mosdepth: fraction of bases covered at each depth or more"),
     "bcftools_stats": ("Variant stats", "bcftools stats: SNP and indel counts, Ti/Tv, quality distributions"),
     "gate_verdict": ("Quality gate verdict", "JSON: the verdict, named reasons and every check with its thresholds"),
+    "alphagenome_tsv": (
+        "Variants of interest (AlphaGenome)",
+        "TSV: the variants AlphaGenome scored, ranked by AVI. Research use only, not for clinical use",
+    ),
+    "alphagenome_vcf": (
+        "AlphaGenome-annotated variants",
+        "The VCF with AlphaGenome scores (INFO/AG_*). Research use only, not for clinical use",
+    ),
+    "alphagenome_tbi": ("AlphaGenome-annotated variant index", "Tabix index (.tbi) of the AlphaGenome VCF"),
     "run_record": (
         "Run record",
         "JSON: inputs, reference MD5, tool versions, image, each stage's status, time and resources",
@@ -73,6 +83,10 @@ FILE_KINDS = {
 }
 # Kinds that are one file per sample but not keys_for() names.
 SAMPLE_FILES = ("truth", "log", "run_record")
+# AlphaGenome's outputs (3.0): offered only when the panel shows this run's annotation (AnnotationView.current),
+# and only by the local UI: the hosted site's downloads are PUBLIC_KINDS (the web API's allowlist), which leaves
+# them out, so AlphaGenome output reaches hosted visitors only as the panel, with its terms notice.
+ALPHAGENOME_KINDS = tuple(alphagenome_mod.FILES)
 LOG_TAIL_LINES = 300
 
 
@@ -92,15 +106,17 @@ def _file_key(sample_id, kind, keys):
         return log_key(sample_id)
     if kind == "run_record":
         return record_key(sample_id)
+    if kind in ALPHAGENOME_KINDS:
+        return alphagenome_mod.file_key(sample_id, kind)
     return keys.get(kind)
 
 
 def _download_kinds(keys):
     """(kind, label, description) for every file a sample can have, both mates for paired-end."""
     for kind, (label, description) in FILE_KINDS.items():
-        if kind in keys or kind in SAMPLE_FILES:
+        if kind in keys or kind in SAMPLE_FILES or kind in ALPHAGENOME_KINDS:
             yield kind, label, description
-        else:
+        elif kind in PER_MATE_KEYS:
             for mate in MATES:
                 yield f"{kind}_{mate}", f"{label} ({mate})", description
 
@@ -362,10 +378,21 @@ def sample_detail(request, sample_id, page=None):
             last = (variants.total - 1) // size * size
             variants = read_variants(storage, variants_key, size, last, want_calls=truth is not None)
     truth_result = check_truth(variants.calls, truth) if (truth and variants) else None
+    # Only next to calls: there is nothing to annotate before the variants stage. The published page has no query
+    # string, so it shows the default order (highest AVI first).
+    alphagenome = (
+        alphagenome_mod.read_annotation(storage, sample_id, record, request.GET.get("avi", "desc"), size)
+        if variants is not None
+        else None
+    )
+    if alphagenome and alphagenome.state == "not_annotated":
+        alphagenome = None  # opt-in per run: no panel at all for a sample that wasn't annotated
     downloads = []
     for kind, label, description in _download_kinds(sample.keys):
         if static and kind not in PUBLIC_KINDS:
             continue  # the public showcase: the calls, QC, gate, stats and run record only (never reads or CRAMs)
+        if kind in ALPHAGENOME_KINDS and not (alphagenome and alphagenome.current):
+            continue  # not annotated, failed, or an earlier run's files: not this sample's current annotation
         key = _file_key(sample_id, kind, sample.keys)
         if kind in ("csq_vcf", "csq_tbi") and variants_key != sample.keys["csq_vcf"]:
             continue  # an annotated VCF (and its index) from an earlier run: not this sample's current calls
@@ -401,6 +428,8 @@ def sample_detail(request, sample_id, page=None):
         "downloads": downloads,
         "gate": read_gate(storage, sample.keys["gate_verdict"], record),
         "record": record_view(record),
+        "alphagenome": alphagenome,
+        "alphagenome_terms_url": alphagenome_mod.TERMS_URL,
         "variant_pager": _pager(sample_id, variants, size, static.max_pages if static else None),
         # The static site publishes the first max_pages pages; past that, the VCF download has the rest.
         "calls_shown": shown_calls if static and variants and variants.total > shown_calls else None,
