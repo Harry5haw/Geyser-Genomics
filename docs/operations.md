@@ -161,8 +161,11 @@ small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its jo
   storage, the trigger alarm. It's deployed by script; `--dry-run` prints the body and makes no AWS calls:
   ```bash
   python scripts/deploy_dashboard.py --dry-run
-  SFN_ARN=<state-machine-arn> python scripts/deploy_dashboard.py --bucket <data-lake>
+  SFN_ARN=<state-machine-arn> python scripts/deploy_dashboard.py --bucket <data-lake> \
+    --web-distribution-id <distribution_id>    # the hosted site's CloudFront error rates (us-east-1 metrics)
   ```
+  The hosted-site row (web API Lambda requests/errors/throttles and duration p50/p95, CloudFront 4xx/5xx) is in by
+  default; `--no-web` leaves it out. The Publish job is a stage group (*Publish (hosted site)*).
 - **Run times, and per stage:** queue wait, run time, estimated cost, attempts and the failure reason:
   ```bash
   python scripts/query_pipeline_duration.py --stages                  # the latest 50 runs
