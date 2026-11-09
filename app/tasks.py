@@ -1828,10 +1828,14 @@ def annotate_main(argv) -> int:
         plan = annotate_plan(args.srr_id, source, max_variants)
         text = json.dumps(plan, indent=1)
         if args.output_key:
-            path = os.path.join(work_dir(args.srr_id), "annotate-plan.json")
-            with open(path, "w", encoding="utf-8") as fh:
-                fh.write(text)
-            storage().upload(path, args.output_key)
+            wd = work_dir(args.srr_id)
+            try:
+                path = os.path.join(wd, "annotate-plan.json")
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                storage().upload(path, args.output_key)
+            finally:
+                shutil.rmtree(wd, ignore_errors=True)
         print(text, flush=True)
         return 0
     try:
