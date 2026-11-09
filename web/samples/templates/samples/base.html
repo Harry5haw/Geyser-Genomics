@@ -9,6 +9,9 @@
   <meta property="og:title" content="Geyser Genomics">
   <meta property="og:description" content="An open-source cloud pipeline from DNA reads (FASTQ) to variants (VCF), with its results published.">
   <meta property="og:image" content="{% static 'samples/geyser-social.png' %}">
+  {# The vector icon first (crisp at any size); the PNG for browsers without SVG favicons. Both go through static, #}
+  {# so the published site serves content-hashed names: a new design is a new URL, never a stale cached icon. #}
+  <link rel="icon" type="image/svg+xml" href="{% static 'samples/geyser-icon.svg' %}">
   <link rel="icon" type="image/png" sizes="32x32" href="{% static 'samples/favicon-32.png' %}">
   <link rel="apple-touch-icon" href="{% static 'samples/apple-touch-icon.png' %}">
   {# Sync and first: sets <html data-theme> before the first paint (a static file: no CSP hash needed). #}
