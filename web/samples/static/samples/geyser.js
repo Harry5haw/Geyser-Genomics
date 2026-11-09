@@ -13,7 +13,7 @@
 
   // The sample list's shortcuts (All / DeepVariant / AlphaGenome / Failed): shown only when this script runs; a
   // button sets data-filter on #samples (outside the polled table, so a refresh keeps it) and CSS hides the rest.
-  const filters = document.querySelector("#samples .filters");
+  const filters = document.querySelectorAll("#samples .filters")[0];
   if (filters) {
     filters.hidden = false;
     filters.addEventListener("click", (e) => {
