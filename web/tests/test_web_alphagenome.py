@@ -316,3 +316,19 @@ def test_atlas_only_rows_without_an_avi_keep_the_tables_rank(client, storage):
     assert not view.scored and [r.gene for r in view.rows] == ["GENEB", "GENEA"]
     body = client.get("/samples/S1/?avi=asc").content.decode()
     assert body.index("GENEB") < body.index("GENEA") and "?avi=" not in body and "keep the table's ranking" in body
+
+
+# ------------------------------------------------------------------ #207's contract, now on main
+
+
+def test_the_panel_reads_207s_table_and_shows_its_notice(client, storage):
+    import alphagenome_annotation as ag  # app/: #207's writer
+    from samples.alphagenome import COLUMNS, REQUIRED
+
+    assert set(REQUIRED) <= set(COLUMNS) <= set(ag.TSV_COLUMNS)
+    first, header = fixture_text().splitlines()[:2]
+    assert first == "#" + ag.TERMS_LINE and header.split(chr(9)) == list(ag.TSV_COLUMNS)
+    assert TERMS_URL in ag.TERMS_NOTICE
+    sample_with(storage, fixture_text(), record({"status": "Success"}))
+    body = " ".join(client.get("/samples/S1/").content.decode().split())
+    assert ag.TERMS_NOTICE.replace(TERMS_URL, "") in body  # the same words as the files' notice
