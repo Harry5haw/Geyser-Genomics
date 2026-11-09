@@ -5,8 +5,7 @@
 (() => {
   "use strict";
 
-  // The heat ramp comes with the grid (figures.py HEAT, cividis: dark blue-grey = low, yellow = high), so the 3D
-  // view, the poster, the colour bar and the 2D figures share one value -> colour mapping.
+  // The heat ramp comes with the grid (figures.py HEAT, cividis): one value -> colour mapping for every view.
   const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
   const heat = (stops) => {
     const R = stops.map(rgb);
@@ -43,7 +42,9 @@
   const fmt = (v) => (v === 0 ? "0" : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2));
 
   function build(data) {
-    const xs = data.x.values, rows = data.rows.names, vals = data.values, n = rows.length, ramp = heat(data.ramp);
+    const xs = data.x.values, rows = data.rows.names, vals = data.values, n = rows.length;
+    // A grid JSON cached from before the ramp (max-age 300) has none: use its two ends.
+    const ramp = heat(Array.isArray(data.ramp) && data.ramp.length > 1 ? data.ramp : ["#4f576c", "#fee838"]);
     const x0 = xs[0], x1 = xs[xs.length - 1] === x0 ? x0 + 1 : xs[xs.length - 1];
     const top = data.z.clip || data.z.max || 1, base = data.z.base || 0, span = top - base || 1;
     const wx = (v) => -1 + ((v - x0) / (x1 - x0)) * 2;

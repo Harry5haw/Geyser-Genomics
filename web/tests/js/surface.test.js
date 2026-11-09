@@ -44,3 +44,9 @@ test("values above the cap take the top colour; the baseline takes the bottom", 
   const g = build(grid([[32, 99, 40]], { base: 32, clip: 40, max: 99 }));
   assert.deepStrictEqual(wallLevels(g), [0, 1]);
 });
+
+test("a grid JSON without a ramp (cached from before) still builds, coloured by the ramp's two ends", () => {
+  const { ramp, ...old } = grid([[0, 4, 4]]);
+  const g = build(old);
+  assert.ok(Math.abs(g.col[18] / 0.55 - 0x4f / 255) < 1e-3); // level 0: the low end's red channel
+});
