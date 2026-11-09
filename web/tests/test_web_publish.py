@@ -298,7 +298,7 @@ def test_a_cloud_run_closed_as_failed_shows_failed_not_running(storage, client):
     part = {"task": "Finalize", "status": "failed", "run_name": "F1-run", "error": {"stage": "Align"}}
     put(storage, "runs/F1.provenance/Finalize.json", json.dumps(part))
     body = client.get("/").content.decode()
-    row = re.search(r"<tr>\s*<td class=\"id\"><a href=\"/samples/F1/\">.*?</tr>", body, re.S).group()
+    row = re.search(r"<tr[^>]*>\s*<td class=\"id\"><a href=\"/samples/F1/\">.*?</tr>", body, re.S).group()
     assert 'class="badge failed"' in row
 
 

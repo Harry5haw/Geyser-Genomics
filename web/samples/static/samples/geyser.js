@@ -11,6 +11,19 @@
     input.setAttribute("aria-invalid", tooBig ? "true" : "false");
   });
 
+  // The sample list's shortcuts (All / DeepVariant / AlphaGenome / Failed): shown only when this script runs; a
+  // button sets data-filter on #samples (outside the polled table, so a refresh keeps it) and CSS hides the rest.
+  const filters = document.querySelector("#samples .filters");
+  if (filters) {
+    filters.hidden = false;
+    filters.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-filter-choice]");
+      if (!b) return;
+      filters.closest("#samples").dataset.filter = b.dataset.filterChoice;
+      for (const o of filters.querySelectorAll("[data-filter-choice]")) o.setAttribute("aria-pressed", String(o === b));
+    });
+  }
+
   // Status polling: an element with data-poll="<url>" is replaced by the server's fresh copy every
   // data-poll-seconds. The copy keeps polling only while it still has data-poll (a finished sample table
   // doesn't). A response with a Geyser-Refresh header means the run finished: reload to show the results.
