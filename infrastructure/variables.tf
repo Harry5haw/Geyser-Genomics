@@ -352,6 +352,90 @@ variable "gate_mode" {
   }
 }
 
+# --- the hosted web UI (W3): the API here; the site bucket and CloudFront in infrastructure/web/ -----------
+
+variable "web_upload_token_parameter" {
+  description = <<-EOT
+    Name of the SSM Parameter Store SecureString holding the upload token the web API checks (a long
+    random string, at least 32 characters). Terraform never creates or reads it: the user puts it in
+    with their own identity. Until it exists, uploads answer 503; status and downloads still work.
+  EOT
+  type        = string
+  default     = "/geyser/web/upload-token"
+
+  validation {
+    condition     = can(regex("^/[A-Za-z0-9_./-]+$", var.web_upload_token_parameter))
+    error_message = "web_upload_token_parameter must be a full parameter name starting with / (letters, digits, _ . - /)."
+  }
+}
+
+variable "web_origin" {
+  description = "The hosted site's origin, e.g. https://d1234abcd.cloudfront.net (infrastructure/web/'s site_origin output). Empty until the web stack exists: then the API allows no browser origin and the data lake gets no CORS rule."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.web_origin == "" || can(regex("^https://[a-z0-9.-]+$", var.web_origin))
+    error_message = "web_origin must be empty or an https:// origin with no path or trailing slash."
+  }
+}
+
+variable "publish_enabled" {
+  description = "Publish each run's page to the hosted site at the end of the run (the Publish state). Off until the web stack exists and the image has the publisher (W2); needs web_site_bucket and web_site_distribution_id."
+  type        = bool
+  default     = false
+}
+
+variable "web_site_bucket" {
+  description = "The site bucket's name (infrastructure/web/'s site_bucket output), for the Publish job. Empty while publishing is off."
+  type        = string
+  default     = ""
+}
+
+variable "web_site_distribution_id" {
+  description = "The CloudFront distribution's ID (infrastructure/web/'s distribution_id output): the Publish job invalidates /index.html there. Empty while publishing is off."
+  type        = string
+  default     = ""
+}
+
+variable "web_api_reserved_concurrency" {
+  description = "Reserved concurrency of the web API Lambda: its rate limit. At most this many requests run at once and the rest get 429, so a flood of requests can't run up the bill or starve the account's other functions (the trigger)."
+  type        = number
+  default     = 5
+
+  validation {
+    condition     = var.web_api_reserved_concurrency >= 1 && var.web_api_reserved_concurrency <= 50 && floor(var.web_api_reserved_concurrency) == var.web_api_reserved_concurrency
+    error_message = "web_api_reserved_concurrency must be a whole number from 1 to 50 (0 would disable the API; -1, unreserved, would remove the limit)."
+  }
+}
+
+variable "web_max_upload_gb" {
+  description = "The largest file the web API starts an upload for, in GiB (a 30x paired FASTQ mate is ~30-50 GB)."
+  type        = number
+  default     = 64
+}
+
+variable "publish_image_version" {
+  description = "Tag of the geyser-publish image (app-publish/Dockerfile: the app image plus web/) the Publish job runs, like image_version for the app image."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "publish_resources" {
+  description = "vCPU and memory (MiB) of the Publish job: one pass over the VCF and the stats, a few seconds for chr20 and ~2-4 min for a 30x genome at 0.5 vCPU (T3's measurements)."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 0.5, memory_mb = 1024 }
+
+  validation {
+    condition = (
+      (var.publish_resources.vcpu == 0.25 && contains([512, 1024, 2048], var.publish_resources.memory_mb)) ||
+      (var.publish_resources.vcpu == 0.5 && var.publish_resources.memory_mb >= 1024 && var.publish_resources.memory_mb <= 4096 && var.publish_resources.memory_mb % 1024 == 0) ||
+      (var.publish_resources.vcpu == 1 && var.publish_resources.memory_mb >= 2048 && var.publish_resources.memory_mb <= 8192 && var.publish_resources.memory_mb % 1024 == 0)
+    )
+    error_message = "publish_resources needs a valid Fargate pair: 0.25 vCPU with 512/1024/2048 MiB, 0.5 vCPU with 1024-4096, or 1 vCPU with 2048-8192 (1024 steps)."
+  }
+}
+
 # --- v1.3 Big inputs: the large route (genome_scale.tf, the state machine's Large_QC_and_Align) ------------
 
 variable "large_input_gb" {

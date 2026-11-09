@@ -187,7 +187,7 @@ def figures_page(request):
     in the browser only when a card scrolls into view (geyser.js)."""
     cards = []
     for name, figure in figures_mod.FIGURES.items():
-        card = {"name": name, "figure": figure, "grid": None, "poster": None, "error": ""}
+        card = {"name": name, "figure": figure, "grid": None, "poster": None, "legend": None, "error": ""}
         try:
             grid = figures_mod.load(name)
             poster = figures_mod.poster_svg(grid) if grid is not None else None
@@ -198,7 +198,11 @@ def figures_page(request):
             card["error"] = f"{figure.csv} can't be read ({reason})"
             grid = poster = None
         if grid is not None:
-            card.update(grid=grid, poster=mark_safe(poster))  # noqa: S308 - labels escaped in poster_svg
+            card.update(
+                grid=grid,
+                poster=mark_safe(poster),  # noqa: S308 - labels escaped in poster_svg
+                legend=mark_safe(figures_mod.legend_svg(grid)),  # noqa: S308 - numbers and escaped labels only
+            )
         cards.append(card)
     return render(request, "samples/figures.html", {"cards": cards})
 

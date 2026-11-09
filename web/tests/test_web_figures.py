@@ -133,6 +133,37 @@ def test_the_poster_is_one_ridge_per_row_with_escaped_labels(figdir):
     assert "<b>x</b>" not in svg and "&lt;b&gt;x&lt;/b&gt;" in svg
 
 
+def test_the_poster_fills_each_ridge_by_value(figdir):
+    svg = figures.poster_svg(figures.load("coverage"))
+    # One heat gradient per ridge, from the ridge's baseline (bottom of the scale) up to the top of the scale.
+    gradients = re.findall(
+        r'<linearGradient id="(heat-coverage-\d+)" gradientUnits="userSpaceOnUse"[^>]*>(.*?)</linear', svg
+    )
+    assert [g for g, _ in gradients] == ["heat-coverage-0", "heat-coverage-1"]
+    stops = re.findall(r'stop-color="(#[0-9a-f]{6})"', gradients[0][1])
+    assert stops == figures.HEAT  # dark (low) at the baseline, light (high) at the top
+    assert svg.count('fill="url(#heat-coverage-') == 2
+
+
+def test_the_colour_bar_shows_the_scale_with_its_cap(figdir):
+    coverage = figures.legend_svg(figures.load("coverage"))
+    assert coverage.startswith('<svg class="colorbar"') and 'role="img"' in coverage
+    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', coverage) == figures.HEAT
+    grid = figures.load("coverage")
+    assert [t for t in re.findall(r">([^<]+)</text>", coverage)] == [
+        "0",
+        figures._num(grid.clip / 2),
+        f"≥ {figures._num(grid.clip)}",
+    ]
+    quality = figures.legend_svg(figures.load("quality"))  # narrow range: from the stated baseline, no cap
+    assert re.findall(r">([^<]+)</text>", quality) == ["32", "34", "36"]
+    assert "Mean base quality from 32 to 36 Phred" in quality
+
+
+def test_ticks_read_like_the_3d_labels():
+    assert [figures._num(v) for v in (0, 0.5, 2.25, 12.34, 150.4)] == ["0", "0.5", "2.25", "12.3", "150"]
+
+
 def test_the_poster_resamples_long_rows(figdir):
     rows = "".join(f"A,chr20,{i * 1000},{(i + 1) * 1000},{30 + i % 7}\n" for i in range(1000))
     (figdir / "coverage-terrain.csv").write_bytes(("label,chrom,start,end,mean_depth\n" + rows).encode())
@@ -143,7 +174,8 @@ def test_the_poster_resamples_long_rows(figdir):
 
 def test_grid_json_is_what_the_renderer_reads(figdir):
     data = json.loads(figures.grid_json(figures.load("quality")))
-    assert set(data) == {"title", "x", "rows", "z", "values"}
+    assert set(data) == {"title", "x", "rows", "z", "values", "ramp"}
+    assert data["ramp"] == figures.HEAT  # surface.js colours by the same stops as the poster and the colour bar
     assert data["x"] == {
         "label": "Sequencing cycle",
         "unit": "cycle",
@@ -161,6 +193,8 @@ def test_grid_json_is_what_the_renderer_reads(figdir):
 def test_the_page_shows_posters_and_defers_the_3d(client, figdir):
     body = client.get("/figures/").content.decode()
     assert body.count('<svg class="poster"') == 2  # coverage and quality: this folder has only those two CSVs
+    assert body.count('<svg class="colorbar"') == 2  # each with its colour bar
+    assert len(set(re.findall(r'<linearGradient id="([^"]+)"', body))) == body.count("<linearGradient ")  # ids unique
     assert 'data-surface="/figures/coverage.json"' in body and 'data-surface="/figures/quality.json"' in body
     assert re.search(r'data-surface-js="/static/samples/surface[^"]*\.js"', body)
     assert re.search(r'data-surface-gl="/static/samples/surface-gl[^"]*\.js"', body)  # the WebGL half, for the worker

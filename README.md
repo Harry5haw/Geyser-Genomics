@@ -812,7 +812,7 @@ python scripts/deploy_alarms.py
 python scripts/deploy_dashboard.py
 ```
 
-Stage durations show the mean and max across samples. CloudWatch can't calculate percentiles across samples because each `SampleId` is a separate metric. If the metrics stop using the `SampleId` dimension, run with `--schema aggregated` to get real p50/p95. To add a stage or a new variant caller, add it to `STAGE_GROUPS` in `scripts/monitoring.py`.
+Stage durations show p50 and p95 per stage: the metrics are published per stage (dimensions `TaskName` + `Status`), not per sample. Images built before Nov 2026 published a `SampleId` dimension too, which made every sample a separate metric and ruled out percentiles; `--schema per-sample` still reads that older data (mean and max across samples). Per-sample detail is in the job logs and the run record. To add a stage or a new variant caller, add it to `STAGE_GROUPS` in `scripts/monitoring.py`.
 
 Email is optional and off by default: `deploy_alarms.py --sns-topic-arn <arn>` also sends the alarm to an SNS topic. Failed runs already publish to the pipeline's SNS topic from the state machine's `Notify_Failure` step.
 

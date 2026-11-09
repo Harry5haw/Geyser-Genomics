@@ -37,7 +37,6 @@ def _duration(status, value):
         "MetricName": "Duration",
         "Dimensions": [
             {"Name": "TaskName", "Value": "Align"},
-            {"Name": "SampleId", "Value": "S1"},
             {"Name": "Status", "Value": status},
         ],
         "Value": value,
@@ -46,7 +45,7 @@ def _duration(status, value):
 
 
 def test_cloudwatch_success_sends_duration_only():
-    # The dashboard scripts read exactly this namespace, metric name and dimension set.
+    # The dashboard scripts (--schema aggregated) read exactly this namespace, metric name and dimension set.
     m, stub = _stubbed_cloudwatch()
     stub.add_response("put_metric_data", {}, {"Namespace": "GeyserGenomics", "MetricData": [_duration("Success", 1.5)]})
     with stub:
@@ -58,7 +57,7 @@ def test_cloudwatch_failure_also_counts_the_failure():
     m, stub = _stubbed_cloudwatch()
     failure = {
         "MetricName": "FailureCount",
-        "Dimensions": [{"Name": "TaskName", "Value": "Align"}, {"Name": "SampleId", "Value": "S1"}],
+        "Dimensions": [{"Name": "TaskName", "Value": "Align"}],
         "Value": 1,
         "Unit": "Count",
     }
