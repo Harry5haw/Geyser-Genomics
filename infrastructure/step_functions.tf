@@ -41,9 +41,14 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
         ]
       },
       {
-        # SubmitJob with Tags (the Stage tag per job, #64) also needs TagResource on the new job.
-        Sid      = "AWSBatchTagJobs", Effect = "Allow", Action = "batch:TagResource",
-        Resource = "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job/*"
+        # SubmitJob with Tags (the Stage tag per job, #64) also needs TagResource on the new job, and Batch
+        # checks it on the job definition named in the call too (CLOUD023 failed with AccessDenied on
+        # job-definition/geyser-app-job after #149's apply, before any job started).
+        Sid = "AWSBatchTagJobs", Effect = "Allow", Action = "batch:TagResource",
+        Resource = [
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job/*",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/*",
+        ]
       },
       {
         Sid = "CloudWatchLogsPermissions", Effect = "Allow", Action = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"], Resource = "*"
