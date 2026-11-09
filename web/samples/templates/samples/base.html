@@ -3,11 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#faf8f3">
   <title>{% block title %}Geyser Genomics{% endblock %}</title>
   <link rel="icon" type="image/png" sizes="32x32" href="{% static 'samples/favicon-32.png' %}">
   <link rel="apple-touch-icon" href="{% static 'samples/apple-touch-icon.png' %}">
+  {# Sync and first: sets <html data-theme> before the first paint (a static file: no CSP hash needed). #}
+  <script src="{% static 'samples/theme.js' %}"></script>
   <style>{% inline_css "samples/_site.css" %}{% block page_css %}{% endblock %}</style>
   <script src="{% static 'samples/geyser.js' %}" defer></script>
   {# Chromium prerenders a same-site page on hover (moderate eagerness), so the click shows it at once. #}
@@ -20,7 +22,12 @@
       <a class="brand" href="{% url 'samples:list' %}"><img src="{% static 'samples/geyser-lockup.svg' %}" width="232" height="40" alt="Geyser Genomics">
         <i>FASTQ → VCF pipeline</i></a>
       <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
-      <a class="tube" href="{% url 'samples:list' %}#samples">Samples</a>
+      <div class="head-actions">
+        <div class="themes" role="group" aria-label="Colour theme">
+          <button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button><button type="button" data-theme-choice="contrast" aria-pressed="false">High contrast</button>
+        </div>
+        <a class="tube" href="{% url 'samples:list' %}#samples">Samples</a>
+      </div>
     </nav>
   </header>
   <main class="wrap">

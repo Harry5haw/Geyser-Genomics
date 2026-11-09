@@ -13,3 +13,5 @@
 .howto{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center}.howto small{flex:1 1 16rem}
 button.ghost{width:auto;padding:.45rem 1rem;background:transparent;border:1px solid var(--frame);color:var(--link);box-shadow:none}button.ghost:hover{background:var(--hover)}
 .fig.live .poster,.no3d-note,.fig.live .no3d-note{display:none}.fig.no3d .no3d-note{display:inline}.fig.no3d [data-surface-start]{visibility:hidden}
+/* The heat ramp per theme (figures.py, surface.js): Turbo, or cividis in high contrast; the SVGs carry both */
+.ramp-cividis{display:none}:root[data-theme=contrast] .ramp-cividis{display:inline}:root[data-theme=contrast] .ramp-turbo{display:none}

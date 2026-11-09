@@ -170,13 +170,15 @@ def test_no_framework_and_no_stylesheet_request(client, storage):
     body = client.get("/samples/S1/").content.decode()
     assert "<style>" in body and 'rel="stylesheet"' not in body
     assert "pico" not in body.lower() and "htmx" not in body.lower() and "hx-" not in body
-    assert re.findall(r"<script src=", body) == ["<script src="]  # geyser.js, deferred
+    assert len(re.findall(r"<script src=", body)) == 2  # theme.js (sync, before first paint) and geyser.js (deferred)
+    assert re.search(r'<script src="[^"]+theme[^"]*\.js"></script>', body)  # not deferred: it must run before paint
     assert re.search(r'<script src="[^"]+geyser[^"]*\.js" defer>', body)
 
 
 def test_the_inlined_css_has_no_comments(client, storage):
     style = re.search(r"<style>(.*?)</style>", client.get("/").content.decode(), re.S).group(1)
-    assert "/*" not in style and "--primary" in style and len(style) < 14 * 1024
+    assert "/*" not in style and "--primary" in style
+    assert len(style) < 17 * 1024  # three themes; the page budget (HTML+CSS+JS <= 30 KB, gzip) is Lighthouse's check
 
 
 def test_images_have_their_size_so_nothing_shifts(client, storage):
