@@ -33,6 +33,8 @@ DEFAULT_REGION = "eu-west-2"
 DEFAULT_NAMESPACE = "GeyserGenomics"  # app/metrics.py METRIC_NAMESPACE
 SCHEMAS = ("per-sample", "aggregated")
 GRID_WIDTH = 24
+# The hosted site's web API Lambda (infrastructure/web_api.tf: "${var.project_name}-web-api-${var.environment}").
+DEFAULT_WEB_FUNCTION = "geyser-web-api-dev"
 # Expression/metric ids: CloudWatch requires a lowercase first letter, then letters, digits, underscores.
 _ID_RE = re.compile(r"[^a-zA-Z0-9_]")
 
@@ -69,6 +71,8 @@ STAGE_GROUPS = {
     "shards": (Stage("CallVariantsShard"),),
     # The quality gate after variant calling (#144): its run time, and its failures (GATE_MODE=fail).
     "gate": (Stage("QualityGate"),),
+    # The hosted site's Publish job at the end of every run (#213, #257): web/'s manage.py publish.
+    "publish": (Stage("Publish"),),
 }
 GROUP_TITLES = {
     "core": "Core pipeline (bcftools)",
@@ -78,6 +82,7 @@ GROUP_TITLES = {
     "pangenome": "Pangenome-aware DeepVariant",
     "shards": "Variant calling shards (per region)",
     "gate": "Quality gate",
+    "publish": "Publish (hosted site)",
 }
 
 
@@ -831,6 +836,54 @@ def storage_widgets(region: str, bucket: str) -> list:
     ]
 
 
+def web_widgets(region: str, function_name: str = DEFAULT_WEB_FUNCTION, distribution_id: str = None) -> list:
+    """The hosted site (O7): the web API Lambda's errors, throttles and duration (free AWS/Lambda metrics) and,
+    with a distribution ID, CloudFront's 4xx/5xx error rates. CloudFront publishes its metrics only in us-east-1
+    (dimension Region=Global), so that widget reads us-east-1 whatever the dashboard's region."""
+    fn = ["FunctionName", function_name]
+    calls = [
+        ["AWS/Lambda", "Invocations", *fn, {"id": "invocations", "stat": "Sum", "label": "Requests"}],
+        ["AWS/Lambda", "Errors", *fn, {"id": "errors", "stat": "Sum", "label": "Errors"}],
+        # Throttles: requests turned away by the reserved concurrency (web_api_reserved_concurrency): the 429s.
+        ["AWS/Lambda", "Throttles", *fn, {"id": "throttles", "stat": "Sum", "label": "Throttled (429)"}],
+    ]
+    duration = [
+        ["AWS/Lambda", "Duration", *fn, {"id": f"d_{stat}", "stat": stat, "label": f"Duration {stat}"}]
+        for stat in ("p50", "p95")
+    ]
+    widgets = [
+        _text_widget(
+            f"## Hosted site\nThe web API Lambda `{function_name}` (uploads, status, downloads)"
+            + (", and the CloudFront distribution in front of the site." if distribution_id else ".")
+            + " The Publish job's run time and failures are in the stage widgets (group *Publish*).",
+        ),
+        _metric_widget(f"Web API requests, errors, throttles: {function_name}", calls, region, view="bar", period=3600),
+        _metric_widget("Web API duration, ms (p50, p95)", duration, region, period=3600, y_label="ms"),
+    ]
+    if distribution_id:
+        cf = ["DistributionId", distribution_id, "Region", "Global"]
+        rates = [
+            ["AWS/CloudFront", "4xxErrorRate", *cf, {"id": "e4xx", "stat": "Average", "label": "4xx %"}],
+            ["AWS/CloudFront", "5xxErrorRate", *cf, {"id": "e5xx", "stat": "Average", "label": "5xx %"}],
+            [
+                "AWS/CloudFront",
+                "Requests",
+                *cf,
+                {"id": "requests", "stat": "Sum", "label": "Requests", "yAxis": "right"},
+            ],
+        ]
+        widgets.append(
+            _metric_widget(
+                "Site (CloudFront): error rates, % (requests on the right)",
+                rates,
+                "us-east-1",
+                period=3600,
+                width=GRID_WIDTH,
+            )
+        )
+    return widgets
+
+
 def build_dashboard(
     region: str = DEFAULT_REGION,
     namespace: str = DEFAULT_NAMESPACE,
@@ -849,6 +902,9 @@ def build_dashboard(
     batch_events_log_group: str = BATCH_EVENTS_LOG_GROUP,
     runs: bool = True,
     spend: bool = True,
+    web: bool = True,
+    web_function_name: str = DEFAULT_WEB_FUNCTION,
+    web_distribution_id: str = None,
 ) -> dict:
     """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, result
     quality (from the Batch job logs), data lake storage (with a bucket name), stage durations."""
@@ -915,6 +971,8 @@ def build_dashboard(
         widgets += quality_widgets(region, batch_log_group, thresholds) + gate_value_widgets(region, namespace)
     if bucket:
         widgets += storage_widgets(region, bucket)
+    if web:
+        widgets += web_widgets(region, web_function_name, web_distribution_id)
     if "deepvariant" in groups:
         widgets += gpu_widgets(region, namespace, schema)
     for name, stages in groups.items():

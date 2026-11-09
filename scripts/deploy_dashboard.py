@@ -114,6 +114,20 @@ def parse_args(argv=None):
         action="store_true",
         help="Leave out the result-quality widgets (each view runs a Logs Insights scan of the Batch log group)",
     )
+    p.add_argument(
+        "--web-function-name",
+        default=os.environ.get("WEB_FUNCTION_NAME", monitoring.DEFAULT_WEB_FUNCTION),
+        help=f"Web API Lambda for the hosted-site widgets (default: $WEB_FUNCTION_NAME or {monitoring.DEFAULT_WEB_FUNCTION})",
+    )
+    p.add_argument(
+        "--web-distribution-id",
+        default=os.environ.get("WEB_DISTRIBUTION_ID"),
+        help="CloudFront distribution ID (infrastructure/web's distribution_id output; default: $WEB_DISTRIBUTION_ID). "
+        "Without it the CloudFront error-rate widget is left out",
+    )
+    p.add_argument(
+        "--no-web", action="store_true", help="Leave out the hosted-site widgets (web API Lambda, CloudFront)"
+    )
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
     return p.parse_args(argv)
 
@@ -186,6 +200,9 @@ def main(argv=None, client=None, sts_client=None) -> int:
             queue_wait=not args.no_queue_wait,
             runs=not args.no_runs,
             spend=not args.no_spend,
+            web=not args.no_web,
+            web_function_name=args.web_function_name,
+            web_distribution_id=args.web_distribution_id,
         )
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}") from err

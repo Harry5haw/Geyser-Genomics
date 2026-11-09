@@ -753,6 +753,55 @@ def test_running_now_reads_usage_and_every_bucket():
     assert 'MetricName="BucketSizeBytes"' in buckets["properties"]["metrics"][0][0]["expression"]
 
 
+# ------------------------------------------------------------------ the hosted site (O7)
+
+
+def _web_metrics(widgets):
+    return [m for w in widgets if w["type"] == "metric" for m in w["properties"]["metrics"]]
+
+
+def test_web_widgets_read_the_web_api_lambda_and_cloudfront():
+    widgets = monitoring.web_widgets("eu-west-2", "geyser-web-api-dev", "E1ABC2DEF3GHIJ")
+    metrics = _web_metrics(widgets)
+    names = {(m[0], m[1]) for m in metrics}
+    assert {("AWS/Lambda", n) for n in ("Invocations", "Errors", "Throttles", "Duration")} <= names
+    assert {("AWS/CloudFront", n) for n in ("4xxErrorRate", "5xxErrorRate", "Requests")} <= names
+    assert all(m[2:4] == ["FunctionName", "geyser-web-api-dev"] for m in metrics if m[0] == "AWS/Lambda")
+    assert {m[-1]["stat"] for m in metrics if m[1] == "Duration"} == {"p50", "p95"}
+    cloudfront = next(w for w in widgets if w["type"] == "metric" and "CloudFront" in w["properties"]["title"])
+    # CloudFront's metrics exist only in us-east-1, with Region=Global, whatever the dashboard's region.
+    assert cloudfront["properties"]["region"] == "us-east-1"
+    assert all(
+        m[2:6] == ["DistributionId", "E1ABC2DEF3GHIJ", "Region", "Global"] for m in cloudfront["properties"]["metrics"]
+    )
+    assert all(METRIC_ID_RE.match(m[-1]["id"]) for m in metrics)
+
+
+def test_without_a_distribution_id_there_is_no_cloudfront_widget():
+    assert not any(m[0] == "AWS/CloudFront" for m in _web_metrics(monitoring.web_widgets("eu-west-2")))
+
+
+def test_the_publish_job_is_a_stage_group_with_its_failures():
+    assert monitoring.STAGE_GROUPS["publish"] == (monitoring.Stage("Publish"),)
+    text = json.dumps(monitoring.build_dashboard(groups=["core", "publish"]))
+    assert "Stage duration, seconds: Publish (hosted site)" in text and '"Publish"' in text
+
+
+def test_dashboard_web_options(capsys, monkeypatch):
+    for var in ("SFN_ARN", "WEB_FUNCTION_NAME", "WEB_DISTRIBUTION_ID"):
+        monkeypatch.delenv(var, raising=False)
+    deploy_dashboard.main(["--dry-run", "--web-distribution-id", "E1ABC2DEF3GHIJ"])
+    text = capsys.readouterr().out
+    assert "geyser-web-api-dev" in text and "E1ABC2DEF3GHIJ" in text and "us-east-1" in text
+    deploy_dashboard.main(["--dry-run", "--web-function-name", "geyser-web-api-prod"])
+    text = capsys.readouterr().out
+    assert "geyser-web-api-prod" in text and "AWS/CloudFront" not in text
+    deploy_dashboard.main(["--dry-run", "--no-web"])
+    text = capsys.readouterr().out
+    assert "geyser-web-api" not in text
+    assert "Hosted site" not in text
+
+
 def test_gate_value_widgets_match_what_the_gate_publishes():
     import tasks
 
