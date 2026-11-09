@@ -63,7 +63,7 @@ FROM python:3.11-slim-trixie@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f24
 # more (#141): the AWS CLI (S3 goes through boto3), sra-toolkit (reads come from S3 or local_bucket/),
 # curl, unzip, bzip2, openssl.
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends fastp bwa samtools bcftools && \
+    apt-get install -y --no-install-recommends fastp bwa samtools bcftools pigz && \
     rm -rf /var/lib/apt/lists/* && \
     fastp --version && samtools --version | head -1 && bcftools --version | head -1
 

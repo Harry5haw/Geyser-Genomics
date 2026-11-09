@@ -8,6 +8,8 @@ import pytest
 
 import cost_surface
 import coverage_terrain
+import dv_batch_shards
+import figkit
 import quality_surface
 import variant_density
 
@@ -16,6 +18,34 @@ FIX = os.path.join(os.path.dirname(__file__), "fixtures", "figures")
 
 def fx(name):
     return os.path.join(FIX, name)
+
+
+# ---- one heat ramp ----
+
+
+def test_the_web_figures_use_the_same_heat_ramp():
+    """The 3D figures on the web page and these 2D figures colour a value the same way."""
+    import ast
+
+    path = os.path.join(os.path.dirname(__file__), "..", "web", "samples", "figures.py")
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    web = next(
+        ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", "") == "HEAT" for t in node.targets)
+    )
+    assert web == figkit.HEAT
+
+
+def test_heat_ramp_lightness_rises_and_text_flips_on_the_dark_end():
+    def luminance(h):
+        r, g, b = (int(h[i : i + 2], 16) / 255 for i in (1, 3, 5))
+        lin = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in (r, g, b)]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    lum = [luminance(h) for h in figkit.HEAT]
+    assert lum == sorted(lum) and len(set(lum)) == len(lum)  # low = dark, high = light, every step lighter
+    assert figkit.ink_on(0.0) == "#ffffff" and figkit.ink_on(1.0) == figkit.INK
 
 
 # ---- cost x turnaround ----
@@ -130,6 +160,32 @@ def test_wrong_contig_name_stops_with_a_message():
         coverage_terrain.from_mosdepth([f"S={fx('sample.regions.bed')}"], chrom="20")
 
 
+# ---- DeepVariant batch x shards ----
+
+
+def test_dv_cells_take_the_median_of_their_successful_runs():
+    rows = {(r["batch_size"], r["shards"]): r for r in dv_batch_shards.summarise(figkit.read_csv(fx("dv-grid.csv")))}
+    cell = rows[(256, 16)]
+    assert (cell["runs"], cell["succeeded"]) == (2, 2)
+    assert cell["stage_s"] == 610.0 and cell["call_variants_s"] == 155.0  # medians of 600/620 and 150/160
+    assert cell["examples"] == "1000" and cell["same_calls"] == "yes" and cell["error"] == ""
+    # Shards rise in the output order, then batch sizes: the table reads like the figure's rows.
+    assert list(rows)[:2] == [(256, 4), (1024, 4)]
+
+
+def test_a_dv_cell_with_no_successful_run_keeps_its_error_and_draws_nothing():
+    rows = {(r["batch_size"], r["shards"]): r for r in dv_batch_shards.summarise(figkit.read_csv(fx("dv-grid.csv")))}
+    failed = rows[(2048, 16)]
+    assert (failed["succeeded"], failed["stage_s"], failed["same_calls"]) == (0, "", "")
+    assert failed["error"].startswith("WrapperStopped") and failed["gpu_memory_peak_mib"] == 9900
+
+
+def test_dv_runs_with_different_calls_are_flagged():
+    rows = figkit.read_csv(fx("dv-grid.csv"))
+    rows[0] = dict(rows[0], records_md5="bbb")
+    assert {r["same_calls"] for r in dv_batch_shards.summarise(rows) if r["succeeded"]} == {"no"}
+
+
 # ---- every figure renders, and identically twice ----
 
 
@@ -174,11 +230,14 @@ def _render(kind, prefix, tmp_path):
                 prefix,
             ]
         )
+    elif kind == "dv":
+        csv_path = str(tmp_path / "dv.csv")
+        dv_batch_shards.main(["--from-grid", fx("dv-grid.csv"), "--csv", csv_path, "--out", prefix])
     else:
         cost_surface.main([fx("grid.stages.csv"), "--out", prefix])
 
 
-@pytest.mark.parametrize("kind", ["coverage", "quality", "density", "cost"])
+@pytest.mark.parametrize("kind", ["coverage", "quality", "density", "cost", "dv"])
 def test_figures_render_deterministically(kind, tmp_path):
     a, b = str(tmp_path / "a"), str(tmp_path / "b")
     _render(kind, a, tmp_path)

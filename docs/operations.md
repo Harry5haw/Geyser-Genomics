@@ -83,7 +83,7 @@ aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-
 | Caller | Where it runs | How to choose it |
 | :--- | :--- | :--- |
 | `bcftools` (default) | Fargate: regions planned, called in parallel by a `Map` state, merged | nothing to do |
-| `deepvariant` | the GPU Batch queue (one g6.xlarge / g5.xlarge, scales to zero); **falls back to bcftools** if it fails | a manual start (below), or Terraform `default_caller = "deepvariant"` for every triggered run |
+| `deepvariant` | the GPU Batch queue (one g6.4xlarge / g5.4xlarge, scales to zero); **falls back to bcftools** if it fails | a manual start (below), or Terraform `default_caller = "deepvariant"` for every triggered run |
 
 **A manual start** runs any sample whose reads are already in `raw_reads/`, with any caller. The input is
 the trigger's document. The name must be 1-80 characters from `A-Z a-z 0-9 _ -`, and it ends up in the job
@@ -107,6 +107,29 @@ always use Terraform's defaults.
 | `align_vcpu` | string | `"4"` (`stage_resources["align"]`) | with `align_memory_mb`, a valid Fargate pair (`"0.25"`: 512/1024/2048 MiB; `"0.5"`: 1-4 GiB; `"1"`: 2-8 GiB; `"2"`: 4-16 GiB; `"4"`: 8-30 GiB, in 1 GiB steps), where QC or the planner plus align still fit in `fargate_max_vcpus` (so no 8 vCPU at the default cap). Written as Terraform writes it: `"4"`, not `"4.0"` |
 | `align_memory_mb` | string | `"8192"` | as above |
 | `variant_region_window` | number | `50000000` (`variant_region_window`) | a whole number from 5,000,000 to 250,000,000 (bases per region; the planner and the merge both use it). 65 Mb = 1 shard on chr20, 33 Mb = 2, 17 Mb = 4, 9 Mb = 8 |
+| `chunk_count` | number | `24` (`genome_chunk_count`) | large route only: a whole number from 2 to 96 (equal chunks the pre-flight cuts) |
+| `align_concurrency` | number | `5` (`genome_align_concurrency`) | large route only: chunks aligned at once, 1 to (`fargate_spot_max_vcpus` − QC's vCPU) ÷ a chunk's vCPU = (48 − 8) ÷ 8 = **5** |
+| `calling_concurrency` | number | `4` (`variants_max_concurrency`) | both routes: calling shards at once, 1 to `fargate_spot_max_vcpus` ÷ a shard's vCPU = **48** |
+| `merge_threads` | number | `8` (`genome_merge_threads`) | large route only: the merge's samtools threads, 1 to its vCPU (**8**) |
+
+The maxima come from the **Fargate Spot** cap, so a run that asks for the most still stays on Spot prices. Raising
+them (a "fast" genome) is a cap raise in Terraform: a compute-environment change, the user's apply.
+
+**Big inputs (v1.3): the large route.** The trigger passes the upload's size as `input_bytes` (both mates added
+up). At or above `large_input_gb` (5 GB) a run takes the large route:
+- QC on the whole input, alongside a **pre-flight**: one streaming pass for gzip integrity, the read count, mates
+  in step and `chunk_count` equal chunks;
+- the chunks aligned in parallel (bwa-mem2), then a streaming merge (markdup, CRAM).
+
+The outputs are the same keys as today's, so calling, the gate and everything after are unchanged. Smaller
+inputs, or none, run as before.
+- A truncated or corrupt upload fails in the pre-flight (`qc_reports/<id>.preflight.json` says why), before any
+  alignment.
+- A manual start chooses the route with `input_bytes`. A chr20 **canary on the large route**:
+  `"input_bytes": 5000000000, "overrides": {"chunk_count": 4}`.
+- **giraffe stays chromosome-scale:** `aligner` other than bwa-mem2 on a large input fails before any job with
+  `AlignerNotOnLargeRoute` (haplotype sampling needs the whole sample).
+- An `input_bytes` that isn't a non-negative number fails before any job with `InvalidInputBytes`.
 
 Any key left out keeps its default. Only align and the window change: QC, the planner, the shards and the
 merge keep their sizes.
@@ -138,8 +161,11 @@ small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its jo
   storage, the trigger alarm. It's deployed by script; `--dry-run` prints the body and makes no AWS calls:
   ```bash
   python scripts/deploy_dashboard.py --dry-run
-  SFN_ARN=<state-machine-arn> python scripts/deploy_dashboard.py --bucket <data-lake>
+  SFN_ARN=<state-machine-arn> python scripts/deploy_dashboard.py --bucket <data-lake> \
+    --web-distribution-id <distribution_id>    # the hosted site's CloudFront error rates (us-east-1 metrics)
   ```
+  The hosted-site row (web API Lambda requests/errors/throttles and duration p50/p95, CloudFront 4xx/5xx) is in by
+  default; `--no-web` leaves it out. The Publish job is a stage group (*Publish (hosted site)*).
 - **Run times, and per stage:** queue wait, run time, estimated cost, attempts and the failure reason:
   ```bash
   python scripts/query_pipeline_duration.py --stages                  # the latest 50 runs
@@ -150,7 +176,12 @@ small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its jo
   ```bash
   python scripts/reconcile.py --bucket <data-lake>                    # add $SFN_ARN to see open runs too
   python scripts/reconcile.py --bucket <data-lake> --json --fail-on-problems
+  python scripts/reconcile.py --bucket <data-lake> --publish-metrics  # CloudWatch GeyserGenomics/ReconcileProblems
   ```
+  `--publish-metrics` sends the problem count by kind (dimension `Problem`: `LoneMate`, `Ignored` (non-.gz
+  uploads that start nothing), `ConcurrentRuns` (duplicate runs, needs `$SFN_ARN`), ..., `Total`), zeros included.
+  It is best effort: a CloudWatch error is a warning. With `--local-dir` the counts go to `metrics/metrics.jsonl`.
+  Nothing runs it on a schedule; it is run by hand.
 - **Logs:** Batch jobs in `/aws/batch/geyser-<env>`, the trigger in `/aws/lambda/geyser-sfn-trigger-<env>`
   (kept 30 days, `log_retention_days`).
 
@@ -246,6 +277,25 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
 - ECR keeps the 20 most recent images, so very old rollback tags expire.
 - The run record's `app_version` is the tag the job was given (`dev-local`). The exact build is the
   `main-<sha>` that `dev-local` pointed to at the time.
+
+## The hosted site (v1.4, not live yet)
+
+The site is static pages in a private S3 bucket behind CloudFront (`infrastructure/web/`, which the user plans and
+applies). A small API Lambda serves uploads, status and downloads (`web_api.tf`). The `geyser-publish` job
+(`publish.tf`) writes the pages.
+- **Per run:** with `publish_enabled = true`, every run ends by publishing its sample's pages and the index, whether
+  it succeeded or failed: a failed run's page shows which stage failed. The only exception is a run that failed
+  before any job (a bad profile or reference). A failed publish never changes the run's outcome.
+- **Bootstrap, once per new site:** `python manage.py publish --all` (in the `geyser-publish` image, or from a
+  checkout for `/figures/`). It writes every sample's pages; the per-run publishes then keep it current.
+- **After a publish image whose inline CSS or scripts changed:**
+  1. run `publish --all`;
+  2. copy `csp-hashes.json`'s `script` and `style` lists from the site's root into the web stack's `script_hashes` /
+     `style_hashes`;
+  3. apply the web stack (the response-headers policy in place).
+  Until then, the pages' inline blocks are blocked by the CSP.
+- **Uploads** need the token in the SSM SecureString `web_upload_token_parameter`, which the user puts in. Rotate it
+  after sharing it for a demo.
 
 ## Cost guardrails, in brief
 

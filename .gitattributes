@@ -3,3 +3,6 @@
 infrastructure/** text eol=lf
 # The trigger Lambda's zip is built from lambda/trigger/index.py (archive_file): the same CRLF problem.
 lambda/** text eol=lf
+# Shell scripts run inside Linux images (app-publish/entrypoint.sh is an ENTRYPOINT): a CRLF checkout breaks the
+# shebang ("exec ...: no such file or directory") in any image built on Windows.
+*.sh text eol=lf

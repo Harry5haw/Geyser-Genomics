@@ -124,7 +124,9 @@ def test_dashboard_shape(schema, sfn_arn):
             assert any(props["query"].startswith(f"SOURCE '{g}' | ") for g in groups)
         if w["type"] == "metric":
             props = w["properties"]
-            assert props["region"] == "eu-west-2" and props["metrics"]
+            # AWS/Billing exists only in us-east-1: the one cross-region widget (O9).
+            billing = props["metrics"][0][:2] == ["AWS/Billing", "EstimatedCharges"]
+            assert props["region"] == ("us-east-1" if billing else "eu-west-2") and props["metrics"]
             ids = [row_options(r).get("id") for r in props["metrics"]]
             assert all(METRIC_ID_RE.match(i) for i in ids), ids
             assert len(ids) == len(set(ids)), f"duplicate ids in {props['title']}"
@@ -150,9 +152,17 @@ def test_dashboard_has_the_widgets_from_issue_48():
 
 
 def test_every_stage_appears_in_the_duration_widgets():
-    text = json.dumps(monitoring.build_dashboard())
+    per_sample = json.dumps(monitoring.build_dashboard(schema="per-sample"))
+    aggregated = json.dumps(monitoring.build_dashboard())  # the default: what app/metrics.py publishes
     for name in all_stage_names():
-        assert f'TaskName=\\"{name}\\"' in text
+        assert f'TaskName=\\"{name}\\"' in per_sample
+        assert f'"TaskName", "{name}"' in aggregated
+
+
+def test_dashboard_default_schema_matches_what_metrics_publishes():
+    # app/metrics.py publishes Duration with TaskName + Status only; the default dashboard must read that shape.
+    body = monitoring.build_dashboard()
+    assert "SampleId" not in json.dumps(body)
 
 
 def test_per_sample_duration_uses_exact_success_search():
@@ -542,16 +552,20 @@ def test_quality_trend_query_bins_by_day():
 
 
 def test_dashboard_quality_widgets_on_by_default_and_optional():
-    logs = [w for w in monitoring.build_dashboard(queue_wait=False)["widgets"] if w["type"] == "log"]
+    logs = [w for w in monitoring.build_dashboard(queue_wait=False, runs=False)["widgets"] if w["type"] == "log"]
     assert [w["properties"]["view"] for w in logs] == ["table", "table", "timeSeries"]
     assert "outside quality thresholds" in logs[1]["properties"]["title"]
-    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod", queue_wait=False)
+    custom = monitoring.build_dashboard(batch_log_group="/aws/batch/geyser-prod", queue_wait=False, runs=False)
     assert all(
         w["properties"]["query"].startswith("SOURCE '/aws/batch/geyser-prod' | ")
         for w in custom["widgets"]
         if w["type"] == "log"
     )
-    assert not [w for w in monitoring.build_dashboard(quality=False, queue_wait=False)["widgets"] if w["type"] == "log"]
+    assert not [
+        w
+        for w in monitoring.build_dashboard(quality=False, queue_wait=False, runs=False)["widgets"]
+        if w["type"] == "log"
+    ]
 
 
 def test_dashboard_cli_quality_options(capsys, monkeypatch):
@@ -559,7 +573,7 @@ def test_dashboard_cli_quality_options(capsys, monkeypatch):
     deploy_dashboard.main(["--dry-run", "--batch-log-group", "/aws/batch/other"])
     body = json.loads(capsys.readouterr().out)
     assert any(w["type"] == "log" and "SOURCE '/aws/batch/other'" in w["properties"]["query"] for w in body["widgets"])
-    deploy_dashboard.main(["--dry-run", "--no-quality"])
+    deploy_dashboard.main(["--dry-run", "--no-quality", "--no-runs"])
     quality = [
         w
         for w in json.loads(capsys.readouterr().out)["widgets"]
@@ -680,3 +694,120 @@ def test_dashboard_cli_no_queue_wait(capsys, monkeypatch):
     monkeypatch.delenv("SFN_ARN", raising=False)
     deploy_dashboard.main(["--dry-run", "--no-queue-wait"])
     assert "Batch wait" not in capsys.readouterr().out
+
+
+def test_run_widgets_read_the_run_record_line_and_spot_retries():
+    widgets = {w["properties"]["title"]: w for w in monitoring.run_widgets()}
+    runs = widgets["Recent runs (from the run record)"]["properties"]["query"]
+    assert runs.startswith(f"SOURCE '{monitoring.BATCH_LOG_GROUP}' | filter @message like /^run-record:/")
+    for field in ("caller_outcome", "route", "infra_retries", "gate", "reference", "app_version"):
+        assert f'"{field}"' in runs
+    outcome = next(w for t, w in widgets.items() if t.startswith("Whose calls"))["properties"]["query"]
+    assert "stats count(*) as runs by outcome" in outcome
+    spot = next(w for t, w in widgets.items() if t.startswith("Jobs retried"))["properties"]["query"]
+    assert spot.startswith(f"SOURCE '{monitoring.BATCH_EVENTS_LOG_GROUP}' | ")
+    assert "ispresent(detail.attempts.0.statusReason)" in spot
+
+
+def test_run_record_parse_matches_the_apps_log_line():
+    # The line app/provenance.py writes: the prefix and its JSON keys (json.dumps: '"key": value').
+    import provenance
+
+    if not hasattr(provenance, "RECORD_LOG_PREFIX"):
+        pytest.skip("the run-record log line comes with #251")
+    assert provenance.RECORD_LOG_PREFIX == monitoring.RUN_RECORD_PREFIX
+    assert set(monitoring.RUN_RECORD_FIELDS) == {"task", *provenance.SUMMARY_FIELDS, "reference", "gate"}
+
+
+def test_gpu_widgets_only_with_the_aggregated_schema_and_deepvariant():
+    titles = [w["properties"].get("title", "") for w in monitoring.build_dashboard()["widgets"]]
+    assert sum("on the GPU" in t for t in titles) == 2
+    per_sample = monitoring.build_dashboard(schema="per-sample")["widgets"]
+    assert not [w for w in per_sample if "on the GPU" in w["properties"].get("title", "")]
+    core_only = monitoring.build_dashboard(groups=["core"])["widgets"]
+    assert not [w for w in core_only if "on the GPU" in w["properties"].get("title", "")]
+
+
+def test_header_links_the_benchmark_history():
+    header = monitoring.build_dashboard()["widgets"][0]["properties"]["markdown"]
+    assert monitoring.BENCHMARKS_URL in header
+
+
+def test_spend_row_shows_charges_and_the_guardrail_lines():
+    charges, text = monitoring.spend_widgets()
+    assert charges["properties"]["region"] == "us-east-1"
+    assert charges["properties"]["metrics"][0][:4] == ["AWS/Billing", "EstimatedCharges", "Currency", "USD"]
+    lines = {a["value"] for a in charges["properties"]["annotations"]["horizontal"]}
+    g = monitoring.GUARDRAILS
+    assert lines == {g["kill_switch_usd"], g["run_block_usd"], g["gpu_block_usd"]}
+    assert g["gpu_block_usd"] < g["run_block_usd"] < g["kill_switch_usd"] < g["cap_usd"]
+    md = text["properties"]["markdown"]
+    assert f"${g['cap_usd']}" in md and "geyser-claude-kill-switch" in md and monitoring.BUDGETS_URL in md
+    assert not [w for w in monitoring.build_dashboard(spend=False)["widgets"] if "Estimated charges" in str(w)]
+
+
+def test_running_now_reads_usage_and_every_bucket():
+    vcpus, buckets = monitoring.running_now_widgets("eu-west-2")
+    exprs = " ".join(r[0]["expression"] for r in vcpus["properties"]["metrics"])
+    assert 'Service="EC2"' in exprs and 'Resource="vCPU"' in exprs and 'Service="Fargate"' in exprs
+    assert 'MetricName="BucketSizeBytes"' in buckets["properties"]["metrics"][0][0]["expression"]
+
+
+# ------------------------------------------------------------------ the hosted site (O7)
+
+
+def _web_metrics(widgets):
+    return [m for w in widgets if w["type"] == "metric" for m in w["properties"]["metrics"]]
+
+
+def test_web_widgets_read_the_web_api_lambda_and_cloudfront():
+    widgets = monitoring.web_widgets("eu-west-2", "geyser-web-api-dev", "E1ABC2DEF3GHIJ")
+    metrics = _web_metrics(widgets)
+    names = {(m[0], m[1]) for m in metrics}
+    assert {("AWS/Lambda", n) for n in ("Invocations", "Errors", "Throttles", "Duration")} <= names
+    assert {("AWS/CloudFront", n) for n in ("4xxErrorRate", "5xxErrorRate", "Requests")} <= names
+    assert all(m[2:4] == ["FunctionName", "geyser-web-api-dev"] for m in metrics if m[0] == "AWS/Lambda")
+    assert {m[-1]["stat"] for m in metrics if m[1] == "Duration"} == {"p50", "p95"}
+    cloudfront = next(w for w in widgets if w["type"] == "metric" and "CloudFront" in w["properties"]["title"])
+    # CloudFront's metrics exist only in us-east-1, with Region=Global, whatever the dashboard's region.
+    assert cloudfront["properties"]["region"] == "us-east-1"
+    assert all(
+        m[2:6] == ["DistributionId", "E1ABC2DEF3GHIJ", "Region", "Global"] for m in cloudfront["properties"]["metrics"]
+    )
+    assert all(METRIC_ID_RE.match(m[-1]["id"]) for m in metrics)
+
+
+def test_without_a_distribution_id_there_is_no_cloudfront_widget():
+    assert not any(m[0] == "AWS/CloudFront" for m in _web_metrics(monitoring.web_widgets("eu-west-2")))
+
+
+def test_the_publish_job_is_a_stage_group_with_its_failures():
+    assert monitoring.STAGE_GROUPS["publish"] == (monitoring.Stage("Publish"),)
+    text = json.dumps(monitoring.build_dashboard(groups=["core", "publish"]))
+    assert "Stage duration, seconds: Publish (hosted site)" in text and '"Publish"' in text
+
+
+def test_dashboard_web_options(capsys, monkeypatch):
+    for var in ("SFN_ARN", "WEB_FUNCTION_NAME", "WEB_DISTRIBUTION_ID"):
+        monkeypatch.delenv(var, raising=False)
+    deploy_dashboard.main(["--dry-run", "--web-distribution-id", "E1ABC2DEF3GHIJ"])
+    text = capsys.readouterr().out
+    assert "geyser-web-api-dev" in text and "E1ABC2DEF3GHIJ" in text and "us-east-1" in text
+    deploy_dashboard.main(["--dry-run", "--web-function-name", "geyser-web-api-prod"])
+    text = capsys.readouterr().out
+    assert "geyser-web-api-prod" in text and "AWS/CloudFront" not in text
+    deploy_dashboard.main(["--dry-run", "--no-web"])
+    text = capsys.readouterr().out
+    assert "geyser-web-api" not in text
+    assert "Hosted site" not in text
+
+
+def test_gate_value_widgets_match_what_the_gate_publishes():
+    import tasks
+
+    assert monitoring.GATE_VALUES_METRIC == tasks.GATE_VALUES_METRIC
+    assert monitoring.GATE_VALUE_CHECKS == tasks.GATE_VALUE_CHECKS
+    shown = [r[3] for w in monitoring.gate_value_widgets() for r in w["properties"]["metrics"]]
+    assert sorted(shown) == sorted(tasks.GATE_VALUE_CHECKS)
+    titles = [w["properties"].get("title", "") for w in monitoring.build_dashboard()["widgets"]]
+    assert sum(t.startswith("Quality gate:") for t in titles) == 2

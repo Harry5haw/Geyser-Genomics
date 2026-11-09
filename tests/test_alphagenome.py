@@ -454,8 +454,8 @@ def test_annotate_writes_the_vcf_tsv_part_and_metrics(stage, uploads, capsys):
     assert record["stages"]["Annotate"]["status"] == "Success"
 
     metrics = metric_lines(stage["root"])
-    assert any(m["task"] == "Annotate" and m["status"] == "Success" for m in metrics)
-    assert [m["count"] for m in metrics if m["task"] == "Annotate.ApiCalls"] == [4]
+    assert any(m.get("task") == "Annotate" and m["status"] == "Success" for m in metrics)
+    assert [m["value"] for m in metrics if m.get("metric") == "AnnotateApiCalls"] == [4]
     assert "4 of 6 candidate variants selected" in capsys.readouterr().out
 
 
@@ -514,7 +514,7 @@ def test_a_failed_annotation_is_noted_never_fatal(stage, capsys, monkeypatch, se
     assert "WARNING: annotation failed" in out.out
     everything = out.out + out.err + json.dumps(record) + json.dumps(metric_lines(stage["root"]))
     assert SECRET not in everything
-    assert [m["count"] for m in metric_lines(stage["root"]) if m["task"] == "Annotate.ApiCalls"] == [0]
+    assert [m["value"] for m in metric_lines(stage["root"]) if m.get("metric") == "AnnotateApiCalls"] == [0]
 
 
 @pytest.mark.parametrize(

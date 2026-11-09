@@ -136,5 +136,5 @@ def uploads(local_env, monkeypatch):
     keys = []
     store = tasks.storage()
     real = store.upload
-    monkeypatch.setattr(store, "upload", lambda path, key: keys.append(key) or real(path, key))
+    monkeypatch.setattr(store, "upload", lambda path, key, **kw: keys.append(key) or real(path, key, **kw))
     return keys

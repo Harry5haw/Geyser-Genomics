@@ -32,6 +32,8 @@ ASL_PATH = os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json")
 MACHINE = "geyser-pipeline-local"
 # The same definition rendered with gate_mode = "fail" (variables.tf's default since #157; MACHINE is "warn").
 MACHINE_FAIL = "geyser-pipeline-local-gate-fail"
+# The same definition with publishing on (W3: the Publish state after every run).
+MACHINE_PUBLISH = "geyser-pipeline-local-publish"
 REGION = "eu-west-2"
 ACCOUNT = "123456789012"  # Step Functions Local's fixed account
 # Inside the container. The image runs as uid 1000 (stepfunctionslocal) and reads this file on every
@@ -57,6 +59,8 @@ TEMPLATE_VARS = {
     "merge_memory_mb": "512",
     # Cloud DeepVariant (deepvariant.tf, batch_gpu.tf).
     "deepvariant_job_definition": "geyser-deepvariant-job",
+    # vg giraffe as the aligner (#146, giraffe.tf).
+    "giraffe_job_definition": "geyser-giraffe-job",
     "gpu_job_queue": "geyser-gpu-queue-dev",
     # Scatter-gather (#108): the data lake, and the defaults of variant_region_window / variants_max_concurrency.
     "bucket": "geyser-data-lake-local",
@@ -65,7 +69,64 @@ TEMPLATE_VARS = {
     # The quality gate (#144): warn here, so the warn paths stay tested; MACHINE_FAIL renders variables.tf's
     # default, fail (#157).
     "gate_mode": "warn",
+    # The hosted site (W3): publishing off, as variables.tf's default. MACHINE_PUBLISH renders it on.
+    "publish_enabled": "false",
+    "publish_job_definition": "geyser-publish-job",
+    "site_bucket": "",
+    "site_distribution_id": "",
+    # v1.3 the large route (genome_scale.tf) and the per-run parallelism: variables.tf's defaults, and the
+    # maxima step_functions.tf derives from fargate_spot_max_vcpus = 48 (live, 4 Nov 2026).
+    "large_job_definition": "geyser-app-large-job",
+    "large_input_bytes": "5000000000",
+    "genome_chunk_count": "24",
+    "genome_align_concurrency": "5",
+    "genome_merge_threads": "8",
+    "align_concurrency_max": "5",  # (48 - qc 8) / chunk 8
+    "calling_concurrency_max": "48",  # 48 / variants 1
+    "merge_threads_max": "8",
+    "preflight_vcpu": "8",
+    "preflight_memory_mb": "16384",
+    "qc_large_vcpu": "8",
+    "qc_large_memory_mb": "16384",
+    "chunk_vcpu": "8",
+    "chunk_memory_mb": "32768",
+    "align_merge_vcpu": "8",
+    "align_merge_memory_mb": "16384",
+    # v1.5 the DeepVariant split (deepvariant_cpu.tf): variables.tf's defaults, and what step_functions.tf derives
+    # from fargate_spot_max_vcpus = 48 and dv_part_resources' 8 vCPUs (parts x 8 shards, 0..48 / 8 parts).
+    "deepvariant_cpu_job_definition": "geyser-deepvariant-cpu-job",
+    "deepvariant_split_parts": "1",
+    "dv_parts_max": "6",
+    "dv_shards_by_parts": "[0,8,16,24,32,40,48]",
+    "dv_part_timeout_seconds": "14400",
+    # v2.0: the GPU DeepVariant job's attempt limit (variables.tf's default; was a fixed 3600).
+    "deepvariant_timeout_seconds": "14400",
 }
+PUBLISH_VARS = {"publish_enabled": "true", "site_bucket": "geyser-site-local", "site_distribution_id": "E2EXAMPLE"}
+# Each Map's MaxConcurrencyPath (the run's setting): the real definition's, which this Step Functions Local image
+# rejects ("Field 'MaxConcurrencyPath' is not supported"). for_sfn_local() swaps in the default as MaxConcurrency;
+# test_each_map_reads_its_concurrency_from_the_run_settings pins the real definition.
+CONCURRENCY_PATHS = {
+    "$.run_settings.align_concurrency": "genome_align_concurrency",
+    "$.run_settings.calling_concurrency": "variants_max_concurrency",
+}
+
+
+def for_sfn_local(definition: str) -> str:
+    data = json.loads(definition)
+
+    def swap(states):
+        for state in states.values():
+            path = state.pop("MaxConcurrencyPath", None)
+            if path is not None:
+                state["MaxConcurrency"] = int(TEMPLATE_VARS[CONCURRENCY_PATHS[path]])
+            for branch in state.get("Branches", []):
+                swap(branch["States"])
+            if "Iterator" in state:
+                swap(state["Iterator"]["States"])
+
+    swap(data["States"])
+    return json.dumps(data)
 
 
 def fargate_memory_table() -> dict:
@@ -96,6 +157,24 @@ TEMPLATE_VARS["variant_region_window_max"] = "250000000"
 BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate")
 # What Read_Regions gets from S3 in the tests: the planner's JSON list, as GetObject returns it (a string).
 REGIONS = ["chr20:1-50000000", "chr20:50000001-64444167", "chr21:1-46709983"]
+# What Read_Manifest gets from S3 on the large route: the pre-flight's manifest (schema 1), three chunks.
+MANIFEST = {
+    "schema": 1,
+    "sample_id": "S1",
+    "layout": "paired",
+    "reads": 300,
+    "chunk_count": 3,
+    "chunks": [
+        {
+            "index": i,
+            "name": f"chunk-{i:03d}",
+            "reads": 100,
+            "aligned": f"intermediate/aligned/S1/run/chunk-{i:03d}.bam",
+        }
+        for i in range(3)
+    ],
+}
+LARGE = 60_000_000_000  # input_bytes of a 30x genome (~53-60 GB): above large_input_bytes
 # What Read_Gate_Verdict gets from S3: the verdict tasks.py gate stored (abridged), as a string.
 GATE_REASONS = ["duplicate_pct 15.2 is above the maximum 6", "mean_depth 12.1 is below the minimum 20"]
 VERDICTS = {
@@ -144,7 +223,15 @@ TEST_CASES = {
         "Call_Variants": FAIL,
         "Notify_Failure": "Published",
     },
+    # v1.5 split mode (dv_parts > 1): the make_examples parts on the Fargate queue, then the GPU job...
+    "DeepVariantSplitOk": {"Make_Examples_Part": "ShardsOk", "DeepVariant": OK},
+    # ...and bcftools when a part fails (every part, as ShardsFail: see its note), without the GPU job.
+    "DeepVariantSplitPartFails": {"Make_Examples_Part": "ShardsFail", "DeepVariant": OK},
+    # v2.0 from_alignment: the sample's CRAM isn't in the data lake, so the run fails before any job.
+    "AlignmentMissing": {"Check_Alignment": "NoSuchKey", "Notify_Failure": "Published"},
     "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
+    # aligner is neither bwa-mem2 nor giraffe: the align branch fails before submitting anything.
+    "AlignerUnknown": {"Notify_Failure": "Published"},
     "RegionsUnreadable": {"Read_Regions": "NoSuchKey", "Notify_Failure": "Published"},
     "ShardFails": {"Call_Shard": "ShardsFail", "Notify_Failure": "Published"},
     # The quality gate (#144). The warn machine and the fail machine get the same cases.
@@ -161,17 +248,69 @@ TEST_CASES = {
     "ReferenceMissing": {"Check_Reference": "NoSuchKey", "Notify_Failure": "Published"},
     # S3 errors on the HeadObject once (e.g. a 503), then answers: retried, the run goes on.
     "ReferenceFlakyOnce": {"Check_Reference": "ReferenceFlakyThenFound"},
+    # The hosted site (W3), on MACHINE_PUBLISH: every run ends with Publish, succeeded or failed.
+    "PublishOk": {"Publish": OK},
+    "PublishFails": {"Publish": FAIL},
+    "QCFailsThenPublished": {"Quality_Control": FAIL, "Notify_Failure": "Published", "Publish": OK},
+    "QCFailsAndPublishFails": {"Quality_Control": FAIL, "Notify_Failure": "Published", "Publish": FAIL},
+    # v1.3 the large route: QC alongside the pre-flight, the chunks, the merge. The manifest has three chunks.
+    "LargeRouteOk": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksOk",
+        "Align_Merge": OK,
+    },
+    "PreflightFails": {
+        "Quality_Control_Large": OK,
+        "Preflight": FAIL,
+        "Notify_Failure": "Published",
+    },
+    "ManifestMissing": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "NoSuchKey",
+        "Notify_Failure": "Published",
+    },
+    "ChunkFails": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksFail",
+        "Notify_Failure": "Published",
+    },
+    "MergeFails": {
+        "Quality_Control_Large": OK,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksOk",
+        "Align_Merge": FAIL,
+        "Notify_Failure": "Published",
+    },
+    "LargeQCFails": {
+        "Quality_Control_Large": FAIL,
+        "Preflight": OK,
+        "Read_Manifest": "ManifestRead",
+        "Align_Chunk": "ChunksOk",
+        "Align_Merge": OK,
+        "Notify_Failure": "Published",
+    },
 }
 # Every case passes the gate unless it says otherwise.
 GATE = {"Quality_Gate": OK, "Read_Gate_Verdict": "VerdictPass"}
-# Every case finds its reference unless it says otherwise (Check_Reference: an S3 HeadObject).
-REFERENCE = {"Check_Reference": "ReferenceFound"}
+# Every case finds its reference unless it says otherwise (Check_Reference: an S3 HeadObject), and, when it
+# starts from_alignment, its CRAM (Check_Alignment, likewise).
+REFERENCE = {"Check_Reference": "ReferenceFound", "Check_Alignment": "AlignmentFound"}
 TEST_CASES = {
     name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **REFERENCE, **SCATTER, **GATE, **case}
     for name, case in TEST_CASES.items()
 }
 MOCK_CONFIG = {
-    "StateMachines": {MACHINE: {"TestCases": TEST_CASES}, MACHINE_FAIL: {"TestCases": TEST_CASES}},
+    "StateMachines": {
+        MACHINE: {"TestCases": TEST_CASES},
+        MACHINE_FAIL: {"TestCases": TEST_CASES},
+        MACHINE_PUBLISH: {"TestCases": TEST_CASES},
+    },
     "MockedResponses": {
         OK: {"0": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
         FAIL: {
@@ -185,6 +324,14 @@ MOCK_CONFIG = {
         },
         "AlwaysThrottled": {"0-3": {"Throw": {"Error": "Batch.AWSBatchException", "Cause": "Too Many Requests"}}},
         "RegionsRead": {"0": {"Return": {"Body": json.dumps(REGIONS), "ContentType": "application/json"}}},
+        # The pre-flight's manifest (docs/design/genome-scale-app.md, schema 1), abridged to what the Map reads.
+        "ManifestRead": {"0": {"Return": {"Body": json.dumps(MANIFEST), "ContentType": "application/json"}}},
+        "ChunksOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
+        "ChunksFail": {
+            "0-99": {
+                "Throw": {"Error": "States.TaskFailed", "Cause": "Essential container in task exited (exit code 1)"}
+            }
+        },
         **{
             f"Verdict{kind.capitalize()}": {"0": {"Return": {"Body": json.dumps(v), "ContentType": "application/json"}}}
             for kind, v in VERDICTS.items()
@@ -195,6 +342,7 @@ MOCK_CONFIG = {
         "ShardsOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
         "Closed": {"0": {"Return": {"ETag": '"etag-1"'}}},
         "ReferenceFound": {"0": {"Return": {"ContentLength": 65186437, "ETag": '"etag-ref"'}}},
+        "AlignmentFound": {"0": {"Return": {"ContentLength": 17000000000, "ETag": '"etag-cram"'}}},
         "ReferenceFlakyThenFound": {
             "0": {"Throw": {"Error": "S3.S3Exception", "Cause": "Service Unavailable"}},
             "1": {"Return": {"ContentLength": 65186437, "ETag": '"etag-ref"'}},
@@ -311,7 +459,9 @@ def sfn():
                 if arn is None:
                     client.list_state_machines()
                     arn = client.create_state_machine(
-                        name=MACHINE, definition=render_definition(), roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole"
+                        name=MACHINE,
+                        definition=for_sfn_local(render_definition()),
+                        roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
                     )["stateMachineArn"]
                 if _start_probe(client, arn):
                     break
@@ -335,7 +485,19 @@ def sfn_fail(sfn):
     client, _, name = sfn
     arn = client.create_state_machine(
         name=MACHINE_FAIL,
-        definition=render_definition(gate_mode="fail"),
+        definition=for_sfn_local(render_definition(gate_mode="fail")),
+        roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
+    )["stateMachineArn"]
+    return client, arn, name
+
+
+@pytest.fixture(scope="module")
+def sfn_publish(sfn):
+    """The definition rendered with publishing on (W3), in the same Step Functions Local container."""
+    client, _, name = sfn
+    arn = client.create_state_machine(
+        name=MACHINE_PUBLISH,
+        definition=for_sfn_local(render_definition(**PUBLISH_VARS)),
         roleArn=f"arn:aws:iam::{ACCOUNT}:role/DummyRole",
     )["stateMachineArn"]
     return client, arn, name
@@ -345,7 +507,17 @@ _UNSET = object()
 
 
 def run_case(
-    sfn, case, sample="S1", reference="chr20.fa", wait_seconds=60, caller=None, gate_profile=_UNSET, overrides=_UNSET
+    sfn,
+    case,
+    sample="S1",
+    reference="chr20.fa",
+    wait_seconds=60,
+    caller=None,
+    gate_profile=_UNSET,
+    overrides=_UNSET,
+    aligner=_UNSET,
+    input_bytes=_UNSET,
+    from_alignment=_UNSET,
 ):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
@@ -354,10 +526,16 @@ def run_case(
         run_input["reference_name"] = reference
     if caller:
         run_input["caller"] = caller
+    if aligner is not _UNSET:  # anything, even not a string: the state machine validates it
+        run_input["aligner"] = aligner
     if gate_profile is not _UNSET:  # anything, even not a string: the state machine validates it
         run_input["gate_profile"] = gate_profile
     if overrides is not _UNSET:  # likewise
         run_input["overrides"] = overrides
+    if input_bytes is not _UNSET:  # likewise (the trigger passes the upload's size; Choose_Route reads it)
+        run_input["input_bytes"] = input_bytes
+    if from_alignment is not _UNSET:  # likewise (Choose_Start reads it)
+        run_input["from_alignment"] = from_alignment
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
@@ -443,7 +621,9 @@ def run_close(events) -> dict:
         e for e in events if e["type"] == "TaskScheduled" and names.get(e["previousEventId"]) == "Close_Run_Record"
     ]
     params = json.loads(put["taskScheduledEventDetails"]["parameters"])
-    return {**params, "Body": json.loads(params["Body"])}
+    # The object itself, not a JSON string: the integration serialises it once (#205).
+    assert isinstance(params["Body"], dict), params["Body"]
+    return params
 
 
 def assert_closed_before_notifying(desc, events, error="States.TaskFailed"):
@@ -483,7 +663,7 @@ def test_happy_path_runs_qc_and_align_in_parallel_then_variants(sfn):
         for e in events
         if e.get("previousEventId") == started["id"] and "stateEnteredEventDetails" in e
     }
-    assert heads == {"Prepare_QC_Command", "Prepare_Align_Command"}
+    assert heads == {"Prepare_QC_Command", "Choose_Aligner"}  # the align branch picks its aligner first (#146)
     for task in ("Quality_Control", "Align_Genome", "Call_Variants"):
         assert ancestor(by_id, state_entered(events, task), "ParallelStateStarted") is not None
     variants = state_entered(events, "Call_Variants")
@@ -709,7 +889,8 @@ def test_caller_deepvariant_runs_deepvariant_on_the_gpu_queue(sfn):
         {"Name": "RUN_NAME", "Value": desc["name"]},
         {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
     ]
-    assert dv["Timeout"]["AttemptDurationSeconds"] == 3600
+    # deepvariant_timeout_seconds (v2.0, was a fixed 3600): long enough for a genome's call_variants.
+    assert dv["Timeout"]["AttemptDurationSeconds"] == 14400
 
 
 def test_a_failed_deepvariant_falls_back_to_bcftools(sfn):
@@ -726,7 +907,177 @@ def test_a_failed_deepvariant_falls_back_to_bcftools(sfn):
 def test_both_callers_failing_fails_the_run(sfn):
     desc, events = run_case(sfn, "BothCallersFail", caller="deepvariant")
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
-    assert entered(events)[-2:] == ["Notify_Failure", "Pipeline_Failed"]
+    assert entered(events)[-3:] == ["Notify_Failure", "Publish_Run", "Pipeline_Failed"]
+
+
+# --- v1.5 the DeepVariant split: make_examples parts on Fargate, then the GPU job (#228, #236) ----------------
+
+
+@pytest.mark.parametrize("overrides", [_UNSET, {"dv_parts": 1}])
+def test_dv_parts_1_is_the_single_gpu_job_as_before(sfn, overrides):
+    desc, events = run_case(sfn, "DeepVariantOk", caller="deepvariant", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Choose_DeepVariant_Mode") < states.index("Prepare_DeepVariant_Command")
+    assert "Make_Examples_Parts" not in states and not batch_calls(events, "Make_Examples_Part")
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert "--from-examples" not in dv["ContainerOverrides"]["Command"]
+
+
+def test_split_mode_runs_one_cpu_part_per_dv_part_then_the_gpu_job_on_their_examples(sfn):
+    desc, events = run_case(
+        sfn, "DeepVariantSplitOk", sample="SAMPLE7", reference="ref.fa", caller="deepvariant", overrides={"dv_parts": 3}
+    )
+    assert desc["status"] == "SUCCEEDED"
+    parts = batch_calls(events, "Make_Examples_Part")
+    assert sorted(p["JobName"] for p in parts) == [f"DeepVariant-Examples-{i}-{desc['name']}" for i in range(3)]
+    for p in parts:
+        part = p["JobName"].split("-")[2]
+        assert p["JobDefinition"] == TEMPLATE_VARS["deepvariant_cpu_job_definition"]
+        assert p["JobQueue"] == TEMPLATE_VARS["job_queue"]  # the Fargate queue, Spot first
+        assert p["Timeout"]["AttemptDurationSeconds"] == 14400
+        assert p["ContainerOverrides"]["Command"] == [
+            "/opt/geyser-venv/bin/python",
+            "deepvariant_task.py",
+            "SAMPLE7",
+            "ref.fa",
+            "--make-examples-part",
+            part,
+            "--parts",
+            "3",
+        ]
+        # Every part gets the same N = parts x the part's 8 vCPUs.
+        assert p["ContainerOverrides"]["Environment"] == [
+            {"Name": "RUN_NAME", "Value": desc["name"]},
+            {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+            {"Name": "DEEPVARIANT_SHARDS", "Value": "24"},
+        ]
+    # The GPU job comes after every part, on their examples, as the single job otherwise.
+    by_id = {e["id"]: e for e in events}
+    assert ancestor(by_id, state_entered(events, "DeepVariant"), "MapStateExited") is not None
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert dv["JobQueue"] == TEMPLATE_VARS["gpu_job_queue"]
+    assert dv["JobDefinition"] == TEMPLATE_VARS["deepvariant_job_definition"]
+    assert dv["JobName"] == f"DeepVariant-SAMPLE7-{desc['name']}"
+    assert dv["ContainerOverrides"]["Command"] == [
+        "/opt/geyser-venv/bin/python",
+        "deepvariant_task.py",
+        "SAMPLE7",
+        "ref.fa",
+        "--from-examples",
+    ]
+    assert dv["ContainerOverrides"]["Environment"] == [
+        {"Name": "RUN_NAME", "Value": desc["name"]},
+        {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+    ]
+    assert "Plan_Regions" not in entered(events)
+    assert json.loads(desc["output"])["run_settings"]["dv_parts"] == 3
+
+
+def test_split_mode_only_applies_to_deepvariant(sfn):
+    desc, events = run_case(sfn, "HappyPath", overrides={"dv_parts": 3})
+    assert desc["status"] == "SUCCEEDED"
+    assert "Choose_DeepVariant_Mode" not in entered(events) and "Call_Variants" in entered(events)
+
+
+def test_a_failed_part_falls_back_to_bcftools_without_the_gpu_job(sfn):
+    desc, events = run_case(sfn, "DeepVariantSplitPartFails", caller="deepvariant", overrides={"dv_parts": 2})
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Make_Examples_Parts") < states.index("Plan_Regions") < states.index("Call_Variants")
+    assert "DeepVariant" not in states and "Notify_Failure" not in states
+    assert json.loads(desc["output"])["deepvariant_error"]["Error"] == "States.TaskFailed"
+
+
+@pytest.mark.parametrize("dv_parts", [0, 7, 2.5, 3.0, "3", None, -1])
+def test_an_invalid_dv_parts_fails_the_run_before_any_job(sfn, dv_parts):
+    desc, events = run_case(sfn, "DeepVariantSplitOk", caller="deepvariant", overrides={"dv_parts": dv_parts})
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    assert "Prepare_Run_Overrides_Error" in entered(events)
+    assert "States.Runtime" not in history_text(events)
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidRunOverrides" and "dv_parts (1 to 6)" in error["Cause"]
+    assert "calling_concurrency (1 to 48), merge_threads (1 to 8) and dv_parts" in error["Cause"]
+
+
+# --- v2.0 from_alignment: call variants from the sample's existing CRAM -----------------------------------
+
+
+ALIGNMENT_STATES = {"QC_and_Align", "Large_QC_and_Align", "Quality_Control", "Align_Genome", "Preflight"}
+
+
+def test_from_alignment_skips_qc_and_alignment_and_runs_the_dv_split_on_the_existing_cram(sfn):
+    desc, events = run_case(
+        sfn,
+        "DeepVariantSplitOk",
+        sample="HG003-WGS30x",
+        caller="deepvariant",
+        overrides={"dv_parts": 3},
+        input_bytes=LARGE,  # ignored: no route is chosen
+        from_alignment=True,
+    )
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert not ALIGNMENT_STATES & set(states)
+    assert states.index("Set_Run_Settings") < states.index("Choose_Start") < states.index("Check_Alignment")
+    assert states.index("Check_Alignment") < states.index("Choose_Caller") < states.index("Make_Examples_Parts")
+    (check,) = sdk_calls(events, "Check_Alignment")
+    assert check == {"Bucket": TEMPLATE_VARS["bucket"], "Key": "alignments/HG003-WGS30x.cram"}
+    assert len(batch_calls(events, "Make_Examples_Part")) == 3
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert dv["ContainerOverrides"]["Command"][-1] == "--from-examples"
+    assert "Quality_Gate" in states  # the gate still judges the call set
+
+
+def test_from_alignment_with_bcftools_plans_calls_and_merges_from_the_cram(sfn):
+    desc, events = run_case(sfn, "HappyPath", from_alignment=True)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert not ALIGNMENT_STATES & set(states)
+    assert states.index("Check_Alignment") < states.index("Plan_Regions") < states.index("Call_Variants")
+    assert set(batch_parameters(events)) == {"Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate"}
+
+
+@pytest.mark.parametrize("from_alignment", [_UNSET, False])
+def test_without_from_alignment_the_run_aligns_as_before(sfn, from_alignment):
+    desc, events = run_case(sfn, "HappyPath", from_alignment=from_alignment)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "Choose_Start" in states and "Check_Alignment" not in states
+    assert {"QC_and_Align", "Quality_Control", "Align_Genome"} <= set(states)
+
+
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_from_alignment_without_a_cram_fails_the_run_before_any_job(request, machine):
+    desc, events = run_case(
+        request.getfixturevalue(machine), "AlignmentMissing", caller="deepvariant", from_alignment=True
+    )
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert not batch_parameters(events)  # no job ran
+    assert states[-6:] == [
+        "Prepare_Alignment_Not_Found",
+        "Prepare_Run_Close",
+        "Close_Run_Record",
+        "Notify_Failure",
+        "Publish_Run",
+        "Pipeline_Failed",
+    ]
+    assert len(sdk_calls(events, "Check_Alignment")) == 1  # a missing key is not retried
+    assert_closed_before_notifying(desc, events, "AlignmentNotFound")
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "AlignmentNotFound" and "alignments/S1.cram" in error["Cause"]
+
+
+@pytest.mark.parametrize("from_alignment", ["true", 1, None, [True], {"cram": True}])
+def test_an_invalid_from_alignment_fails_before_any_job(sfn, from_alignment):
+    desc, events = run_case(sfn, "HappyPath", from_alignment=from_alignment)
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    states = entered(events)
+    assert "Prepare_From_Alignment_Error" in states and "Check_Alignment" not in states
+    assert "States.Runtime" not in history_text(events)
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidFromAlignment" and error["Cause"].startswith("from_alignment ")
 
 
 # --- scatter-gather: the Map over the planned regions (#108) ------------------------------------
@@ -761,11 +1112,22 @@ def test_the_map_calls_every_region_once_then_merges(sfn):
     }
 
 
-def test_the_map_runs_at_most_the_configured_shards_at_once():
+def test_each_map_reads_its_concurrency_from_the_run_settings():
+    # The real definition (not for_sfn_local's): each Map takes the run's setting, whose default is Terraform's.
     definition = json.loads(render_definition())
-    assert definition["States"]["Call_Variant_Shards"]["MaxConcurrency"] == int(
-        TEMPLATE_VARS["variants_max_concurrency"]
-    )
+    states = definition["States"]
+    assert states["Call_Variant_Shards"]["MaxConcurrencyPath"] == "$.run_settings.calling_concurrency"
+    assert "MaxConcurrency" not in states["Call_Variant_Shards"]
+    (chunks,) = [
+        b["States"]["Align_Chunks"] for b in states["Large_QC_and_Align"]["Branches"] if "Align_Chunks" in b["States"]
+    ]
+    assert chunks["MaxConcurrencyPath"] == "$.run_settings.align_concurrency" and "MaxConcurrency" not in chunks
+    defaults = states["Run_Setting_Rules"]["Result"]["defaults"]
+    assert defaults["calling_concurrency"] == int(TEMPLATE_VARS["variants_max_concurrency"])
+    assert defaults["align_concurrency"] == int(TEMPLATE_VARS["genome_align_concurrency"])
+    # Every MaxConcurrencyPath in the file is one for_sfn_local knows how to stand in for.
+    paths = re.findall(r'"MaxConcurrencyPath": "([^"]+)"', render_definition())
+    assert sorted(paths) == sorted(CONCURRENCY_PATHS)
 
 
 @pytest.mark.parametrize("case", ["PlanFails", "RegionsUnreadable", "ShardFails"])
@@ -821,7 +1183,8 @@ def test_the_gate_judges_the_merged_call_set_and_a_pass_ends_the_run(sfn):
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
     assert states.index("Call_Variants") < states.index("Quality_Gate") < states.index("Read_Gate_Verdict")
-    assert states[-2:] == ["Gate_Decision", "Pipeline_Succeeded"]
+    # Every run ends through Publish_Run (W3), which goes straight on while publishing is off.
+    assert states[-3:] == ["Gate_Decision", "Publish_Run", "Pipeline_Succeeded"]
     assert gate_read(events) == {"Bucket": TEMPLATE_VARS["bucket"], "Key": "qc_reports/SAMPLE7.gate.json"}
     output = json.loads(desc["output"])
     assert output["gate"]["verdict"]["verdict"] == "pass"
@@ -853,7 +1216,7 @@ def test_warn_mode_records_a_failed_or_missing_verdict_and_the_run_succeeds(sfn,
     states = entered(events)
     # A judged run (Gate_Warned) is told apart from one the gate never judged (Gate_Skipped, #157).
     last = "Gate_Warned" if case == "GateFailsVerdict" else "Gate_Skipped"
-    assert states[-2:] == [last, "Pipeline_Succeeded"]
+    assert states[-3:] == [last, "Publish_Run", "Pipeline_Succeeded"]
     assert "States.Runtime" not in history_text(events)
     assert "Notify_Failure" not in states
     output = json.loads(desc["output"])
@@ -868,11 +1231,12 @@ def test_fail_mode_fails_the_run_with_the_gates_reasons(sfn_fail):
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
     # The failure path like any failed stage's: the run record is closed as failed, then the notification.
-    assert states[-5:] == [
+    assert states[-6:] == [
         "Prepare_Gate_Failure",
         "Prepare_Run_Close",
         "Close_Run_Record",
         "Notify_Failure",
+        "Publish_Run",
         "Pipeline_Failed",
     ]
     closed = run_close(events)["Body"]
@@ -889,11 +1253,12 @@ def test_fail_mode_fails_the_run_with_the_gates_reasons(sfn_fail):
 def test_fail_mode_treats_no_verdict_as_no_pass(sfn_fail, case):
     desc, events = run_case(sfn_fail, case)
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
-    assert entered(events)[-5:] == [
+    assert entered(events)[-6:] == [
         "Prepare_Gate_Error",
         "Prepare_Run_Close",
         "Close_Run_Record",
         "Notify_Failure",
+        "Publish_Run",
         "Pipeline_Failed",
     ]
     assert run_close(events)["Body"]["caught"]["Error"] == "QualityGateError"
@@ -967,7 +1332,7 @@ def test_an_unknown_profile_fails_the_run_before_any_job_in_either_mode(request,
     states = entered(events)
     assert states[:2] == ["Check_Gate_Profile", "Prepare_Profile_Error"]
     assert "QC_and_Align" not in states and "Quality_Gate" not in states  # no job ran
-    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert states[-4:] == ["Close_Run_Record", "Notify_Failure", "Publish_Run", "Pipeline_Failed"]
     error = published_message(events)["ErrorDetails"]
     # States.JsonToString writes compact JSON.
     assert error["Error"] == "UnknownGateProfile" and json.dumps(profile, separators=(",", ":")) in error["Cause"]
@@ -991,6 +1356,62 @@ def test_both_profiles_follow_the_gate_mode(request, profile, machine, case, out
     assert outcome in states
     assert desc["status"] == ("FAILED" if outcome == "Pipeline_Failed" else "SUCCEEDED")
     assert gate_environment(events)["GATE_CONFIG"] == f"$GATE_THRESHOLDS_DIR/{profile}.toml"
+
+
+# --- the aligner per run (#146) -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("aligner", [_UNSET, "bwa-mem2"])
+def test_without_giraffe_align_runs_in_the_app_job_definition(sfn, aligner):
+    desc, events = run_case(sfn, "HappyPath", aligner=aligner)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "Prepare_Align_Command" in states and "Prepare_Giraffe_Command" not in states
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["JobDefinition"] == TEMPLATE_VARS["job_definition"]
+
+
+def test_aligner_giraffe_runs_the_same_align_stage_in_the_giraffe_job_definition(sfn):
+    desc, events = run_case(sfn, "HappyPath", sample="SAMPLE7", reference="ref.fa", aligner="giraffe")
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "Prepare_Giraffe_Command" in states and "Prepare_Align_Command" not in states
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["JobDefinition"] == TEMPLATE_VARS["giraffe_job_definition"]
+    # Everything else is the align stage's: queue, command, job name, run name, size and time limit, so the
+    # variants stage, the run record and the dashboards see an ordinary align job.
+    assert align["JobQueue"] == TEMPLATE_VARS["job_queue"]
+    assert align["ContainerOverrides"]["Command"] == ["python", "tasks.py", "align", "SAMPLE7", "ref.fa"]
+    assert re.fullmatch(r"AlignGenome-SAMPLE7-HappyPath-\w+", align["JobName"])
+    assert align["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
+    sizes = {r["Type"]: r["Value"] for r in align["ContainerOverrides"]["ResourceRequirements"]}
+    assert sizes == {"VCPU": TEMPLATE_VARS["align_vcpu"], "MEMORY": TEMPLATE_VARS["align_memory_mb"]}
+    assert align["Timeout"]["AttemptDurationSeconds"] == 14400
+    # Only align changes job definition.
+    for state, p in batch_parameters(events).items():
+        if state != "Align_Genome":
+            assert p["JobDefinition"] == TEMPLATE_VARS["job_definition"], state
+
+
+def test_giraffe_takes_the_runs_align_size_like_bwa_mem2(sfn):
+    # The run's settings (#192), overrides included, size align whichever aligner runs it.
+    overrides = {"align_vcpu": "2", "align_memory_mb": "8192", "variant_region_window": 17000000}
+    desc, events = run_case(sfn, "HappyPath", aligner="giraffe", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Set_Run_Settings") < states.index("Choose_Aligner") < states.index("Prepare_Giraffe_Command")
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["JobDefinition"] == TEMPLATE_VARS["giraffe_job_definition"]
+    assert run_sizes(events) == {"align": ("2", "8192"), "plan_window": "17000000", "merge_window": "17000000"}
+
+
+@pytest.mark.parametrize("aligner", ["Giraffe", "bwa", "", 7, None])
+def test_an_unknown_aligner_fails_the_run_without_aligning(sfn, aligner):
+    desc, events = run_case(sfn, "AlignerUnknown", aligner=aligner)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert "Unknown_Aligner" in states and "Align_Genome" not in states and "Call_Variants" not in states
+    assert_closed_before_notifying(desc, events, error="UnknownAligner")
 
 
 # --- the reference genome per upload: checked before any job ----------------------------------------
@@ -1043,11 +1464,12 @@ def test_a_reference_not_in_the_data_lake_fails_the_run_before_any_job(request, 
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     states = entered(events)
     assert "QC_and_Align" not in states and not batch_parameters(events)  # no job ran
-    assert states[-5:] == [
+    assert states[-6:] == [
         "Prepare_Reference_Not_Found",
         "Prepare_Run_Close",
         "Close_Run_Record",
         "Notify_Failure",
+        "Publish_Run",
         "Pipeline_Failed",
     ]
     assert len(sdk_calls(events, "Check_Reference")) == 1  # a missing key is not retried
@@ -1080,7 +1502,7 @@ def test_a_reference_that_is_not_a_file_name_fails_the_run_before_any_job(reques
     states = entered(events)
     assert states[2:4] == ["Check_Reference_Name", "Prepare_Reference_Error"]
     assert "Check_Reference" not in states and "QC_and_Align" not in states  # not even S3 was asked
-    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert states[-4:] == ["Close_Run_Record", "Notify_Failure", "Publish_Run", "Pipeline_Failed"]
     assert_closed_before_notifying(desc, events, "UnknownReference")
     error = published_message(events)["ErrorDetails"]
     assert error["Error"] == "UnknownReference"
@@ -1106,7 +1528,18 @@ def test_a_bad_gate_profile_is_still_reported_first(sfn):
 
 # --- per-run size overrides (the cost x turnaround grid; docs/figures/cost-surface-grid.md) ---------------
 
-DEFAULT_RUN_SETTINGS = {"align_vcpu": "4", "align_memory_mb": "8192", "variant_region_window": "50000000"}
+DEFAULT_RUN_SETTINGS = {
+    "align_vcpu": "4",
+    "align_memory_mb": "8192",
+    "variant_region_window": "50000000",
+    # v1.3: the genome's parallelism (the concurrencies as numbers, for MaxConcurrencyPath).
+    "chunk_count": "24",
+    "align_concurrency": 5,
+    "calling_concurrency": 4,
+    "merge_threads": "8",
+    # v1.5: DeepVariant's make_examples parts (a number: Prepare_Examples_Parts does arithmetic on it).
+    "dv_parts": 1,
+}
 OVERRIDE_CHAIN = [
     "Run_Setting_Rules",
     "Check_Run_Overrides",
@@ -1117,6 +1550,8 @@ OVERRIDE_CHAIN = [
     "Inspect_Run_Setting_Values",
     "Check_Run_Setting_Values",
     "Set_Run_Settings",
+    "Choose_Start",  # v2.0: without from_alignment, on to the routes
+    "Choose_Route",  # v1.3: small inputs go on to QC_and_Align as before
 ]
 
 
@@ -1221,7 +1656,7 @@ def test_invalid_overrides_fail_the_run_before_any_job(sfn, overrides):
     assert "Prepare_Run_Overrides_Error" in states
     assert "QC_and_Align" not in states and not batch_parameters(events)  # no job ran
     assert "States.Runtime" not in history_text(events)
-    assert states[-3:] == ["Close_Run_Record", "Notify_Failure", "Pipeline_Failed"]
+    assert states[-4:] == ["Close_Run_Record", "Notify_Failure", "Publish_Run", "Pipeline_Failed"]
     assert_closed_before_notifying(desc, events, "InvalidRunOverrides")
     error = published_message(events)["ErrorDetails"]
     assert error["Error"] == "InvalidRunOverrides"
@@ -1255,3 +1690,254 @@ def test_the_checks_run_in_order_gate_profile_reference_then_run_settings(reques
     _, events = run_case(sfn, "ReferenceMissing", reference="GRCh37.fa", overrides={"align_cpu": "2"})
     assert "Run_Setting_Rules" not in entered(events)
     assert published_message(events)["ErrorDetails"]["Error"] == "ReferenceNotFound"
+
+
+# --- the hosted site (W3): the Publish state after every run ---------------------------------------------------
+
+
+@pytest.mark.parametrize("case,status", [("HappyPath", "SUCCEEDED"), ("QCFails", "FAILED")])
+def test_with_publishing_off_a_run_ends_as_before(sfn, case, status):
+    desc, events = run_case(sfn, case)
+    assert desc["status"] == status
+    states = entered(events)
+    assert "Publish" not in states and states[-2] == "Publish_Run"
+    assert json.loads(desc["output"] if status == "SUCCEEDED" else "{}").get("publish_output") is None
+
+
+def test_a_succeeded_run_publishes_its_page_then_succeeds(sfn_publish):
+    desc, events = run_case(sfn_publish, "PublishOk", sample="SAMPLE7")
+    assert desc["status"] == "SUCCEEDED"
+    assert entered(events)[-4:] == ["Publish_Run", "Publish", "Publish_Finished", "Pipeline_Succeeded"]
+    (params,) = batch_calls(events, "Publish")
+    # Its own job definition (publish.tf: the geyser-publish image; the site, distribution and API base are its env).
+    assert params["JobDefinition"] == TEMPLATE_VARS["publish_job_definition"]
+    assert params["JobName"] == f"Publish-SAMPLE7-{desc['name']}"
+    overrides = params["ContainerOverrides"]
+    assert overrides["Command"] == [
+        "python",
+        "manage.py",
+        "publish",
+        "SAMPLE7",
+    ]  # T3's contract: the site from $SITE_BUCKET
+    # The site and the distribution per run, so switching publishing on never changes the job definition.
+    assert overrides["Environment"] == [
+        {"Name": "RUN_NAME", "Value": desc["name"]},
+        {"Name": "SITE_BUCKET", "Value": "geyser-site-local"},
+        {"Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "E2EXAMPLE"},
+    ]
+    assert "ResourceRequirements" not in overrides  # the job definition's own size
+    assert params["Timeout"] == {"AttemptDurationSeconds": 900}
+
+
+def test_a_failed_publish_never_changes_the_runs_outcome(sfn_publish):
+    desc, events = run_case(sfn_publish, "PublishFails")
+    assert desc["status"] == "SUCCEEDED"
+    assert json.loads(desc["output"])["publish_error"]["Error"] == "States.TaskFailed"
+    desc, events = run_case(sfn_publish, "QCFailsAndPublishFails")
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert entered(events)[-3:] == ["Publish", "Publish_Finished", "Pipeline_Failed"]
+
+
+def test_a_failed_run_is_published_after_its_notification_and_still_fails(sfn_publish):
+    desc, events = run_case(sfn_publish, "QCFailsThenPublished")
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert states[-6:] == [
+        "Close_Run_Record",
+        "Notify_Failure",
+        "Publish_Run",
+        "Publish",
+        "Publish_Finished",
+        "Pipeline_Failed",
+    ]
+
+
+@pytest.mark.parametrize("bad", [{"gate_profile": "strict"}, {"reference": "sub/x.fa"}])
+def test_a_run_that_failed_before_any_job_is_published_too(sfn_publish, bad):
+    # T3's W2: the sample list links every finished sample, so a run that failed before any stage needs its page
+    # too (it says so). The switch doesn't depend on the run's data: it is rendered into the Choice.
+    desc, events = run_case(sfn_publish, "PublishOk", **bad)
+    assert desc["status"] == "FAILED"
+    states = entered(events)
+    assert "QC_and_Align" not in states and "Run_Setting_Rules" not in states  # no job ran
+    assert states[-4:] == ["Publish_Run", "Publish", "Publish_Finished", "Pipeline_Failed"]
+    (params,) = batch_calls(events, "Publish")
+    assert params["ContainerOverrides"]["Command"] == ["python", "manage.py", "publish", "S1"]
+
+
+def test_publish_enabled_is_rendered_into_the_choice_not_read_from_the_run():
+    for enabled in ("true", "false"):
+        states = json.loads(render_definition(publish_enabled=enabled))["States"]
+        first = states["Publish_Run"]["Choices"][0]
+        assert first == {"Variable": "$$.Execution.Id", "IsPresent": enabled == "true", "Next": "Publish"}
+        assert "publish" not in states["Run_Setting_Rules"]["Result"]
+
+
+# --- v1.3 Big inputs: Choose_Route, the large route, the per-run parallelism ----------------------------------
+
+LARGE_STATES = ("Large_QC_and_Align", "Preflight", "Read_Manifest", "Align_Chunks", "Align_Chunk", "Align_Merge")
+
+
+@pytest.mark.parametrize("input_bytes", [_UNSET, 0, 4_999_999_999])
+def test_small_inputs_take_todays_path_unchanged(sfn, input_bytes):
+    desc, events = run_case(sfn, "HappyPath", input_bytes=input_bytes)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    at = states.index("Set_Run_Settings")
+    assert states[at + 1 : at + 4] == ["Choose_Start", "Choose_Route", "QC_and_Align"]
+    assert not set(LARGE_STATES) & set(states)
+    assert set(batch_parameters(events)) == set(BATCH_TASKS)  # the same jobs as before v1.3
+
+
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_a_large_input_takes_the_large_route_and_rejoins_at_the_caller(request, machine):
+    desc, events = run_case(request.getfixturevalue(machine), "LargeRouteOk", sample="SAMPLE7", input_bytes=LARGE)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "QC_and_Align" not in states and "Align_Genome" not in states
+    order = [
+        "Choose_Route",
+        "Check_Large_Aligner",
+        "Large_QC_and_Align",
+        "Choose_Caller",
+        "Plan_Regions",
+        "Quality_Gate",
+    ]
+    assert [states.index(s) for s in order] == sorted(states.index(s) for s in order)
+    large_order = ["Preflight", "Read_Manifest", "Align_Chunks", "Align_Merge"]
+    assert [states.index(s) for s in large_order] == sorted(states.index(s) for s in large_order)
+    name = desc["name"]
+    (preflight,) = batch_calls(events, "Preflight")
+    assert preflight["JobName"] == f"Preflight-SAMPLE7-{name}"
+    assert preflight["JobDefinition"] == TEMPLATE_VARS["large_job_definition"]
+    assert preflight["ContainerOverrides"]["Command"] == [
+        "python",
+        "tasks.py",
+        "preflight",
+        "SAMPLE7",
+        "--chunks",
+        "24",
+    ]
+    assert preflight["Timeout"] == {"AttemptDurationSeconds": 7200}
+    (qc,) = batch_calls(events, "Quality_Control_Large")
+    assert qc["ContainerOverrides"]["Command"] == ["python", "tasks.py", "qc", "SAMPLE7"]
+    assert qc["JobDefinition"] == TEMPLATE_VARS["large_job_definition"]
+    assert qc["ContainerOverrides"]["ResourceRequirements"] == [
+        {"Type": "VCPU", "Value": "8"},
+        {"Type": "MEMORY", "Value": "16384"},
+    ]
+    assert sdk_calls(events, "Read_Manifest") == [
+        {"Bucket": TEMPLATE_VARS["bucket"], "Key": f"intermediate/chunks/SAMPLE7/{name}/manifest.json"}
+    ]
+    chunks = batch_calls(events, "Align_Chunk")
+    assert sorted(c["ContainerOverrides"]["Command"][-1] for c in chunks) == ["0", "1", "2"]  # one per manifest chunk
+    for c in chunks:
+        index = c["ContainerOverrides"]["Command"][-1]
+        expected = ["python", "tasks.py", "align_chunk", "SAMPLE7", "chr20.fa", "--chunk", index]
+        assert c["ContainerOverrides"]["Command"] == expected
+        assert c["JobName"] == f"AlignChunk-{index}-{name}"
+        assert c["JobDefinition"] == TEMPLATE_VARS["large_job_definition"]
+        assert c["Timeout"] == {"AttemptDurationSeconds": 3600}
+        assert c["ContainerOverrides"]["ResourceRequirements"][1] == {"Type": "MEMORY", "Value": "32768"}
+    (merge,) = batch_calls(events, "Align_Merge")
+    expected = ["python", "tasks.py", "align_merge", "SAMPLE7", "chr20.fa", "--threads", "8"]
+    assert merge["ContainerOverrides"]["Command"] == expected
+    assert merge["JobName"] == f"AlignMerge-SAMPLE7-{name}"
+    assert merge["Timeout"] == {"AttemptDurationSeconds": 14400}
+    # Downstream is unchanged: the same calling, merge and gate as the small route.
+    assert {"Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate"} <= set(batch_parameters(events))
+
+
+@pytest.mark.parametrize(
+    "case,failed",
+    [
+        ("PreflightFails", "Preflight"),
+        ("ManifestMissing", "Read_Manifest"),
+        ("ChunkFails", "Align_Chunk"),
+        ("MergeFails", "Align_Merge"),
+        ("LargeQCFails", "Quality_Control_Large"),
+    ],
+)
+def test_a_failure_on_the_large_route_closes_and_notifies_before_calling(sfn, case, failed):
+    desc, events = run_case(sfn, case, input_bytes=LARGE)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert failed in states and "Choose_Caller" not in states and "Plan_Regions" not in states
+    assert states[-4:] == ["Close_Run_Record", "Notify_Failure", "Publish_Run", "Pipeline_Failed"]
+
+
+def test_a_failed_preflight_runs_no_alignment(sfn):
+    _, events = run_case(sfn, "PreflightFails", input_bytes=LARGE)
+    assert "Align_Chunks" not in entered(events) and not batch_calls(events, "Align_Chunk")
+
+
+@pytest.mark.parametrize("aligner", ["giraffe", "GIRAFFE", "bwa", 42])
+def test_the_large_route_refuses_any_aligner_but_bwa_mem2_before_any_job(sfn, aligner):
+    desc, events = run_case(sfn, "LargeRouteOk", input_bytes=LARGE, aligner=aligner)
+    assert desc["status"] == "FAILED"
+    assert "Prepare_Large_Aligner_Error" in entered(events) and not batch_parameters(events)
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "AlignerNotOnLargeRoute" and "giraffe needs the whole sample" in error["Cause"]
+
+
+def test_bwa_mem2_named_explicitly_is_fine_on_the_large_route(sfn):
+    desc, _ = run_case(sfn, "LargeRouteOk", input_bytes=LARGE, aligner="bwa-mem2")
+    assert desc["status"] == "SUCCEEDED"
+
+
+@pytest.mark.parametrize("input_bytes", ["60000000000", -1, None, [1], {"size": 1}, True])
+def test_an_input_size_that_is_not_a_byte_count_fails_before_any_job(sfn, input_bytes):
+    desc, events = run_case(sfn, "HappyPath", input_bytes=input_bytes)
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    assert published_message(events)["ErrorDetails"]["Error"] == "InvalidInputBytes"
+
+
+def test_the_defaults_are_the_run_settings(sfn):
+    desc, _ = run_case(sfn, "LargeRouteOk", input_bytes=LARGE)
+    settings = json.loads(desc["output"])["run_settings"]
+    assert settings["chunk_count"] == "24" and settings["merge_threads"] == "8"
+    assert settings["align_concurrency"] == 5 and settings["calling_concurrency"] == 4  # numbers, for the Maps
+
+
+def test_parallelism_overrides_reach_the_preflight_the_merge_and_both_maps(sfn):
+    overrides = {"chunk_count": 4, "align_concurrency": 2, "calling_concurrency": 48, "merge_threads": 4}
+    desc, events = run_case(sfn, "LargeRouteOk", input_bytes=LARGE, overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    (preflight,) = batch_calls(events, "Preflight")
+    assert preflight["ContainerOverrides"]["Command"][-2:] == ["--chunks", "4"]
+    (merge,) = batch_calls(events, "Align_Merge")
+    assert merge["ContainerOverrides"]["Command"][-2:] == ["--threads", "4"]
+    # The Maps read these through MaxConcurrencyPath (pinned by test_each_map_reads_its_concurrency_from_the_run_settings).
+    settings = json.loads(desc["output"])["run_settings"]
+    assert settings["align_concurrency"] == 2 and settings["calling_concurrency"] == 48
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"chunk_count": 1},
+        {"chunk_count": 97},
+        {"chunk_count": "24"},
+        {"chunk_count": 24.5},
+        {"chunk_count": 2.4e1},
+        {"align_concurrency": 0},
+        {"align_concurrency": 6},  # 6 x 8 + QC 8 = 56 > the 48-vCPU Spot cap
+        {"align_concurrency": "5"},
+        {"calling_concurrency": 49},
+        {"calling_concurrency": 0},
+        {"calling_concurrency": 1.5},
+        {"merge_threads": 9},
+        {"merge_threads": 0},
+        {"merge_threads": None},
+        {"align_concurency": 2},  # misspelt: never a silent default
+    ],
+)
+@pytest.mark.parametrize("input_bytes", [LARGE, _UNSET])
+def test_out_of_bounds_parallelism_fails_before_any_job_on_either_route(sfn, overrides, input_bytes):
+    desc, events = run_case(sfn, "LargeRouteOk", input_bytes=input_bytes, overrides=overrides)
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    states = entered(events)
+    assert "Prepare_Run_Overrides_Error" in states and "Choose_Route" not in states
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidRunOverrides"
+    assert "align_concurrency (1 to 5)" in error["Cause"] and "calling_concurrency (1 to 48)" in error["Cause"]

@@ -2,11 +2,15 @@
 
 The gate stage stores qc_reports/<id>.gate.json (keys_for "gate_verdict"): "verdict" is "pass" or
 "fail" with named "reasons" and per-check results, or null with an "error" when the gate couldn't give
-one (not installed, timed out, crashed). The run record's "gate" entry holds the mode the stage ran in
-(GATE_MODE: "warn" by default until the user decides, "fail" makes a failed verdict fail the stage).
+one (not installed, timed out, crashed).
 
-A failed verdict in warn mode is shown as a warning, not as a failed sample: in that mode the run
-itself succeeded. A missing verdict (null) is "not run", never a pass.
+Where the mode is enforced: in the cloud the state machine runs the gate job with GATE_MODE=warn pinned, so the
+job never fails and its verdict (and the run record's "gate" entry) always says "mode": "warn". The state
+machine then applies Terraform's gate_mode itself: in fail mode a failed verdict fails the run with the error
+QualityGateFailed, and the run record's closing part (Finalize) records it. So the run record's outcome, not the
+verdict's own mode field, says whether the gate failed the run: a failed verdict is "fail" when the record closed
+with QualityGateFailed, and "warn" when the run still succeeded. (A local run with GATE_MODE=fail fails the gate
+stage itself, which its verdict's mode says.) A missing verdict (null) is "not run", never a pass.
 """
 
 import json
@@ -15,6 +19,8 @@ from dataclasses import dataclass, field
 from geyser_web.pipeline import ObjectNotFound
 
 MAX_VERDICT_BYTES = 1024 * 1024  # a verdict is a few KB; anything bigger isn't one
+# The error the state machine fails a run with when gate_mode = fail and the verdict is fail (Prepare_Gate_Failure).
+GATE_FAILED_ERROR = "QualityGateFailed"
 
 # state -> (badge text, CSS class)
 STATES = {
@@ -28,13 +34,14 @@ STATES = {
 @dataclass
 class GateView:
     state: str  # pass | warn | fail | not_run
-    mode: str  # warn | fail (as the stage ran; "warn" if unknown)
+    mode: str  # warn | fail: the mode that decided the run (the pipeline's, when it failed the run)
     reasons: list = field(default_factory=list)
     error: str = None
     failed_checks: list = field(default_factory=list)  # [{name, value, min, max, reason}]
     config: str = None
     gate_version: str = None
     run_name: str = None
+    enforced: bool = False  # True: the pipeline failed the run over this verdict (the record closed QualityGateFailed)
 
     @property
     def label(self) -> str:
@@ -66,6 +73,10 @@ def read_gate(storage, key: str, record=None):
     except ValueError as err:
         return GateView(state="not_run", mode=mode, error=f"unreadable verdict: {err}")
     mode = data.get("mode") or mode
+    failure = (record or {}).get("failure") or {}
+    enforced = (record or {}).get("status") == "failed" and failure.get("error") == GATE_FAILED_ERROR
+    if enforced:
+        mode = "fail"  # the job ran pinned to warn; the state machine's gate_mode = fail failed the run
     common = {
         "mode": mode,
         "config": data.get("config") or recorded.get("config"),
@@ -85,6 +96,7 @@ def read_gate(storage, key: str, record=None):
             state="fail" if mode == "fail" else "warn",
             reasons=list(data.get("reasons") or []),
             failed_checks=failed,
+            enforced=enforced,
             **common,
         )
     return GateView(state="not_run", error=data.get("error") or recorded.get("error") or "no verdict", **common)

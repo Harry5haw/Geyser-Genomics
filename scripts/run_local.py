@@ -111,6 +111,7 @@ PIPELINE_ENV_VARS = (
     "ANNOTATE",
     "GATE_MODE",
     "GATE_CONFIG",
+    "GEYSER_STREAM_REGIONS",  # 0: calling shards download the CRAM instead of reading their region in place
 )
 ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
 # --annotate alphagenome (3.0): the AlphaGenome sources (app/alphagenome_annotation.py SOURCES; a test keeps them equal).
@@ -177,6 +178,11 @@ def deepvariant_command(sample_id, reference_name, pangenome=None):
     return cmd + ["--pangenome", pangenome] if pangenome else cmd
 
 
+# Jobs that get the DEEPVARIANT_* knobs and --dv-memory: the DeepVariant stage, its split-mode make_examples parts
+# (v1.5, docs/design/deepvariant-split.md) and the pangenome-aware stage.
+DEEPVARIANT_JOBS = ("deepvariant", "deepvariant-examples", "pangenome")
+
+
 def pipeline_jobs(
     sample_id,
     reference_name,
@@ -196,8 +202,14 @@ def pipeline_jobs(
     align_env=None,
     annotate=None,
     annotate_source="fake",
+    dv_split=None,
+    dv_cpu_image="geyser-deepvariant-cpu",
+    chunks=None,
 ):
     """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome, env).
+
+    dv_split: DeepVariant in split mode (v1.5): that many make_examples part jobs in dv_cpu_image (no GPU), as
+    the cloud's Fargate Map will run them, then the GPU job on their examples (--from-examples).
 
     align_image / align_env: the align job's image and extra environment (--aligner giraffe: geyser-giraffe,
     ALIGNER=giraffe and the graph); default app_image and nothing.
@@ -239,16 +251,31 @@ def pipeline_jobs(
             job["image"] = align_image or app_image
             if align_env:
                 job["env"] = dict(align_env)
+            if chunks:  # v1.3's large route, as the state machine runs it: check and split, align each chunk, merge
+                jobs += large_route_jobs(sample_id, reference_name, chunks, job["image"], job.get("env"))
+                continue
         jobs.append(job)
     # Like the cloud's caller choice: without bcftools in the run, DeepVariant's stats are the sample's.
     # Not with --skip-to-variants: that adds a caller to an earlier run, whose stats stay the sample's.
     caller_owns_stats = "bcftools" not in sets and not skip_to_variants
     caller_env = {"PIPELINE_CALLER": sets[0]} if caller_owns_stats else {}
     if "deepvariant" in sets:
+        cmd = deepvariant_command(sample_id, reference_name)
+        if dv_split:
+            jobs += [
+                {
+                    "name": "deepvariant-examples",
+                    "cmd": cmd + ["--make-examples-part", str(part), "--parts", str(dv_split)],
+                    "image": dv_cpu_image,
+                    "gpus": False,
+                }
+                for part in range(dv_split)
+            ]
+            cmd = cmd + ["--from-examples"]
         jobs.append(
             {
                 "name": "deepvariant",
-                "cmd": deepvariant_command(sample_id, reference_name),
+                "cmd": cmd,
                 "image": dv_image,
                 "gpus": gpus,
                 "env": caller_env if sets == ["deepvariant"] else {},
@@ -286,6 +313,20 @@ def pipeline_jobs(
         cmd = ["python", "tasks.py", "annotate", sample_id, reference_name, "--source", annotate_source]
         jobs.append({"name": "annotate", "cmd": cmd, "image": app_image, "gpus": False, "optional": True})
     return jobs
+
+
+def large_route_jobs(sample_id, reference_name, chunks, image, env=None):
+    """preflight --chunks N, align_chunk --chunk 0..N-1, align_merge: the large route's align (one RUN_NAME for all)."""
+
+    def job(name, cmd):
+        return {"name": name, "cmd": cmd, "image": image, "gpus": False, **({"env": dict(env)} if env else {})}
+
+    base = ["python", "tasks.py"]
+    jobs = [job("preflight", base + ["preflight", sample_id, "--chunks", str(chunks)])]
+    jobs += [
+        job("align_chunk", base + ["align_chunk", sample_id, reference_name, "--chunk", str(i)]) for i in range(chunks)
+    ]
+    return jobs + [job("align_merge", base + ["align_merge", sample_id, reference_name])]
 
 
 def reference_problem(root, reference_name):
@@ -356,10 +397,13 @@ def container_path(host_path, root):
     return host_path
 
 
-def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None, pass_env=()):
-    """pass_env: variable names docker copies from this process's environment (-e NAME, no value), for secrets:
+def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None, label=None, pass_env=()):
+    """label: a docker label on the container (e.g. geyser.owner=t2), so a watchdog can stop exactly these.
+    pass_env: variable names docker copies from this process's environment (-e NAME, no value), for secrets:
     their values never appear on a command line."""
     full = ["docker", "run", "--rm"]
+    if label:
+        full += ["--label", label]
     if gpus:
         full += ["--gpus", "all"]
     if shm:
@@ -388,26 +432,26 @@ def run_env(sample_id, image):
     }
 
 
-def run_job(job, runner, root, dv_memory=None, env=None):
-    """env: extra variables for the stage (run_env), on top of the pass-through knobs."""
+def run_job(job, runner, root, dv_memory=None, env=None, memory=None, label=None):
+    """env: extra variables for the stage (run_env), on top of the pass-through knobs. memory: a hard cap for
+    the pipeline-stage containers (DeepVariant's is dv_memory); label: a docker label on every container."""
     if runner == "docker":
         # Pipeline and DeepVariant knobs are passed through to the container when set on the host
         # (the host runner inherits the whole environment anyway).
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
         extra.update(job.get("env") or {})
         extra.update(env or {})
-        memory = None
         pass_env = ()
-        if job["name"] in ("deepvariant", "pangenome"):
+        if job["name"] in DEEPVARIANT_JOBS:
             extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
         if job["name"] == "annotate":
             extra.update({k: os.environ[k] for k in ANNOTATE_ENV_VARS if os.environ.get(k)})
             pass_env = tuple(k for k in SECRET_ENV_VARS if os.environ.get(k))
         return subprocess.run(
-            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"), pass_env)
+            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"), label, pass_env)
         ).returncode
-    if job["name"] in ("deepvariant", "pangenome"):
+    if job["name"] in DEEPVARIANT_JOBS:
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
     # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastp) must be on PATH. bwa-mem2 has no
@@ -544,6 +588,18 @@ def main(argv=None):
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
     p.add_argument("--dv-image", default="geyser-deepvariant", help="DeepVariant image (app-deepvariant/)")
     p.add_argument(
+        "--dv-split",
+        type=int,
+        metavar="J",
+        help="DeepVariant in split mode (v1.5): J make_examples part jobs in --dv-cpu-image, then call_variants and "
+        "postprocess_variants in --dv-image on their examples. DEEPVARIANT_SHARDS = tasks in all (default J x CPUs)",
+    )
+    p.add_argument(
+        "--dv-cpu-image",
+        default="geyser-deepvariant-cpu",
+        help="image for the --dv-split make_examples parts (app-deepvariant/ built with DV_TAG=1.10.0)",
+    )
+    p.add_argument(
         "--no-gpu",
         action="store_true",
         help="run DeepVariant and pangenome-aware DeepVariant without --gpus all (CPU images)",
@@ -574,6 +630,16 @@ def main(argv=None):
         help="--shm-size for the pangenome container (default: %(default)s, as in Google's case studies)",
     )
     p.add_argument(
+        "--memory",
+        metavar="SIZE",
+        help="hard memory cap for every pipeline-stage container (docker --memory), e.g. 8g; DeepVariant's is --dv-memory",
+    )
+    p.add_argument(
+        "--docker-label",
+        metavar="KEY=VALUE",
+        help="a docker label on every container this run starts (e.g. geyser.owner=t2), so they can be found and stopped",
+    )
+    p.add_argument(
         "--dv-memory",
         metavar="SIZE",
         help="memory cap for the DeepVariant and pangenome containers, e.g. 12g. A whole chromosome can "
@@ -590,6 +656,12 @@ def main(argv=None):
         metavar="BP",
         help="scatter-gather variant calling: one bcftools job per region of BP bases, then a merge into the "
         "usual VCF (what the Map state will run; #108). Default: one variants job",
+    )
+    p.add_argument(
+        "--chunks",
+        type=int,
+        metavar="N",
+        help="align through v1.3's large route: preflight into N chunks, align each, merge (default: one align job)",
     )
     p.add_argument("--check", action="store_true", help="compare each VCF with truth/<sample>.*")
     p.add_argument("--no-gate", action="store_true", help="skip the quality gate after variant calling")
@@ -613,8 +685,14 @@ def main(argv=None):
         "atlas and api need ALPHAGENOME_API_KEY: set -a; . ~/geyser-secrets/alphagenome.env; set +a",
     )
     a = p.parse_args(argv)
+    if a.chunks is not None and not 1 <= a.chunks <= 999:
+        p.error("--chunks must be 1-999")
+    if a.chunks and a.skip_to_variants:
+        p.error("--chunks aligns; it can't be combined with --skip-to-variants")
     if a.shard_window is not None and a.shard_window < 1:
         p.error("--shard-window must be >= 1")
+    if a.dv_split is not None and a.dv_split < 1:
+        p.error("--dv-split must be >= 1")
 
     trigger = load_trigger()
     keys = sample_keys(trigger, a.root, a.sample)
@@ -665,12 +743,15 @@ def main(argv=None):
             align_env=align_env,
             annotate=a.annotate,
             annotate_source=a.annotate_source,
+            dv_split=a.dv_split,
+            dv_cpu_image=a.dv_cpu_image,
+            chunks=a.chunks,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             env = {**run_env(sample_id, job["image"]), "RUN_NAME": run_name}
-            if run_job(job, a.runner, a.root, a.dv_memory, env) != 0:
+            if run_job(job, a.runner, a.root, a.dv_memory, env, a.memory, a.docker_label) != 0:
                 if job.get("optional"):
                     print(f"\nWARNING: optional stage '{job['name']}' failed for {sample_id}; the run is unaffected")
                     continue
