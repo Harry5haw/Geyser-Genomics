@@ -525,7 +525,8 @@ def test_file_kinds_are_the_stages_own_keys(api):
 
     assert not set(api.PUBLIC_FILES) & set(api.TOKEN_FILES)
     offered = {k: t.format(id="S1") for k, t in {**api.PUBLIC_FILES, **api.TOKEN_FILES}.items()}
-    outputs = {k: v for k, v in tasks.keys_for("S1").items() if not k.startswith("raw")}
+    # AlphaGenome's outputs (3.0) are not offered: the hosted page shows the table with the terms notice, no downloads.
+    outputs = {k: v for k, v in tasks.keys_for("S1").items() if not k.startswith(("raw", "alphagenome"))}
     # The extra callers' VCFs (and their indexes) are provenance.STAGE_VCF's, the record's "vcf" when they called.
     callers = {
         "deepvariant_vcf": provenance.STAGE_VCF["DeepVariant"].format(id="S1"),

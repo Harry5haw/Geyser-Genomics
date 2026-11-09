@@ -35,6 +35,12 @@ def state_machine_stages():
     return stages
 
 
+def annotate_in_state_machine() -> bool:
+    """Whether the state machine has the AlphaGenome Annotate step yet (3.0: #207 adds the stage, #209 the state;
+    either can merge first, so the checks below require it only once the state exists)."""
+    return any(stage == "annotate" for stage, _, _ in state_machine_commands())
+
+
 # v1.3's large route (docs/design/genome-scale-app.md): the app half adds these stages and job names, the infra
 # half the states that run them. Either can merge first, so the checks below require them in the state machine
 # only once its large route exists, and then all of them.
@@ -48,10 +54,12 @@ def large_route_in_state_machine() -> bool:
 
 def test_state_machine_matches_local_runner():
     # File order: the QC branch, the align branch, variants, then the quality gate (#144). run_local runs
-    # the core stages in that order and the gate as its last job (pipeline_jobs(gate=True)). The large route's
-    # stages (an alternative to align) are checked on their own.
+    # the core stages in that order and the gate as its last job (pipeline_jobs(gate=True)), then the optional
+    # AlphaGenome annotation (pipeline_jobs(annotate=...)). The large route's stages (an alternative to align) are
+    # checked on their own.
     stages = state_machine_stages()
-    assert [s for s in stages if s[0] not in LARGE_ROUTE] == run_local.STAGES + [("gate", False)]
+    annotate = [("annotate", True)] if annotate_in_state_machine() else []
+    assert [s for s in stages if s[0] not in LARGE_ROUTE] == run_local.STAGES + [("gate", False)] + annotate
     if large_route_in_state_machine():
         assert {s for s in stages if s[0] in LARGE_ROUTE} == set(LARGE_ROUTE.items())
 
@@ -81,7 +89,8 @@ def test_state_machine_is_rendered_from_the_asl_file():
 def test_the_state_machine_runs_every_task():
     # The reverse of test_state_machine_stages_exist_in_tasks: a new tasks.py stage needs its state too
     # (the repo rule: tasks, state machine and run_local change together). The gate's arrived with #144.
-    expected = set(tasks.TASKS) - (set() if large_route_in_state_machine() else set(LARGE_ROUTE))
+    expected = set(tasks.TASKS) - (set() if annotate_in_state_machine() else {"annotate"})
+    expected -= set() if large_route_in_state_machine() else set(LARGE_ROUTE)
     assert expected == {stage for stage, _ in state_machine_stages()}
 
 
@@ -238,6 +247,8 @@ def test_failure_parsing_knows_every_job_name_the_state_machine_sets():
 
     prefixes = set(re.findall(r"States\.Format\('(\w+)-\{\}", asl_text()))
     known = {p.rstrip("-") for p, _ in provenance.JOB_NAME_STAGES}
+    if not annotate_in_state_machine():
+        known.discard("Annotate")  # #207's stage before #209's state is on main
     if not large_route_in_state_machine():
         known -= LARGE_ROUTE_JOBS
     assert prefixes and prefixes == known, prefixes

@@ -1,0 +1,3 @@
+# The AlphaGenome client, for tasks.py annotate --source atlas (and api, later). Not in the pipeline image:
+# with its dependencies (pandas, scipy, matplotlib, grpcio, anndata) it is ~500 MB. Install it where atlas runs.
+alphagenome==0.10.0
