@@ -1,7 +1,7 @@
 # Release notes
 
 One page per milestone, from the milestone's merged pull requests. **v0.3, v0.35, v0.4, v1.0, v1.1 and v1.2 are
-tagged**, with [GitHub Releases](../../../../releases); v1.3, v1.5 and v2.0 are tagged too; v2.1 is a draft. Tagging and publishing a release is the
+tagged**, with [GitHub Releases](../../../../releases); v1.3, v1.5, v2.0 and v2.1 are tagged too. Tagging and publishing a release is the
 maintainer's decision. Each page ends with what was (or is still) open at its tag.
 
 | Version | Milestone | State |
@@ -14,7 +14,7 @@ maintainer's decision. Each page ends with what was (or is still) open at its ta
 | [v1.2 "Fast"](v1.2.md) | (checkpoint) | **Tagged** 4 Nov 2026: the web UI rebuilt without a framework (every page under 10 KB, LCP under 0.8 s on mobile, Lighthouse 100, #226) and interactive 3D figures (WebGL in a Worker, #227); no pipeline change |
 | [v1.3 "Big inputs"](v1.3.md) | v1.3 Big inputs | **Tagged** 7 Nov 2026. Whole genomes on the existing Fargate Spot environments. Size routing at 5 GB; pre-flight, 24 chunks aligned 5 at a time and a streaming merge, equivalent to one align job (hap.py F1 within 0.00005 on real chr20); region-streamed calling; per-run parallelism; raw-read tiers (#225, #229). Also the teraflow teardown (#46) and the OIDC provider adopted (#134). HG003 30x whole genome: 2 h 59 min, $6.50 at on-demand list prices, gate 11/11, hap.py SNP F1 0.9903 / indel 0.9506 (as on chr20) |
 | [v2.0 "XLR8"](v2.0.md) | Architecture | **Tagged** 8 Nov 2026, the cumulative speed release: three stages, bwa-mem2, CRAM, slim image, Spot, sharded calling, the quality gate in fail mode; real chr20 in ~22 min for ~$0.07. Per-run gate profiles (#178), right-sizing (#174), the per-upload reference (#183), per-run overrides (#192), alignment expiry (#190), the cost grid, the GPU DeepVariant run and giraffe in the cloud (#197) are in. Whole genome (HG003 30x): DeepVariant split on the GPU in 72.9 min, ~$4.1, SNP F1 0.9959 / indel 0.9950 vs bcftools 0.9903 / 0.9506 (errors −57% / −90%). DeepVariant on CPU on the same examples: call_variants 66.5 min vs 27.2 on the GPU, $1.30 list; no slot left. Overlaps v1.0's milestone: see its page |
-| [v2.1 "Hosted"](v2.1.md) | v2.1 Hosted | Draft. The pipeline on the web: a public read-only site on CloudFront with token-gated uploads, a web API and a Publish step after every run (#213), a strict hash-based CSP, honest run pages (#260), heat-map figures (#248). Observability: metrics per stage (#249), run records with route and caller outcome (#251), dashboard v2 with spend, running now, gate values and the hosted site (#253, #255, #259). Checkpoints CLOUD021 (gate fail, as designed) and CLOUD022 (SUCCEEDED, 5 min 39 s) |
+| [v2.1 "Hosted"](v2.1.md) | v2.1 Hosted | **Tagged** 9 Nov 2026. The pipeline on the web: a public read-only site on CloudFront with token-gated uploads, a web API and a Publish step after every run (#213), a strict hash-based CSP, honest run pages (#260), heat-map figures (#248). Observability: metrics per stage (#249), run records with route and caller outcome (#251), dashboard v2 with spend, running now, gate values and the hosted site (#253, #255, #259). Checkpoints CLOUD021 (gate fail, as designed) and CLOUD022 (SUCCEEDED, 5 min 39 s); Lighthouse on the live site, LCP 0.84-0.93 s (#240) |
 
 Each tagged release has a banner in [`docs/assets/`](../assets/) (`<name>-<version>-release`), also shown on
 its GitHub Release. v1.0 "The Upgrade Release" uses `upgrade-1.0-release.jpg`, 2.0 "XLR8"
