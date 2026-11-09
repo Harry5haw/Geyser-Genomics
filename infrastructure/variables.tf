@@ -43,9 +43,9 @@ variable "budget_alert_email" {
 # --- Claude Code guardrails (#73, claude_guardrails.tf) ---
 
 variable "gpu_max_vcpus" {
-  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 4 = one g5.xlarge (or g4dn.xlarge) at a time."
+  description = "Max vCPUs of the GPU Batch compute environment. Caps the GPU spend rate: 16 = one g6.4xlarge or g5.4xlarge at a time (at most $2.06/h). batch_gpu.tf refuses a cap above the smallest gpu_instance_types' vCPUs, so it is always one instance at a time."
   type        = number
-  default     = 4
+  default     = 16
 }
 
 variable "fargate_max_vcpus" {
@@ -205,21 +205,88 @@ variable "alignment_expiry_days" {
 # --- Cloud DeepVariant (G2: #43, #44; docs/design/cloud-deepvariant.md) ---
 
 variable "gpu_instance_types" {
-  description = "Instance types the GPU Batch environment may launch. Both have a 24 GB-class GPU (call_variants at batch 1024 needs more than 10 GB). g6 (L4) is about 20% cheaper than g5 (A10G) in eu-west-2."
+  description = "Instance types the GPU Batch environment may launch, each in batch_gpu.tf's gpu_instance_shapes. Both have a 24 GB-class GPU (call_variants at batch 1024 needs more than 10 GB). g6 (L4) is about 20% cheaper than g5 (A10G) in eu-west-2. The 4xlarge (16 vCPU / 64 GiB) types are the measured shape (docs/design/cloud-deepvariant.md): cheaper per run than the xlarge, since make_examples runs four times faster."
   type        = list(string)
-  default     = ["g6.xlarge", "g5.xlarge"]
+  default     = ["g6.4xlarge", "g5.4xlarge"]
 }
 
 variable "deepvariant_resources" {
-  description = "vCPU and memory (MiB) per DeepVariant job, plus one GPU. 4 vCPU fits the current gpu_max_vcpus cap; the measured shape (16 vCPU, ~8 min for chr20) needs gpu_max_vcpus = 16 and the 4xlarge types."
+  description = "vCPU and memory (MiB) per DeepVariant job, plus one GPU. The measured shape: 16 vCPU (~8 min for chr20). It must fit gpu_max_vcpus and the smallest gpu_instance_types (deepvariant.tf)."
   type        = object({ vcpu = number, memory_mb = number })
-  default     = { vcpu = 4, memory_mb = 14336 } # 16 GiB instance, ~2 GiB left for the ECS agent and OS
+  default     = { vcpu = 16, memory_mb = 57344 } # 64 GiB instance; 56 GiB leaves room for the ECS agent and OS (need: 0.6 GB per shard + 2 GB)
 }
 
 variable "deepvariant_image_version" {
   description = "Tag of the geyser-deepvariant image in ECR (pushed by hand: ~9.8 GB)."
   type        = string
   default     = "dev-local"
+}
+
+# --- DeepVariant split mode (v1.5, deepvariant_cpu.tf): make_examples parts on Fargate, then the GPU job ---
+
+variable "deepvariant_split_parts" {
+  description = "Default dv_parts (a per-run setting): make_examples part jobs on the Fargate queue before the GPU job. 1 = today's single GPU job (no split). At most fargate_spot_max_vcpus / dv_part_resources.vcpu (step_functions.tf)."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.deepvariant_split_parts >= 1 && floor(var.deepvariant_split_parts) == var.deepvariant_split_parts
+    error_message = "deepvariant_split_parts must be a whole number >= 1 (1 = no split)."
+  }
+}
+
+variable "deepvariant_cpu_image_version" {
+  description = "Tag of the geyser-deepvariant-cpu image in ECR (app-deepvariant/Dockerfile with --build-arg DV_TAG=1.10.0: the GPU image's DeepVariant version, which the GPU job checks)."
+  type        = string
+  default     = "dev-local"
+}
+
+variable "dv_part_resources" {
+  description = "vCPU and memory (MiB) of each make_examples part job. DEEPVARIANT_SHARDS = parts x vcpu (one make_examples task per vCPU). A chr20 part of 8 tasks peaked at ~1.1 GB RSS (#228); 16 GiB leaves room for a genome's. Fargate pairs: 4 vCPU 8-30 GiB (1 GiB steps), 8 vCPU 16-60 GiB (4 GiB steps), 16 vCPU 32-120 GiB (8 GiB steps)."
+  type        = object({ vcpu = number, memory_mb = number })
+  default     = { vcpu = 8, memory_mb = 16384 }
+
+  validation {
+    condition = (
+      (var.dv_part_resources.vcpu == 4 && var.dv_part_resources.memory_mb >= 8192 && var.dv_part_resources.memory_mb <= 30720 && var.dv_part_resources.memory_mb % 1024 == 0) ||
+      (var.dv_part_resources.vcpu == 8 && var.dv_part_resources.memory_mb >= 16384 && var.dv_part_resources.memory_mb <= 61440 && var.dv_part_resources.memory_mb % 4096 == 0) ||
+      (var.dv_part_resources.vcpu == 16 && var.dv_part_resources.memory_mb >= 32768 && var.dv_part_resources.memory_mb <= 122880 && var.dv_part_resources.memory_mb % 8192 == 0)
+    )
+    error_message = "dv_part_resources needs a valid Fargate pair: 4 vCPU 8192-30720 MiB (1024 steps), 8 vCPU 16384-61440 (4096 steps), 16 vCPU 32768-122880 (8192 steps)."
+  }
+}
+
+variable "dv_part_disk_gb" {
+  description = "Ephemeral storage of each part job (GiB, Fargate's 21-200, billed per GiB-hour above 20): the whole CRAM (~17 GB for a 30x genome, ~0.4 GB for chr20), the reference and the part's examples."
+  type        = number
+  default     = 100
+
+  validation {
+    condition     = var.dv_part_disk_gb >= 21 && var.dv_part_disk_gb <= 200
+    error_message = "dv_part_disk_gb must be 21-200 (the Fargate range)."
+  }
+}
+
+variable "dv_part_timeout_seconds" {
+  description = "Attempt limit of each part job (the state machine's AttemptDurationSeconds). The app stops itself 300 s before it (DEEPVARIANT_TIMEOUT_SECONDS). chr20 parts took ~4.5 min (#228); a genome's share is ~50x that per part."
+  type        = number
+  default     = 14400
+
+  validation {
+    condition     = var.dv_part_timeout_seconds >= 900 && floor(var.dv_part_timeout_seconds) == var.dv_part_timeout_seconds
+    error_message = "dv_part_timeout_seconds must be a whole number of at least 900."
+  }
+}
+
+variable "deepvariant_timeout_seconds" {
+  description = "Attempt limit of the GPU DeepVariant job (the state machine's AttemptDurationSeconds); the app stops itself 300 s before it (DEEPVARIANT_TIMEOUT_SECONDS). Was a fixed 3600: chr20 takes ~8 min on 16 vCPU, but a 30x genome's call_variants + postprocess_variants (split mode) is ~1.5-2.5 h. A hang is still caught by the 15-minute idle timeout, so a long limit only costs anything on a job that keeps making progress."
+  type        = number
+  default     = 14400
+
+  validation {
+    condition     = var.deepvariant_timeout_seconds >= 1500 && floor(var.deepvariant_timeout_seconds) == var.deepvariant_timeout_seconds
+    error_message = "deepvariant_timeout_seconds must be a whole number of at least 1500 (the app's limit, 300 s under it, must exceed its 900 s idle timeout)."
+  }
 }
 
 # --- vg giraffe as the aligner (#146, giraffe.tf) ---
@@ -253,9 +320,14 @@ variable "giraffe_kmc_memory_gb" {
 }
 
 variable "gpu_disk_gb" {
-  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment and DeepVariant's intermediates: 100 GB for chromosome-scale runs, 250+ for a whole genome."
+  description = "Root volume (gp3) of the GPU instances. The DeepVariant image unpacks to ~28 GB, plus the alignment (~17 GB CRAM for a 30x genome) and DeepVariant's intermediates (or, in v1.5 split mode, every part's examples): 100 GB is enough for a chromosome, a whole genome needs 250+ (500 leaves room for a 30x genome's examples). 500 GB of gp3 is ~$0.06 per instance-hour, billed only while an instance runs."
   type        = number
-  default     = 100
+  default     = 500
+
+  validation {
+    condition     = var.gpu_disk_gb >= 100 && var.gpu_disk_gb <= 1000 && floor(var.gpu_disk_gb) == var.gpu_disk_gb
+    error_message = "gpu_disk_gb must be a whole number of GB from 100 (the image alone is ~28 GB) to 1000."
+  }
 }
 
 variable "default_caller" {

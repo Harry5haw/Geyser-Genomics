@@ -67,6 +67,15 @@ Settings you can change. Set these on the host; `run_local.py` passes them into 
 - **After use:** a used checkpoint is marked consumed by overwriting its manifest, because the cloud role cannot delete objects. A checkpoint made with other settings is ignored, and the stage runs in full.
 - **Off switch:** `DEEPVARIANT_CHECKPOINT=0`.
 
+**Split mode (v1.5): `make_examples` on CPU jobs, the rest on the GPU.** `make_examples` is most of the stage
+and never touches the GPU (84% of the cloud chr20 run, with the GPU idle). With `--make-examples-part P --parts J`, J
+CPU jobs (the CPU image) each run a contiguous share of the wrapper's own `make_examples` tasks and upload the
+examples to `intermediate/dv/<id>/<RUN_NAME>/shard-P/`, with a manifest last. `--from-examples` then checks every
+manifest (complete, consistent, same DeepVariant, settings and reference), downloads the examples and runs the
+wrapper's own `call_variants` and `postprocess_variants` on the GPU. The outputs, run record, metrics and GPU
+figures are the same as the single job's. Locally: `run_local.py --dv-split J`. Contract and the infra still to
+build: [docs/design/deepvariant-split.md](../docs/design/deepvariant-split.md).
+
 There is no GPU? Build the CPU variant (`--build-arg DV_TAG=1.10.0 -t geyser-deepvariant-cpu`) and pass `--dv-image geyser-deepvariant-cpu --no-gpu`.
 
 **Where the GPU actually helps.** Of DeepVariant's three steps, only `call_variants` uses the GPU. `make_examples` and `postprocess_variants` run on the CPU. Since 1.8, a "small model" inside `make_examples` also calls the easy sites on the CPU, so `call_variants` only sees the harder ones. The stage records each step separately.

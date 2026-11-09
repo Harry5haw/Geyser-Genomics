@@ -99,7 +99,7 @@
     },
     "Run_Setting_Rules": {
       "Type": "Pass",
-      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus). The genome's parallelism (v1.3, whole numbers): chunk_count (the large route's alignment chunks), align_concurrency (chunks aligned at once), calling_concurrency (calling shards at once, both routes) and merge_threads; their maxima are rendered from the Fargate Spot cap (step_functions.tf), so a run can't ask for more than the cap holds.",
+      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus). The genome's parallelism (v1.3, whole numbers): chunk_count (the large route's alignment chunks), align_concurrency (chunks aligned at once), calling_concurrency (calling shards at once, both routes) and merge_threads; their maxima are rendered from the Fargate Spot cap (step_functions.tf), so a run can't ask for more than the cap holds. dv_parts (v1.5): DeepVariant's make_examples as that many CPU part jobs on Fargate before the GPU job (1 = the single GPU job); dv_shards_by_parts[J] is DEEPVARIANT_SHARDS for J parts (J x the part's vCPUs).",
       "Result": {
         "defaults": {
           "align_vcpu": "${align_vcpu}",
@@ -108,9 +108,10 @@
           "chunk_count": ${genome_chunk_count},
           "align_concurrency": ${genome_align_concurrency},
           "calling_concurrency": ${variants_max_concurrency},
-          "merge_threads": ${genome_merge_threads}
+          "merge_threads": ${genome_merge_threads},
+          "dv_parts": ${deepvariant_split_parts}
         },
-        "setting_count": 7,
+        "setting_count": 8,
         "align_sizes": ${align_sizes},
         "window_min": ${variant_region_window_min},
         "window_max": ${variant_region_window_max},
@@ -119,6 +120,8 @@
         "align_concurrency_max": ${align_concurrency_max},
         "calling_concurrency_max": ${calling_concurrency_max},
         "merge_threads_max": ${merge_threads_max},
+        "dv_parts_max": ${dv_parts_max},
+        "dv_shards_by_parts": ${dv_shards_by_parts},
         "large_input_bytes": ${large_input_bytes}
       },
       "ResultPath": "$.run_rules",
@@ -170,7 +173,8 @@
             { "Variable": "$.run_check.settings.chunk_count", "IsNumeric": true },
             { "Variable": "$.run_check.settings.align_concurrency", "IsNumeric": true },
             { "Variable": "$.run_check.settings.calling_concurrency", "IsNumeric": true },
-            { "Variable": "$.run_check.settings.merge_threads", "IsNumeric": true }
+            { "Variable": "$.run_check.settings.merge_threads", "IsNumeric": true },
+            { "Variable": "$.run_check.settings.dv_parts", "IsNumeric": true }
           ],
           "Next": "Inspect_Run_Setting_Values"
         }
@@ -187,7 +191,8 @@
         "chunk_text.$": "States.Format('{}', $.run_check.settings.chunk_count)",
         "align_concurrency_text.$": "States.Format('{}', $.run_check.settings.align_concurrency)",
         "calling_concurrency_text.$": "States.Format('{}', $.run_check.settings.calling_concurrency)",
-        "merge_threads_text.$": "States.Format('{}', $.run_check.settings.merge_threads)"
+        "merge_threads_text.$": "States.Format('{}', $.run_check.settings.merge_threads)",
+        "dv_parts_text.$": "States.Format('{}', $.run_check.settings.dv_parts)"
       },
       "ResultPath": "$.run_check",
       "Next": "Check_Run_Setting_Values"
@@ -222,7 +227,12 @@
             { "Variable": "$.run_check.settings.merge_threads", "NumericLessThanEqualsPath": "$.run_rules.merge_threads_max" },
             { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*.*" } },
             { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*E*" } },
-            { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*e*" } }
+            { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*e*" } },
+            { "Variable": "$.run_check.settings.dv_parts", "NumericGreaterThanEquals": 1 },
+            { "Variable": "$.run_check.settings.dv_parts", "NumericLessThanEqualsPath": "$.run_rules.dv_parts_max" },
+            { "Not": { "Variable": "$.run_check.dv_parts_text", "StringMatches": "*.*" } },
+            { "Not": { "Variable": "$.run_check.dv_parts_text", "StringMatches": "*E*" } },
+            { "Not": { "Variable": "$.run_check.dv_parts_text", "StringMatches": "*e*" } }
           ],
           "Next": "Set_Run_Settings"
         }
@@ -239,10 +249,73 @@
         "chunk_count.$": "$.run_check.chunk_text",
         "align_concurrency.$": "$.run_check.settings.align_concurrency",
         "calling_concurrency.$": "$.run_check.settings.calling_concurrency",
-        "merge_threads.$": "$.run_check.merge_threads_text"
+        "merge_threads.$": "$.run_check.merge_threads_text",
+        "dv_parts.$": "$.run_check.settings.dv_parts"
       },
       "ResultPath": "$.run_settings",
-      "Next": "Choose_Route"
+      "Next": "Choose_Start"
+    },
+    "Choose_Start": {
+      "Type": "Choice",
+      "Comment": "from_alignment: true (v2.0, a manual start) skips QC and alignment and calls variants from the sample's existing alignments/<id>.cram, e.g. to re-call a genome with DeepVariant without redoing ~2 h of alignment. Absent or false: the normal routes. Anything else fails before any job, so a typo never re-aligns silently.",
+      "Choices": [
+        { "Not": { "Variable": "$.from_alignment", "IsPresent": true }, "Next": "Choose_Route" },
+        {
+          "And": [
+            { "Variable": "$.from_alignment", "IsBoolean": true },
+            { "Variable": "$.from_alignment", "BooleanEquals": true }
+          ],
+          "Next": "Check_Alignment"
+        },
+        {
+          "And": [
+            { "Variable": "$.from_alignment", "IsBoolean": true },
+            { "Variable": "$.from_alignment", "BooleanEquals": false }
+          ],
+          "Next": "Choose_Route"
+        }
+      ],
+      "Default": "Prepare_From_Alignment_Error"
+    },
+    "Prepare_From_Alignment_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "InvalidFromAlignment",
+        "Cause.$": "States.Format('from_alignment {} is not valid: true (call variants from the existing alignments/<id>.cram) or false', States.JsonToString($.from_alignment))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Check_Alignment": {
+      "Type": "Task",
+      "Comment": "The CRAM align wrote (tasks.keys_for: alignments/<id>.cram) must exist before calling starts: a HeadObject, as Check_Reference. The callers re-index it, so a missing or stale .crai is fine. A missing key is S3.NoSuchKeyException and is not retried.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:headObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('alignments/{}.cram', $.srr_id)"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": ["S3.S3Exception", "States.Timeout"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Alignment_Not_Found", "ResultPath": "$.alignment_error" }
+      ],
+      "Next": "Choose_Caller"
+    },
+    "Prepare_Alignment_Not_Found": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "AlignmentNotFound",
+        "Cause.$": "States.Format('from_alignment: alignments/{}.cram could not be read from ${bucket} ({}). Run the sample through alignment first, or start without from_alignment', $.srr_id, $.alignment_error.Error)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Choose_Route": {
       "Type": "Choice",
@@ -298,7 +371,7 @@
       "Comment": "Invalid overrides fail the run before any job, like an unknown gate_profile: never a silent default. Only JsonToString and plain numbers here, so this Pass can't fail.",
       "Parameters": {
         "Error": "InvalidRunOverrides",
-        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}), variant_region_window (a whole number from {} to {}), chunk_count ({} to {}), align_concurrency (1 to {}), calling_concurrency (1 to {}) and merge_threads (1 to {}), all whole numbers', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max, $.run_rules.chunk_count_min, $.run_rules.chunk_count_max, $.run_rules.align_concurrency_max, $.run_rules.calling_concurrency_max, $.run_rules.merge_threads_max)"
+        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}), variant_region_window (a whole number from {} to {}), chunk_count ({} to {}), align_concurrency (1 to {}), calling_concurrency (1 to {}), merge_threads (1 to {}) and dv_parts (1 to {}), all whole numbers', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max, $.run_rules.chunk_count_min, $.run_rules.chunk_count_max, $.run_rules.align_concurrency_max, $.run_rules.calling_concurrency_max, $.run_rules.merge_threads_max, $.run_rules.dv_parts_max)"
       },
       "ResultPath": "$.error",
       "Next": "Prepare_Run_Close"
@@ -623,10 +696,103 @@
             { "Variable": "$.caller", "IsPresent": true },
             { "Variable": "$.caller", "StringEquals": "deepvariant" }
           ],
-          "Next": "Prepare_DeepVariant_Command"
+          "Next": "Choose_DeepVariant_Mode"
         }
       ],
       "Default": "Prepare_Plan_Command"
+    },
+    "Choose_DeepVariant_Mode": {
+      "Type": "Choice",
+      "Comment": "DeepVariant split mode (v1.5, docs/design/deepvariant-split.md): with dv_parts > 1, make_examples (CPU-only, ~84% of the stage) runs as dv_parts CPU jobs on the Fargate queue, then the GPU job runs call_variants and postprocess_variants on their examples. dv_parts 1 (the default) is the single GPU job, unchanged.",
+      "Choices": [{ "Variable": "$.run_settings.dv_parts", "NumericGreaterThan": 1, "Next": "Prepare_Examples_Parts" }],
+      "Default": "Prepare_DeepVariant_Command"
+    },
+    "Prepare_Examples_Parts": {
+      "Type": "Pass",
+      "Comment": "The parts 0..J-1 for the Map, J as text for the command, and DEEPVARIANT_SHARDS = J x the part's vCPUs (Terraform's dv_shards_by_parts[J]: Step Functions has no multiply). Every part gets the same N, which the GPU job checks.",
+      "Parameters": {
+        "parts.$": "States.ArrayRange(0, States.MathAdd($.run_settings.dv_parts, -1), 1)",
+        "parts_text.$": "States.Format('{}', $.run_settings.dv_parts)",
+        "shards_text.$": "States.Format('{}', States.ArrayGetItem($.run_rules.dv_shards_by_parts, $.run_settings.dv_parts))"
+      },
+      "ResultPath": "$.dv_split",
+      "Next": "Make_Examples_Parts"
+    },
+    "Make_Examples_Parts": {
+      "Type": "Map",
+      "Comment": "One make_examples part job per part, all at once (dv_parts fits the Fargate Spot cap), on the Fargate queue in the CPU DeepVariant image. Each uploads its examples to intermediate/dv/<id>/<RUN_NAME>/shard-<P>/, its manifest last. If any part fails, bcftools calls the sample instead, as when the GPU job fails ($.deepvariant_error records why). Legacy Parameters/Iterator syntax, as Call_Variant_Shards (Step Functions Local).",
+      "ItemsPath": "$.dv_split.parts",
+      "Parameters": {
+        "srr_id.$": "$.srr_id",
+        "reference_name.$": "$.reference_name",
+        "part.$": "States.Format('{}', $$.Map.Item.Value)",
+        "parts.$": "$.dv_split.parts_text",
+        "shards.$": "$.dv_split.shards_text"
+      },
+      "MaxConcurrency": 0,
+      "Iterator": {
+        "StartAt": "Prepare_Examples_Part_Command",
+        "States": {
+          "Prepare_Examples_Part_Command": {
+            "Type": "Pass",
+            "Parameters": {
+              "JobName.$": "States.Format('DeepVariant-Examples-{}-{}', $.part, $$.Execution.Name)",
+              "ContainerOverrides": {
+                "Command.$": "States.Array('/opt/geyser-venv/bin/python', 'deepvariant_task.py', $.srr_id, $.reference_name, '--make-examples-part', $.part, '--parts', $.parts)",
+                "Environment": [
+                  { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+                  { "Name": "PIPELINE_CALLER", "Value": "deepvariant" },
+                  { "Name": "DEEPVARIANT_SHARDS", "Value.$": "$.shards" }
+                ]
+              }
+            },
+            "ResultPath": "$.batch_params",
+            "Next": "Make_Examples_Part"
+          },
+          "Make_Examples_Part": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::batch:submitJob.sync",
+            "Parameters": {
+              "JobName.$": "$.batch_params.JobName",
+              "JobDefinition": "${deepvariant_cpu_job_definition}",
+              "JobQueue": "${job_queue}",
+              "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+              "Timeout": { "AttemptDurationSeconds": ${dv_part_timeout_seconds} }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Plan_Command", "ResultPath": "$.deepvariant_error" }
+      ],
+      "Next": "Prepare_DeepVariant_From_Examples_Command"
+    },
+    "Prepare_DeepVariant_From_Examples_Command": {
+      "Type": "Pass",
+      "Comment": "The GPU job on the parts' examples: call_variants and postprocess_variants only; it checks every manifest before any GPU work. The same DeepVariant task (GPU queue, attempt limit, bcftools fallback) as the single job.",
+      "Parameters": {
+        "JobName.$": "States.Format('DeepVariant-{}-{}', $.srr_id, $$.Execution.Name)",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('/opt/geyser-venv/bin/python', 'deepvariant_task.py', $.srr_id, $.reference_name, '--from-examples')",
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "PIPELINE_CALLER", "Value": "deepvariant" }
+          ]
+        }
+      },
+      "ResultPath": "$.batch_params",
+      "Next": "DeepVariant"
     },
     "Prepare_DeepVariant_Command": {
       "Type": "Pass",
@@ -645,14 +811,14 @@
     },
     "DeepVariant": {
       "Type": "Task",
-      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead (the scatter-gather path), and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit.",
+      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead (the scatter-gather path), and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit: deepvariant_timeout_seconds (v2.0, long enough for a genome's call_variants; the job's own DEEPVARIANT_TIMEOUT_SECONDS is 300 s under it, and its idle timeout still catches a hang within 15 minutes).",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
         "JobName.$": "$.batch_params.JobName",
         "JobDefinition": "${deepvariant_job_definition}",
         "JobQueue": "${gpu_job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 3600 }
+        "Timeout": { "AttemptDurationSeconds": ${deepvariant_timeout_seconds} }
       },
       "Retry": [
         {

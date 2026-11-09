@@ -92,6 +92,15 @@ TEMPLATE_VARS = {
     "chunk_memory_mb": "32768",
     "align_merge_vcpu": "8",
     "align_merge_memory_mb": "16384",
+    # v1.5 the DeepVariant split (deepvariant_cpu.tf): variables.tf's defaults, and what step_functions.tf derives
+    # from fargate_spot_max_vcpus = 48 and dv_part_resources' 8 vCPUs (parts x 8 shards, 0..48 / 8 parts).
+    "deepvariant_cpu_job_definition": "geyser-deepvariant-cpu-job",
+    "deepvariant_split_parts": "1",
+    "dv_parts_max": "6",
+    "dv_shards_by_parts": "[0,8,16,24,32,40,48]",
+    "dv_part_timeout_seconds": "14400",
+    # v2.0: the GPU DeepVariant job's attempt limit (variables.tf's default; was a fixed 3600).
+    "deepvariant_timeout_seconds": "14400",
 }
 PUBLISH_VARS = {"publish_enabled": "true", "site_bucket": "geyser-site-local", "site_distribution_id": "E2EXAMPLE"}
 # Each Map's MaxConcurrencyPath (the run's setting): the real definition's, which this Step Functions Local image
@@ -214,6 +223,12 @@ TEST_CASES = {
         "Call_Variants": FAIL,
         "Notify_Failure": "Published",
     },
+    # v1.5 split mode (dv_parts > 1): the make_examples parts on the Fargate queue, then the GPU job...
+    "DeepVariantSplitOk": {"Make_Examples_Part": "ShardsOk", "DeepVariant": OK},
+    # ...and bcftools when a part fails (every part, as ShardsFail: see its note), without the GPU job.
+    "DeepVariantSplitPartFails": {"Make_Examples_Part": "ShardsFail", "DeepVariant": OK},
+    # v2.0 from_alignment: the sample's CRAM isn't in the data lake, so the run fails before any job.
+    "AlignmentMissing": {"Check_Alignment": "NoSuchKey", "Notify_Failure": "Published"},
     "PlanFails": {"Plan_Regions": FAIL, "Notify_Failure": "Published"},
     # aligner is neither bwa-mem2 nor giraffe: the align branch fails before submitting anything.
     "AlignerUnknown": {"Notify_Failure": "Published"},
@@ -283,8 +298,9 @@ TEST_CASES = {
 }
 # Every case passes the gate unless it says otherwise.
 GATE = {"Quality_Gate": OK, "Read_Gate_Verdict": "VerdictPass"}
-# Every case finds its reference unless it says otherwise (Check_Reference: an S3 HeadObject).
-REFERENCE = {"Check_Reference": "ReferenceFound"}
+# Every case finds its reference unless it says otherwise (Check_Reference: an S3 HeadObject), and, when it
+# starts from_alignment, its CRAM (Check_Alignment, likewise).
+REFERENCE = {"Check_Reference": "ReferenceFound", "Check_Alignment": "AlignmentFound"}
 TEST_CASES = {
     name: {"Quality_Control": OK, "Align_Genome": OK, "Call_Variants": OK, **REFERENCE, **SCATTER, **GATE, **case}
     for name, case in TEST_CASES.items()
@@ -326,6 +342,7 @@ MOCK_CONFIG = {
         "ShardsOk": {"0-99": {"Return": {"JobId": "job-ok", "JobName": "mocked", "Status": "SUCCEEDED"}}},
         "Closed": {"0": {"Return": {"ETag": '"etag-1"'}}},
         "ReferenceFound": {"0": {"Return": {"ContentLength": 65186437, "ETag": '"etag-ref"'}}},
+        "AlignmentFound": {"0": {"Return": {"ContentLength": 17000000000, "ETag": '"etag-cram"'}}},
         "ReferenceFlakyThenFound": {
             "0": {"Throw": {"Error": "S3.S3Exception", "Cause": "Service Unavailable"}},
             "1": {"Return": {"ContentLength": 65186437, "ETag": '"etag-ref"'}},
@@ -500,6 +517,7 @@ def run_case(
     overrides=_UNSET,
     aligner=_UNSET,
     input_bytes=_UNSET,
+    from_alignment=_UNSET,
 ):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
@@ -516,6 +534,8 @@ def run_case(
         run_input["overrides"] = overrides
     if input_bytes is not _UNSET:  # likewise (the trigger passes the upload's size; Choose_Route reads it)
         run_input["input_bytes"] = input_bytes
+    if from_alignment is not _UNSET:  # likewise (Choose_Start reads it)
+        run_input["from_alignment"] = from_alignment
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
@@ -867,7 +887,8 @@ def test_caller_deepvariant_runs_deepvariant_on_the_gpu_queue(sfn):
         {"Name": "RUN_NAME", "Value": desc["name"]},
         {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
     ]
-    assert dv["Timeout"]["AttemptDurationSeconds"] == 3600
+    # deepvariant_timeout_seconds (v2.0, was a fixed 3600): long enough for a genome's call_variants.
+    assert dv["Timeout"]["AttemptDurationSeconds"] == 14400
 
 
 def test_a_failed_deepvariant_falls_back_to_bcftools(sfn):
@@ -885,6 +906,175 @@ def test_both_callers_failing_fails_the_run(sfn):
     desc, events = run_case(sfn, "BothCallersFail", caller="deepvariant")
     assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
     assert entered(events)[-3:] == ["Notify_Failure", "Publish_Run", "Pipeline_Failed"]
+
+
+# --- v1.5 the DeepVariant split: make_examples parts on Fargate, then the GPU job (#228, #236) ----------------
+
+
+@pytest.mark.parametrize("overrides", [_UNSET, {"dv_parts": 1}])
+def test_dv_parts_1_is_the_single_gpu_job_as_before(sfn, overrides):
+    desc, events = run_case(sfn, "DeepVariantOk", caller="deepvariant", overrides=overrides)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Choose_DeepVariant_Mode") < states.index("Prepare_DeepVariant_Command")
+    assert "Make_Examples_Parts" not in states and not batch_calls(events, "Make_Examples_Part")
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert "--from-examples" not in dv["ContainerOverrides"]["Command"]
+
+
+def test_split_mode_runs_one_cpu_part_per_dv_part_then_the_gpu_job_on_their_examples(sfn):
+    desc, events = run_case(
+        sfn, "DeepVariantSplitOk", sample="SAMPLE7", reference="ref.fa", caller="deepvariant", overrides={"dv_parts": 3}
+    )
+    assert desc["status"] == "SUCCEEDED"
+    parts = batch_calls(events, "Make_Examples_Part")
+    assert sorted(p["JobName"] for p in parts) == [f"DeepVariant-Examples-{i}-{desc['name']}" for i in range(3)]
+    for p in parts:
+        part = p["JobName"].split("-")[2]
+        assert p["JobDefinition"] == TEMPLATE_VARS["deepvariant_cpu_job_definition"]
+        assert p["JobQueue"] == TEMPLATE_VARS["job_queue"]  # the Fargate queue, Spot first
+        assert p["Timeout"]["AttemptDurationSeconds"] == 14400
+        assert p["ContainerOverrides"]["Command"] == [
+            "/opt/geyser-venv/bin/python",
+            "deepvariant_task.py",
+            "SAMPLE7",
+            "ref.fa",
+            "--make-examples-part",
+            part,
+            "--parts",
+            "3",
+        ]
+        # Every part gets the same N = parts x the part's 8 vCPUs.
+        assert p["ContainerOverrides"]["Environment"] == [
+            {"Name": "RUN_NAME", "Value": desc["name"]},
+            {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+            {"Name": "DEEPVARIANT_SHARDS", "Value": "24"},
+        ]
+    # The GPU job comes after every part, on their examples, as the single job otherwise.
+    by_id = {e["id"]: e for e in events}
+    assert ancestor(by_id, state_entered(events, "DeepVariant"), "MapStateExited") is not None
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert dv["JobQueue"] == TEMPLATE_VARS["gpu_job_queue"]
+    assert dv["JobDefinition"] == TEMPLATE_VARS["deepvariant_job_definition"]
+    assert dv["JobName"] == f"DeepVariant-SAMPLE7-{desc['name']}"
+    assert dv["ContainerOverrides"]["Command"] == [
+        "/opt/geyser-venv/bin/python",
+        "deepvariant_task.py",
+        "SAMPLE7",
+        "ref.fa",
+        "--from-examples",
+    ]
+    assert dv["ContainerOverrides"]["Environment"] == [
+        {"Name": "RUN_NAME", "Value": desc["name"]},
+        {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+    ]
+    assert "Plan_Regions" not in entered(events)
+    assert json.loads(desc["output"])["run_settings"]["dv_parts"] == 3
+
+
+def test_split_mode_only_applies_to_deepvariant(sfn):
+    desc, events = run_case(sfn, "HappyPath", overrides={"dv_parts": 3})
+    assert desc["status"] == "SUCCEEDED"
+    assert "Choose_DeepVariant_Mode" not in entered(events) and "Call_Variants" in entered(events)
+
+
+def test_a_failed_part_falls_back_to_bcftools_without_the_gpu_job(sfn):
+    desc, events = run_case(sfn, "DeepVariantSplitPartFails", caller="deepvariant", overrides={"dv_parts": 2})
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Make_Examples_Parts") < states.index("Plan_Regions") < states.index("Call_Variants")
+    assert "DeepVariant" not in states and "Notify_Failure" not in states
+    assert json.loads(desc["output"])["deepvariant_error"]["Error"] == "States.TaskFailed"
+
+
+@pytest.mark.parametrize("dv_parts", [0, 7, 2.5, 3.0, "3", None, -1])
+def test_an_invalid_dv_parts_fails_the_run_before_any_job(sfn, dv_parts):
+    desc, events = run_case(sfn, "DeepVariantSplitOk", caller="deepvariant", overrides={"dv_parts": dv_parts})
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    assert "Prepare_Run_Overrides_Error" in entered(events)
+    assert "States.Runtime" not in history_text(events)
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidRunOverrides" and "dv_parts (1 to 6)" in error["Cause"]
+    assert "calling_concurrency (1 to 48), merge_threads (1 to 8) and dv_parts" in error["Cause"]
+
+
+# --- v2.0 from_alignment: call variants from the sample's existing CRAM -----------------------------------
+
+
+ALIGNMENT_STATES = {"QC_and_Align", "Large_QC_and_Align", "Quality_Control", "Align_Genome", "Preflight"}
+
+
+def test_from_alignment_skips_qc_and_alignment_and_runs_the_dv_split_on_the_existing_cram(sfn):
+    desc, events = run_case(
+        sfn,
+        "DeepVariantSplitOk",
+        sample="HG003-WGS30x",
+        caller="deepvariant",
+        overrides={"dv_parts": 3},
+        input_bytes=LARGE,  # ignored: no route is chosen
+        from_alignment=True,
+    )
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert not ALIGNMENT_STATES & set(states)
+    assert states.index("Set_Run_Settings") < states.index("Choose_Start") < states.index("Check_Alignment")
+    assert states.index("Check_Alignment") < states.index("Choose_Caller") < states.index("Make_Examples_Parts")
+    (check,) = sdk_calls(events, "Check_Alignment")
+    assert check == {"Bucket": TEMPLATE_VARS["bucket"], "Key": "alignments/HG003-WGS30x.cram"}
+    assert len(batch_calls(events, "Make_Examples_Part")) == 3
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert dv["ContainerOverrides"]["Command"][-1] == "--from-examples"
+    assert "Quality_Gate" in states  # the gate still judges the call set
+
+
+def test_from_alignment_with_bcftools_plans_calls_and_merges_from_the_cram(sfn):
+    desc, events = run_case(sfn, "HappyPath", from_alignment=True)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert not ALIGNMENT_STATES & set(states)
+    assert states.index("Check_Alignment") < states.index("Plan_Regions") < states.index("Call_Variants")
+    assert set(batch_parameters(events)) == {"Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate"}
+
+
+@pytest.mark.parametrize("from_alignment", [_UNSET, False])
+def test_without_from_alignment_the_run_aligns_as_before(sfn, from_alignment):
+    desc, events = run_case(sfn, "HappyPath", from_alignment=from_alignment)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "Choose_Start" in states and "Check_Alignment" not in states
+    assert {"QC_and_Align", "Quality_Control", "Align_Genome"} <= set(states)
+
+
+@pytest.mark.parametrize("machine", ["sfn", "sfn_fail"])
+def test_from_alignment_without_a_cram_fails_the_run_before_any_job(request, machine):
+    desc, events = run_case(
+        request.getfixturevalue(machine), "AlignmentMissing", caller="deepvariant", from_alignment=True
+    )
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    states = entered(events)
+    assert not batch_parameters(events)  # no job ran
+    assert states[-5:] == [
+        "Prepare_Alignment_Not_Found",
+        "Prepare_Run_Close",
+        "Close_Run_Record",
+        "Notify_Failure",
+        "Pipeline_Failed",
+    ]
+    assert len(sdk_calls(events, "Check_Alignment")) == 1  # a missing key is not retried
+    assert_closed_before_notifying(desc, events, "AlignmentNotFound")
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "AlignmentNotFound" and "alignments/S1.cram" in error["Cause"]
+
+
+@pytest.mark.parametrize("from_alignment", ["true", 1, None, [True], {"cram": True}])
+def test_an_invalid_from_alignment_fails_before_any_job(sfn, from_alignment):
+    desc, events = run_case(sfn, "HappyPath", from_alignment=from_alignment)
+    assert desc["status"] == "FAILED" and not batch_parameters(events)
+    states = entered(events)
+    assert "Prepare_From_Alignment_Error" in states and "Check_Alignment" not in states
+    assert "States.Runtime" not in history_text(events)
+    error = published_message(events)["ErrorDetails"]
+    assert error["Error"] == "InvalidFromAlignment" and error["Cause"].startswith("from_alignment ")
 
 
 # --- scatter-gather: the Map over the planned regions (#108) ------------------------------------
@@ -1344,6 +1534,8 @@ DEFAULT_RUN_SETTINGS = {
     "align_concurrency": 5,
     "calling_concurrency": 4,
     "merge_threads": "8",
+    # v1.5: DeepVariant's make_examples parts (a number: Prepare_Examples_Parts does arithmetic on it).
+    "dv_parts": 1,
 }
 OVERRIDE_CHAIN = [
     "Run_Setting_Rules",
@@ -1355,6 +1547,7 @@ OVERRIDE_CHAIN = [
     "Inspect_Run_Setting_Values",
     "Check_Run_Setting_Values",
     "Set_Run_Settings",
+    "Choose_Start",  # v2.0: without from_alignment, on to the routes
     "Choose_Route",  # v1.3: small inputs go on to QC_and_Align as before
 ]
 
@@ -1588,7 +1781,7 @@ def test_small_inputs_take_todays_path_unchanged(sfn, input_bytes):
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
     at = states.index("Set_Run_Settings")
-    assert states[at + 1 : at + 3] == ["Choose_Route", "QC_and_Align"]
+    assert states[at + 1 : at + 4] == ["Choose_Start", "Choose_Route", "QC_and_Align"]
     assert not set(LARGE_STATES) & set(states)
     assert set(batch_parameters(events)) == set(BATCH_TASKS)  # the same jobs as before v1.3
 

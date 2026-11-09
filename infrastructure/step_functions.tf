@@ -31,7 +31,10 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}:*",
           # v1.3: the large route's jobs (genome_scale.tf), on the same Fargate queue.
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*"
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*",
+          # v1.5: the DeepVariant split's make_examples part jobs (deepvariant_cpu.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name}:*"
         ]
       },
       {
@@ -47,6 +50,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       # 403, so the run fails with "not found" rather than an access error. As for the trigger Lambda,
       # it can't be narrowed by prefix: HeadObject carries no s3:prefix to match.
       { Sid = "CheckReference", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/reference/*" },
+      # v2.0: Check_Alignment (from_alignment runs) checks the sample's CRAM the same way.
+      { Sid = "CheckAlignment", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/alignments/*.cram" },
       { Sid = "MissingReferenceIs404", Effect = "Allow", Action = "s3:ListBucket", Resource = aws_s3_bucket.data_lake.arn },
       # Close_Run_Record writes a failed run's closing run-record part (#155), and only that object.
       { Sid = "CloseRunRecord", Effect = "Allow", Action = "s3:PutObject", Resource = "${aws_s3_bucket.data_lake.arn}/runs/*.provenance/Finalize.json" },
@@ -93,6 +98,10 @@ locals {
   calling_concurrency_max = floor(var.fargate_spot_max_vcpus / var.stage_resources["variants"].vcpu)
   merge_threads_max       = local.large["merge"].vcpu
   large_input_bytes       = floor(var.large_input_gb * 1000000000)
+  # v1.5 the DeepVariant split: parts at once on Fargate Spot, and DEEPVARIANT_SHARDS per parts (index = parts):
+  # Step Functions has no multiply, so the state machine reads parts x the part's vCPUs from this list.
+  dv_parts_max       = floor(var.fargate_spot_max_vcpus / var.dv_part_resources.vcpu)
+  dv_shards_by_parts = [for parts in range(local.dv_parts_max + 1) : parts * var.dv_part_resources.vcpu]
 }
 
 locals {
@@ -105,7 +114,10 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   role_arn = aws_iam_role.geyser_sfn_execution_role.arn
   # The definition lives in state_machine.asl.json so that tests/test_state_machine_local.py can run
   # the very same file in Step Functions Local (Docker, no AWS). Only these values are filled in.
-  definition = templatefile("${path.module}/state_machine.asl.json", {
+  # jsonencode(jsondecode(...)) sends it minified, the same document: the provider's request decomposer reads the
+  # escaped definition with a 64 KB bufio.Scanner, and the indented file passed that in v1.5 ("token too long").
+  # Minified and escaped it is ~52 KB; tests/test_consistency.py keeps it under 56 KB.
+  definition = jsonencode(jsondecode(templatefile("${path.module}/state_machine.asl.json", {
     job_definition             = aws_batch_job_definition.geyser_app_job_def.name
     job_queue                  = aws_batch_job_queue.geyser_queue.name
     deepvariant_job_definition = aws_batch_job_definition.geyser_deepvariant_job_def.name
@@ -153,7 +165,14 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     chunk_memory_mb          = local.large["chunk"].memory_mb
     align_merge_vcpu         = local.large["merge"].vcpu
     align_merge_memory_mb    = local.large["merge"].memory_mb
-  })
+    # v1.5 the DeepVariant split (deepvariant_cpu.tf).
+    deepvariant_cpu_job_definition = aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name
+    deepvariant_split_parts        = var.deepvariant_split_parts
+    dv_parts_max                   = local.dv_parts_max
+    dv_shards_by_parts             = jsonencode(local.dv_shards_by_parts)
+    dv_part_timeout_seconds        = var.dv_part_timeout_seconds
+    deepvariant_timeout_seconds    = var.deepvariant_timeout_seconds
+  })))
 
   lifecycle {
     precondition {
@@ -187,6 +206,11 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
       # The pre-flight runs alongside QC, before the chunks.
       condition     = local.large["preflight"].vcpu + local.large["qc"].vcpu <= var.fargate_spot_max_vcpus
       error_message = "The pre-flight and QC run at the same time: their vCPUs together must fit in fargate_spot_max_vcpus."
+    }
+    precondition {
+      # v1.5: the default goes through the per-run checks too (1 to dv_parts_max).
+      condition     = var.deepvariant_split_parts <= local.dv_parts_max
+      error_message = "deepvariant_split_parts must be at most fargate_spot_max_vcpus / dv_part_resources.vcpu (and one part must fit)."
     }
   }
   logging_configuration {

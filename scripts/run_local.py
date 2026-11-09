@@ -170,6 +170,11 @@ def deepvariant_command(sample_id, reference_name, pangenome=None):
     return cmd + ["--pangenome", pangenome] if pangenome else cmd
 
 
+# Jobs that get the DEEPVARIANT_* knobs and --dv-memory: the DeepVariant stage, its split-mode make_examples parts
+# (v1.5, docs/design/deepvariant-split.md) and the pangenome-aware stage.
+DEEPVARIANT_JOBS = ("deepvariant", "deepvariant-examples", "pangenome")
+
+
 def pipeline_jobs(
     sample_id,
     reference_name,
@@ -187,9 +192,14 @@ def pipeline_jobs(
     gate_config=None,
     align_image=None,
     align_env=None,
+    dv_split=None,
+    dv_cpu_image="geyser-deepvariant-cpu",
     chunks=None,
 ):
     """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome, env).
+
+    dv_split: DeepVariant in split mode (v1.5): that many make_examples part jobs in dv_cpu_image (no GPU), as
+    the cloud's Fargate Map will run them, then the GPU job on their examples (--from-examples).
 
     align_image / align_env: the align job's image and extra environment (--aligner giraffe: geyser-giraffe,
     ALIGNER=giraffe and the graph); default app_image and nothing.
@@ -238,10 +248,22 @@ def pipeline_jobs(
     caller_owns_stats = "bcftools" not in sets and not skip_to_variants
     caller_env = {"PIPELINE_CALLER": sets[0]} if caller_owns_stats else {}
     if "deepvariant" in sets:
+        cmd = deepvariant_command(sample_id, reference_name)
+        if dv_split:
+            jobs += [
+                {
+                    "name": "deepvariant-examples",
+                    "cmd": cmd + ["--make-examples-part", str(part), "--parts", str(dv_split)],
+                    "image": dv_cpu_image,
+                    "gpus": False,
+                }
+                for part in range(dv_split)
+            ]
+            cmd = cmd + ["--from-examples"]
         jobs.append(
             {
                 "name": "deepvariant",
-                "cmd": deepvariant_command(sample_id, reference_name),
+                "cmd": cmd,
                 "image": dv_image,
                 "gpus": gpus,
                 "env": caller_env if sets == ["deepvariant"] else {},
@@ -398,13 +420,13 @@ def run_job(job, runner, root, dv_memory=None, env=None, memory=None, label=None
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
         extra.update(job.get("env") or {})
         extra.update(env or {})
-        if job["name"] in ("deepvariant", "pangenome"):
+        if job["name"] in DEEPVARIANT_JOBS:
             extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
         return subprocess.run(
             docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"), label)
         ).returncode
-    if job["name"] in ("deepvariant", "pangenome"):
+    if job["name"] in DEEPVARIANT_JOBS:
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
     # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastp) must be on PATH. bwa-mem2 has no
@@ -541,6 +563,18 @@ def main(argv=None):
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
     p.add_argument("--dv-image", default="geyser-deepvariant", help="DeepVariant image (app-deepvariant/)")
     p.add_argument(
+        "--dv-split",
+        type=int,
+        metavar="J",
+        help="DeepVariant in split mode (v1.5): J make_examples part jobs in --dv-cpu-image, then call_variants and "
+        "postprocess_variants in --dv-image on their examples. DEEPVARIANT_SHARDS = tasks in all (default J x CPUs)",
+    )
+    p.add_argument(
+        "--dv-cpu-image",
+        default="geyser-deepvariant-cpu",
+        help="image for the --dv-split make_examples parts (app-deepvariant/ built with DV_TAG=1.10.0)",
+    )
+    p.add_argument(
         "--no-gpu",
         action="store_true",
         help="run DeepVariant and pangenome-aware DeepVariant without --gpus all (CPU images)",
@@ -619,6 +653,8 @@ def main(argv=None):
         p.error("--chunks aligns; it can't be combined with --skip-to-variants")
     if a.shard_window is not None and a.shard_window < 1:
         p.error("--shard-window must be >= 1")
+    if a.dv_split is not None and a.dv_split < 1:
+        p.error("--dv-split must be >= 1")
 
     trigger = load_trigger()
     keys = sample_keys(trigger, a.root, a.sample)
@@ -667,6 +703,8 @@ def main(argv=None):
             gate_config=gate_config_for(a.root, sample_id, a.runner, a.gate_profile),
             align_image=align_image,
             align_env=align_env,
+            dv_split=a.dv_split,
+            dv_cpu_image=a.dv_cpu_image,
             chunks=a.chunks,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]

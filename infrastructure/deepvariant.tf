@@ -45,9 +45,9 @@ resource "aws_batch_job_definition" "geyser_deepvariant_job_def" {
       # make_examples parallelism = the job's vCPUs (app-deepvariant/README.md).
       { name = "DEEPVARIANT_SHARDS", value = tostring(var.deepvariant_resources.vcpu) },
       # The app's own limits (deepvariant_task.py, feature/dv-robustness): the run stops itself, with the
-      # reason in the log, before the state machine's 3600 s attempt limit kills the container; a run
-      # that prints nothing for 15 minutes is a hang (GPU out of memory), not progress.
-      { name = "DEEPVARIANT_TIMEOUT_SECONDS", value = "3300" },
+      # reason in the log, before the state machine's attempt limit (var.deepvariant_timeout_seconds) kills the
+      # container; a run that prints nothing for 15 minutes is a hang (GPU out of memory), not progress.
+      { name = "DEEPVARIANT_TIMEOUT_SECONDS", value = tostring(var.deepvariant_timeout_seconds - 300) },
       { name = "DEEPVARIANT_IDLE_TIMEOUT_SECONDS", value = "900" },
     ]
     logConfiguration = {
@@ -89,6 +89,11 @@ resource "aws_batch_job_definition" "geyser_deepvariant_job_def" {
     precondition {
       condition     = var.deepvariant_resources.vcpu <= var.gpu_max_vcpus
       error_message = "deepvariant_resources.vcpu must fit in gpu_max_vcpus, or the job can never be placed."
+    }
+    precondition {
+      # Every type the environment may pick must hold the job, with >= 2 GiB left for the ECS agent and OS.
+      condition     = var.deepvariant_resources.vcpu <= local.gpu_min_instance_vcpu && var.deepvariant_resources.memory_mb <= local.gpu_min_instance_mib - 2048
+      error_message = "deepvariant_resources must fit the smallest gpu_instance_types (its vCPUs, and its memory less 2 GiB)."
     }
   }
   tags = { Name = "${var.project_name}-DeepVariantJobDef" }
