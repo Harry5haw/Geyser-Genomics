@@ -308,19 +308,66 @@ def test_a_shard_downloads_when_the_index_isnt_verified(local_env, tool_calls, s
     assert shlex.split(index)[:2] == ["samtools", "index"] and "##idx##" not in call
 
 
-def test_a_failed_in_place_read_falls_back_to_downloading(local_env, tool_calls, shell_commands, monkeypatch):
-    aligned(local_env)
-    real = tasks.run_shell
+def failing_in_place(monkeypatch, failures):
+    """run_shell that fails the first `failures` in-place reads; returns the list of in-place attempts."""
+    real, attempts = tasks.run_shell, []
+    monkeypatch.setattr(tasks, "IN_PLACE_RETRY_SECONDS", 0)
 
     def flaky(command):
         if "##idx##" in command:
-            raise subprocess.CalledProcessError(1, command)
+            attempts.append(command)
+            if len(attempts) <= failures:
+                raise subprocess.CalledProcessError(1, command)
         real(command)
 
     monkeypatch.setattr(tasks, "run_shell", flaky)
+    return attempts
+
+
+def test_a_failed_in_place_read_falls_back_to_downloading(local_env, tool_calls, shell_commands, monkeypatch, capsys):
+    aligned(local_env)
+    attempts = failing_in_place(monkeypatch, failures=99)
     tasks.variants_shard_task("S1", REF, "c:1-500")
+    assert len(attempts) == tasks.IN_PLACE_ATTEMPTS  # retried before giving up
     index, call = shell_commands
     assert shlex.split(index)[:2] == ["samtools", "index"] and "##idx##" not in call
+    assert f"attempt {tasks.IN_PLACE_ATTEMPTS}/{tasks.IN_PLACE_ATTEMPTS}); downloading" in capsys.readouterr().out
+
+
+def test_one_transient_in_place_failure_is_retried_not_downloaded(local_env, tool_calls, shell_commands, monkeypatch):
+    aligned(local_env)
+    attempts = failing_in_place(monkeypatch, failures=1)
+    tasks.variants_shard_task("S1", REF, "c:1-500")
+    assert len(attempts) == 2
+    (call,) = shell_commands  # the retry's call only: no samtools index, no download
+    assert "##idx##" in call
+
+
+def test_a_download_that_cannot_fit_fails_before_it_starts(local_env, tool_calls, shell_commands, monkeypatch):
+    aligned(local_env)
+    failing_in_place(monkeypatch, failures=99)
+    downloads = []
+    monkeypatch.setattr(tasks, "fetch_alignment", lambda *a, **k: downloads.append(a) or "never")
+    free = tasks.DOWNLOAD_HEADROOM_BYTES - 1  # less than the headroom alone
+    monkeypatch.setattr(tasks.shutil, "disk_usage", lambda path: shutil_usage(free))
+    with pytest.raises(tasks.DiskSpaceError, match=r"alignments/S1.cram .*for region c:1-500.*job_disk_gb"):
+        tasks.variants_shard_task("S1", REF, "c:1-500")
+    assert not downloads
+
+
+def test_room_check_passes_with_enough_disk_or_an_unknown_size(local_env, monkeypatch, tmp_path):
+    aligned(local_env)
+    monkeypatch.setattr(tasks.shutil, "disk_usage", lambda path: shutil_usage(10 * tasks.DOWNLOAD_HEADROOM_BYTES))
+    tasks.check_room_to_download("alignments/S1.cram", str(tmp_path), "for a test")
+    monkeypatch.setattr(tasks.storage(), "head", lambda key: {"etag": "x", "size": None, "metadata": {}})
+    monkeypatch.setattr(tasks.shutil, "disk_usage", lambda path: shutil_usage(0))
+    tasks.check_room_to_download("alignments/S1.cram", str(tmp_path), "for a test")
+
+
+def shutil_usage(free):
+    import collections
+
+    return collections.namedtuple("usage", "total used free")(free * 2, free, free)
 
 
 def test_an_index_replaced_while_it_was_read_is_not_trusted(local_env, monkeypatch, tmp_path):

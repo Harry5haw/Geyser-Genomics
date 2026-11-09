@@ -56,6 +56,10 @@ GATE_PROFILE_METADATA = ("gate-profile", "gate_profile")
 # S3 user metadata (x-amz-meta-reference) naming this upload's reference genome under reference/.
 # Any other key with "ref" in it is passed on flagged (a likely misspelling, e.g. "refernce", "genome-ref").
 REFERENCE_METADATA = ("reference", "reference-name", "reference_name")
+# The web API's id for one upload call, on every file of it (lambda/web_api/index.py UPLOAD_BATCH_METADATA). Mates
+# whose batches differ are a re-upload in progress (the new R1 next to the old R2): no run until both match.
+# Absent on both (a CLI upload) is a match, as before.
+UPLOAD_BATCH_METADATA = "upload-batch"
 
 # Execution names: 1-80 characters. Kept to [A-Za-z0-9_-] because the name is reused in the Batch job
 # names (letters, digits, hyphens, underscores; max 128) and non-ASCII names break CloudWatch logging.
@@ -238,6 +242,11 @@ def input_bytes(heads):
     return sum(sizes)
 
 
+def upload_batch(head):
+    """The web upload call this object came from (metadata upload-batch), or None (a CLI upload)."""
+    return ((head or {}).get("Metadata") or {}).get(UPLOAD_BATCH_METADATA)
+
+
 def _response(status: int, **body) -> dict:
     return {"statusCode": status, "body": json.dumps(body)}
 
@@ -294,6 +303,12 @@ def handler(event, context):
             waiting_for = keys[missing[0]]
             logger.info(f"'{sample_id}': {mate} arrived, waiting for s3://{bucket_name}/{waiting_for}")
             return _response(202, waiting_for=waiting_for)
+        batches = {m: upload_batch(heads[m]) for m in MATES}
+        if len(set(batches.values())) > 1:
+            # A re-upload in progress: wait for the other mate of this upload (its completion starts the run).
+            waiting_for = keys[[m for m in MATES if m != mate][0]]
+            logger.info(f"'{sample_id}': {mate} is from another upload than s3://{bucket_name}/{waiting_for}: waiting")
+            return _response(202, waiting_for=waiting_for, reason="the mates are from different uploads")
         name = paired_execution_name(sample_id, [(heads[m]["ETag"], heads[m]["LastModified"]) for m in MATES])
         profile, reference = gate_profile(heads.values()), reference_metadata(heads.values())
         size = input_bytes(heads.values())

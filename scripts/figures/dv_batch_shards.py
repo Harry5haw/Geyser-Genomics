@@ -96,9 +96,9 @@ def _heatmap(ax, cells, xs, ys, key, fmt, title, cmap, scale=1.0):
             ax.text(j, i, "failed", ha="center", va="center", fontsize=7.5, color=figkit.MUTED)
             continue
         value = float(c[key]) * scale
-        dark = hi > lo and (value - lo) / (hi - lo) > 0.55
+        ink = figkit.ink_on((value - lo) / (hi - lo) if hi > lo else 1.0)
         label = fmt(value) + (f"\nn={c['succeeded']}" if int(c["succeeded"]) > 1 else "")
-        ax.text(j, i, label, ha="center", va="center", fontsize=7.5, color="#ffffff" if dark else figkit.INK)
+        ax.text(j, i, label, ha="center", va="center", fontsize=7.5, color=ink)
     ax.set_xticks(range(len(xs)), [str(x) for x in xs])
     ax.set_yticks(range(len(ys)), [str(y) for y in ys])
     ax.set_xlabel("call_variants batch size")

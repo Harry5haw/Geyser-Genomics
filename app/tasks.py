@@ -1213,6 +1213,30 @@ def _finish_vcf(reference_name: str, ref: str, vcf: str, wd: str, keys: dict) ->
 
 
 STREAM_REGIONS_ENV = "GEYSER_STREAM_REGIONS"  # 0: calling shards always download the CRAM (today's behaviour)
+# A failed in-place read is retried before a shard falls back to downloading the whole CRAM: a genome CRAM
+# (~17 GB) plus the 3.1 GB FASTA doesn't fit the variants job's default 20 GiB disk, so the fallback is a
+# last resort, and one transient network error shouldn't trigger it.
+IN_PLACE_ATTEMPTS = 2
+IN_PLACE_RETRY_SECONDS = 10
+DOWNLOAD_HEADROOM_BYTES = 1 << 30  # the local .crai, bcftools' part and temp files
+
+
+class DiskSpaceError(RuntimeError):
+    """A download that can't fit the job's free disk: raised before it starts, not as ENOSPC part-way through."""
+
+
+def check_room_to_download(key: str, wd: str, why: str) -> None:
+    """Raise DiskSpaceError unless wd has room for key (+5% and DOWNLOAD_HEADROOM_BYTES). Unknown sizes pass."""
+    size = storage().head(key).get("size")
+    if not size:
+        return
+    need = int(size * 1.05) + DOWNLOAD_HEADROOM_BYTES
+    free = shutil.disk_usage(wd).free
+    if free < need:
+        raise DiskSpaceError(
+            f"Not enough disk to download {key} ({size / 1e9:.1f} GB, need {need / 1e9:.1f} GB with headroom; "
+            f"{free / 1e9:.1f} GB free) {why}. Give the job more disk (job_disk_gb) or fix the in-place read."
+        )
 
 
 def streamable_alignment(sample_id: str, wd: str):
@@ -1264,13 +1288,24 @@ def variants_shard_task(sample_id, reference_name, region):
         done = False
         if streamed:
             location, crai = streamed
-            try:
-                call(f"{location}##idx##{crai}")  # htslib reads only the region's slices, through the verified index
-                print("Read the region in place (ETag-verified index)", flush=True)
-                done = True
-            except subprocess.CalledProcessError as err:
-                print(f"WARNING: reading the region in place failed (exit {err.returncode}); downloading", flush=True)
+            for attempt in range(1, IN_PLACE_ATTEMPTS + 1):
+                try:
+                    call(f"{location}##idx##{crai}")  # htslib reads only the region's slices, via the verified index
+                    print("Read the region in place (ETag-verified index)", flush=True)
+                    done = True
+                    break
+                except subprocess.CalledProcessError as err:
+                    last = attempt == IN_PLACE_ATTEMPTS
+                    then = "downloading" if last else f"retrying in {IN_PLACE_RETRY_SECONDS} s"
+                    print(
+                        f"WARNING: reading the region in place failed (exit {err.returncode}, attempt "
+                        f"{attempt}/{IN_PLACE_ATTEMPTS}); {then}",
+                        flush=True,
+                    )
+                    if not last:
+                        time.sleep(IN_PLACE_RETRY_SECONDS)
         if not done:
+            check_room_to_download(alignment_input(sample_id), wd, f"for region {region}")
             call(fetch_alignment(sample_id, wd, need_index=True))  # -r needs random access
         storage().upload(part, region_part_key(sample_id, region))
     finally:
@@ -1416,6 +1451,10 @@ GATE_BINARY = "geyser-gate"
 # Its stage name (metrics, run record part): an extra stage after the core three, like the shards
 # (scripts/monitoring.py STAGE_GROUPS["gate"]).
 GATE_METRIC = "QualityGate"
+# O11: the gate's key values as one metric per value (dimension Check), so a change of image or reference that
+# shifts quality shows as a step on a line, not only as pass/fail. Five values keep the custom metrics few.
+GATE_VALUES_METRIC = "QualityGateValue"
+GATE_VALUE_CHECKS = ("mapped_pct", "duplicate_pct", "mean_depth", "breadth_10x_pct", "tstv")
 GATE_TIMEOUT_SECONDS = 300  # it parses a few small files; minutes means something is wrong
 # keys_for names the gate reads (the run record comes from provenance.read_record, assembled fresh).
 GATE_INPUTS = ("qc_json", "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats")
@@ -1489,6 +1528,23 @@ def _gate_problem(sample_id: str, key: str, wd: str, mode: str, message: str) ->
     print(f"WARNING: quality gate: {message} (GATE_MODE=warn: the run continues)", flush=True)
 
 
+def publish_gate_values(verdict: dict) -> dict:
+    """Send the verdict's GATE_VALUE_CHECKS (the numbers it measured) as metrics; best effort, never raises.
+    Returns what was sent (values the gate couldn't measure are left out, not sent as 0)."""
+    measured = verdict.get("metrics") or {}
+    values = {
+        name: float(measured[name])
+        for name in GATE_VALUE_CHECKS
+        if isinstance(measured.get(name), (int, float)) and not isinstance(measured.get(name), bool)
+    }
+    if values:
+        try:
+            metrics().record_counts(GATE_VALUES_METRIC, "Check", values, unit="None")
+        except Exception as err:  # noqa: BLE001 - metrics are best effort
+            print(f"WARNING: could not record the gate values: {err}", flush=True)
+    return values
+
+
 def _read_verdict(path: str) -> dict:
     """The verdict JSON, or ValueError if it isn't one (missing file, bad JSON, missing fields)."""
     try:
@@ -1543,6 +1599,7 @@ def gate_task(sample_id):
         except ValueError as err:
             return _gate_problem(sample_id, key, wd, mode, str(err))
         upload_output(verdict_path, key)
+        publish_gate_values(verdict)
         summary = {
             "verdict": verdict["verdict"],
             "reasons": verdict["reasons"],

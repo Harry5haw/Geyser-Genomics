@@ -58,6 +58,9 @@ jobs:
       - name: terraform validate (account stack, user-applied)
         run: terraform init -backend=false -input=false && terraform validate
         working-directory: infrastructure/account
+      - name: terraform validate (web stack, user-applied)
+        run: terraform init -backend=false -input=false && terraform validate
+        working-directory: infrastructure/web
 
   # The quality gate (gate/, Rust): formatting, clippy with warnings denied, tests, and the static
   # musl build the image will use. rustup on the runner installs the toolchain pinned in
@@ -90,6 +93,9 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
       - run: pytest
+      # The upload page's core (web/samples/static/samples/upload.js) under Node's built-in test runner: no npm,
+      # no dependencies. The runner image's Node is enough (20+).
+      - run: node --test web/tests/js/*.test.js
 
   end-to-end:
     name: Pipeline end-to-end (Docker, synthetic data)

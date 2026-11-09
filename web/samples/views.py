@@ -17,6 +17,7 @@ from django.views.decorators.gzip import gzip_page
 from django.views.decorators.http import require_GET, require_POST
 
 from geyser_web.pipeline import (
+    DEFAULT_REFERENCE_GENOME,
     MATES,
     PAIRED,
     PER_MATE_KEYS,
@@ -39,7 +40,7 @@ from .gate import read_gate
 from .qc import read_qc_summary
 from .record import load_record, record_view
 from .runs import is_valid_sample_id, log_key, read_text
-from .static_site import PUBLIC_KINDS, static_of
+from .static_site import GATE_PROFILES, PUBLIC_KINDS, static_of
 from .vcf import check_truth, page_of, planted_positions, read_truth, read_variants, truth_key
 
 # Downloadable files: kind -> (label, description). Anything not listed here is a 404.
@@ -163,12 +164,30 @@ def upload(request):
 
 @require_GET
 @gzip_page
+def upload_page(request):
+    """The hosted site's upload page: the browser sends the reads straight to the data lake through the web API
+    (static/samples/upload.js). Only on the static site with an API; the live UI uploads through its own form."""
+    static = static_of(request)
+    if not static or not static.api_base:
+        raise Http404("Uploads here go through the form on the sample list")
+    context = {
+        "api_base": static.api_base,
+        "existing": sorted(static.samples),  # IDs already on the site: the page asks before replacing one
+        "gate_profiles": GATE_PROFILES,
+        "references": static.references,
+        "default_reference": DEFAULT_REFERENCE_GENOME,
+    }
+    return render(request, "samples/upload_page.html", context)
+
+
+@require_GET
+@gzip_page
 def figures_page(request):
     """The signature figures as 3D terrains: each card shows its inline-SVG poster; the renderer and the grid load
     in the browser only when a card scrolls into view (geyser.js)."""
     cards = []
     for name, figure in figures_mod.FIGURES.items():
-        card = {"name": name, "figure": figure, "grid": None, "poster": None, "error": ""}
+        card = {"name": name, "figure": figure, "grid": None, "poster": None, "legend": None, "error": ""}
         try:
             grid = figures_mod.load(name)
             poster = figures_mod.poster_svg(grid) if grid is not None else None
@@ -179,7 +198,11 @@ def figures_page(request):
             card["error"] = f"{figure.csv} can't be read ({reason})"
             grid = poster = None
         if grid is not None:
-            card.update(grid=grid, poster=mark_safe(poster))  # noqa: S308 - labels escaped in poster_svg
+            card.update(
+                grid=grid,
+                poster=mark_safe(poster),  # noqa: S308 - labels escaped in poster_svg
+                legend=mark_safe(figures_mod.legend_svg(grid)),  # noqa: S308 - numbers and escaped labels only
+            )
         cards.append(card)
     return render(request, "samples/figures.html", {"cards": cards})
 
