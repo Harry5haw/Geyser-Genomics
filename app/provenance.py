@@ -103,6 +103,9 @@ UPSTREAM = {
     # them in the record. The gate runs last (run_local.py, the state machine), so no run in progress
     # can borrow an older caller stage this way.
     "QualityGate": CORE_STAGES + ("DeepVariant", "PangenomeDeepVariant"),
+    # AlphaGenome annotation (3.0) reads the run's calls after the gate: an annotation re-run by hand keeps the
+    # run it annotates in the record.
+    "Annotate": CORE_STAGES + ("DeepVariant", "PangenomeDeepVariant", "QualityGate"),
 }
 # name -> (command, regex on its combined output). Run once per process, outside the pipeline's
 # subprocess helpers, so a missing or odd tool can't affect a stage.
@@ -342,6 +345,7 @@ JOB_NAME_STAGES = (
     ("PlanRegions-", "PlanRegions"),
     ("DeepVariant-", "DeepVariant"),  # G2: the GPU caller; an extra caller, so its failure doesn't fail the run
     ("QualityGate-", "QualityGate"),  # #162: the gate after either caller
+    ("Annotate-", "Annotate"),  # 3.0: AlphaGenome annotation (#209's state); an extra stage (EXTRA_STAGES)
     ("Publish-", "Publish"),  # W3: the hosted site's page, after every run (best effort, never fails a run)
     # v1.3's large route: the pre-flight split, the per-chunk aligners and the merge (the merge is the Align stage).
     ("Preflight-", "Preflight"),
@@ -350,6 +354,8 @@ JOB_NAME_STAGES = (
 )
 REASON_LIMIT = 1000  # characters of a failure reason kept in the record
 EXTRA_CALLERS = ("DeepVariant", "PangenomeDeepVariant")  # their failure never fails the core run
+# Stages whose failure never fails the run: the extra callers, and AlphaGenome annotation (3.0, opt-in).
+EXTRA_STAGES = EXTRA_CALLERS + ("Annotate",)
 FINALIZE_TASK = "Finalize"
 
 
@@ -493,7 +499,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     # A run closed as failed is failed whichever step failed (the planner, a shard, reading the regions, or
     # unknown), unless that step is an extra caller: the same rule as for its own part (_core_status). The run's
     # own caller (PIPELINE_CALLER) is its variant calling, so its failure does fail the run.
-    extra = set(EXTRA_CALLERS) - {CALLER_STAGES.get(caller)}
+    extra = set(EXTRA_STAGES) - {CALLER_STAGES.get(caller)}
     failed = failed or ((final or {}).get("status") == "failed" and (failure or {}).get("stage") not in extra)
     record = {
         "schema": SCHEMA_VERSION,
@@ -522,7 +528,7 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
         record["stats"].update(p.get("stats") or {})
-        for field in ("reference", "layout", "aligner", "annotation", "gate"):
+        for field in ("reference", "layout", "aligner", "annotation", "gate", "alphagenome"):
             if p.get(field) is not None:
                 record[field] = p[field]
     if caller:
