@@ -90,6 +90,25 @@ FLAT_RAMPS = {"flat": HEAT_TURBO_DARK, "cividis": HEAT_CIVIDIS}
 COLOUR_QUANTILES = (0.02, 0.25, 0.5, 0.75, 0.98)
 
 
+def flat_window(grid) -> tuple:
+    """The values the 2D view's ramp spans (the user's choice): the median +/- 2 interquartile ranges, inside the
+    height scale (base to the cap, or the largest value). Typical values sit mid-rainbow, lows go blue and highs
+    (pile-ups) red; values outside take the end colours. Without spread: the height scale."""
+    top = grid.clip or grid.vmax or 1
+    vals = sorted(v for line in grid.values for v in line if v is not None)
+    if not vals:
+        return grid.base, top
+
+    def pct(q):
+        k = (len(vals) - 1) * q
+        lo = int(k)
+        return vals[lo] + (vals[min(lo + 1, len(vals) - 1)] - vals[lo]) * (k - lo)
+
+    med, iqr = pct(0.5), pct(0.75) - pct(0.25)
+    lo, hi = max(grid.base, med - 2 * iqr), min(top, med + 2 * iqr)
+    return (lo, hi) if hi > lo else (grid.base, top)
+
+
 def colour_knots(grid) -> list:
     """Where the colour ramp's quarters fall: the 2nd, 25th, 50th, 75th and 98th percentiles of the plotted values
     (inside the height scale: base to the cap, or the largest value). The ramp is spread by rank between them, a
@@ -417,6 +436,7 @@ def poster_svg(grid: Grid) -> str:
     span = (
         top - grid.base
     ) or 1.0  # a flat grid (every value equal to the baseline) draws flat, not a ZeroDivisionError
+    w0, w1 = flat_window(grid)
     lift = band * 2.5 / span  # pixels per unit of value
     # A linear vertical gradient through the ramp, from the baseline (bottom of the scale) to the top of the scale,
     # so a point's colour is its value's height. One gradient per ramp for the whole poster: each ridge is drawn from
@@ -426,7 +446,7 @@ def poster_svg(grid: Grid) -> str:
     # (CSS: .poster path). Ids are page-wide: several posters share the page.
     gradients = [
         f'<linearGradient id="heat-{f.name}-{ramp}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" '
-        f'y2="{round(-2 * (top - grid.base) * lift)}">{_stops(ramp)}</linearGradient>'
+        f'y2="{round(-2 * (w1 - grid.base) * lift)}">{_stops(ramp, (w0 - grid.base) / ((w1 - grid.base) or 1))}</linearGradient>'
         for ramp in FLAT_RAMPS
     ]
     paths, ridges = {}, []
@@ -470,11 +490,15 @@ def poster_svg(grid: Grid) -> str:
     )
 
 
-def _stops(ramp: str = "turbo") -> str:
-    """The ramp's stops, evenly spaced (any ramp of RAMPS or FLAT_RAMPS)."""
+def _stops(ramp: str = "turbo", start: float = 0.0) -> str:
+    """The ramp's stops, evenly spaced from `start` to 1. With start > 0 (the 2D poster, whose gradient runs from a
+    ridge's baseline), a first stop at 0 fades the first colour to transparent: the body under a ridge's line below
+    the window falls away to the stage, so the figure isn't heavy."""
     stops = {**RAMPS, **FLAT_RAMPS}[ramp]
     last = len(stops) - 1
-    return "".join(f'<stop offset="{k / last:.3f}" stop-color="{c}"/>' for k, c in enumerate(stops))
+    out = [f'<stop offset="0" stop-color="{stops[0]}" stop-opacity="0"/>'] if start > 0 else []
+    out += [f'<stop offset="{start + (1 - start) * k / last:.3f}" stop-color="{c}"/>' for k, c in enumerate(stops)]
+    return "".join(out)
 
 
 def _num(v: float) -> str:
@@ -493,13 +517,14 @@ def legend_svg(grid: Grid) -> str:
     outer knots and the median, with <= / >= where the data goes beyond them. Text is filled by CSS
     (.colorbar text), so it follows the page's theme."""
     f = grid.figure
-    top = grid.clip or grid.vmax or 1
     knots = colour_knots(grid)
     c0, c1 = knots[0], knots[-1]
-    flat = []
-    for k in range(3):
-        text = _num(grid.base + (top - grid.base) * k / 2)
-        flat.append(("≥ " + text) if k == 2 and grid.clip else text)
+    w0, w1 = flat_window(grid)
+    flat = [_num(w0), _num((w0 + w1) / 2), _num(w1)]
+    if grid.vmin < w0:
+        flat[0] = "≤ " + flat[0]
+    if grid.vmax > w1:
+        flat[2] = "≥ " + flat[2]
     rank = []
     for k in range(3):
         text = _num(_value_at(knots, k / 2))  # by rank: the bar's middle is the median, not the midpoint
@@ -508,7 +533,7 @@ def legend_svg(grid: Grid) -> str:
         if k == 2 and grid.vmax > c1:
             text = "≥ " + text
         rank.append(text)
-    return _bar(f, "2d", FLAT_RAMPS, flat, f"from {_num(grid.base)} to {_num(top)}") + _bar(
+    return _bar(f, "2d", FLAT_RAMPS, flat, f"from {_num(w0)} to {_num(w1)}") + _bar(
         f, "3d", RAMPS, rank, f"by rank, from {_num(c0)} to {_num(c1)}"
     )
 
