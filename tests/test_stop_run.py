@@ -170,13 +170,16 @@ def test_nothing_running_is_exit_0(capsys):
 
 
 def test_every_job_the_state_machine_names_ends_with_the_execution_name():
-    # The suffix match relies on this: every Batch job name is '<Stage>-<sample or shard>-<execution name>'.
+    # The suffix match relies on this: every Batch job name is '<Stage>-<sample or shard>-<execution name>'
+    # (a stage may have a hyphen: v1.5's DeepVariant-Examples-<part>-<execution name>).
     with open(os.path.join(REPO, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
         asl = fh.read()
     names = re.findall(r'"JobName\.\$": "([^"]+)"', asl)
     formats = [n for n in names if n.startswith("States.Format(")]
     assert formats, "no job name formats found"
     for fmt in formats:
-        assert re.fullmatch(r"States\.Format\('[A-Za-z]+-\{\}-\{\}', \$[.\w]+, \$\$\.Execution\.Name\)", fmt), fmt
+        assert re.fullmatch(
+            r"States\.Format\('[A-Za-z]+(-[A-Za-z]+)?-\{\}-\{\}', \$[.\w]+, \$\$\.Execution\.Name\)", fmt
+        ), fmt
     # The other JobName.$ entries pass these formatted names on unchanged.
     assert all(n.startswith("States.Format(") or n == "$.batch_params.JobName" for n in names), names

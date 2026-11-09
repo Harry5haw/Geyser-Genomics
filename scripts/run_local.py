@@ -114,6 +114,14 @@ PIPELINE_ENV_VARS = (
     "GEYSER_STREAM_REGIONS",  # 0: calling shards download the CRAM instead of reading their region in place
 )
 ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
+# --annotate alphagenome (3.0): the AlphaGenome sources (app/alphagenome_annotation.py SOURCES; a test keeps them equal).
+# Offline the default is fake: deterministic test data, not predictions. atlas and api need the key in the
+# host's environment, which is passed to the container by name only (never on a command line):
+#   set -a; . ~/geyser-secrets/alphagenome.env; set +a
+ANNOTATORS = ("alphagenome",)
+ANNOTATE_SOURCES = ("avi-file", "atlas", "api", "fake")
+ANNOTATE_ENV_VARS = ("ALPHAGENOME_MAX_VARIANTS",)
+SECRET_ENV_VARS = ("ALPHAGENOME_API_KEY",)
 # The gate's thresholds for make_test_data.py data: the image's copy, or the repo's for --runner host.
 # The gate's threshold profiles (gate/thresholds/<profile>.toml), as the state machine's gate_profile
 # input names them (Check_Gate_Profile; tests/test_consistency.py keeps the three in step).
@@ -170,6 +178,11 @@ def deepvariant_command(sample_id, reference_name, pangenome=None):
     return cmd + ["--pangenome", pangenome] if pangenome else cmd
 
 
+# Jobs that get the DEEPVARIANT_* knobs and --dv-memory: the DeepVariant stage, its split-mode make_examples parts
+# (v1.5, docs/design/deepvariant-split.md) and the pangenome-aware stage.
+DEEPVARIANT_JOBS = ("deepvariant", "deepvariant-examples", "pangenome")
+
+
 def pipeline_jobs(
     sample_id,
     reference_name,
@@ -187,9 +200,16 @@ def pipeline_jobs(
     gate_config=None,
     align_image=None,
     align_env=None,
+    annotate=None,
+    annotate_source="fake",
+    dv_split=None,
+    dv_cpu_image="geyser-deepvariant-cpu",
     chunks=None,
 ):
     """The containers to run, in order, as dicts with name, cmd, image, gpus (and shm for pangenome, env).
+
+    dv_split: DeepVariant in split mode (v1.5): that many make_examples part jobs in dv_cpu_image (no GPU), as
+    the cloud's Fargate Map will run them, then the GPU job on their examples (--from-examples).
 
     align_image / align_env: the align job's image and extra environment (--aligner giraffe: geyser-giraffe,
     ALIGNER=giraffe and the graph); default app_image and nothing.
@@ -199,6 +219,8 @@ def pipeline_jobs(
     gate: the quality gate, last, when the run made the sample's stats (bcftools, or a DeepVariant-only
     run's PASS-call stats, #147; not a caller added with skip_to_variants); gate_config: its
     GATE_CONFIG for this sample (None: the host's GATE_CONFIG, else the built-in thresholds).
+    annotate: "alphagenome" adds the AlphaGenome annotation, last (after the gate, as the cloud's Annotate step
+    will run after Quality_Gate), with --source annotate_source. It is optional: a failure is reported, not fatal.
     """
     if caller not in CALLERS:
         raise ValueError(f"unknown caller {caller!r}")
@@ -238,10 +260,22 @@ def pipeline_jobs(
     caller_owns_stats = "bcftools" not in sets and not skip_to_variants
     caller_env = {"PIPELINE_CALLER": sets[0]} if caller_owns_stats else {}
     if "deepvariant" in sets:
+        cmd = deepvariant_command(sample_id, reference_name)
+        if dv_split:
+            jobs += [
+                {
+                    "name": "deepvariant-examples",
+                    "cmd": cmd + ["--make-examples-part", str(part), "--parts", str(dv_split)],
+                    "image": dv_cpu_image,
+                    "gpus": False,
+                }
+                for part in range(dv_split)
+            ]
+            cmd = cmd + ["--from-examples"]
         jobs.append(
             {
                 "name": "deepvariant",
-                "cmd": deepvariant_command(sample_id, reference_name),
+                "cmd": cmd,
                 "image": dv_image,
                 "gpus": gpus,
                 "env": caller_env if sets == ["deepvariant"] else {},
@@ -273,6 +307,11 @@ def pipeline_jobs(
         if gate_config:
             job["env"] = {"GATE_CONFIG": gate_config}
         jobs.append(job)
+    if annotate:
+        if annotate not in ANNOTATORS or annotate_source not in ANNOTATE_SOURCES:
+            raise ValueError(f"unknown annotation {annotate!r} / source {annotate_source!r}")
+        cmd = ["python", "tasks.py", "annotate", sample_id, reference_name, "--source", annotate_source]
+        jobs.append({"name": "annotate", "cmd": cmd, "image": app_image, "gpus": False, "optional": True})
     return jobs
 
 
@@ -358,8 +397,10 @@ def container_path(host_path, root):
     return host_path
 
 
-def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None, label=None):
-    """label: a docker label on the container (e.g. geyser.owner=t2), so a watchdog can stop exactly these."""
+def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, shm=None, label=None, pass_env=()):
+    """label: a docker label on the container (e.g. geyser.owner=t2), so a watchdog can stop exactly these.
+    pass_env: variable names docker copies from this process's environment (-e NAME, no value), for secrets:
+    their values never appear on a command line."""
     full = ["docker", "run", "--rm"]
     if label:
         full += ["--label", label]
@@ -374,6 +415,8 @@ def docker_command(cmd, root, image, gpus=False, extra_env=None, memory=None, sh
     env = {"STORAGE_BACKEND": "local", "METRICS_BACKEND": "local", "LOCAL_STORAGE_DIR": "/data", **(extra_env or {})}
     for k, v in env.items():
         full += ["-e", f"{k}={v}"]
+    for name in pass_env:
+        full += ["-e", name]
     return full + [image] + cmd
 
 
@@ -398,13 +441,17 @@ def run_job(job, runner, root, dv_memory=None, env=None, memory=None, label=None
         extra = {k: os.environ[k] for k in PIPELINE_ENV_VARS if os.environ.get(k)}
         extra.update(job.get("env") or {})
         extra.update(env or {})
-        if job["name"] in ("deepvariant", "pangenome"):
+        pass_env = ()
+        if job["name"] in DEEPVARIANT_JOBS:
             extra.update({k: os.environ[k] for k in DEEPVARIANT_ENV_VARS if os.environ.get(k)})
             memory = dv_memory
+        if job["name"] == "annotate":
+            extra.update({k: os.environ[k] for k in ANNOTATE_ENV_VARS if os.environ.get(k)})
+            pass_env = tuple(k for k in SECRET_ENV_VARS if os.environ.get(k))
         return subprocess.run(
-            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"), label)
+            docker_command(job["cmd"], root, job["image"], job["gpus"], extra, memory, job.get("shm"), label, pass_env)
         ).returncode
-    if job["name"] in ("deepvariant", "pangenome"):
+    if job["name"] in DEEPVARIANT_JOBS:
         print("DeepVariant only runs in its container (use --runner docker).")
         return 1
     # host: tools (bwa-mem2 and bwa, samtools, bcftools, fastp) must be on PATH. bwa-mem2 has no
@@ -541,6 +588,18 @@ def main(argv=None):
     p.add_argument("--caller", choices=CALLERS, default="bcftools")
     p.add_argument("--dv-image", default="geyser-deepvariant", help="DeepVariant image (app-deepvariant/)")
     p.add_argument(
+        "--dv-split",
+        type=int,
+        metavar="J",
+        help="DeepVariant in split mode (v1.5): J make_examples part jobs in --dv-cpu-image, then call_variants and "
+        "postprocess_variants in --dv-image on their examples. DEEPVARIANT_SHARDS = tasks in all (default J x CPUs)",
+    )
+    p.add_argument(
+        "--dv-cpu-image",
+        default="geyser-deepvariant-cpu",
+        help="image for the --dv-split make_examples parts (app-deepvariant/ built with DV_TAG=1.10.0)",
+    )
+    p.add_argument(
         "--no-gpu",
         action="store_true",
         help="run DeepVariant and pangenome-aware DeepVariant without --gpus all (CPU images)",
@@ -612,6 +671,19 @@ def main(argv=None):
         help="the gate's thresholds, as the cloud's gate_profile input (S3 metadata gate-profile) names them; "
         "default: synthetic for make_test_data.py samples, else the built-in human WGS thresholds",
     )
+    p.add_argument(
+        "--annotate",
+        choices=ANNOTATORS,
+        help="after the gate, score the run's selected variants with AlphaGenome (3.0; research use only). "
+        "Optional: a failure is reported, never fatal",
+    )
+    p.add_argument(
+        "--annotate-source",
+        choices=ANNOTATE_SOURCES,
+        default="fake",
+        help="where --annotate's scores come from (default fake: deterministic test data, not predictions). "
+        "atlas and api need ALPHAGENOME_API_KEY: set -a; . ~/geyser-secrets/alphagenome.env; set +a",
+    )
     a = p.parse_args(argv)
     if a.chunks is not None and not 1 <= a.chunks <= 999:
         p.error("--chunks must be 1-999")
@@ -619,6 +691,8 @@ def main(argv=None):
         p.error("--chunks aligns; it can't be combined with --skip-to-variants")
     if a.shard_window is not None and a.shard_window < 1:
         p.error("--shard-window must be >= 1")
+    if a.dv_split is not None and a.dv_split < 1:
+        p.error("--dv-split must be >= 1")
 
     trigger = load_trigger()
     keys = sample_keys(trigger, a.root, a.sample)
@@ -667,6 +741,10 @@ def main(argv=None):
             gate_config=gate_config_for(a.root, sample_id, a.runner, a.gate_profile),
             align_image=align_image,
             align_env=align_env,
+            annotate=a.annotate,
+            annotate_source=a.annotate_source,
+            dv_split=a.dv_split,
+            dv_cpu_image=a.dv_cpu_image,
             chunks=a.chunks,
         )
         run_name = run_env(sample_id, a.image)["RUN_NAME"]
@@ -674,6 +752,9 @@ def main(argv=None):
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             env = {**run_env(sample_id, job["image"]), "RUN_NAME": run_name}
             if run_job(job, a.runner, a.root, a.dv_memory, env, a.memory, a.docker_label) != 0:
+                if job.get("optional"):
+                    print(f"\nWARNING: optional stage '{job['name']}' failed for {sample_id}; the run is unaffected")
+                    continue
                 print(f"\nFAILED at stage '{job['name']}' for {sample_id} (in the cloud this goes to Notify_Failure)")
                 ok = False
                 break

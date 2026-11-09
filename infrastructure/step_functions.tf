@@ -26,9 +26,29 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_job_def.name}:*",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}",
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_giraffe_job_def.name}:*",
+          # W3: the Publish job (publish.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_publish_job_def.name}:*",
+          # v3.0: the optional AlphaGenome annotation (alphagenome.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_annotate_job_def.name}:*",
           # v1.3: the large route's jobs (genome_scale.tf), on the same Fargate queue.
           "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}",
-          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*"
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_app_large_job_def.name}:*",
+          # v1.5: the DeepVariant split's make_examples part jobs (deepvariant_cpu.tf), on the same Fargate queue.
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name}",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/${aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name}:*"
+        ]
+      },
+      {
+        # SubmitJob with Tags (the Stage tag per job, #64) also needs TagResource on the new job, and Batch
+        # checks it on the job definition and the job queue named in the call too (CLOUD023 and CLOUD024 failed
+        # with AccessDenied on job-definition/geyser-app-job, then job-queue/geyser-job-queue, after #149's apply).
+        Sid = "AWSBatchTagJobs", Effect = "Allow", Action = "batch:TagResource",
+        Resource = [
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job/*",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-definition/*",
+          "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job-queue/*",
         ]
       },
       {
@@ -37,6 +57,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
       # Read_Regions reads the planner's output (tasks.py regions --output-key) straight from S3.
       { Sid = "ReadVariantRegions", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/variant-regions/*" },
+      # v3.0: the annotation's plan (Plan_Annotate writes it, Read_Annotate_Plan reads it).
+      { Sid = "ReadAnnotatePlan", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/annotate-plan/*" },
       # Read_Manifest reads the pre-flight's chunk manifest (tasks.py preflight) on the large route, and only that.
       { Sid = "ReadChunkManifests", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/intermediate/chunks/*/manifest.json" },
       # Check_Reference checks the run's reference/<name> exists before any job (HeadObject needs
@@ -44,6 +66,8 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
       # 403, so the run fails with "not found" rather than an access error. As for the trigger Lambda,
       # it can't be narrowed by prefix: HeadObject carries no s3:prefix to match.
       { Sid = "CheckReference", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/reference/*" },
+      # v2.0: Check_Alignment (from_alignment runs) checks the sample's CRAM the same way.
+      { Sid = "CheckAlignment", Effect = "Allow", Action = "s3:GetObject", Resource = "${aws_s3_bucket.data_lake.arn}/alignments/*.cram" },
       { Sid = "MissingReferenceIs404", Effect = "Allow", Action = "s3:ListBucket", Resource = aws_s3_bucket.data_lake.arn },
       # Close_Run_Record writes a failed run's closing run-record part (#155), and only that object.
       { Sid = "CloseRunRecord", Effect = "Allow", Action = "s3:PutObject", Resource = "${aws_s3_bucket.data_lake.arn}/runs/*.provenance/Finalize.json" },
@@ -90,14 +114,30 @@ locals {
   calling_concurrency_max = floor(var.fargate_spot_max_vcpus / var.stage_resources["variants"].vcpu)
   merge_threads_max       = local.large["merge"].vcpu
   large_input_bytes       = floor(var.large_input_gb * 1000000000)
+  # v1.5 the DeepVariant split: parts at once on Fargate Spot, and DEEPVARIANT_SHARDS per parts (index = parts):
+  # Step Functions has no multiply, so the state machine reads parts x the part's vCPUs from this list.
+  dv_parts_max       = floor(var.fargate_spot_max_vcpus / var.dv_part_resources.vcpu)
+  dv_shards_by_parts = [for parts in range(local.dv_parts_max + 1) : parts * var.dv_part_resources.vcpu]
+}
+
+locals {
+  # One name for the state machine, so the web API (web_api.tf) can build its ARN without depending on it.
+  pipeline_state_machine_name = "${var.project_name}-pipeline-sfn-${var.environment}"
 }
 
 resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
-  name     = "${var.project_name}-pipeline-sfn-${var.environment}"
+  name     = local.pipeline_state_machine_name
   role_arn = aws_iam_role.geyser_sfn_execution_role.arn
   # The definition lives in state_machine.asl.json so that tests/test_state_machine_local.py can run
   # the very same file in Step Functions Local (Docker, no AWS). Only these values are filled in.
-  definition = templatefile("${path.module}/state_machine.asl.json", {
+  # jsonencode(jsondecode(...)) sends it minified, the same document: the provider's request decomposer reads the
+  # escaped definition with a 64 KB bufio.Scanner, and the indented file passed that in v1.5 ("token too long").
+  # Minified and escaped it was ~55 KB with comments by v3.0 (#209), so the "Comment" keys are removed on the
+  # way (the regex below, at any depth: states, Parallel branches, Map iterators): ~41 KB. The source file keeps
+  # every comment; the console doesn't show them. tests/test_consistency.py keeps the rendered definition under
+  # 56 KB and checks it equals the source with only the Comment keys removed (every Comment is followed by
+  # another key, so the regex takes its trailing comma too).
+  definition = jsonencode(jsondecode(replace(templatefile("${path.module}/state_machine.asl.json", {
     job_definition             = aws_batch_job_definition.geyser_app_job_def.name
     job_queue                  = aws_batch_job_queue.geyser_queue.name
     deepvariant_job_definition = aws_batch_job_definition.geyser_deepvariant_job_def.name
@@ -122,6 +162,12 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     align_sizes                = jsonencode(local.align_override_sizes)
     variant_region_window_min  = local.variant_region_window_min
     variant_region_window_max  = local.variant_region_window_max
+    # The hosted site (publish.tf, infrastructure/web/): the Publish state's switch, its job definition, and the
+    # site bucket and distribution it passes per run.
+    publish_enabled        = var.publish_enabled
+    publish_job_definition = aws_batch_job_definition.geyser_publish_job_def.name
+    site_bucket            = var.web_site_bucket
+    site_distribution_id   = var.web_site_distribution_id
     # v1.3 the large route (genome_scale.tf) and the per-run parallelism.
     large_job_definition     = aws_batch_job_definition.geyser_app_large_job_def.name
     large_input_bytes        = local.large_input_bytes
@@ -139,7 +185,18 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     chunk_memory_mb          = local.large["chunk"].memory_mb
     align_merge_vcpu         = local.large["merge"].vcpu
     align_merge_memory_mb    = local.large["merge"].memory_mb
-  })
+    # v1.5 the DeepVariant split (deepvariant_cpu.tf).
+    deepvariant_cpu_job_definition = aws_batch_job_definition.geyser_deepvariant_cpu_job_def.name
+    deepvariant_split_parts        = var.deepvariant_split_parts
+    dv_parts_max                   = local.dv_parts_max
+    dv_shards_by_parts             = jsonencode(local.dv_shards_by_parts)
+    dv_part_timeout_seconds        = var.dv_part_timeout_seconds
+    deepvariant_timeout_seconds    = var.deepvariant_timeout_seconds
+    # The optional AlphaGenome annotation (v3.0, alphagenome.tf).
+    annotate_job_definition = aws_batch_job_definition.geyser_annotate_job_def.name
+    annotate_plan_vcpu      = var.annotate_plan_resources.vcpu
+    annotate_plan_memory_mb = var.annotate_plan_resources.memory_mb
+  }), "/\"Comment\":\\s*\"(?:[^\"\\\\]|\\\\.)*\",\\s*/", "")))
 
   lifecycle {
     precondition {
@@ -173,6 +230,11 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
       # The pre-flight runs alongside QC, before the chunks.
       condition     = local.large["preflight"].vcpu + local.large["qc"].vcpu <= var.fargate_spot_max_vcpus
       error_message = "The pre-flight and QC run at the same time: their vCPUs together must fit in fargate_spot_max_vcpus."
+    }
+    precondition {
+      # v1.5: the default goes through the per-run checks too (1 to dv_parts_max).
+      condition     = var.deepvariant_split_parts <= local.dv_parts_max
+      error_message = "deepvariant_split_parts must be at most fargate_spot_max_vcpus / dv_part_resources.vcpu (and one part must fit)."
     }
   }
   logging_configuration {

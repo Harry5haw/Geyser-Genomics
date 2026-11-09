@@ -282,3 +282,67 @@ def test_a_pair_with_a_mates_size_unknown_has_no_input_bytes(trigger, aws):
     s3.sizes = {"raw_reads/S1_R1.fastq.gz": 10}
     trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
     assert "input_bytes" not in json.loads(sfn.started[0]["input"])
+
+
+# --- the upload batch: never a run on mates from two different uploads (T3's upload page review) ----------------
+
+R1, R2 = "raw_reads/S1_R1.fastq.gz", "raw_reads/S1_R2.fastq.gz"
+
+
+@pytest.mark.parametrize("arrived", ["R1", "R2"])
+def test_a_reupload_in_progress_waits_for_the_other_mate_of_its_batch(trigger, aws, arrived):
+    # A paired re-upload: the new R1 completes while the old R2 (an earlier batch) is still there.
+    meta = {R1: {"upload-batch": "new"}, R2: {"upload-batch": "old"}}
+    s3, sfn = aws(PAIR, metadata=meta)
+    key = {"R1": R1, "R2": R2}[arrived]
+    result = trigger.handler(event(key, "e1"), None)
+    assert result["statusCode"] == 202 and sfn.started == []
+    body = json.loads(result["body"])
+    assert body["waiting_for"] == (R2 if arrived == "R1" else R1)
+    assert body["reason"] == "the mates are from different uploads"
+
+
+def test_a_web_upload_with_one_mate_stamped_and_one_not_waits_too(trigger, aws):
+    # The old R2 came from the CLI (no batch), the new R1 from the web page: still two different uploads.
+    s3, sfn = aws(PAIR, metadata={R1: {"upload-batch": "new"}})
+    assert trigger.handler(event(R1, "e1"), None)["statusCode"] == 202 and sfn.started == []
+
+
+def test_both_mates_of_one_batch_start_the_run(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={R1: {"upload-batch": "b1"}, R2: {"upload-batch": "b1"}})
+    assert trigger.handler(event(R2, "e2"), None)["statusCode"] == 200
+    (start,) = sfn.started
+    assert "upload-batch" not in start["input"]  # not a run setting: the state machine never sees it
+
+
+def test_cli_uploads_without_a_batch_start_as_before(trigger, aws):
+    s3, sfn = aws(PAIR)
+    assert trigger.handler(event(R1, "e1"), None)["statusCode"] == 200 and len(sfn.started) == 1
+
+
+def test_a_single_end_upload_ignores_the_batch(trigger, aws):
+    s3, sfn = aws({"raw_reads/S1.fastq.gz": "e"}, metadata={"raw_reads/S1.fastq.gz": {"upload-batch": "b1"}})
+    assert trigger.handler(event("raw_reads/S1.fastq.gz", "e"), None)["statusCode"] == 200
+    assert len(sfn.started) == 1
+
+
+# --- the optional annotation (v3.0, metadata annotate), like the gate profile -------------------------
+
+
+def test_a_pairs_annotate_can_be_on_either_mate(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={"raw_reads/S1_R2.fastq.gz": {"annotate": "alphagenome"}})
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["annotate"] == "alphagenome"
+
+
+def test_mates_with_different_annotate_values_go_on_as_both_for_the_state_machine_to_refuse(trigger, aws):
+    meta = {"raw_reads/S1_R1.fastq.gz": {"annotate": "alphagenome"}, "raw_reads/S1_R2.fastq.gz": {"annotate": "none"}}
+    s3, sfn = aws(PAIR, metadata=meta)
+    trigger.handler(event("raw_reads/S1_R1.fastq.gz", "e1"), None)
+    assert json.loads(sfn.started[0]["input"])["annotate"] == ["alphagenome", "none"]
+
+
+def test_a_pair_without_annotate_metadata_is_not_annotated(trigger, aws):
+    s3, sfn = aws(PAIR, metadata={k: {"gate-profile": "smoke"} for k in PAIR})
+    trigger.handler(event("raw_reads/S1_R2.fastq.gz", "e2"), None)
+    assert "annotate" not in json.loads(sfn.started[0]["input"])

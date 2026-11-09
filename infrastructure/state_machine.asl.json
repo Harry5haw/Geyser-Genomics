@@ -14,7 +14,7 @@
             { "Variable": "$.gate_profile", "StringEquals": "synthetic" },
             { "Variable": "$.gate_profile", "StringEquals": "smoke" }
           ],
-          "Next": "Check_Reference_Name"
+          "Next": "Check_Annotate"
         }
       ],
       "Default": "Prepare_Profile_Error"
@@ -23,7 +23,37 @@
       "Type": "Pass",
       "Result": "default",
       "ResultPath": "$.gate_profile",
+      "Next": "Check_Annotate"
+    },
+    "Check_Annotate": {
+      "Type": "Choice",
+      "Comment": "Optional AlphaGenome annotation after the quality gate (v3.0): annotate in the input (the trigger takes it from the upload's S3 metadata annotate). none or unset: no annotation. Any other value fails the run here, before any job, like gate_profile.",
+      "Choices": [
+        { "Not": { "Variable": "$.annotate", "IsPresent": true }, "Next": "No_Annotation" },
+        {
+          "Or": [
+            { "Variable": "$.annotate", "StringEquals": "none" },
+            { "Variable": "$.annotate", "StringEquals": "alphagenome" }
+          ],
+          "Next": "Check_Reference_Name"
+        }
+      ],
+      "Default": "Prepare_Annotate_Error"
+    },
+    "No_Annotation": {
+      "Type": "Pass",
+      "Result": "none",
+      "ResultPath": "$.annotate",
       "Next": "Check_Reference_Name"
+    },
+    "Prepare_Annotate_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "UnknownAnnotation",
+        "Cause.$": "States.Format('annotate {} is not one of: none, alphagenome', States.JsonToString($.annotate))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Prepare_Profile_Error": {
       "Type": "Pass",
@@ -99,7 +129,7 @@
     },
     "Run_Setting_Rules": {
       "Type": "Pass",
-      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus). The genome's parallelism (v1.3, whole numbers): chunk_count (the large route's alignment chunks), align_concurrency (chunks aligned at once), calling_concurrency (calling shards at once, both routes) and merge_threads; their maxima are rendered from the Fargate Spot cap (step_functions.tf), so a run can't ask for more than the cap holds.",
+      "Comment": "Per-run size overrides (cost x turnaround grid, docs/figures/cost-surface-grid.md): an optional object overrides in the input, e.g. {\"align_vcpu\": \"2\", \"align_memory_mb\": \"4096\", \"variant_region_window\": 17000000}, merged over these Terraform defaults. Uploads never set it, so triggered runs use the defaults. align_sizes: the Fargate vCPU/MiB pairs align may use (step_functions.tf: valid pairs where max(qc, plan) + align fits in fargate_max_vcpus). The genome's parallelism (v1.3, whole numbers): chunk_count (the large route's alignment chunks), align_concurrency (chunks aligned at once), calling_concurrency (calling shards at once, both routes) and merge_threads; their maxima are rendered from the Fargate Spot cap (step_functions.tf), so a run can't ask for more than the cap holds. dv_parts (v1.5): DeepVariant's make_examples as that many CPU part jobs on Fargate before the GPU job (1 = the single GPU job); dv_shards_by_parts[J] is DEEPVARIANT_SHARDS for J parts (J x the part's vCPUs).",
       "Result": {
         "defaults": {
           "align_vcpu": "${align_vcpu}",
@@ -108,9 +138,10 @@
           "chunk_count": ${genome_chunk_count},
           "align_concurrency": ${genome_align_concurrency},
           "calling_concurrency": ${variants_max_concurrency},
-          "merge_threads": ${genome_merge_threads}
+          "merge_threads": ${genome_merge_threads},
+          "dv_parts": ${deepvariant_split_parts}
         },
-        "setting_count": 7,
+        "setting_count": 8,
         "align_sizes": ${align_sizes},
         "window_min": ${variant_region_window_min},
         "window_max": ${variant_region_window_max},
@@ -119,6 +150,8 @@
         "align_concurrency_max": ${align_concurrency_max},
         "calling_concurrency_max": ${calling_concurrency_max},
         "merge_threads_max": ${merge_threads_max},
+        "dv_parts_max": ${dv_parts_max},
+        "dv_shards_by_parts": ${dv_shards_by_parts},
         "large_input_bytes": ${large_input_bytes}
       },
       "ResultPath": "$.run_rules",
@@ -170,7 +203,8 @@
             { "Variable": "$.run_check.settings.chunk_count", "IsNumeric": true },
             { "Variable": "$.run_check.settings.align_concurrency", "IsNumeric": true },
             { "Variable": "$.run_check.settings.calling_concurrency", "IsNumeric": true },
-            { "Variable": "$.run_check.settings.merge_threads", "IsNumeric": true }
+            { "Variable": "$.run_check.settings.merge_threads", "IsNumeric": true },
+            { "Variable": "$.run_check.settings.dv_parts", "IsNumeric": true }
           ],
           "Next": "Inspect_Run_Setting_Values"
         }
@@ -187,7 +221,8 @@
         "chunk_text.$": "States.Format('{}', $.run_check.settings.chunk_count)",
         "align_concurrency_text.$": "States.Format('{}', $.run_check.settings.align_concurrency)",
         "calling_concurrency_text.$": "States.Format('{}', $.run_check.settings.calling_concurrency)",
-        "merge_threads_text.$": "States.Format('{}', $.run_check.settings.merge_threads)"
+        "merge_threads_text.$": "States.Format('{}', $.run_check.settings.merge_threads)",
+        "dv_parts_text.$": "States.Format('{}', $.run_check.settings.dv_parts)"
       },
       "ResultPath": "$.run_check",
       "Next": "Check_Run_Setting_Values"
@@ -222,7 +257,12 @@
             { "Variable": "$.run_check.settings.merge_threads", "NumericLessThanEqualsPath": "$.run_rules.merge_threads_max" },
             { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*.*" } },
             { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*E*" } },
-            { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*e*" } }
+            { "Not": { "Variable": "$.run_check.merge_threads_text", "StringMatches": "*e*" } },
+            { "Variable": "$.run_check.settings.dv_parts", "NumericGreaterThanEquals": 1 },
+            { "Variable": "$.run_check.settings.dv_parts", "NumericLessThanEqualsPath": "$.run_rules.dv_parts_max" },
+            { "Not": { "Variable": "$.run_check.dv_parts_text", "StringMatches": "*.*" } },
+            { "Not": { "Variable": "$.run_check.dv_parts_text", "StringMatches": "*E*" } },
+            { "Not": { "Variable": "$.run_check.dv_parts_text", "StringMatches": "*e*" } }
           ],
           "Next": "Set_Run_Settings"
         }
@@ -239,10 +279,73 @@
         "chunk_count.$": "$.run_check.chunk_text",
         "align_concurrency.$": "$.run_check.settings.align_concurrency",
         "calling_concurrency.$": "$.run_check.settings.calling_concurrency",
-        "merge_threads.$": "$.run_check.merge_threads_text"
+        "merge_threads.$": "$.run_check.merge_threads_text",
+        "dv_parts.$": "$.run_check.settings.dv_parts"
       },
       "ResultPath": "$.run_settings",
-      "Next": "Choose_Route"
+      "Next": "Choose_Start"
+    },
+    "Choose_Start": {
+      "Type": "Choice",
+      "Comment": "from_alignment: true (v2.0, a manual start) skips QC and alignment and calls variants from the sample's existing alignments/<id>.cram, e.g. to re-call a genome with DeepVariant without redoing ~2 h of alignment. Absent or false: the normal routes. Anything else fails before any job, so a typo never re-aligns silently.",
+      "Choices": [
+        { "Not": { "Variable": "$.from_alignment", "IsPresent": true }, "Next": "Choose_Route" },
+        {
+          "And": [
+            { "Variable": "$.from_alignment", "IsBoolean": true },
+            { "Variable": "$.from_alignment", "BooleanEquals": true }
+          ],
+          "Next": "Check_Alignment"
+        },
+        {
+          "And": [
+            { "Variable": "$.from_alignment", "IsBoolean": true },
+            { "Variable": "$.from_alignment", "BooleanEquals": false }
+          ],
+          "Next": "Choose_Route"
+        }
+      ],
+      "Default": "Prepare_From_Alignment_Error"
+    },
+    "Prepare_From_Alignment_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "InvalidFromAlignment",
+        "Cause.$": "States.Format('from_alignment {} is not valid: true (call variants from the existing alignments/<id>.cram) or false', States.JsonToString($.from_alignment))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Check_Alignment": {
+      "Type": "Task",
+      "Comment": "The CRAM align wrote (tasks.keys_for: alignments/<id>.cram) must exist before calling starts: a HeadObject, as Check_Reference. The callers re-index it, so a missing or stale .crai is fine. A missing key is S3.NoSuchKeyException and is not retried.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:headObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('alignments/{}.cram', $.srr_id)"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": ["S3.S3Exception", "States.Timeout"],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Alignment_Not_Found", "ResultPath": "$.alignment_error" }
+      ],
+      "Next": "Choose_Caller"
+    },
+    "Prepare_Alignment_Not_Found": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "AlignmentNotFound",
+        "Cause.$": "States.Format('from_alignment: alignments/{}.cram could not be read from ${bucket} ({}). Run the sample through alignment first, or start without from_alignment', $.srr_id, $.alignment_error.Error)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Choose_Route": {
       "Type": "Choice",
@@ -298,7 +401,7 @@
       "Comment": "Invalid overrides fail the run before any job, like an unknown gate_profile: never a silent default. Only JsonToString and plain numbers here, so this Pass can't fail.",
       "Parameters": {
         "Error": "InvalidRunOverrides",
-        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}), variant_region_window (a whole number from {} to {}), chunk_count ({} to {}), align_concurrency (1 to {}), calling_concurrency (1 to {}) and merge_threads (1 to {}), all whole numbers', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max, $.run_rules.chunk_count_min, $.run_rules.chunk_count_max, $.run_rules.align_concurrency_max, $.run_rules.calling_concurrency_max, $.run_rules.merge_threads_max)"
+        "Cause.$": "States.Format('overrides {} are not valid. Allowed keys: align_vcpu and align_memory_mb (strings, one of the Fargate pairs {}), variant_region_window (a whole number from {} to {}), chunk_count ({} to {}), align_concurrency (1 to {}), calling_concurrency (1 to {}), merge_threads (1 to {}) and dv_parts (1 to {}), all whole numbers', States.JsonToString($.overrides), States.JsonToString($.run_rules.align_sizes), $.run_rules.window_min, $.run_rules.window_max, $.run_rules.chunk_count_min, $.run_rules.chunk_count_max, $.run_rules.align_concurrency_max, $.run_rules.calling_concurrency_max, $.run_rules.merge_threads_max, $.run_rules.dv_parts_max)"
       },
       "ResultPath": "$.error",
       "Next": "Prepare_Run_Close"
@@ -334,7 +437,8 @@
                 "JobDefinition": "${job_definition}",
                 "JobQueue": "${job_queue}",
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-                "Timeout": { "AttemptDurationSeconds": 3600 }
+                "Timeout": { "AttemptDurationSeconds": 3600 },
+                "Tags": { "Stage": "qc" }
               },
               "Retry": [
                 {
@@ -378,7 +482,8 @@
                 "JobDefinition.$": "$.batch_params.JobDefinition",
                 "JobQueue": "${job_queue}",
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-                "Timeout": { "AttemptDurationSeconds": 14400 }
+                "Timeout": { "AttemptDurationSeconds": 14400 },
+                "Tags": { "Stage": "align" }
               },
               "Retry": [
                 {
@@ -461,7 +566,8 @@
                     { "Type": "MEMORY", "Value": "${qc_large_memory_mb}" }
                   ]
                 },
-                "Timeout": { "AttemptDurationSeconds": 7200 }
+                "Timeout": { "AttemptDurationSeconds": 7200 },
+                "Tags": { "Stage": "qc" }
               },
               "Retry": [
                 {
@@ -496,7 +602,8 @@
                     { "Type": "MEMORY", "Value": "${preflight_memory_mb}" }
                   ]
                 },
-                "Timeout": { "AttemptDurationSeconds": 7200 }
+                "Timeout": { "AttemptDurationSeconds": 7200 },
+                "Tags": { "Stage": "preflight" }
               },
               "Retry": [
                 {
@@ -553,7 +660,8 @@
                           { "Type": "MEMORY", "Value": "${chunk_memory_mb}" }
                         ]
                       },
-                      "Timeout": { "AttemptDurationSeconds": 3600 }
+                      "Timeout": { "AttemptDurationSeconds": 3600 },
+                      "Tags": { "Stage": "align_chunk" }
                     },
                     "Retry": [
                       {
@@ -587,7 +695,8 @@
                     { "Type": "MEMORY", "Value": "${align_merge_memory_mb}" }
                   ]
                 },
-                "Timeout": { "AttemptDurationSeconds": 14400 }
+                "Timeout": { "AttemptDurationSeconds": 14400 },
+                "Tags": { "Stage": "align_merge" }
               },
               "Retry": [
                 {
@@ -623,10 +732,104 @@
             { "Variable": "$.caller", "IsPresent": true },
             { "Variable": "$.caller", "StringEquals": "deepvariant" }
           ],
-          "Next": "Prepare_DeepVariant_Command"
+          "Next": "Choose_DeepVariant_Mode"
         }
       ],
       "Default": "Prepare_Plan_Command"
+    },
+    "Choose_DeepVariant_Mode": {
+      "Type": "Choice",
+      "Comment": "DeepVariant split mode (v1.5, docs/design/deepvariant-split.md): with dv_parts > 1, make_examples (CPU-only, ~84% of the stage) runs as dv_parts CPU jobs on the Fargate queue, then the GPU job runs call_variants and postprocess_variants on their examples. dv_parts 1 (the default) is the single GPU job, unchanged.",
+      "Choices": [{ "Variable": "$.run_settings.dv_parts", "NumericGreaterThan": 1, "Next": "Prepare_Examples_Parts" }],
+      "Default": "Prepare_DeepVariant_Command"
+    },
+    "Prepare_Examples_Parts": {
+      "Type": "Pass",
+      "Comment": "The parts 0..J-1 for the Map, J as text for the command, and DEEPVARIANT_SHARDS = J x the part's vCPUs (Terraform's dv_shards_by_parts[J]: Step Functions has no multiply). Every part gets the same N, which the GPU job checks.",
+      "Parameters": {
+        "parts.$": "States.ArrayRange(0, States.MathAdd($.run_settings.dv_parts, -1), 1)",
+        "parts_text.$": "States.Format('{}', $.run_settings.dv_parts)",
+        "shards_text.$": "States.Format('{}', States.ArrayGetItem($.run_rules.dv_shards_by_parts, $.run_settings.dv_parts))"
+      },
+      "ResultPath": "$.dv_split",
+      "Next": "Make_Examples_Parts"
+    },
+    "Make_Examples_Parts": {
+      "Type": "Map",
+      "Comment": "One make_examples part job per part, all at once (dv_parts fits the Fargate Spot cap), on the Fargate queue in the CPU DeepVariant image. Each uploads its examples to intermediate/dv/<id>/<RUN_NAME>/shard-<P>/, its manifest last. If any part fails, bcftools calls the sample instead, as when the GPU job fails ($.deepvariant_error records why). Legacy Parameters/Iterator syntax, as Call_Variant_Shards (Step Functions Local).",
+      "ItemsPath": "$.dv_split.parts",
+      "Parameters": {
+        "srr_id.$": "$.srr_id",
+        "reference_name.$": "$.reference_name",
+        "part.$": "States.Format('{}', $$.Map.Item.Value)",
+        "parts.$": "$.dv_split.parts_text",
+        "shards.$": "$.dv_split.shards_text"
+      },
+      "MaxConcurrency": 0,
+      "Iterator": {
+        "StartAt": "Prepare_Examples_Part_Command",
+        "States": {
+          "Prepare_Examples_Part_Command": {
+            "Type": "Pass",
+            "Parameters": {
+              "JobName.$": "States.Format('DeepVariant-Examples-{}-{}', $.part, $$.Execution.Name)",
+              "ContainerOverrides": {
+                "Command.$": "States.Array('/opt/geyser-venv/bin/python', 'deepvariant_task.py', $.srr_id, $.reference_name, '--make-examples-part', $.part, '--parts', $.parts)",
+                "Environment": [
+                  { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+                  { "Name": "PIPELINE_CALLER", "Value": "deepvariant" },
+                  { "Name": "DEEPVARIANT_SHARDS", "Value.$": "$.shards" }
+                ]
+              }
+            },
+            "ResultPath": "$.batch_params",
+            "Next": "Make_Examples_Part"
+          },
+          "Make_Examples_Part": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::batch:submitJob.sync",
+            "Parameters": {
+              "JobName.$": "$.batch_params.JobName",
+              "JobDefinition": "${deepvariant_cpu_job_definition}",
+              "JobQueue": "${job_queue}",
+              "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
+              "Timeout": { "AttemptDurationSeconds": ${dv_part_timeout_seconds} },
+              "Tags": { "Stage": "deepvariant_examples" }
+            },
+            "Retry": [
+              {
+                "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+                "IntervalSeconds": 10,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+            "End": true
+          }
+        }
+      },
+      "ResultPath": null,
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Prepare_Plan_Command", "ResultPath": "$.deepvariant_error" }
+      ],
+      "Next": "Prepare_DeepVariant_From_Examples_Command"
+    },
+    "Prepare_DeepVariant_From_Examples_Command": {
+      "Type": "Pass",
+      "Comment": "The GPU job on the parts' examples: call_variants and postprocess_variants only; it checks every manifest before any GPU work. The same DeepVariant task (GPU queue, attempt limit, bcftools fallback) as the single job.",
+      "Parameters": {
+        "JobName.$": "States.Format('DeepVariant-{}-{}', $.srr_id, $$.Execution.Name)",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('/opt/geyser-venv/bin/python', 'deepvariant_task.py', $.srr_id, $.reference_name, '--from-examples')",
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "PIPELINE_CALLER", "Value": "deepvariant" }
+          ]
+        }
+      },
+      "ResultPath": "$.batch_params",
+      "Next": "DeepVariant"
     },
     "Prepare_DeepVariant_Command": {
       "Type": "Pass",
@@ -645,14 +848,15 @@
     },
     "DeepVariant": {
       "Type": "Task",
-      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead (the scatter-gather path), and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit.",
+      "Comment": "Linear DeepVariant on the GPU (variants_deepvariant/{id}.vcf.gz). If it fails for any reason, bcftools calls the sample instead (the scatter-gather path), and $.deepvariant_error records why. pangenome-aware runs hang when call_variants runs out of GPU memory (app-deepvariant/README.md), so the attempt has a hard limit: deepvariant_timeout_seconds (v2.0, long enough for a genome's call_variants; the job's own DEEPVARIANT_TIMEOUT_SECONDS is 300 s under it, and its idle timeout still catches a hang within 15 minutes).",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
         "JobName.$": "$.batch_params.JobName",
         "JobDefinition": "${deepvariant_job_definition}",
         "JobQueue": "${gpu_job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 3600 }
+        "Timeout": { "AttemptDurationSeconds": ${deepvariant_timeout_seconds} },
+        "Tags": { "Stage": "deepvariant" }
       },
       "Retry": [
         {
@@ -694,7 +898,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 1800 }
+        "Timeout": { "AttemptDurationSeconds": 1800 },
+        "Tags": { "Stage": "plan_regions" }
       },
       "Retry": [
         {
@@ -767,7 +972,8 @@
               "JobDefinition": "${job_definition}",
               "JobQueue": "${job_queue}",
               "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-              "Timeout": { "AttemptDurationSeconds": 7200 }
+              "Timeout": { "AttemptDurationSeconds": 7200 },
+              "Tags": { "Stage": "variants_shard" }
             },
             "Retry": [
               {
@@ -812,7 +1018,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 7200 }
+        "Timeout": { "AttemptDurationSeconds": 7200 },
+        "Tags": { "Stage": "variants" }
       },
       "Retry": [
         {
@@ -860,7 +1067,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 900 }
+        "Timeout": { "AttemptDurationSeconds": 900 },
+        "Tags": { "Stage": "quality_gate" }
       },
       "Retry": [
         {
@@ -905,7 +1113,7 @@
       "Type": "Choice",
       "Comment": "pass: done. fail (with its reasons): the mode decides. Anything else (verdict null: the gate couldn't judge) is a gate problem.",
       "Choices": [
-        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Pipeline_Succeeded" },
+        { "Variable": "$.gate.verdict.verdict", "StringEquals": "pass", "Next": "Choose_Annotation" },
         {
           "And": [
             { "Variable": "$.gate.verdict.verdict", "StringEquals": "fail" },
@@ -950,16 +1158,150 @@
     "Gate_Warned": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate failed the sample: recorded (qc_reports/{id}.gate.json, the run record, the job log, this execution's output) and the run still succeeds.",
-      "Next": "Pipeline_Succeeded"
+      "Next": "Choose_Annotation"
     },
     "Gate_Skipped": {
       "Type": "Pass",
       "Comment": "gate_mode = warn and the gate gave no verdict ($.gate_error or a null verdict says why). The run succeeds, but it was never judged: it doesn't count toward the switch to fail (#157). The QualityGate stage's FailureCount metric shows a failed gate job on the dashboard.",
-      "Next": "Pipeline_Succeeded"
+      "Next": "Choose_Annotation"
+    },
+    "Choose_Annotation": {
+      "Type": "Choice",
+      "Comment": "Every run that is going to succeed comes here after the quality gate (a pass; in warn mode also Gate_Warned and Gate_Skipped), on either route and with either caller. annotate = alphagenome annotates; none goes straight to Publish_Run.",
+      "Choices": [{ "Variable": "$.annotate", "StringEquals": "alphagenome", "Next": "Plan_Annotate" }],
+      "Default": "Publish_Run"
+    },
+    "Plan_Annotate": {
+      "Type": "Task",
+      "Comment": "tasks.py annotate --plan (#207): sizes the annotation from the run's calls (the formula lives in Python) and writes the plan to S3; annotates nothing. The annotate job definition at its smallest size, so the plan and the annotation come from the same image. The Atlas is the only source in the cloud (no AVI file in S3).",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('Annotate-Plan-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobDefinition": "${annotate_job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'annotate', $.srr_id, $.reference_name, '--source', 'atlas', '--plan', '--output-key', States.Format('intermediate/annotate-plan/{}/{}.json', $.srr_id, $$.Execution.Name))",
+          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value": "${annotate_plan_vcpu}" },
+            { "Type": "MEMORY", "Value": "${annotate_plan_memory_mb}" }
+          ]
+        },
+        "Timeout": { "AttemptDurationSeconds": 900 },
+        "Tags": { "Stage": "annotate" }
+      },
+      "Retry": [
+        { "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"], "IntervalSeconds": 10, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "ResultPath": null,
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "Annotation_Failed", "ResultPath": "$.annotate_error" }],
+      "Next": "Read_Annotate_Plan"
+    },
+    "Read_Annotate_Plan": {
+      "Type": "Task",
+      "Comment": "The plan, read straight from S3 like Read_Regions: {schema, run, vcpus, memory_mib, timeout_seconds, ...}, or {schema, run: false, reason}.",
+      "Resource": "arn:aws:states:::aws-sdk:s3:getObject",
+      "Parameters": {
+        "Bucket": "${bucket}",
+        "Key.$": "States.Format('intermediate/annotate-plan/{}/{}.json', $.srr_id, $$.Execution.Name)"
+      },
+      "ResultSelector": { "plan.$": "States.StringToJson($.Body)" },
+      "ResultPath": "$.annotate_plan",
+      "Retry": [
+        { "ErrorEquals": ["S3.S3Exception", "States.Timeout"], "IntervalSeconds": 2, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "Annotation_Failed", "ResultPath": "$.annotate_error" }],
+      "Next": "Check_Annotate_Plan"
+    },
+    "Check_Annotate_Plan": {
+      "Type": "Choice",
+      "Comment": "run: false (nothing to annotate; the reason stays in $.annotate_plan.plan) goes straight to Publish_Run. A plan that isn't run: true fails the Annotate submit, which is caught like any annotation failure.",
+      "Choices": [{ "Variable": "$.annotate_plan.plan.run", "BooleanEquals": false, "Next": "Publish_Run" }],
+      "Default": "Annotate"
+    },
+    "Annotate": {
+      "Type": "Task",
+      "Comment": "Its own job definition, the only one that maps the API key (SSM SecureString). Size and time limit from the plan. Never fatal: any failure (the job's, a missing key, a timeout, a bad plan) is caught and noted in $.annotate_error, and the run keeps the core pipeline's status.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('Annotate-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobDefinition": "${annotate_job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'tasks.py', 'annotate', $.srr_id, $.reference_name, '--source', 'atlas')",
+          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "ResourceRequirements": [
+            { "Type": "VCPU", "Value.$": "States.Format('{}', $.annotate_plan.plan.vcpus)" },
+            { "Type": "MEMORY", "Value.$": "States.Format('{}', $.annotate_plan.plan.memory_mib)" }
+          ]
+        },
+        "Timeout": { "AttemptDurationSeconds.$": "$.annotate_plan.plan.timeout_seconds" },
+        "Tags": { "Stage": "annotate" }
+      },
+      "Retry": [
+        { "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"], "IntervalSeconds": 10, "MaxAttempts": 3, "BackoffRate": 2 }
+      ],
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.annotate_output",
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "Annotation_Failed", "ResultPath": "$.annotate_error" }],
+      "Next": "Publish_Run"
+    },
+    "Annotation_Failed": {
+      "Type": "Pass",
+      "Next": "Publish_Run"
+    },
+    "Publish_Run": {
+      "Type": "Choice",
+      "Comment": "Every run ends here, succeeded or failed (after Notify_Failure), including a run that failed before any job (a bad profile or reference): its page shows that it failed before any stage. Publishing is Terraform's publish_enabled, rendered into the first rule: $$.Execution.Id is always present, so IsPresent true always publishes and IsPresent false never does, whatever the run's data. Otherwise straight to the run's own end, so this changes nothing while publishing is off.",
+      "Choices": [
+        { "Variable": "$$.Execution.Id", "IsPresent": ${publish_enabled}, "Next": "Publish" },
+        { "Variable": "$.run_close", "IsPresent": true, "Next": "Pipeline_Failed" }
+      ],
+      "Default": "Pipeline_Succeeded"
+    },
+    "Publish": {
+      "Type": "Task",
+      "Comment": "Renders the sample's pages and the index into the site bucket and invalidates them (the web UI's publisher, W2: manage.py publish <id>, in the geyser-publish image, publish.tf). The job definition carries the site bucket, the distribution, the API base and its size. Best effort: a failed publish is noted ($.publish_error) and the run keeps its own outcome.",
+      "Resource": "arn:aws:states:::batch:submitJob.sync",
+      "Parameters": {
+        "JobName.$": "States.Format('Publish-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobDefinition": "${publish_job_definition}",
+        "JobQueue": "${job_queue}",
+        "ContainerOverrides": {
+          "Command.$": "States.Array('python', 'manage.py', 'publish', $.srr_id)",
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "SITE_BUCKET", "Value": "${site_bucket}" },
+            { "Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "${site_distribution_id}" }
+          ]
+        },
+        "Timeout": { "AttemptDurationSeconds": 900 },
+        "Tags": { "Stage": "publish" }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Batch.AWSBatchException", "Batch.ServerException"],
+          "IntervalSeconds": 10,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "ResultSelector": { "JobId.$": "$.JobId", "Status.$": "$.Status" },
+      "ResultPath": "$.publish_output",
+      "Catch": [
+        { "ErrorEquals": ["States.ALL"], "Next": "Publish_Finished", "ResultPath": "$.publish_error" }
+      ],
+      "Next": "Publish_Finished"
+    },
+    "Publish_Finished": {
+      "Type": "Choice",
+      "Comment": "Back to the run's own outcome: Prepare_Run_Close ($.run_close) is on every failure path and on no success path.",
+      "Choices": [{ "Variable": "$.run_close", "IsPresent": true, "Next": "Pipeline_Failed" }],
+      "Default": "Pipeline_Succeeded"
     },
     "Pipeline_Succeeded": {
-      "Type": "Succeed",
-      "Comment": "Every successful run ends here, after the quality gate."
+      "Comment": "Every successful run ends here, after the quality gate and the optional annotation. (Comment first: step_functions.tf removes Comment keys with their trailing comma.)",
+      "Type": "Succeed"
     },
     "Prepare_Run_Close": {
       "Type": "Pass",
@@ -978,12 +1320,12 @@
     },
     "Close_Run_Record": {
       "Type": "Task",
-      "Comment": "Written straight to S3, not by a Batch job: no Fargate start-up on failure, and a retried job's Cause (every attempt's description) can be too big for a command line. Best effort: if this fails, the run still goes on to Notify_Failure with the original $.error.",
+      "Comment": "Body is the object itself: the SDK integration serialises it to JSON once (a JsonToString string would be stored JSON-encoded a second time, #205). Written straight to S3, not by a Batch job: no Fargate start-up on failure, and a retried job's Cause (every attempt's description) can be too big for a command line. Best effort: if this fails, the run still goes on to Notify_Failure with the original $.error.",
       "Resource": "arn:aws:states:::aws-sdk:s3:putObject",
       "Parameters": {
         "Bucket": "${bucket}",
         "Key.$": "States.Format('runs/{}.provenance/Finalize.json', $.srr_id)",
-        "Body.$": "States.JsonToString($.run_close)",
+        "Body.$": "$.run_close",
         "ContentType": "application/json"
       },
       "Retry": [
@@ -1016,9 +1358,9 @@
       },
       "ResultPath": null,
       "Catch": [
-        { "ErrorEquals": ["States.ALL"], "Next": "Pipeline_Failed", "ResultPath": "$.notify_error" }
+        { "ErrorEquals": ["States.ALL"], "Next": "Publish_Run", "ResultPath": "$.notify_error" }
       ],
-      "Next": "Pipeline_Failed"
+      "Next": "Publish_Run"
     },
     "Pipeline_Failed": {
       "Type": "Fail",

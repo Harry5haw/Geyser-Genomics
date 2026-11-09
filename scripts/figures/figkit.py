@@ -2,7 +2,8 @@
 
 The colours are the dataviz skill's validated reference palette (light mode: these figures are static
 PNG/SVG for the README, the release notes and the printed dissertation). Rules the scripts follow:
-categorical hues in fixed slot order and never cycled; magnitude in one hue, light to dark; text in ink
+categorical hues in fixed slot order and never cycled; magnitude on the heat ramp below (low dark, high light,
+the same mapping as the 3D figures on the web page); text in ink
 colours, never in a series colour; hairline grids; no dual axes.
 """
 
@@ -67,10 +68,23 @@ def pyplot():
     return plt
 
 
-def sequential_cmap(name="geyser-blues"):
+# The heat ramp for magnitude (heatmaps, colour bars): cividis from 0.3 to 1, low = dark blue-grey, high = yellow.
+# Perceptually uniform, lightness rises monotonically (reads in greyscale and with any colour-vision deficiency),
+# and the dark end is trimmed so it still clears 2:1 against the web page's dark stage (#042c20). The web page's
+# 3D figures use the same 13 stops (web/samples/figures.py HEAT; tests/test_figures.py checks they agree).
+HEAT = ["#4f576c", "#5d616e", "#6a6c71", "#777776", "#848279", "#928d78", "#a19975", "#b0a571", "#c0b16a"]
+HEAT += ["#d0be62", "#e0cb56", "#f1d945", "#fee838"]
+
+
+def sequential_cmap(name="geyser-heat"):
     from matplotlib.colors import LinearSegmentedColormap
 
-    return LinearSegmentedColormap.from_list(name, BLUES)
+    return LinearSegmentedColormap.from_list(name, HEAT)
+
+
+def ink_on(fraction):
+    """Text colour on a heat-ramp cell at this fraction of the scale: white on the dark (low) end, ink on the rest."""
+    return "#ffffff" if fraction < 0.4 else INK
 
 
 def tidy(ax, grid_axis="y"):

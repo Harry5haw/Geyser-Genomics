@@ -78,12 +78,32 @@ aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-
   depth about 0.02x, 0% at 10x, GC 37.5%), so it fails them. `smoke` is calibrated on the cloud checkpoints
   CLOUD005-016 ([#157](../../../issues/157)); every one passes it.
 
+**AlphaGenome annotation (v3.0):** an upload can ask for the optional annotation of its calls after
+the quality gate with S3 metadata `annotate=alphagenome` (on either mate); a manual start sets `"annotate": "alphagenome"`.
+- **Both routes, either caller:** every run that succeeds the quality gate can be annotated. The source in the cloud is
+  always the AlphaGenome Atlas (`--source atlas`; no AVI file in S3).
+- **Sized per run:** a small `Plan_Annotate` job (`tasks.py annotate --plan`) writes `intermediate/annotate-plan/<id>/<run>.json`;
+  `Annotate` takes its vCPU, memory and time limit from it. With nothing to annotate the plan says `run: false` and no
+  annotate job runs (the reason is in the execution's output, `annotate_plan`).
+- **Off by default.** `none` or no value means no annotation. Anything else fails the run before any job with
+  `UnknownAnnotation`, like an unknown gate profile.
+- **Never fatal.** A failed annotation is noted in the execution's output (`annotate_error`) and the job log, and the run keeps
+  the core pipeline's status.
+- **The API key** is an SSM SecureString that you put in yourself, with your own identity. Terraform only references
+  it by name (`alphagenome_api_key_parameter`, default `/geyser/alphagenome/api-key`):
+
+  ```bash
+  AWS_PROFILE=default aws ssm put-parameter --name /geyser/alphagenome/api-key --type SecureString --value "<key>"
+  ```
+
+  Until it exists, an annotate job fails to start ("unable to pull secrets"), which is noted as above.
+
 ### Choose the caller
 
 | Caller | Where it runs | How to choose it |
 | :--- | :--- | :--- |
 | `bcftools` (default) | Fargate: regions planned, called in parallel by a `Map` state, merged | nothing to do |
-| `deepvariant` | the GPU Batch queue (one g6.xlarge / g5.xlarge, scales to zero); **falls back to bcftools** if it fails | a manual start (below), or Terraform `default_caller = "deepvariant"` for every triggered run |
+| `deepvariant` | the GPU Batch queue (one g6.4xlarge / g5.4xlarge, scales to zero); **falls back to bcftools** if it fails | a manual start (below), or Terraform `default_caller = "deepvariant"` for every triggered run |
 
 **A manual start** runs any sample whose reads are already in `raw_reads/`, with any caller. The input is
 the trigger's document. The name must be 1-80 characters from `A-Z a-z 0-9 _ -`, and it ends up in the job
@@ -161,8 +181,11 @@ small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its jo
   storage, the trigger alarm. It's deployed by script; `--dry-run` prints the body and makes no AWS calls:
   ```bash
   python scripts/deploy_dashboard.py --dry-run
-  SFN_ARN=<state-machine-arn> python scripts/deploy_dashboard.py --bucket <data-lake>
+  SFN_ARN=<state-machine-arn> python scripts/deploy_dashboard.py --bucket <data-lake> \
+    --web-distribution-id <distribution_id>    # the hosted site's CloudFront error rates (us-east-1 metrics)
   ```
+  The hosted-site row (web API Lambda requests/errors/throttles and duration p50/p95, CloudFront 4xx/5xx) is in by
+  default; `--no-web` leaves it out. The Publish job is a stage group (*Publish (hosted site)*).
 - **Run times, and per stage:** queue wait, run time, estimated cost, attempts and the failure reason:
   ```bash
   python scripts/query_pipeline_duration.py --stages                  # the latest 50 runs
@@ -173,7 +196,12 @@ small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its jo
   ```bash
   python scripts/reconcile.py --bucket <data-lake>                    # add $SFN_ARN to see open runs too
   python scripts/reconcile.py --bucket <data-lake> --json --fail-on-problems
+  python scripts/reconcile.py --bucket <data-lake> --publish-metrics  # CloudWatch GeyserGenomics/ReconcileProblems
   ```
+  `--publish-metrics` sends the problem count by kind (dimension `Problem`: `LoneMate`, `Ignored` (non-.gz
+  uploads that start nothing), `ConcurrentRuns` (duplicate runs, needs `$SFN_ARN`), ..., `Total`), zeros included.
+  It is best effort: a CloudWatch error is a warning. With `--local-dir` the counts go to `metrics/metrics.jsonl`.
+  Nothing runs it on a schedule; it is run by hand.
 - **Logs:** Batch jobs in `/aws/batch/geyser-<env>`, the trigger in `/aws/lambda/geyser-sfn-trigger-<env>`
   (kept 30 days, `log_retention_days`).
 
@@ -308,8 +336,28 @@ Things to know:
   `fargate_max_vcpus`). The live environments allow 48.
 - The bwa index (`.bwt .sa`, for `ALIGNER=bwa`) is not built. A run with `ALIGNER=bwa` on this reference
   builds it inside its align job.
-- Measured, GRCh38 no-alt (`IndexBuild-GRCh38-no-alt-20261104`): **SLOT: wall time per step and in all, the
-  attempts, the cost**.
+- Measured, GRCh38 no-alt (`IndexBuild-GRCh38-no-alt-20261104`, 4 Nov 2026): **18.8 min, at most $0.51**
+  (16 vCPU / 120 GiB on Fargate, at on-demand list prices; the Spot interruption above meant a second attempt).
+  It built the reference behind the HG003 30x whole-genome run ([v1.3](releases/v1.3.md)).
+
+## The hosted site (v1.4, not live yet)
+
+The site is static pages in a private S3 bucket behind CloudFront (`infrastructure/web/`, which the user plans and
+applies). A small API Lambda serves uploads, status and downloads (`web_api.tf`). The `geyser-publish` job
+(`publish.tf`) writes the pages.
+- **Per run:** with `publish_enabled = true`, every run ends by publishing its sample's pages and the index, whether
+  it succeeded or failed: a failed run's page shows which stage failed. The only exception is a run that failed
+  before any job (a bad profile or reference). A failed publish never changes the run's outcome.
+- **Bootstrap, once per new site:** `python manage.py publish --all` (in the `geyser-publish` image, or from a
+  checkout for `/figures/`). It writes every sample's pages; the per-run publishes then keep it current.
+- **After a publish image whose inline CSS or scripts changed:**
+  1. run `publish --all`;
+  2. copy `csp-hashes.json`'s `script` and `style` lists from the site's root into the web stack's `script_hashes` /
+     `style_hashes`;
+  3. apply the web stack (the response-headers policy in place).
+  Until then, the pages' inline blocks are blocked by the CSP.
+- **Uploads** need the token in the SSM SecureString `web_upload_token_parameter`, which the user puts in. Rotate it
+  after sharing it for a demo.
 
 ## Cost guardrails, in brief
 

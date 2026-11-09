@@ -1,7 +1,11 @@
 {
   "ci": {
     "collect": {
-      "url": ["http://127.0.0.1:8000/", "http://127.0.0.1:8000/samples/SYNTH001/", "http://127.0.0.1:8000/figures/"],
+      "url": [
+        "http://127.0.0.1:8000/", "http://127.0.0.1:8000/samples/SYNTH001/", "http://127.0.0.1:8000/figures/",
+        "http://127.0.0.1:8001/", "http://127.0.0.1:8001/samples/SYNTH001/", "http://127.0.0.1:8001/figures/",
+        "http://127.0.0.1:8001/uploads/"
+      ],
       "numberOfRuns": 3,
       "settings": {
         "chromeFlags": "--no-sandbox --headless=new"
@@ -11,7 +15,8 @@
       "assertions": {
         "largest-contentful-paint": ["error", { "maxNumericValue": 999, "aggregationMethod": "median-run" }],
         "cumulative-layout-shift": ["error", { "maxNumericValue": 0, "aggregationMethod": "median-run" }],
-        "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median-run" }]
+        "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median-run" }],
+        "errors-in-console": ["error", { "minScore": 1, "aggregationMethod": "pessimistic" }]
       }
     },
     "upload": {

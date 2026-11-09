@@ -11,7 +11,7 @@ The JSON is built in scripts/monitoring.py.
 
 Preview (no AWS calls):
   python scripts/deploy_dashboard.py --dry-run
-  python scripts/deploy_dashboard.py --dry-run --state-machine-arn <arn> --schema aggregated
+  python scripts/deploy_dashboard.py --dry-run --state-machine-arn <arn> [--schema per-sample]
 
 Deploy (uses your ambient AWS credentials):
   SFN_ARN=<state machine arn> python scripts/deploy_dashboard.py
@@ -53,9 +53,9 @@ def parse_args(argv=None):
     p.add_argument(
         "--schema",
         choices=monitoring.SCHEMAS,
-        default="per-sample",
-        help="Metric dimensions to read: per-sample (what app/metrics.py publishes today) "
-        "or aggregated (no SampleId; gives real p50/p95)",
+        default="aggregated",
+        help="Metric dimensions to read: aggregated (what app/metrics.py publishes; real p50/p95, the default) "
+        "or per-sample (the SampleId shape of images built before Nov 2026)",
     )
     p.add_argument(
         "--groups",
@@ -95,6 +95,16 @@ def parse_args(argv=None):
         help=f"Batch job log group the quality widgets query (default: {monitoring.BATCH_LOG_GROUP})",
     )
     p.add_argument(
+        "--no-spend",
+        action="store_true",
+        help="Leave out the spend row (estimated charges, guardrail lines) and the running-now/bucket widgets",
+    )
+    p.add_argument(
+        "--no-runs",
+        action="store_true",
+        help="Leave out the run widgets (recent runs and caller outcomes from the run-record log line, Spot retries)",
+    )
+    p.add_argument(
         "--no-queue-wait",
         action="store_true",
         help="Leave out the Batch wait widgets (Logs Insights over the Batch job-event log group, #138)",
@@ -103,6 +113,20 @@ def parse_args(argv=None):
         "--no-quality",
         action="store_true",
         help="Leave out the result-quality widgets (each view runs a Logs Insights scan of the Batch log group)",
+    )
+    p.add_argument(
+        "--web-function-name",
+        default=os.environ.get("WEB_FUNCTION_NAME", monitoring.DEFAULT_WEB_FUNCTION),
+        help=f"Web API Lambda for the hosted-site widgets (default: $WEB_FUNCTION_NAME or {monitoring.DEFAULT_WEB_FUNCTION})",
+    )
+    p.add_argument(
+        "--web-distribution-id",
+        default=os.environ.get("WEB_DISTRIBUTION_ID"),
+        help="CloudFront distribution ID (infrastructure/web's distribution_id output; default: $WEB_DISTRIBUTION_ID). "
+        "Without it the CloudFront error-rate widget is left out",
+    )
+    p.add_argument(
+        "--no-web", action="store_true", help="Leave out the hosted-site widgets (web API Lambda, CloudFront)"
     )
     p.add_argument("--dry-run", action="store_true", help="Print the dashboard JSON and exit (no AWS calls)")
     return p.parse_args(argv)
@@ -174,6 +198,11 @@ def main(argv=None, client=None, sts_client=None) -> int:
             bucket=args.bucket,
             batch_log_group=args.batch_log_group,
             queue_wait=not args.no_queue_wait,
+            runs=not args.no_runs,
+            spend=not args.no_spend,
+            web=not args.no_web,
+            web_function_name=args.web_function_name,
+            web_distribution_id=args.web_distribution_id,
         )
     except ValueError as err:
         raise SystemExit(f"FATAL: {err}") from err

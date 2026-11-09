@@ -13,6 +13,7 @@ import re
 import threading
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from django.core.management import CommandError, call_command
@@ -146,7 +147,8 @@ def test_one_sample_publishes_its_pages_and_the_list_only(storage, site):
     finished_sample(storage, "S2")
     root = run_publish(site, "S2")
     assert (root / "samples/S2/index.html").is_file() and (root / "index.html").is_file()
-    assert not (root / "samples/S1").exists() and not (root / "figures").exists()  # figures: --all
+    assert not (root / "samples/S1").exists()
+    assert (root / "figures/index.html").is_file()  # every page links to it, so every publish writes it
     assert 'href="/samples/S1/"' in (root / "index.html").read_text(encoding="utf-8")  # the list has every sample
 
 
@@ -159,14 +161,14 @@ def test_a_running_sample_has_a_row_but_no_page_and_no_link(storage, site):
     assert not (root / "samples/R1").exists()
 
 
-def test_figures_are_published_with_all_when_their_csvs_are_here(storage, tmp_path, settings):
+def test_figures_are_published_with_one_sample_when_their_csvs_are_here(storage, tmp_path, settings):
     from django.conf import settings as live
 
     settings.GEYSER_FIGURES_DIR = Path(live.REPO_ROOT) / "docs" / "figures" / "csv"
     if not settings.GEYSER_FIGURES_DIR.is_dir():
         pytest.skip("no figure CSVs in this checkout")
     finished_sample(storage)
-    root = run_publish(tmp_path / "site", "--all")
+    root = run_publish(tmp_path / "site", "S1")
     assert (root / "figures/index.html").is_file()
     assert sorted(p.suffix for p in (root / "figures").iterdir() if p.stem == "coverage") == [".csv", ".json"]
 
@@ -267,7 +269,7 @@ def test_s3_objects_get_their_type_and_cache_lifetime(site, monkeypatch):
     assert list(fake.objects)[-1] == "pre/index.html"  # the list last, after the pages it links to
     vcf = fake.objects["pre/samples/S1/files/S1.vcf.gz"]
     assert vcf["streamed"] and vcf["ContentType"] == "application/gzip"  # big files: multipart, not in memory
-    assert invalidations == [("E123", ["/", "/index.html", "/404.html", "/samples/S1/*"])]
+    assert invalidations == [("E123", ["/", "/index.html", "/404.html", "/figures/*", "/samples/S1/*"])]
 
 
 def test_out_defaults_to_the_site_bucket(site, monkeypatch):
@@ -339,3 +341,62 @@ def test_a_deepvariant_called_sample_links_deepvariants_vcf(storage, tmp_path, s
     folder = run_publish(tmp_path / "folder", "S1")
     copied = (folder / "samples/S1/files/S1.vcf.gz").read_bytes()
     assert copied == Path(storage.describe("variants_deepvariant/S1.vcf.gz")).read_bytes()
+
+
+# ------------------------------------------------------------------ the Publish metric (O7)
+
+
+def _publish_metrics(storage):
+    path = Path(storage.root) / "metrics" / "metrics.jsonl"
+    lines = path.read_text().splitlines() if path.exists() else []
+    return [r for r in map(json.loads, lines) if r.get("task") == "Publish"]
+
+
+def test_a_publish_records_its_metric_beside_local_storage(storage, site, monkeypatch):
+    monkeypatch.delenv("METRICS_BACKEND", raising=False)
+    monkeypatch.delenv("METRICS_FILE", raising=False)
+    finished_sample(storage)
+    run_publish(site, "S1")
+    run_publish(site / "all", "--all")
+    recs = _publish_metrics(storage)
+    assert [(r["sample_id"], r["status"]) for r in recs] == [("S1", "Success"), ("all", "Success")]
+    assert all(r["duration_seconds"] >= 0 for r in recs)
+
+
+def test_a_failed_publish_records_failure_and_still_fails(storage, site, monkeypatch):
+    monkeypatch.delenv("METRICS_BACKEND", raising=False)
+    from samples.management.commands import publish as command
+
+    def broken(**kwargs):
+        raise publish_mod.PublishError("site bucket unreachable")
+
+    monkeypatch.setattr(command, "publish", broken)
+    with pytest.raises(CommandError, match="site bucket unreachable"):
+        run_publish(site, "S1", "S2")
+    assert [(r["sample_id"], r["status"]) for r in _publish_metrics(storage)] == [("several", "Failure")]
+
+
+def test_a_metrics_error_never_fails_a_publish(storage, site, monkeypatch, capsys):
+    from samples.management.commands import publish as command
+
+    class Broken:
+        def record(self, *args, **kwargs):
+            raise RuntimeError("CloudWatch down")
+
+    monkeypatch.setattr(command, "get_metrics", lambda: Broken())
+    finished_sample(storage)
+    run_publish(site, "S1")  # no exception
+    assert "could not record the Publish metric: RuntimeError: CloudWatch down" in capsys.readouterr().err
+
+
+def test_the_ui_never_picks_cloudwatch_from_local_storage(settings, monkeypatch):
+    from geyser_web.pipeline import get_metrics
+    from metrics import CloudWatchMetrics, LocalMetrics
+
+    monkeypatch.delenv("METRICS_BACKEND", raising=False)
+    monkeypatch.setenv("STORAGE_BACKEND", "s3")  # the process env says S3, but the UI's settings say local
+    settings.GEYSER_STORAGE_BACKEND = "local"
+    assert isinstance(get_metrics(), LocalMetrics)
+    settings.GEYSER_STORAGE_BACKEND = "s3"
+    with mock.patch("boto3.client"):
+        assert isinstance(get_metrics(), CloudWatchMetrics)  # the Publish job: S3 storage on AWS

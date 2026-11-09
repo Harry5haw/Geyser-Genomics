@@ -21,22 +21,25 @@ from xml.sax.saxutils import escape
 
 from django.conf import settings
 
-# The sequential ramp (dataviz reference: one hue, blue), from the dark end that recedes into the page to the light
-# end that stands out: low values dark, high values light, so it reads by lightness alone (colour-blind safe).
-RAMP = [
-    "#0d366b",
-    "#104281",
-    "#184f95",
-    "#1c5cab",
-    "#256abf",
-    "#2a78d6",
-    "#3987e5",
-    "#5598e7",
-    "#6da7ec",
-    "#86b6ef",
-    "#9ec5f4",
-    "#b7d3f6",
-    "#cde2fb",
+# The heat ramp: cividis from 0.3 to 1 (low = dark blue-grey, high = yellow). Perceptually uniform with lightness
+# rising monotonically, so it reads in greyscale and with any colour-vision deficiency; the dark end is trimmed so
+# the lowest values still clear 2:1 against the dark stage (#042c20). The same 13 stops as scripts/figures/figkit.py
+# HEAT, so a value has the same colour here as in the 2D figures (tests/test_figures.py checks they agree).
+# surface.js gets them in the grid JSON: this list is the web page's only copy.
+HEAT = [
+    "#4f576c",
+    "#5d616e",
+    "#6a6c71",
+    "#777776",
+    "#848279",
+    "#928d78",
+    "#a19975",
+    "#b0a571",
+    "#c0b16a",
+    "#d0be62",
+    "#e0cb56",
+    "#f1d945",
+    "#fee838",
 ]
 
 
@@ -307,6 +310,7 @@ def grid_json(grid: Grid) -> str:
                 "base": grid.base,
             },
             "values": [[None if v is None else round(v, 2) for v in line] for line in grid.values],
+            "ramp": HEAT,
         },
         separators=(",", ":"),
     )
@@ -319,8 +323,9 @@ MARGIN_L, MARGIN_R, MARGIN_T, MARGIN_B = 8, 8, 10, 26
 
 
 def poster_svg(grid: Grid) -> str:
-    """One ridge per row, stacked like the 3D view seen from the front, in the ramp's colours (back rows darker).
-    Small on purpose: the x axis is resampled to at most 120 points per ridge. Labels are escaped."""
+    """One ridge per row, stacked like the 3D view seen from the front, filled by value like a heatmap: each ridge's
+    fill is a vertical gradient through the heat ramp from its baseline (the bottom of the scale) to the height of
+    the top of the scale, so any point of it has the colour of its value, as in the 3D view. Small on purpose: the x axis is resampled to at most 120 points per ridge. Labels are escaped."""
     f = grid.figure
     n = len(grid.rows)
     top = grid.clip or grid.vmax or 1
@@ -331,7 +336,7 @@ def poster_svg(grid: Grid) -> str:
     span = (
         top - grid.base
     ) or 1.0  # a flat grid (every value equal to the baseline) draws flat, not a ZeroDivisionError
-    paths = []
+    paths, gradients = [], []
     for i, name in enumerate(grid.rows):
         base = MARGIN_T + band * (i + 2.5)
         points = []
@@ -346,10 +351,15 @@ def poster_svg(grid: Grid) -> str:
             continue
         line = " ".join(points)
         first, last = points[0].split(",")[0], points[-1].split(",")[0]
-        shade = RAMP[min(len(RAMP) - 1, 3 + round((n - 1 - i) / max(1, n - 1) * 5))]
+        gid = f"heat-{f.name}-{i}"  # ids are page-wide: several posters share the page
+        gradients.append(
+            f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="0" y1="{base:.1f}" x2="0" '
+            f'y2="{base - band * 2.5:.1f}">{_stops()}</linearGradient>'
+        )
+        # The stroke is the stage colour: a gap that keeps overlapping ridges apart (CSS: .poster path).
         paths.append(
-            f'<path d="M{first},{base:.1f} L{line} L{last},{base:.1f}Z" fill="{RAMP[1]}" fill-opacity=".92" '
-            f'stroke="{shade}" stroke-width="1.5"><title>{escape(name)}</title></path>'
+            f'<path d="M{first},{base:.1f} L{line} L{last},{base:.1f}Z" fill="url(#{gid})">'
+            f"<title>{escape(name)}</title></path>"
         )
     ticks = []
     named = grid.x_ticks or [(x0 + (x1 - x0) * k / 4, f"{x0 + (x1 - x0) * k / 4:.3g}") for k in range(5)]
@@ -363,6 +373,48 @@ def poster_svg(grid: Grid) -> str:
     )
     return (
         f'<svg class="poster" viewBox="0 0 {POSTER_W} {POSTER_H}" role="img" aria-label="{label}">'
+        + f"<defs>{''.join(gradients)}</defs>"
         + "".join(paths)
         + f'<g class="ticks">{"".join(ticks)}</g></svg>'
+    )
+
+
+def _stops() -> str:
+    last = len(HEAT) - 1
+    return "".join(f'<stop offset="{k / last:.3f}" stop-color="{c}"/>' for k, c in enumerate(HEAT))
+
+
+def _num(v: float) -> str:
+    """Tick text, as surface.js's fmt: 0, 2 decimals under 10, 1 under 100, none above."""
+    if v == 0:
+        return "0"
+    a = abs(v)
+    text = f"{v:.0f}" if a >= 100 else f"{v:.1f}" if a >= 10 else f"{v:.2f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+def legend_svg(grid: Grid) -> str:
+    """The colour bar under a figure: the heat ramp from the bottom of the scale (the baseline) to the top (the
+    height cap, or the largest value), with the bottom, middle and top values marked. The same scale as the
+    terrain's heights and colours. Text is filled by CSS (.colorbar text), so it follows the page's theme."""
+    f = grid.figure
+    top = grid.clip or grid.vmax or 1
+    w, bar_h = 240, 10
+    ticks = []
+    for k in range(3):
+        value = grid.base + (top - grid.base) * k / 2
+        text = _num(value)
+        if k == 2 and grid.clip:
+            text = "≥ " + text
+        x = w * k / 2
+        ticks.append(
+            f'<line x1="{x:.0f}" y1="{bar_h}" x2="{x:.0f}" y2="{bar_h + 4}"/>'
+            f'<text x="{x:.0f}" y="{bar_h + 18}" text-anchor="middle">{escape(text)}</text>'
+        )
+    label = escape(f"Colour scale: {f.z_label} from {_num(grid.base)} to {_num(top)} {f.z_unit}")
+    return (
+        f'<svg class="colorbar" viewBox="-20 0 {w + 40} {bar_h + 22}" role="img" aria-label="{label}">'
+        f'<defs><linearGradient id="heat-bar-{f.name}">{_stops()}</linearGradient></defs>'
+        f'<rect width="{w}" height="{bar_h}" rx="3" fill="url(#heat-bar-{f.name})"/>'
+        f'<g class="ticks">{"".join(ticks)}</g></svg>'
     )
