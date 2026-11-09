@@ -251,9 +251,7 @@ def synthetic(tmp_path):
     eqtl_b.append(["ENSG99999", "chr20_6000000_T_C", 0.1])  # in a credible set, not a positive, not called
     annotated = tmp_path / "alphagenome.tsv"
     write_tsv(annotated, HEADER, ann)
-    annotated.write_text(
-        "# AlphaGenome outputs: research use only, not for clinical decisions\n" + annotated.read_text("utf-8"), "utf-8"
-    )
+    annotated.write_text("#AlphaGenomeTerms=" + ev.TERMS_NOTICE + "\n" + annotated.read_text("utf-8"), "utf-8")
     paths = {
         "annotated": str(annotated),
         "eqtl": [
@@ -265,9 +263,31 @@ def synthetic(tmp_path):
         "noncoding_flagged": noncoding_flagged,
     }
     rr = tmp_path / "rr.json"
-    rr.write_text(json.dumps({"stage": "Annotate", "source": "atlas", "api_calls": 12, "seconds": 41.5}), "utf-8")
+    rr.write_text(json.dumps(ANNOTATE_PART), "utf-8")
     paths["run_record"] = str(rr)
     return paths
+
+
+ANNOTATE_PART = {
+    "schema": 1,
+    "task": "Annotate",
+    "sample_id": "S1",
+    "status": "Success",
+    "duration_seconds": 41.5,
+    "resources": {"cpu_seconds": 9.2, "peak_memory_mib": 310},
+    "alphagenome": {
+        "source": "atlas",
+        "model_version": "alphagenome 0.10.0",
+        "max_variants": 500,
+        "scored": 680,
+        "not_scored": 3,
+        "not_scored_by_kind": {"snv": 0, "indel": 3},
+        "not_in_service": 0,
+        "api_calls": 12,
+        "vcf": "written",
+        "terms": "By using this information, ...",
+    },
+}
 
 
 def run(paths, tmp_path, *extra):
@@ -311,8 +331,23 @@ def test_end_to_end_matched_on_tss_and_af(synthetic, tmp_path):
     assert o["flag"] == "avi>=20" and (o["csq_and_ag"], o["csq_only"]) == (5, 15)
     assert o["ag_only"] == synthetic["noncoding_flagged"] and o["ag_only"] + o["neither"] == 660
     assert result["coverage"]["by_source"] == {"atlas": 680}
-    assert result["run_record"] == {"source": "atlas", "api_calls": 12, "seconds": 41.5}
+    assert result["run_record"] == {
+        "source": "atlas",
+        "model_version": "alphagenome 0.10.0",
+        "max_variants": 500,
+        "scored": 680,
+        "not_scored": 3,
+        "not_scored_by_kind": {"snv": 0, "indel": 3},
+        "not_in_service": 0,
+        "api_calls": 12,
+        "status": "Success",
+        "seconds": 41.5,
+        "cpu_seconds": 9.2,
+        "peak_memory_mib": 310,
+    }
     assert "| `rna_lfc:abs` | primary |" in md and "research use only" in md
+    assert md.count(ev.TERMS_NOTICE) == 2 and result["terms"] == ev.TERMS_NOTICE  # top and bottom of the summary
+    assert not result["test_data"] and "Test data" not in md
 
 
 def test_without_af_the_report_says_so_and_avi_shows_the_confound(synthetic, tmp_path):
@@ -479,3 +514,58 @@ def test_tss_baseline_and_tss_matching_need_a_tss_table(synthetic, tmp_path, cap
     assert ev.main([*base, "--score", "neg_tss_distance"]) == 1
     assert ev.main([*base, "--match", "tss"]) == 1
     assert "need --tss" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------ #207's live contract (v3.0)
+
+
+def atlas_only(paths, tmp_path, source="atlas"):
+    """The synthetic table as the cloud writes it: Atlas only, so avi and avi_raw are empty (no AVI file in S3)."""
+    lines = open(paths["annotated"], encoding="utf-8").read().splitlines()
+    header = lines[1].split(chr(9))
+    avi, avi_raw, src = header.index("avi"), header.index("avi_raw"), header.index("source")
+    out = lines[:2]
+    for line in lines[2:]:
+        cells = line.split(chr(9))
+        cells[avi] = cells[avi_raw] = ""
+        cells[src] = source
+        out.append(chr(9).join(cells))
+    path = tmp_path / "atlas_only.tsv"
+    path.write_text(chr(10).join(out) + chr(10), "utf-8")
+    return {**paths, "annotated": str(path)}
+
+
+def test_atlas_only_tables_leave_avi_out_and_say_why(synthetic, tmp_path):
+    result, md = run(atlas_only(synthetic, tmp_path), tmp_path, "--tss", synthetic["tss"], "--af", synthetic["af"])
+    assert [s["score"] for s in result["scores"]] == ["rna_lfc:abs"] and result["scores"][0]["auroc"] > 0.95
+    assert result["scores_left_out"] == [{"score": "avi", "reason": ev.NO_VALUES}]
+    assert result["overlap"] == {"flag": "avi>=20", "available": False, "reason": ev.NO_VALUES}
+    assert "`avi` left out:" in md and "csq vs AlphaGenome:** not available" in md
+
+
+def test_an_avi_score_asked_for_by_name_is_kept_even_without_values(synthetic, tmp_path):
+    result, _ = run(atlas_only(synthetic, tmp_path), tmp_path, "--score", "rna_lfc:abs", "--score", "avi")
+    assert [s["score"] for s in result["scores"]] == ["rna_lfc:abs", "avi"] and result["scores"][1]["auroc"] is None
+    assert result["scores_left_out"] == []
+
+
+def test_fake_scores_are_marked_as_test_data(synthetic, tmp_path):
+    result, md = run(atlas_only(synthetic, tmp_path, source="fake"), tmp_path)
+    assert result["test_data"] and "**Test data:**" in md
+
+
+def test_the_assembled_record_and_the_plan_give_time_and_a_cost_estimate(synthetic, tmp_path):
+    record = {
+        "schema": 1,
+        "sample_id": "S1",
+        "alphagenome": ANNOTATE_PART["alphagenome"],
+        "stages": {"Annotate": {k: ANNOTATE_PART[k] for k in ("status", "duration_seconds", "resources")}},
+    }
+    rr, plan = tmp_path / "record.json", tmp_path / "plan.json"
+    rr.write_text(json.dumps(record), "utf-8")
+    plan.write_text(json.dumps({"schema": 1, "run": True, "vcpus": 1, "memory_mib": 2048, "disk_gib": 21}), "utf-8")
+    result, md = run(synthetic, tmp_path, "--run-record", str(rr), "--plan", str(plan))
+    got = result["run_record"]
+    assert got["api_calls"] == 12 and got["seconds"] == 41.5 and got["plan"]["vcpus"] == 1
+    # 41.5 s bills the 60 s minimum: 1 vCPU, 2 GiB and 1 GiB of storage over the free 20, at eu-west-2 prices
+    assert 0 < got["cost_usd_estimate"] < 0.001 and "cost_usd_estimate" in md

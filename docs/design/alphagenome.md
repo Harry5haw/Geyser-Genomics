@@ -1,6 +1,12 @@
 # AlphaGenome-aware variant annotation (Geyser 3.0 "Project Alpha Genome")
 
-**Status:** design. Draft PRs only until v2.0 is tagged.
+**Status:** live in v3.0 "Alpha Genome" (9 Nov 2026): the Annotate step ([#207](../../../../pull/207) app,
+[#209](../../../../pull/209) infrastructure), the variants-of-interest panel ([#263](../../../../pull/263)) and the
+dashboard signals ([#264](../../../../pull/264)). This note records the decisions as they now run; the evaluation
+harness below is #208. Release notes: [docs/releases/v3.0.md](../releases/v3.0.md).
+
+> By using this information, you agree to AlphaGenome Output Terms of Use found at
+> https://deepmind.google.com/science/alphagenome/output-terms
 
 The terms, data and API facts below were checked on 4 Nov 2026 against the primary sources listed at the end. They're marked **(unverified)** where only a secondary source or an inference supports them.
 
@@ -31,44 +37,57 @@ AVI is a neural network over AlphaGenome's predictions, with each of ten modalit
 - **Data in the repo:** commit no AVI file and no bulk Atlas or API output. Summaries, figures and a few example variants with citations are fine.
 - The full Terms of Service page didn't render for the check; the maintainer reads it when registering for the API key.
 
-## Design
+## Design (as it runs in v3.0)
 
-**App (`app/alphagenome.py`, `tasks.py annotate <id> <ref> --source avi-file|atlas|api|fake`)**
-- No AWS imports; storage goes through the existing backends. The annotate stage's interface contract (#207) is authoritative for names, columns and the run-record part; the summary here follows it.
-- **Step 1, AVI (all PASS SNVs, local, $0):**
-  - tabix lookup in `reference/alphagenome/avi_chr20.tsv.gz` (+ `.tbi`);
-  - normalise `#CHROM` (`chr20` or `20`), and check that REF equals our GRCh38 base, counting mismatches;
-  - this fills `AG_AVI` (PHRED) and `AG_AVI_RAW`.
-- **Step 2, Atlas (selected SNVs, needs the key, capped):**
-  - per-gene `RNA_SEQ` log fold change and the top track, which fill `AG_RNA_LFC`, `AG_GENE` and `AG_TOP_TRACK`;
-  - selection: PASS calls; non-coding or near-gene by `bcftools csq` (UTR, splice region, upstream or downstream, intronic near exons), plus AVI PHRED ≥ 20; ranked; at most `ALPHAGENOME_MAX_VARIANTS` (default 500).
-- **Step 3, model API (indels, capped):** `score_variant` with a 1 Mb interval centred on the variant and the 19 recommended scorers. That's one request per variant, from the same cap.
-- **Output:**
-  - `variants/{id}.alphagenome.vcf.gz` (+ `.tbi`) with INFO `AG_*`, and `AG_SOURCE=avi-file|atlas|api|fake`;
-  - `stats/{id}/alphagenome.tsv`, a ranked "variants of interest" table;
-  - a run-record part `Annotate`: counts per source, requests used, seconds, the client version, and the AVI file's name, byte size, SHA-256 and download date;
-  - metrics `Annotate` and `Annotate.ApiCalls`.
-- **Offline first:** a `fake` backend replays recorded responses for the unit tests and the Docker E2E, and `run_local.py --annotate alphagenome` runs it locally.
-- **Key handling:** the key lives in SSM Parameter Store as a SecureString. The job definition's `secrets` puts it in the environment, and the task role gets `ssm:GetParameter` on that one parameter. Locally it comes from `~/geyser-secrets/alphagenome.env`. It never goes in tfvars, tracked files, logs or PR text.
-- **Pin `alphagenome==0.10.0`** (released 8 Oct 2026). The client went from 0.8 to 0.10 in seven weeks.
+### Decisions now live
+| Decision | What runs | Why |
+| :--- | :--- | :--- |
+| **Atlas only in the cloud** | On S3 storage the only source is `atlas` (`CLOUD_SOURCES`); `avi-file` and `fake` are refused there | The Atlas fills gene, track and RNA LFC, which is what the panel and the evaluation need. One request per SNV, capped |
+| **No AVI in S3** | No AVI extract is kept in the cloud, so cloud rows have empty `avi`/`avi_raw` (`AG_AVI` absent) | The 88.5 GB download, and a ~2 GB chr20 extract, would sit in S3 for a score the cloud doesn't need. `avi-file` stays an offline source |
+| **Annotate on both routes** | The chromosome-scale and whole-genome routes end in the same VCF and run record, so `Plan_Annotate` → `Annotate` is one step after the quality gate on either route, with either caller | One place to opt in (`annotate=alphagenome` upload metadata), one place to fail |
+| **`--plan` sizing** | `tasks.py annotate --plan` sizes the job from the VCF's size and the cap (`plan_resources`: vCPUs, memory, timeout, disk); the state machine runs `Plan_Annotate` first and sizes `Annotate` from it. Nothing to annotate: the step is skipped | A whole genome and a smoke sample need different jobs; the formula lives in Python, where it's tested |
+| **Never fatal** | Every failure (planning, scoring, the VCF) is noted in the run record (`Annotate` part) and the run keeps its status | Annotation is an extra; CLOUD025 showed it: `Plan_Annotate` was refused and the run still succeeded |
 
-**Data:** there's no per-chromosome download. Getting chr20 is a one-off, and it's the maintainer's call:
-1. download the 88.5 GB ZIP (with ~264 GB free locally);
-2. `tabix -h … chr20 | bgzip`, then index it: an estimated **~2 GB** and ~190 M rows **(unverified)**;
-3. upload it to `reference/alphagenome/`, then delete the ZIP.
+**App** (`app/alphagenome_annotation.py`; `tasks.py annotate <id> <ref> --source atlas|api|avi-file|fake [--max-variants N] [--plan]`)
+- **Selection:** PASS calls; with bcftools csq consequences, only non-coding variants near a gene (UTR, splice
+  region, intron, non-coding); ranked by QUAL with ties spread by a stable hash; at most `ALPHAGENOME_MAX_VARIANTS`
+  (default 500, 1-20,000). The VCF is streamed and only the best N are held, so a whole genome selects in bounded
+  memory.
+- **Sources:** `atlas` (cloud and offline; `AG_GENE`, `AG_TOP_TRACK`, `AG_RNA_LFC` for the top gene), `api`
+  (`score_variant`, 1 Mb window: indels, capped), `avi-file` (offline only: `AG_AVI`, `AG_AVI_RAW` from a local
+  extract), `fake` (offline tests; `AG_SOURCE=fake`, not predictions).
+- **Outputs:** `variants/{id}.alphagenome.vcf.gz` (+ `.tbi`; INFO `AG_*` and `AG_SOURCE`) and
+  `stats/{id}/alphagenome.tsv` (columns `rank chrom pos ref alt kind qual avi avi_raw top_track gene rna_lfc csq
+  source`; empty cell = no value). Both carry the terms notice: the VCF as a header line, the TSV as its first
+  `#` line.
+- **Run record:** the `Annotate` part (`runs/{id}.provenance/Annotate.json`): status, `duration_seconds`,
+  `resources` (CPU seconds, peak memory), and `alphagenome` (source, model version, cap, selection counts,
+  `scored`, `not_scored` by kind, `not_in_service`, `api_calls`, the VCF's outcome, `terms`). The assembled record
+  copies `alphagenome` to its top level. Metrics: `Annotate` (duration, failures) and `AnnotateApiCalls`.
+- **Key handling:** an SSM SecureString (`/geyser/alphagenome/api-key`) mapped into the job by its job definition;
+  read only from the environment, never logged, redacted from client errors. Locally it comes from
+  `~/geyser-secrets/alphagenome.env`. It never goes in tfvars, tracked files, logs or PR text.
+- **Image:** `geyser-annotate` = `geyser-app` + the AlphaGenome client pinned at 0.10.0 (~301 MB compressed),
+  so no other stage pulls the client.
 
-The unofficial Hugging Face mirror could serve remote tabix queries, but it isn't the source of record.
+**Web UI:** the sample page's "Variants of interest" panel: gene, AVI (a dash on Atlas rows), top track, RNA LFC,
+the csq consequence and the source, with the research-only note and the terms notice. The hosted site shows the
+panel only: no AlphaGenome downloads (the web API's allowlist leaves them out).
 
-**State machine (infra PR, plan written first, applied with the maintainer):**
-- An optional `Annotate` step after `Quality_Gate`, chosen by `annotate: "alphagenome"` in the input or by upload metadata `annotate=alphagenome`, validated like `gate-profile`.
-- A Catch that only notes the failure.
-- Fargate at 0.25-0.5 vCPU for a few minutes, under $0.005 per run. No GPU and no NAT: the API is reached over the task's public IP.
-
-**Web UI:** a "Variants of interest" table: gene, AVI PHRED, |RNA LFC| and top track, the csq consequence, and the research-only note.
+### First cloud run
+`CLOUD026-20261109T204333Z-f7ddf042` (`annotate=alphagenome`, `smoke` gate profile) **SUCCEEDED in 7 min 7 s**:
+the Atlas scored **10 of 10 SNVs in 10 API calls**; the Annotate job ran in 2.9 s with a peak of 231 MiB; the panel
+is on the hosted page with the terms notice; the key appears 0 times in the logs. CLOUD023-025 found three IAM
+gaps on the way (fixed in place, see the release notes).
 
 ## Evaluation (the dissertation's 3.0 chapter)
 
 The harness is `scripts/eval_alphagenome.py` (tests in `tests/test_eval_alphagenome.py`, synthetic fixtures only).
+It reads the annotate stage's TSV or VCF as #207 writes them, and the run record (`--run-record`: the assembled
+record or its `Annotate` part; with `--plan`, a Fargate cost estimate for the stage). On an Atlas-only table (every
+cloud run) the default AVI score has no values: the report leaves it out and says why, and the csq-vs-AVI overlap
+table is marked not available. Scores from the `fake` backend are marked as test data. Every report starts and ends
+with the terms notice. The preregistered study that uses it is [docs/prereg/rp1-alphagenome.md](../prereg/rp1-alphagenome.md).
 
 1. **Do AlphaGenome's scores find fine-mapped eQTLs?**
    - **Positives:** the sample's calls (HG003 and HG005 chr20) that are fine-mapped eQTLs with PIP ≥ 0.9. The source is eQTL Catalogue's SuSiE credible sets for the GTEx v8 tissues (CC BY 4.0, GRCh38).
@@ -78,8 +97,8 @@ The harness is `scripts/eval_alphagenome.py` (tests in `tests/test_eval_alphagen
    - **Secondary score:** `AG_AVI`, reported with the **frequency confound** stated plainly. Fine-mapped eQTLs are mostly common, and AVI is trained to score common variants low. Unmatched on AF, AVI's AUROC measures frequency, not regulation; on synthetic data built that way the harness shows exactly this, with AUROC < 0.3 unmatched and ≈ 0.5 matched.
    - **Statistic:** the AUROC (Mann-Whitney, ties counted half) with a percentile bootstrap 95% CI (1,000 resamples, positives and controls resampled independently).
    - **Comparisons with baselines** (`--delong`): the primary score against each other score (e.g. CADD, phyloP, AVI, or the built-in `neg_tss_distance`), on the same positives and controls, by DeLong's paired test (fast midrank form; Sun & Xu 2014). The p-values are Holm-adjusted across the comparisons. For a distance-to-TSS baseline to compete, the controls are matched on allele frequency only (`--match af`). No combined model is fitted on AlphaGenome scores, because the terms forbid it.
-2. **Coverage and cost:** the share of called SNVs found in the AVI file; Atlas and API requests per run; time and $, from the run record.
-3. **Agreement:** a 2×2 table of csq protein-level consequence × AlphaGenome flag (default AVI PHRED ≥ 20), plus the variants only one of them flags.
+2. **Coverage and cost:** the share of selected variants scored (by source); Atlas and API requests per run; time, CPU and peak memory from the run record, and $ estimated from the `--plan` size (CLOUD026: 10/10 SNVs in 10 calls, 2.9 s, 231 MiB).
+3. **Agreement:** a 2×2 table of csq protein-level consequence × AlphaGenome flag (default AVI PHRED ≥ 20, so offline `avi-file` runs only; on Atlas output pass `--flag rna_lfc:abs>=X`), plus the variants only one of them flags.
 4. **The HG003/HG005 picture:** the AVI distribution of their PASS SNVs, and the PHRED ≥ 20 tail. Most calls are common, so most AVI values are low. That's expected, and it's reported as such.
 
 **Fetching the truth set** happens only after the maintainer has confirmed the terms. The command is in the script's docstring, for example:
@@ -95,6 +114,7 @@ It's per tissue, with columns `molecular_trait_id, variant, chromosome, position
 - **No mtDNA:** the Atlas and AVI have no chrM (relevant to mitochondrial disease questions).
 - **No population allele frequency in the pipeline** (no gnomAD). AVI already folds frequency in through its training, but the pipeline can't show AF beside it.
 - **SNVs only offline:** indels need the API, which is capped and has no published quota.
+- **No AVI in the cloud:** cloud rows carry the Atlas's gene-level scores only; AVI comparisons need an offline `avi-file` run.
 - **Scores can change:** AVI's model weights arrive "upon final publication", so the run record pins the AVI file by its SHA-256.
 - **Single-sequence, unphased model:** each variant is scored alone, not on the sample's haplotype.
 

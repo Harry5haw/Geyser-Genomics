@@ -34,7 +34,14 @@ interface contract (#207): for its TSV ``rna_lfc:abs`` then ``avi``; for its VCF
 - ``--af`` (optional): TSV ``chrom  pos  ref  alt  af`` of population allele frequencies (e.g. the ``maf`` of eQTL
   Catalogue's summary statistics for the same tissue), or an AF column in ``--annotated``. Without either, the
   controls are **not** matched on AF, and the report says so.
-- ``--run-record`` (optional): the annotate stage's run-record part (JSON), for API calls, time and cost.
+- ``--run-record`` (optional): the run record (``runs/{id}.provenance.json``) or its ``Annotate`` part: source, cap,
+  scored and unscored counts, API calls, time, CPU and peak memory. With ``--plan`` (the ``annotate --plan`` JSON
+  the state machine sized the job from), a Fargate cost estimate too.
+
+**Atlas-only tables** (every cloud run: no AVI is kept in S3) have no AVI values. With the default scores, the
+report leaves AVI out and says why, and marks the csq overlap (flagged by AVI) not available; pass ``--flag
+rna_lfc:abs>=X`` to flag by the Atlas's score instead. Rows from the ``fake`` backend are marked as test data.
+Every report starts and ends with AlphaGenome's Output Terms notice.
 
 **Comparisons** (``--delong``): the primary score against each other score, by DeLong's paired test for correlated
 AUROCs (DeLong, DeLong & Clarke-Pearson 1988, Biometrics 44:837; fast form: Sun & Xu 2014, IEEE Signal Process Lett
@@ -67,6 +74,8 @@ import json
 import math
 import random
 import sys
+
+from stage_breakdown import fargate_cost
 
 # Defaults per input format, from the annotate stage's interface contract (#207).
 DEFAULTS = {
@@ -131,15 +140,26 @@ AVI_CONFOUND_MATCHED = (
     "AVI is a deleteriousness score trained to separate common (gnomAD AF > 0.1%) from rarer variants. The controls "
     "here are matched on allele frequency, which removes the main confound, but AVI still is not a regulatory score."
 )
-RUN_RECORD_KEYS = (
+# The annotate stage's summary in the run record (#207: the Annotate part's "alphagenome", copied to the assembled
+# record's top level), as reported here.
+ALPHAGENOME_KEYS = (
     "source",
     "model_version",
-    "variants_selected",
-    "variants_scored",
+    "max_variants",
+    "scored",
+    "not_scored",
+    "not_scored_by_kind",
+    "not_in_service",
     "api_calls",
-    "seconds",
-    "cost_usd",
 )
+ANNOTATE_STAGE = "Annotate"
+# AlphaGenome's Output Terms: published summaries of its outputs carry this notice (app/alphagenome_annotation.py).
+TERMS_NOTICE = (
+    "By using this information, you agree to AlphaGenome Output Terms of Use found at "
+    "https://deepmind.google.com/science/alphagenome/output-terms"
+)
+# The cloud annotates from the Atlas only (#207: no AVI file in S3), so a cloud table has no AVI values.
+NO_VALUES = "no values in this annotation (Atlas-only outputs, as in the cloud, carry no AVI)"
 
 
 def open_text(path):
@@ -498,18 +518,33 @@ def overlap_table(variants, flag):
     return table
 
 
-def run_record_summary(path):
+def run_record_summary(path, plan_path=None):
+    """The annotation's figures from the run record: its Annotate part (runs/{id}.provenance/Annotate.json) or the
+    assembled record (runs/{id}.provenance.json). With plan_path (the --plan JSON the state machine sized the job
+    from: vcpus, memory_mib), also a Fargate cost estimate for the stage's time."""
     if not path:
         return None
     with open(path, encoding="utf-8") as fh:
         record = json.load(fh)
-    found = {}
-    for scope in (record, record.get("outputs") or {}, record.get("stats") or {}, record.get("annotate") or {}):
-        if isinstance(scope, dict):
-            for k in RUN_RECORD_KEYS:
-                if k in scope and k not in found:
-                    found[k] = scope[k]
-    return found
+    if record.get("task") == ANNOTATE_STAGE:  # the part
+        stage = record
+    else:  # the assembled record
+        stage = (record.get("stages") or {}).get(ANNOTATE_STAGE) or {}
+    summary = record.get("alphagenome") or stage.get("alphagenome") or {}
+    found = {k: summary[k] for k in ALPHAGENOME_KEYS if k in summary}
+    found["status"] = stage.get("status")
+    found["seconds"] = stage.get("duration_seconds")
+    resources = stage.get("resources") or {}
+    for k in ("cpu_seconds", "peak_memory_mib"):
+        found[k] = resources.get(k)
+    if plan_path:
+        with open(plan_path, encoding="utf-8") as fh:
+            plan = json.load(fh)
+        found["plan"] = {k: plan.get(k) for k in ("vcpus", "memory_mib", "timeout_seconds", "max_variants")}
+        memory_gb = plan["memory_mib"] / 1024 if plan.get("memory_mib") else None
+        cost = fargate_cost(found["seconds"], plan.get("vcpus"), memory_gb, storage_gb=plan.get("disk_gib"))
+        found["cost_usd_estimate"] = None if cost is None else round(cost, 6)
+    return {k: v for k, v in found.items() if v is not None}
 
 
 def evaluate(args):
@@ -530,6 +565,17 @@ def evaluate(args):
         raise ValueError(f"{TSS_SCORE} and --match {args.match} need --tss")
 
     variants = read_annotated(args.annotated, columns, names)
+    dropped = []
+    if not args.score:  # the defaults: leave out a score this annotation doesn't carry (Atlas only: no AVI)
+        kept = [spec for spec in score_specs if any(v["scores"].get(spec[0]) is not None for v in variants)]
+        if not kept:
+            raise ValueError(
+                f"{args.annotated}: none of the default scores ({', '.join(defaults['scores'])}) has a value"
+            )
+        dropped = [
+            {"score": n + (":abs" if a else ""), "reason": NO_VALUES} for n, a in score_specs if (n, a) not in kept
+        ]
+        score_specs = kept
     eqtls = read_eqtls(args.eqtl)
     tss = read_tss(args.tss) if args.tss else None
     af_table = read_af(args.af) if args.af else {}
@@ -656,16 +702,23 @@ def evaluate(args):
             "positives_short_of_controls": short,
         },
         "scores": scores,
+        "scores_left_out": dropped,
         "comparisons": comparisons,
         "gene_agreement": gene_agreement,
-        "overlap": {"flag": args.flag, **overlap_table(variants, flag)},
+        "overlap": (
+            {"flag": args.flag, **overlap_table(variants, flag)}
+            if any(v["scores"].get(flag[0]) is not None for v in variants)
+            else {"flag": args.flag, "available": False, "reason": NO_VALUES}
+        ),
         "coverage": {
             "variants_with_any_score": len(scored_any),
             "share_with_any_score": round(len(scored_any) / len(variants), 4) if variants else None,
             "per_score": {n: sum(1 for v in variants if v["scores"].get(n) is not None) for n in names},
             "by_source": sources,
         },
-        "run_record": run_record_summary(args.run_record),
+        "run_record": run_record_summary(args.run_record, args.plan),
+        "test_data": "fake" in sources,  # AG_SOURCE=fake: the offline backend's values, not predictions
+        "terms": TERMS_NOTICE,
     }
 
 
@@ -675,9 +728,13 @@ def fmt(x, digits=3):
 
 def to_markdown(result):
     c = result["counts"]
-    lines = [
-        "# AlphaGenome evaluation: fine-mapped eQTLs vs matched controls",
-        "",
+    lines = ["# AlphaGenome evaluation: fine-mapped eQTLs vs matched controls", "", f"*{result['terms']}*", ""]
+    if result.get("test_data"):
+        lines += [
+            "**Test data:** some scores come from the offline `fake` backend (AG_SOURCE=fake), not AlphaGenome.",
+            "",
+        ]
+    lines += [
         f"- Positives: {c['positives']} calls with PIP >= {result['min_pip']}; controls: {c['controls']} non-coding "
         f"calls in no credible set ({result['controls_per_case']} per positive, seed {result['seed']}).",
         f"- Matched on: {', '.join(result['matched_on'])}."
@@ -710,6 +767,8 @@ def to_markdown(result):
                 f"{fmt(cmp['se'])} | {fmt(cmp['z'], 2)} | {fmt(cmp['p'], 4)} | {fmt(cmp['p_holm'], 4)} | "
                 f"{cmp['positives']} / {cmp['controls']} |"
             )
+    for left in result.get("scores_left_out") or []:
+        lines += ["", f"`{left['score']}` left out: {left['reason']}."]
     caveats = [s["caveat"] for s in result["scores"] if s.get("caveat")]
     if caveats:
         lines += ["", f"**Caveat:** {caveats[0]}"]
@@ -722,15 +781,18 @@ def to_markdown(result):
             f"({g['positives_with_ag_gene']} had a gene).",
         ]
     o = result["overlap"]
-    lines += [
-        "",
-        f"**csq vs AlphaGenome** (AlphaGenome flag: `{o['flag']}`; {o['no_score']} calls without that score):",
-        "",
-        "| | AlphaGenome flags it | AlphaGenome doesn't |",
-        "| :--- | ---: | ---: |",
-        f"| csq: protein-level consequence | {o['csq_and_ag']} | {o['csq_only']} |",
-        f"| csq: none (non-coding) | {o['ag_only']} | {o['neither']} |",
-    ]
+    if o.get("available") is False:
+        lines += ["", f"**csq vs AlphaGenome:** not available: the flag `{o['flag']}` has {o['reason']}."]
+    else:
+        lines += [
+            "",
+            f"**csq vs AlphaGenome** (AlphaGenome flag: `{o['flag']}`; {o['no_score']} calls without that score):",
+            "",
+            "| | AlphaGenome flags it | AlphaGenome doesn't |",
+            "| :--- | ---: | ---: |",
+            f"| csq: protein-level consequence | {o['csq_and_ag']} | {o['csq_only']} |",
+            f"| csq: none (non-coding) | {o['ag_only']} | {o['neither']} |",
+        ]
     cov = result["coverage"]
     lines += [
         "",
@@ -742,7 +804,7 @@ def to_markdown(result):
     rr = result["run_record"]
     if rr:
         lines.append("**Run record:** " + ", ".join(f"{k} {v}" for k, v in rr.items()) + ".")
-    lines += ["", "AlphaGenome outputs: research use only, not for clinical decisions."]
+    lines += ["", "AlphaGenome outputs: research use only, not for clinical decisions.", "", result["terms"]]
     return "\n".join(lines) + "\n"
 
 
@@ -759,7 +821,11 @@ def main(argv=None):
         help="gene metadata TSV with gene_id and gene_name (e.g. eQTL Catalogue phenotype metadata), so AlphaGenome's "
         "gene names can be compared with the eQTL table's Ensembl IDs",
     )
-    p.add_argument("--run-record", help="the annotate stage's run-record part (JSON), for API calls, time, cost")
+    p.add_argument(
+        "--run-record",
+        help="the run record (runs/{id}.provenance.json) or its Annotate part, for calls, scored counts and time",
+    )
+    p.add_argument("--plan", help="the annotate --plan JSON (vcpus, memory_mib): with --run-record, a cost estimate")
     p.add_argument(
         "--score",
         action="append",
@@ -770,7 +836,9 @@ def main(argv=None):
         action="append",
         help="ROLE=NAME to rename an input column (roles: " + ", ".join(ROLES) + ")",
     )
-    p.add_argument("--flag", help="AlphaGenome flag for the csq overlap table (default: AVI PHRED >= 20)")
+    p.add_argument(
+        "--flag", help="AlphaGenome flag for the csq overlap table (default: AVI PHRED >= 20; none without AVI values)"
+    )
     p.add_argument("--min-pip", type=float, default=0.9)
     p.add_argument("--controls-per-case", type=int, default=5)
     p.add_argument("--bootstrap", type=int, default=1000)
