@@ -77,10 +77,10 @@ HEAT_TURBO = [
     "#4559cb", "#4680f6", "#3aa3fc", "#20c7df", "#19e3b9", "#38f491", "#71fe5f", "#a4fc3c",
     "#c8ef34", "#e9d539", "#fbb838", "#fe9029", "#f36315", "#e14109", "#c32503",
 ]  # fmt: skip
-# HEAT_CIVIDIS, the high-contrast alternative: cividis from 0 to 0.742, low = dark navy, high = khaki. Perceptually
-# uniform, lightness rises monotonically (reads in greyscale and with any colour-vision deficiency), and the light
-# end is trimmed so it still clears 2:1 against the beige stage.
-HEAT_CIVIDIS = ["#00224e", "#18376f", "#424e6c", "#5f636f", "#7b7a78", "#999277", "#b9ab6d"]
+# HEAT_CIVIDIS, the high-contrast (black-stage) alternative: cividis from 0.20 to 1, slate blue to yellow.
+# Perceptually uniform, lightness rises monotonically (reads in greyscale and with any colour-vision deficiency),
+# and the dark end is trimmed so it still clears 2:1 against the black stage.
+HEAT_CIVIDIS = ["#35456c", "#575d6d", "#757575", "#948e77", "#b7a96e", "#dbc75a", "#fee838"]
 HEAT = HEAT_TURBO  # the default ramp
 
 

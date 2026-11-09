@@ -69,14 +69,23 @@ def test_turbo_is_googles_turbo_sampled_from_010_to_090():
     assert figkit.HEAT_TURBO == [to_hex(turbo(0.10 + 0.80 * k / (n - 1))) for k in range(n)]
 
 
-@pytest.mark.parametrize("stage", ["#f3efe6", "#262626", "#ffffff"])  # --deep: light, dark, high contrast
+@pytest.mark.parametrize("stage", ["#f3efe6", "#262626", "#ffffff"])  # --deep: light, dark, retro (Turbo)
 def test_both_ends_of_turbo_clear_2_to_1_on_each_stage(stage):
     assert _contrast(figkit.HEAT_TURBO[0], stage) >= 2.0
     assert _contrast(figkit.HEAT_TURBO[-1], stage) >= 2.0
 
 
 def test_cividis_clears_2_to_1_on_the_high_contrast_stage():
-    assert min(_contrast(c, "#ffffff") for c in figkit.HEAT_CIVIDIS) >= 2.0  # data-theme="contrast": #fff
+    # data-theme="contrast" is the low-vision mode on a black stage.
+    assert min(_contrast(c, "#000000") for c in figkit.HEAT_CIVIDIS) >= 2.0
+
+
+def test_cividis_is_cividis_sampled_from_020_to_1():
+    from matplotlib import colormaps
+    from matplotlib.colors import to_hex
+
+    cividis, n = colormaps["cividis"], len(figkit.HEAT_CIVIDIS)
+    assert figkit.HEAT_CIVIDIS == [to_hex(cividis(0.20 + 0.80 * k / (n - 1))) for k in range(n)]
 
 
 def test_text_on_turbo_cells_is_whichever_contrasts_more():
