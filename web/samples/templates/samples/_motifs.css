@@ -1,10 +1,11 @@
 /* ---- Motion motifs (T2): DeepVariant net (_motif_dv.html), AlphaGenome strip (_motif_ag.html). Decorative,
 aria-hidden, transform/opacity only; static under prefers-reduced-motion (_site.css's last rule). Original artwork. ---- */
-.mdv{display:flex;align-items:center;gap:.75rem;margin:.5rem 0}.mdv-art{flex:none;overflow:visible}
+.mdv-art{flex:none;overflow:visible;margin-left:auto}
 .mdv line{stroke:var(--muted);stroke-width:1;opacity:.35}.mdv circle{transform-box:fill-box;transform-origin:center}
 .mdv .k1{fill:var(--blue)}.mdv .k2{fill:var(--red)}.mdv .k3{fill:var(--yellow)}.mdv .k4{fill:var(--green)}
 .mdv .ok{opacity:0}.mdv .ok circle{fill:var(--done)}.mdv .ok path{fill:none;stroke:var(--on-primary);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.mdv.done .ok{opacity:1;animation:mdv-in .7s .2s ease-out backwards}.mdv.done .net{animation:mdv-settle 1s ease-out}
+.mdv.done .ok{opacity:1;animation:mdv-in .6s 3s ease-out backwards}.mdv.done .net{animation:mdv-drift 3s ease-in-out}
+.mdv.done .nodes circle{animation:mdv-pulse 1.5s ease-in-out 2}.mdv.done line{animation:mdv-edge 1.5s ease-in-out 2}.mdv.done .e2 line{animation-delay:.75s}
 .mdv.running .net{animation:mdv-drift 7s ease-in-out infinite}.mdv.running .nodes circle{animation:mdv-pulse 2.4s ease-in-out infinite}
 .mdv.running .nodes circle:nth-child(3n+2){animation-delay:-.8s}.mdv.running .nodes circle:nth-child(3n){animation-delay:-1.6s}
 .mdv.running line{animation:mdv-edge 1.8s ease-in-out infinite}.mdv.running .e2 line{animation-delay:.9s}
@@ -12,7 +13,6 @@ aria-hidden, transform/opacity only; static under prefers-reduced-motion (_site.
 @keyframes mdv-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(2px,-1.5px)}50%{transform:translate(0,2px)}75%{transform:translate(-2px,-.5px)}}
 @keyframes mdv-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.3)}}
 @keyframes mdv-edge{0%,100%{opacity:.15}45%{opacity:1}}
-@keyframes mdv-settle{0%{transform:translate(2px,-1.5px)}100%{transform:none}}
 @keyframes mdv-in{0%{opacity:0;transform:scale(.6)}100%{opacity:1;transform:none}}
 .mdv .ok{transform-box:fill-box;transform-origin:center}
 :root[data-theme=contrast] .mdv line{stroke:#fff}:root[data-theme=contrast] .mdv :is(.k1,.k3){fill:#ffd600}:root[data-theme=contrast] .mdv :is(.k2,.k4){fill:#fff}

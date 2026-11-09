@@ -145,6 +145,24 @@
   if (document.prerendering) document.addEventListener("prerenderingchange", start, { once: true });
   else start();
 
+  // The DeepVariant card's motif (_motif_dv.html): a finished run plays it once on load (CSS); hovering the card, or
+  // focusing inside it, plays it again: re-adding .done restarts its animations. Decorative; nothing under
+  // prefers-reduced-motion (the CSS stops every animation there).
+  for (const card of document.querySelectorAll(".dv-card")) {
+    const art = card.querySelector(".mdv.done");
+    if (!art) continue;
+    let last = performance.now();
+    const replay = () => {
+      if (performance.now() - last < 3800) return; // not while it is still playing
+      last = performance.now();
+      art.classList.remove("done");
+      void art.getBoundingClientRect();
+      art.classList.add("done");
+    };
+    card.addEventListener("mouseenter", replay);
+    card.addEventListener("focusin", replay);
+  }
+
   // Browsers without Speculation Rules (Firefox, Safari): prefetch a same-site page on hover or touch,
   // so the click finds it in the cache. Downloads and the current page are skipped.
   if (!(HTMLScriptElement.supports && HTMLScriptElement.supports("speculationrules"))) {

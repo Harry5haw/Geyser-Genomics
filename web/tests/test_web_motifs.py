@@ -10,7 +10,6 @@ from samples.status import deepvariant_state
 from .test_web_alphagenome import fixture_text, record, sample_with
 
 TEMPLATES = os.path.join(os.path.dirname(__file__), "..", "samples", "templates", "samples")
-DV_CREDIT = "Variant calling: DeepVariant (Google)"
 
 
 def read(name):
@@ -35,18 +34,49 @@ def test_the_deepvariant_motif_only_for_runs_deepvariant_called(rec, run_state, 
     assert deepvariant_state(rec, run_state) == expected
 
 
-def test_a_deepvariant_run_shows_the_settled_net_with_its_credit(client, storage):
+def test_a_deepvariant_run_has_its_own_card_with_the_motif_by_the_heading(client, storage):
+    rec = record(stats={"bcftools_stats": {"records": 12, "snps": 10, "indels": 2}})
+    rec["stages"]["DeepVariant"] = {
+        "status": "Success",
+        "started": "2026-11-04T10:01:00Z",
+        "duration_seconds": 754.0,
+        "resources": {"cpu_seconds": 3000.0},
+        "make_examples": {"split": True, "parts": 16, "examples": 2230000, "part_seconds": [1290.0, 1920.0]},
+        "gpu": {"model": "NVIDIA L4", "utilization_mean_pct": 71},
+    }
+    sample_with(storage, run_record=rec)
+    page = client.get("/samples/S1/").content.decode()
+    card = page[page.index('<section class="panel dv-card"') :]
+    card = card[: card.index("</section>")]
+    assert re.search(r'<div class="mhead"><h2 id="deepvariant-heading">Variant calling · DeepVariant</h2>\s*<svg', card)
+    assert 'class="mdv-art mdv done"' in card and "calling…" not in card
+    for fact in (
+        "16 parts on CPU, 21 m 30 s–32 m 00 s each",
+        "2,230,000",
+        "GPU NVIDIA L4, 71% mean utilisation",
+        "No: DeepVariant made the calls",
+        "12 (10 SNPs, 2 indels)",
+        "12 m 34 s",
+        "50 m 00 s",
+    ):
+        assert fact in card, fact
+    assert "DeepVariant is Google's open-source caller; Geyser is independent." in card
+    status = page[page.index('id="run-status"') :]
+    assert "mdv" not in status[: status.index("</section>")]  # not in the run-status card any more
+
+
+def test_an_older_deepvariant_record_shows_what_it_has(client, storage):
     rec = record()
     rec["stages"]["DeepVariant"] = {"status": "Success", "started": "2026-11-04T10:01:00Z"}
     sample_with(storage, run_record=rec)
     page = client.get("/samples/S1/").content.decode()
-    assert '<p class="mdv done">' in page and DV_CREDIT in page and "calling…" not in page
+    assert 'id="deepvariant"' in page and "No: DeepVariant made the calls" in page and "make_examples" not in page
 
 
-def test_a_bcftools_run_has_no_deepvariant_motif(client, storage):
+def test_a_bcftools_run_has_no_deepvariant_card(client, storage):
     sample_with(storage, run_record=record())
     page = client.get("/samples/S1/").content.decode()
-    assert "mdv" not in page.split("<style>")[0] + page.split("</style>")[-1] and DV_CREDIT not in page
+    assert 'id="deepvariant"' not in page and "dv-card" not in page.split("</style>")[-1]
 
 
 def test_the_alphagenome_panel_has_the_strip_its_credit_and_the_terms_notice(client, storage):
@@ -81,3 +111,13 @@ def test_motif_css_is_transform_and_opacity_only_and_sample_pages_only():
 def test_the_motif_comments_never_reach_the_page(name):
     # {# #} is one line only in Django: a multi-line note must be {% comment %}
     assert "{#" not in read(name)
+
+
+def test_a_finished_run_plays_once_then_shows_the_tick_and_hover_replays_it():
+    css = read("_motifs.css")
+    assert ".mdv.done .net{animation:mdv-drift 3s ease-in-out}" in css  # one iteration, not infinite
+    assert ".mdv.done .ok{opacity:1;animation:mdv-in .6s 3s" in css  # the tick after the play
+    assert "infinite" not in "".join(rule for rule in css.split("}") if ".mdv.done" in rule)
+    with open(os.path.join(TEMPLATES, "..", "..", "static", "samples", "geyser.js"), encoding="utf-8") as fh:
+        js = fh.read()
+    assert '".dv-card"' in js and '"mouseenter"' in js and '"focusin"' in js

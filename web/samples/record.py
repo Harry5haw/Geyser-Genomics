@@ -66,3 +66,56 @@ def record_view(record):
         status=record.get("status"),
         run_name=record.get("run_name"),
     )
+
+
+def _span(seconds):
+    from .templatetags.geyser import duration
+
+    return duration(seconds)
+
+
+def deepvariant_view(record, state):
+    """The DeepVariant card's facts, from the run record, when DeepVariant made (or is making) this run's calls.
+
+    state: SampleView.deepvariant ("running" | "done" | None). Every fact is optional: older records have no
+    make_examples or GPU notes (#251). DeepVariant's VCF stats are over PASS calls (#147)."""
+    if not state:
+        return None
+    record = record or {}
+    part = (record.get("stages") or {}).get("DeepVariant") or {}
+    facts = []
+    version = (record.get("tools") or {}).get("deepvariant")
+    model = part.get("model_type") or (part.get("make_examples") or {}).get("model_type")
+    if version or model:
+        facts.append(("Model", " ".join(x for x in (f"DeepVariant {version}" if version else None, model) if x)))
+    me = part.get("make_examples") or {}
+    if me.get("split"):
+        secs = [s for s in me.get("part_seconds") or [] if isinstance(s, (int, float))]
+        each = f", {_span(min(secs))}–{_span(max(secs))} each" if secs else ""
+        facts.append(("make_examples", f"{me.get('parts')} parts on CPU{each}"))
+        if me.get("examples") is not None:
+            facts.append(("Examples", f"{me['examples']:,}"))
+    elif me.get("shards"):
+        facts.append(("make_examples", f"{me['shards']} shards in one job"))
+    gpu = part.get("gpu") or {}
+    if gpu.get("model"):
+        util = gpu.get("utilization_mean_pct")
+        facts.append(
+            ("call_variants", f"GPU {gpu['model']}" + (f", {util}% mean utilisation" if util is not None else ""))
+        )
+    if state == "done":
+        facts.append(("bcftools fallback", "No: DeepVariant made the calls"))
+        stats = (record.get("stats") or {}).get("bcftools_stats") or {}
+        if stats.get("records") is not None:
+            kinds = ", ".join(
+                f"{stats[k]:,} {label}"
+                for k, label in (("snps", "SNPs"), ("indels", "indels"))
+                if stats.get(k) is not None
+            )
+            facts.append(("PASS calls", f"{stats['records']:,}" + (f" ({kinds})" if kinds else "")))
+        if part.get("duration_seconds") is not None:
+            facts.append(("Time", _span(part["duration_seconds"])))
+        res = part.get("resources") or {}
+        if res.get("cpu_seconds") is not None:
+            facts.append(("CPU time", _span(res["cpu_seconds"])))
+    return {"state": state, "facts": facts}
