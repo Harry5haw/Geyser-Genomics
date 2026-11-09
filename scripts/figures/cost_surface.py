@@ -191,13 +191,13 @@ def _heatmap(ax, cells, xs, ys, value, fmt, title, cmap, ring):
     marks = dict(ring)
     for (x, y), c in cells.items():
         i, j = ys.index(y), xs.index(x)
-        dark = hi > lo and (value(c) - lo) / (hi - lo) > 0.55
+        ink = figkit.ink_on((value(c) - lo) / (hi - lo) if hi > lo else 1.0)
         lines = [fmt(value(c))]
         lines += [f"n={c['n']}"] if c["n"] > 1 else []
         lines += [marks[(x, y)]] if (x, y) in marks else []
-        ax.text(j, i, "\n".join(lines), ha="center", va="center", fontsize=7.5, color="#ffffff" if dark else figkit.INK)
+        ax.text(j, i, "\n".join(lines), ha="center", va="center", fontsize=7.5, color=ink)
         if (x, y) in marks:
-            ax.add_patch(_ring(j, i, "#ffffff" if dark else figkit.INK))
+            ax.add_patch(_ring(j, i, ink))
     ax.set_xticks(range(len(xs)), [_vcpu_label(x) for x in xs])
     ax.set_yticks(range(len(ys)), [str(y) for y in ys])
     ax.set_xlabel("align vCPUs")
@@ -327,7 +327,7 @@ def plot_surface(cells, xs, ys, out, title=None):
     for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
         axis.set_pane_color((1, 1, 1, 0))
         axis._axinfo["grid"]["color"] = figkit.GRID
-    ax.set_title((title + ": " if title else "") + "cost (height), turnaround (colour, darker = slower)", fontsize=9)
+    ax.set_title((title + ": " if title else "") + "cost (height), turnaround (colour, lighter = slower)", fontsize=9)
     written = figkit.save(fig, out)
     plt.close(fig)
     return written

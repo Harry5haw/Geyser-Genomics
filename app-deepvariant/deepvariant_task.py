@@ -985,6 +985,7 @@ def _call_variants(sample_id, reference_name, pangenome=None):
             f"  examples sent to call_variants: {counts['examples']}; "
             f"called by the small model in make_examples (CPU): {counts['small_model_calls']}"
         )
+        provenance.note(make_examples={"split": False, "shards": shards, "resumed": bool(resumed), **counts})
         missing = [s for s in step_metrics if s not in timings and not (resumed and s == "make_examples")]
         if missing:
             print(f"WARNING: no timing found for {missing}; {os.path.basename(cmd[0])} output format may have changed")
