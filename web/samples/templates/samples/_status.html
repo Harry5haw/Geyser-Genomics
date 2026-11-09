@@ -19,7 +19,7 @@
       <div class="s-{{ st.name }} {{ st.state }}">
         <small>Stage {{ forloop.counter }}</small>
         <strong>{{ st.label }}</strong>
-        <p><span class="pill s-{{ st.name }} {{ st.state }}">{% include "samples/_dna.html" with state=st.state name="" label=st.label %}{{ st.state }}</span><span>{{ st.duration|duration }}</span></p>
+        <p><span class="pill s-{{ st.name }} {{ st.state }}">{{ st.state }}</span><span>{{ st.duration|duration }}</span></p>
       </div>
     {% endfor %}
   </div>

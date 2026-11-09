@@ -25,11 +25,11 @@ def test_the_sprite_is_on_the_pages_that_show_stage_status_only(client, storage)
     listing = client.get("/").content.decode()
     detail = client.get("/samples/S1/").content.decode()
     figures = client.get("/figures/").content.decode()
-    for page in (listing, detail):
-        assert page.count('<symbol id="dna"') == 1 and page.count('<symbol id="dna-break"') == 1
-    assert "<symbol" not in figures  # the figures page has no stage status (and the tightest size budget)
-    # the sample page: one helix per stage in the track and one in each stage card's pill, each with a text label
-    assert len(re.findall(r'<svg class="dna ', detail)) == 6 and "Quality control" in detail
+    assert detail.count('<symbol id="dna"') == 1 and detail.count('<symbol id="dna-break"') == 1
+    assert "<symbol" not in figures and "<symbol" not in listing  # no stage helix there (the pills are text)
+    # the sample page: one helix per stage in the track; the stage pills are text only (the user's call)
+    assert len(re.findall(r'<svg class="dna ', detail)) == 3 and "Quality control" in detail
+    assert '<svg class="dna' not in listing
 
 
 def test_motion_is_paused_unless_running_and_stops_under_reduced_motion():
