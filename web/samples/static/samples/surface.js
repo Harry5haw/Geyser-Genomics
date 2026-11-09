@@ -5,13 +5,16 @@
 (() => {
   "use strict";
 
-  // The sequential ramp (dataviz reference, one hue): dark = low, receding into the page; light = high.
-  const RAMP = ["#0d366b", "#104281", "#184f95", "#1c5cab", "#256abf", "#2a78d6", "#3987e5", "#5598e7",
-    "#6da7ec", "#86b6ef", "#9ec5f4", "#b7d3f6", "#cde2fb"].map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255));
-  const ramp = (t) => {
-    t = Math.min(1, Math.max(0, t)) * (RAMP.length - 1);
-    const i = Math.min(RAMP.length - 2, Math.floor(t)), f = t - i;
-    return [0, 1, 2].map((k) => RAMP[i][k] + (RAMP[i + 1][k] - RAMP[i][k]) * f);
+  // The heat ramp comes with the grid (figures.py HEAT, cividis: dark blue-grey = low, yellow = high), so the 3D
+  // view, the poster, the colour bar and the 2D figures share one value -> colour mapping.
+  const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const heat = (stops) => {
+    const R = stops.map(rgb);
+    return (t) => {
+      t = Math.min(1, Math.max(0, t)) * (R.length - 1);
+      const i = Math.min(R.length - 2, Math.floor(t)), f = t - i;
+      return [0, 1, 2].map((k) => R[i][k] + (R[i + 1][k] - R[i][k]) * f);
+    };
   };
   const LINE = [0.18, 0.54, 0.41]; // the table frame colour (#2f8a68): hairlines one step off the surface
   const H = 0.75, D = 0.9; // terrain height and half depth, in world units (x spans -1..1)
@@ -40,7 +43,7 @@
   const fmt = (v) => (v === 0 ? "0" : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2));
 
   function build(data) {
-    const xs = data.x.values, rows = data.rows.names, vals = data.values, n = rows.length;
+    const xs = data.x.values, rows = data.rows.names, vals = data.values, n = rows.length, ramp = heat(data.ramp);
     const x0 = xs[0], x1 = xs[xs.length - 1] === x0 ? x0 + 1 : xs[xs.length - 1];
     const top = data.z.clip || data.z.max || 1, base = data.z.base || 0, span = top - base || 1;
     const wx = (v) => -1 + ((v - x0) / (x1 - x0)) * 2;
