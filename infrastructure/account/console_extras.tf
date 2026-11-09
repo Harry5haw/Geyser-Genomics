@@ -47,17 +47,6 @@ resource "aws_accessanalyzer_analyzer" "account" {
   type          = "ACCOUNT"
 }
 
-# myApplications: one console page with the project's cost, alarms and resources. AWS groups resources
-# by the application's awsApplication tag, which the main stack adds through default_tags once it knows
-# it: after this stack is applied, set aws_application_tag in terraform.tfvars to
-# `terraform -chdir=infrastructure/account output aws_application_tag`, then plan the main stack
-# (in-place tag updates only).
-resource "aws_servicecatalogappregistry_application" "geyser" {
-  name        = "${var.project_name}-${var.environment}"
-  description = "Geyser Genomics: FASTQ to VCF on S3, Lambda, Step Functions and AWS Batch."
-}
-
-output "aws_application_tag" {
-  description = "Set the main stack's aws_application_tag to this map for myApplications."
-  value       = aws_servicecatalogappregistry_application.geyser.application_tag
-}
+# No myApplications (AppRegistry): AWS put AppRegistry in maintenance mode and closed it to new customers
+# on 30 July 2026, so creating the application fails with 403 (9 Nov 2026). Resource Groups and the
+# Project/Environment/Stage cost allocation tags cover the same grouping.

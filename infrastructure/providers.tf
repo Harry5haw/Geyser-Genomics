@@ -20,14 +20,10 @@ terraform {
 provider "aws" {
   region = "eu-west-2"
 
-  # Every resource gets these (#64), so Cost Explorer, Resource Groups and myApplications can group the
-  # project. Project and Environment become cost allocation tags once the user activates them in
-  # Billing. var.aws_application_tag adds the myApplications tag once the AppRegistry application exists
-  # (infrastructure/account/, a separate user-applied stack).
+  # Every resource gets these (#64), so Cost Explorer and Resource Groups can group the project. Project
+  # and Environment become cost allocation tags once the user activates them in Billing. (No
+  # myApplications tag: AWS closed AppRegistry to new customers on 30 July 2026.)
   default_tags {
-    tags = merge(
-      { Project = var.project_name, Environment = var.environment, ManagedBy = "Terraform" },
-      var.aws_application_tag,
-    )
+    tags = { Project = var.project_name, Environment = var.environment, ManagedBy = "Terraform" }
   }
 }

@@ -191,13 +191,6 @@ variable "intermediate_expiry_days" {
   }
 }
 
-
-variable "aws_application_tag" {
-  description = "The myApplications tag, e.g. { awsApplication = \"arn:...\" }, from `terraform -chdir=account output aws_application_tag` (the user-applied account stack). Empty until then; added to every resource through default_tags."
-  type        = map(string)
-  default     = {}
-}
-
 variable "alignment_expiry_days" {
   description = "Days before alignments/ (CRAM + index) expire (storage_lifecycle.tf): the break-even of storing a CRAM vs re-aligning its raw reads, 178-248 days on the six real chr20 runs (scripts/lifecycle_break_even.py). 0 turns the rule off (alignments kept forever)."
   type        = number

@@ -4,7 +4,7 @@
 #   terraform -chdir=infrastructure/account init -backend-config=backend-account.hcl
 #   AWS_PROFILE=default terraform -chdir=infrastructure/account plan -var-file=../terraform.tfvars -out=account.tfplan
 #
-# Why separate from infrastructure/: Cost Explorer, IAM Access Analyzer and AppRegistry are outside the
+# Why separate from infrastructure/: Cost Explorer and IAM Access Analyzer are outside the
 # geyser-claude permissions boundary, which can't even read them. In the dev state, every geyser-claude
 # plan would fail refreshing these resources. Here only the user plans and applies; geyser-claude never
 # touches this state.
