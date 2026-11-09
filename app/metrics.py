@@ -22,6 +22,11 @@ process runs one stage (always in Batch and run_local.py). A stage killed from o
 the Batch attempt timeout) never reaches the measurement and logs no usage; Batch's own status reason
 says why it stopped. ``getrusage`` is Unix-only: on Windows there is no usage, only Duration.
 
+Counts (``record_counts``): one value per kind under a single dimension, e.g. scripts/reconcile.py
+``--publish-metrics`` (#O13): ``ReconcileProblems`` by ``Problem`` (``LoneMate``, ``Ignored`` ..., ``Total``).
+Every kind is sent each time, zeros included, so a graph shows 0 rather than a gap. Locally they are one
+JSON line each without task/sample_id/status, so the web UI's stage reader (web/samples/status.py) skips them.
+
 DeepVariant's step metrics (``DeepVariant.CallVariants`` ...) also carry GPU utilisation and peak GPU memory
 when the job had a GPU (#139; see deepvariant_task.py).
 """
@@ -88,13 +93,15 @@ class NullMetrics:
     def record(self, task_name: str, sample_id: str, status: str, duration_seconds: float, usage=None) -> None:
         pass
 
+    def record_counts(self, metric_name: str, dimension: str, counts: dict) -> None:
+        pass
+
 
 class LocalMetrics:
     def __init__(self, path: str):
         self.path = path
 
     def record(self, task_name, sample_id, status, duration_seconds, usage=None):
-        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         entry = {
             "timestamp": time.time(),
             "task": task_name,
@@ -103,8 +110,27 @@ class LocalMetrics:
             "duration_seconds": round(duration_seconds, 3),
         }
         entry.update({k: v for k, v in (usage or {}).items() if k in USAGE_METRICS})
+        self._append([entry])
+
+    def record_counts(self, metric_name, dimension, counts):
+        now = time.time()
+        self._append(
+            [
+                {
+                    "timestamp": now,
+                    "metric": metric_name,
+                    "dimensions": {dimension: kind},
+                    "value": value,
+                    "unit": "Count",
+                }
+                for kind, value in counts.items()
+            ]
+        )
+
+    def _append(self, entries):
+        os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
+            fh.write("".join(json.dumps(e) + "\n" for e in entries))
 
 
 class CloudWatchMetrics:
@@ -139,6 +165,19 @@ class CloudWatchMetrics:
                 }
             )
         self._client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=data)
+
+    def record_counts(self, metric_name, dimension, counts):
+        data = [
+            {
+                "MetricName": metric_name,
+                "Dimensions": [{"Name": dimension, "Value": kind}],
+                "Value": value,
+                "Unit": "Count",
+            }
+            for kind, value in counts.items()
+        ]
+        for start in range(0, len(data), 1000):  # PutMetricData takes at most 1,000 values per call
+            self._client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=data[start : start + 1000])
 
 
 def metrics_from_env(env=None):

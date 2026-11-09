@@ -27,6 +27,18 @@ With --state-machine-arn, more than one open run for a sample is flagged: they w
 Without it, open runs are not checked, so a sample that is still running shows as not started or
 incomplete: run with the state machine ARN before trusting --fail-on-problems.
 
+Metrics (--publish-metrics, O13)
+  The problem count by kind, as the metric ReconcileProblems with the dimension Problem, through
+  app/metrics.py: CloudWatch (namespace GeyserGenomics) with --bucket, metrics/metrics.jsonl with
+  --local-dir; otherwise (and with METRICS_BACKEND set) metrics_from_env decides. One value per kind,
+  zeros included, plus Total (= problem_count):
+    Ignored Refused WillFail        upload problems (Ignored: non-.gz uploads that start nothing)
+    LoneMate BothLayouts            raw reads that can't form one sample (LoneMate: the trigger waits)
+    NotStarted Incomplete RunFailed runs that didn't start or didn't finish
+    ConcurrentRuns                  duplicate runs for one sample (the trigger's dedupe missed); needs the ARN
+  Publishing is best effort: a failure is a warning and never changes the exit code. The script stays
+  run-by-hand (or by any scheduler you point at it); nothing in AWS runs it.
+
 Usage:
   python scripts/reconcile.py --local-dir local_bucket
   python scripts/reconcile.py --bucket <data lake bucket> --state-machine-arn <arn>
@@ -48,6 +60,7 @@ for _sub in ("app", "app-deepvariant"):
         sys.path.insert(0, _path)
 
 import provenance  # noqa: E402
+from metrics import metrics_from_env  # noqa: E402
 from storage import LocalStorage, S3Storage, storage_from_env  # noqa: E402
 from tasks import ALIGNMENT_FORMS, MATES, PAIRED, SINGLE, keys_for, keys_of, legacy_qc_keys  # noqa: E402
 
@@ -80,6 +93,47 @@ def load_trigger():
 EXTRA_LEGEND = {"csq": "annotated VCF", "dv": "DeepVariant VCF", "pg": "pangenome DeepVariant VCF"}
 # Columns shown only once some sample has the output: most references have no gene models.
 OPTIONAL_LABELS = {"csq"}
+
+# The problem kinds, in report order; each is published as a metric even at 0 (see the module docstring).
+UPLOAD_PROBLEMS = ("ignored", "refused", "will fail")
+SAMPLE_PROBLEMS = ("lone mate", "both layouts", "not started", "incomplete", "run failed", "concurrent runs")
+PROBLEM_METRIC = "ReconcileProblems"
+PROBLEM_DIMENSION = "Problem"
+
+
+def metric_kind(problem: str) -> str:
+    """'lone mate' -> 'LoneMate': CloudWatch dimension values without spaces."""
+    return "".join(word.capitalize() for word in problem.split())
+
+
+def problem_counts(result: dict) -> dict:
+    """{kind: count} for every known kind (zeros included) and any other kind found, plus Total."""
+    found = Counter(p["problem"] for p in result["upload_problems"])
+    found.update(r["problem"] for r in result["samples"] if r["problem"])
+    kinds = list(UPLOAD_PROBLEMS + SAMPLE_PROBLEMS) + sorted(set(found) - set(UPLOAD_PROBLEMS + SAMPLE_PROBLEMS))
+    counts = {metric_kind(k): found.get(k, 0) for k in kinds}
+    counts["Total"] = result["problem_count"]
+    return counts
+
+
+def metrics_backend(args, env=None):
+    """The metrics backend for --publish-metrics: local beside --local-dir, CloudWatch in --region with --bucket,
+    else app/metrics.py's own choice. METRICS_BACKEND, when set, always wins."""
+    env = dict(os.environ if env is None else env)
+    if args.local_dir:
+        env["STORAGE_BACKEND"], env["LOCAL_STORAGE_DIR"] = "local", args.local_dir
+    elif args.bucket:
+        env["STORAGE_BACKEND"], env["AWS_REGION"] = "s3", args.region
+    return metrics_from_env(env)
+
+
+def publish_counts(counts: dict, backend) -> bool:
+    try:
+        backend.record_counts(PROBLEM_METRIC, PROBLEM_DIMENSION, counts)
+    except Exception as err:  # noqa: BLE001 - best effort: a metrics outage never fails the reconcile
+        print(f"WARNING: couldn't publish {PROBLEM_METRIC}: {type(err).__name__}: {err}", file=sys.stderr)
+        return False
+    return True
 
 
 def extra_outputs() -> dict:
@@ -367,10 +421,15 @@ def parse_args(argv=None):
     )
     p.add_argument("--json", action="store_true", help="Print the result as JSON")
     p.add_argument("--fail-on-problems", action="store_true", help="Exit 1 if any problem is found")
+    p.add_argument(
+        "--publish-metrics",
+        action="store_true",
+        help="Also publish the problem count by kind as the ReconcileProblems metric (see the module docstring)",
+    )
     return p.parse_args(argv)
 
 
-def main(argv=None, storage=None, sfn_client=None) -> int:
+def main(argv=None, storage=None, sfn_client=None, metrics=None) -> int:
     args = parse_args(argv)
     if storage is None:
         if args.local_dir:
@@ -399,6 +458,13 @@ def main(argv=None, storage=None, sfn_client=None) -> int:
         print(json.dumps(result, indent=2))
     else:
         print_report(result)
+    if args.publish_metrics:
+        counts = problem_counts(result)
+        if publish_counts(counts, metrics if metrics is not None else metrics_backend(args)):
+            print(
+                f"Published {PROBLEM_METRIC}: " + ", ".join(f"{k} {v}" for k, v in counts.items() if v or k == "Total"),
+                file=sys.stderr,
+            )
     return 1 if args.fail_on_problems and result["problem_count"] else 0
 
 

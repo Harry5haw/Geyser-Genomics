@@ -173,7 +173,12 @@ small for the sample (e.g. 0.25 vCPU / 512 MiB for align) still fails, in its jo
   ```bash
   python scripts/reconcile.py --bucket <data-lake>                    # add $SFN_ARN to see open runs too
   python scripts/reconcile.py --bucket <data-lake> --json --fail-on-problems
+  python scripts/reconcile.py --bucket <data-lake> --publish-metrics  # CloudWatch GeyserGenomics/ReconcileProblems
   ```
+  `--publish-metrics` sends the problem count by kind (dimension `Problem`: `LoneMate`, `Ignored` (non-.gz
+  uploads that start nothing), `ConcurrentRuns` (duplicate runs, needs `$SFN_ARN`), ..., `Total`), zeros included.
+  It is best effort: a CloudWatch error is a warning. With `--local-dir` the counts go to `metrics/metrics.jsonl`.
+  Nothing runs it on a schedule; it is run by hand.
 - **Logs:** Batch jobs in `/aws/batch/geyser-<env>`, the trigger in `/aws/lambda/geyser-sfn-trigger-<env>`
   (kept 30 days, `log_retention_days`).
 
@@ -269,6 +274,25 @@ aws ecr put-image --repository-name geyser-app --image-tag dev-local --image-man
 - ECR keeps the 20 most recent images, so very old rollback tags expire.
 - The run record's `app_version` is the tag the job was given (`dev-local`). The exact build is the
   `main-<sha>` that `dev-local` pointed to at the time.
+
+## The hosted site (v1.4, not live yet)
+
+The site is static pages in a private S3 bucket behind CloudFront (`infrastructure/web/`, which the user plans and
+applies). A small API Lambda serves uploads, status and downloads (`web_api.tf`). The `geyser-publish` job
+(`publish.tf`) writes the pages.
+- **Per run:** with `publish_enabled = true`, every run ends by publishing its sample's pages and the index, whether
+  it succeeded or failed: a failed run's page shows which stage failed. The only exception is a run that failed
+  before any job (a bad profile or reference). A failed publish never changes the run's outcome.
+- **Bootstrap, once per new site:** `python manage.py publish --all` (in the `geyser-publish` image, or from a
+  checkout for `/figures/`). It writes every sample's pages; the per-run publishes then keep it current.
+- **After a publish image whose inline CSS or scripts changed:**
+  1. run `publish --all`;
+  2. copy `csp-hashes.json`'s `script` and `style` lists from the site's root into the web stack's `script_hashes` /
+     `style_hashes`;
+  3. apply the web stack (the response-headers policy in place).
+  Until then, the pages' inline blocks are blocked by the CSP.
+- **Uploads** need the token in the SSM SecureString `web_upload_token_parameter`, which the user puts in. Rotate it
+  after sharing it for a demo.
 
 ## Cost guardrails, in brief
 
