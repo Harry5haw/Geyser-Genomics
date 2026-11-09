@@ -131,4 +131,14 @@ button{width:100%;padding:.75rem 1.25rem;font:500 1rem/1.2 var(--sans);color:var
 button:hover{background:var(--primary-hover)}button.upload{background:var(--primary)}button.upload:hover{background:var(--primary-hover)}
 .note{border-left:.35rem solid var(--warn-line);padding:.5rem .9rem;background:var(--warn-bg);border-radius:.5rem;font-size:.9rem}
 .note,.msg{overflow-wrap:anywhere}
+.brand{position:relative}.erupt{position:absolute;left:0;top:50%;width:40px;height:40px;margin-top:-20px;overflow:visible;pointer-events:none}
+.erupt>use,.erupt>circle{opacity:0;transform-box:fill-box;transform-origin:center}
+.brand:is(:hover,:focus-visible) .erupt>*{animation:erupt .9s cubic-bezier(.2,.8,.3,1) var(--d,0s) both}
+.brand:is(:hover,:focus-visible) img{animation:vent .35s ease-out;transform-origin:10% 85%}
+.e1{--x:-11px;--y:-30px;--r:-40deg}.e2{--x:1px;--y:-38px;--r:25deg;--d:.06s}.e3{--x:12px;--y:-29px;--r:55deg;--d:.12s}
+.e4{--x:-6px;--y:-22px;--d:.03s}.e5{--x:7px;--y:-25px;--d:.09s}.e6{--x:-15px;--y:-14px;--d:.15s}.e7{--x:15px;--y:-17px;--d:.18s}
+@keyframes erupt{0%{opacity:0;transform:scale(.3)}20%{opacity:1}70%{opacity:1}100%{opacity:0;transform:translate(var(--x),var(--y)) rotate(var(--r,0deg)) scale(1)}}
+@keyframes vent{30%{transform:translateY(1px) scaleY(.95)}65%{transform:translateY(-1px) scaleY(1.02)}}
+:root[data-theme=contrast] .erupt>*{stroke:#FFD600}:root[data-theme=contrast] .erupt>circle{fill:#00E5FF}
+@media (max-width:576px){.erupt{width:32px;height:32px;margin-top:-16px}}
 @media (prefers-reduced-motion:reduce){*,::before,::after{animation:none!important;transition:none!important}}
