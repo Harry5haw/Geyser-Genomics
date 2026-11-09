@@ -6,6 +6,9 @@
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#faf8f3">
   <title>{% block title %}Geyser Genomics{% endblock %}</title>
+  <meta property="og:title" content="Geyser Genomics">
+  <meta property="og:description" content="An open-source cloud pipeline from DNA reads (FASTQ) to variants (VCF), with its results published.">
+  <meta property="og:image" content="{% static 'samples/geyser-social.png' %}">
   <link rel="icon" type="image/png" sizes="32x32" href="{% static 'samples/favicon-32.png' %}">
   <link rel="apple-touch-icon" href="{% static 'samples/apple-touch-icon.png' %}">
   {# Sync and first: sets <html data-theme> before the first paint (a static file: no CSP hash needed). #}
@@ -19,7 +22,7 @@
 <body>
   <header class="site-head">
     <nav class="wrap" aria-label="Site">
-      <a class="brand" href="{% url 'samples:list' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" width="232" height="40" alt="Geyser Genomics"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" width="232" height="40" alt="Geyser Genomics"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" width="232" height="40" alt="Geyser Genomics">
+      <a class="brand" href="{% url 'samples:list' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" width="180" height="40" alt="Geyser Genomics"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-retro" src="{% static 'samples/geyser-lockup-retro.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy">
         <i>FASTQ → VCF pipeline</i></a>
       <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
       <div class="head-actions">

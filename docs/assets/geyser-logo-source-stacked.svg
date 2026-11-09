@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1600" width="1600" height="1600" fill="none">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@700;800&amp;family=Poppins:wght@600;700&amp;display=swap');
+  </style>
+  <defs>
+    <linearGradient id="coneGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1A5BC4"/>
+      <stop offset="55%" stop-color="#174EA6"/>
+      <stop offset="100%" stop-color="#0D3373"/>
+    </linearGradient>
+    <radialGradient id="ventGlow" cx="50%" cy="55%" r="55%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="1"/>
+      <stop offset="55%" stop-color="#D2E3FC" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#174EA6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="jetGrad" x1="50%" y1="100%" x2="50%" y2="0%">
+      <stop offset="0%" stop-color="#174EA6"/>
+      <stop offset="65%" stop-color="#1A73E8"/>
+      <stop offset="100%" stop-color="#669DF6"/>
+    </linearGradient>
+
+    <!-- Reusable Hand-Illustrated Painterly DNA Helix Templates (Google 4-Color Palette) -->
+    <g id="helix-blue">
+      <g transform="translate(1.8, 2.6)" stroke="#1967D2" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#4285F4" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#1967D2" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#8AB4F8" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g>
+
+    <g id="helix-red">
+      <g transform="translate(1.8, 2.6)" stroke="#B31412" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#EA4335" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#B31412" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#F28B82" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g>
+
+    <g id="helix-yellow">
+      <g transform="translate(1.8, 2.6)" stroke="#EA8600" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#FBBC04" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#EA8600" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#FDE293" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g>
+
+    <g id="helix-green">
+      <g transform="translate(1.8, 2.6)" stroke="#137333" stroke-linecap="round" fill="none" opacity="0.88">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+      </g>
+      <g stroke="#34A853" stroke-linecap="round" fill="none">
+        <path d="M -20 -26 L 20 -26 M -15 -13 L 15 -13 M -15 13 L 15 13 M -20 26 L 20 26" stroke-width="7.2"/>
+        <path d="M -22 -36 C -22 -11, 22 -11, 22 0 C 22 11, -22 11, -22 36" stroke-width="10.5"/>
+        <path d="M 11 -16 C 4 -7, -4 -7, -11 0" stroke="#137333" stroke-width="12" opacity="0.55"/>
+        <path d="M 22 -36 C 22 -11, -22 -11, -22 0 C -22 11, 22 11, 22 36" stroke-width="10.5"/>
+        <path d="M -22 -36 C -22 -14, 18 -12, 21 -2" stroke="#81C995" stroke-width="2.6" opacity="0.65"/>
+      </g>
+    </g>
+  </defs>
+
+  <g transform="translate(32, 10) scale(1.536)">
+    <!-- Volcanic Geyser Cone with Soft Painterly Shading -->
+    <ellipse cx="492" cy="708" rx="206" ry="14" fill="#0D3373" opacity="0.18"/>
+    <path d="M 284 700 C 308 692, 366 664, 412 598 C 418 590, 448 584, 492 584 C 536 584, 566 590, 572 598 C 618 664, 676 692, 700 700 C 712 705, 696 716, 668 717 C 590 721, 394 721, 316 717 C 288 716, 272 705, 284 700 Z"
+          fill="url(#coneGrad)" stroke="#0D3373" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M 304 702 C 344 684, 392 644, 424 602 C 434 606, 456 610, 474 612 C 454 654, 422 694, 384 712 C 346 712, 318 708, 304 702 Z"
+          fill="#2B7DE9" opacity="0.42"/>
+    <path d="M 454 614 C 442 652, 416 692, 392 710" stroke="#2B7DE9" stroke-width="8" stroke-linecap="round" opacity="0.45"/>
+    <path d="M 488 618 C 484 656, 476 690, 468 712" stroke="#2B7DE9" stroke-width="6" stroke-linecap="round" opacity="0.3"/>
+    <path d="M 548 606 C 584 654, 634 688, 686 703 C 666 712, 608 716, 558 716 C 568 688, 548 644, 526 614 Z"
+          fill="#0D3373" opacity="0.55"/>
+    <ellipse cx="492" cy="602" rx="74" ry="18" fill="#D2E3FC" stroke="#0D3373" stroke-width="3.5"/>
+    <ellipse cx="492" cy="598" rx="64" ry="26" fill="url(#ventGlow)"/>
+
+    <!-- Curving Water Jets -->
+    <g fill="url(#jetGrad)">
+      <path d="M 446 604 C 424 536, 378 482, 344 468 C 334 464, 328 474, 336 480 C 372 500, 412 546, 436 606 Z"/>
+      <path d="M 454 606 C 426 502, 362 426, 290 416 C 278 414, 276 428, 288 432 C 354 446, 412 514, 442 606 Z"/>
+      <path d="M 464 604 C 444 504, 396 418, 320 378 C 310 373, 304 385, 314 391 C 382 430, 430 510, 452 604 Z"/>
+      <path d="M 474 568 C 468 522, 452 478, 428 446 C 421 438, 413 446, 419 454 C 442 484, 456 526, 464 570 Z"/>
+      <path d="M 486 606 C 485 572, 485 546, 486 528 C 487 518, 496 518, 496 528 C 496 546, 495 572, 494 606 Z" fill="#1A73E8"/>
+      <path d="M 508 606 C 524 508, 562 436, 616 386 C 624 378, 614 368, 605 376 C 548 426, 512 504, 498 604 Z"/>
+      <path d="M 526 606 C 554 514, 608 452, 668 442 C 680 440, 682 426, 668 426 C 598 434, 542 504, 514 604 Z"/>
+      <path d="M 548 508 C 568 474, 594 452, 618 446 C 626 444, 624 432, 614 434 C 586 440, 558 466, 540 502 Z" fill="#1A73E8"/>
+    </g>
+
+    <!-- Coloured Droplets -->
+    <g>
+      <circle cx="204" cy="364" r="4.5" fill="#34A853"/>
+      <circle cx="250" cy="394" r="8.5" fill="#FBBC04"/>
+      <circle cx="286" cy="368" r="7.5" fill="#EA4335"/>
+      <circle cx="302" cy="242" r="8.0" fill="#EA4335"/>
+      <circle cx="382" cy="298" r="5.0" fill="#34A853"/>
+      <circle cx="374" cy="160" r="6.5" fill="#4285F4"/>
+      <circle cx="374" cy="84"  r="7.5" fill="#4285F4"/>
+      <circle cx="454" cy="428" r="7.0" fill="#EA4335"/>
+      <circle cx="490" cy="508" r="5.5" fill="#4285F4"/>
+      <circle cx="496" cy="344" r="8.0" fill="#FBBC04"/>
+      <circle cx="472" cy="228" r="5.5" fill="#34A853"/>
+      <circle cx="496" cy="158" r="8.0" fill="#4285F4"/>
+      <circle cx="540" cy="428" r="4.5" fill="#4285F4"/>
+      <circle cx="558" cy="286" r="6.0" fill="#4285F4"/>
+      <circle cx="574" cy="238" r="7.5" fill="#EA4335"/>
+      <circle cx="578" cy="78"  r="6.0" fill="#FBBC04"/>
+      <circle cx="632" cy="158" r="5.5" fill="#34A853"/>
+      <circle cx="640" cy="358" r="8.0" fill="#FBBC04"/>
+      <circle cx="676" cy="242" r="6.5" fill="#EA4335"/>
+      <circle cx="734" cy="418" r="7.5" fill="#34A853"/>
+      <circle cx="782" cy="344" r="8.0" fill="#4285F4"/>
+    </g>
+
+    <!-- Erupting Hand-Illustrated DNA Helices -->
+    <use href="#helix-green"  transform="translate(496, 422) rotate(12) scale(0.78)"/>
+    <use href="#helix-blue"   transform="translate(432, 345) rotate(-16) scale(0.85)"/>
+    <use href="#helix-red"    transform="translate(568, 342) rotate(28) scale(0.86)"/>
+    <use href="#helix-red"    transform="translate(444, 266) rotate(-34) scale(0.52)"/>
+    <use href="#helix-yellow" transform="translate(334, 324) rotate(-36) scale(0.88)"/>
+    <use href="#helix-green"  transform="translate(228, 332) rotate(-52) scale(0.68)"/>
+    <use href="#helix-blue"   transform="translate(514, 245) rotate(7) scale(0.96)"/>
+    <use href="#helix-green"  transform="translate(626, 242) rotate(36) scale(0.90)"/>
+    <use href="#helix-blue"   transform="translate(678, 300) rotate(46) scale(0.80)"/>
+    <use href="#helix-green"  transform="translate(694, 382) rotate(68) scale(0.82)"/>
+    <use href="#helix-blue"   transform="translate(235, 248) rotate(-42) scale(0.94)"/>
+    <use href="#helix-green"  transform="translate(358, 224) rotate(-28) scale(0.90)"/>
+    <use href="#helix-yellow" transform="translate(428, 158) rotate(-14) scale(0.94)"/>
+    <use href="#helix-red"    transform="translate(586, 146) rotate(32) scale(0.96)"/>
+    <use href="#helix-yellow" transform="translate(750, 212) rotate(44) scale(0.86)"/>
+    <use href="#helix-red"    transform="translate(772, 286) rotate(58) scale(0.80)"/>
+    <use href="#helix-red"    transform="translate(256, 164) rotate(-36) scale(0.86)"/>
+    <use href="#helix-yellow" transform="translate(320, 102) rotate(-26) scale(0.92)"/>
+    <use href="#helix-red"    transform="translate(428, 58) rotate(-9) scale(0.86)"/>
+    <use href="#helix-green"  transform="translate(526, 68) rotate(16) scale(0.94)"/>
+    <use href="#helix-blue"   transform="translate(656, 84) rotate(38) scale(0.82)"/>
+    <use href="#helix-red"    transform="translate(702, 148) rotate(42) scale(0.92)"/>
+
+    <!-- Rounded Geometric Wordmark -->
+    <g text-anchor="middle" style="font-family: 'Outfit', 'Poppins', sans-serif; font-weight: 800;">
+      <text x="492" y="842" fill="#174EA6" font-size="134" letter-spacing="-1.5">Geyser</text>
+      <text x="492" y="966" fill="#174EA6" font-size="134" letter-spacing="-3.2">Genomics</text>
+    </g>
+  </g>
+</svg>

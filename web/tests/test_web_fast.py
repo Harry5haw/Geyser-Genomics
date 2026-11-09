@@ -184,9 +184,9 @@ def test_the_inlined_css_has_no_comments(client, storage):
 def test_images_have_their_size_so_nothing_shifts(client, storage):
     body = client.get("/").content.decode()
     imgs = re.findall(r"<img [^>]+>", body)  # the lockup per theme; CSS shows one
-    assert len(imgs) == 3
+    assert len(imgs) == 4
     for img in imgs:
-        assert 'width="232"' in img and 'height="40"' in img and 'alt="Geyser Genomics"' in img
+        assert 'width="180"' in img and 'height="40"' in img and 'alt="Geyser Genomics"' in img
 
 
 # ------------------------------------------------------------------ paged tables

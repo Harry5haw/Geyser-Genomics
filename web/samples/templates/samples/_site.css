@@ -26,11 +26,16 @@ checks every theme's tokens). Windows High Contrast (forced-colors) gets the sys
 --done:#0b5323;--done-bg:#fff;--run:#0842a0;--run-bg:#fff;--fail:#8c0d0d;--fail-bg:#fff;--warn:#5c3300;--warn-bg:#fff;
 --warn-line:#000;--pend:#333;--pend-bg:#fff;--queue:#5c3300;--queue-bg:#fff;--tube-hover:#fff;--tube-hover-text:#0842a0;--on:#000;
 --stage-qc:#aecbfa;--stage-align:#a8dab5;--stage-variants:#fde293;
---nt-a:#0b5323;--nt-c:#0842a0;--nt-g:#5c3300;--nt-t:#8c0d0d;--shadow:none;color-scheme:light}
+--nt-a:#000;--nt-c:#000;--nt-g:#000;--nt-t:#000;--nt-a-bg:#ceead6;--nt-c-bg:#d2e3fc;--nt-g-bg:#feefc3;--nt-t-bg:#fad2cf;
+--nt-a-line:#188038;--nt-c-line:#1967d2;--nt-g-line:#c26401;--nt-t-line:#c5221f;--shadow:none;color-scheme:light}
 :root[data-theme=retro] a:not(.brand){text-decoration:underline}
 :root[data-theme=retro] :focus-visible{outline:3px solid #000;outline-offset:2px}
 :root[data-theme=retro] :is(.badge,.tube,.msg,.note,.flow b){border:2px solid currentColor}
 :root[data-theme=retro] .timeline>div{background:var(--card);border-color:#000}
+/* Retro bases: a bold black letter on a tinted cell with a coloured edge, so the four read apart without dark coloured text */
+:root[data-theme=retro] td:is(.nt-A,.nt-C,.nt-G,.nt-T){font-weight:800}
+:root[data-theme=retro] td.nt-A{background:var(--nt-a-bg);box-shadow:inset 0 0 0 2px var(--nt-a-line)}:root[data-theme=retro] td.nt-C{background:var(--nt-c-bg);box-shadow:inset 0 0 0 2px var(--nt-c-line)}
+:root[data-theme=retro] td.nt-G{background:var(--nt-g-bg);box-shadow:inset 0 0 0 2px var(--nt-g-line)}:root[data-theme=retro] td.nt-T{background:var(--nt-t-bg);box-shadow:inset 0 0 0 2px var(--nt-t-line)}
 /* High contrast, for low vision: white text on black, yellow links and focus, cyan accents; state by icon and word
 as well as colour; 2-3 px white borders, no shadows or gradients behind text; text 15% larger, bolder, 1.6 line
 height; every control at least 44 px. Motion already stops under prefers-reduced-motion (the rule at the end). */
@@ -76,8 +81,8 @@ background:linear-gradient(90deg,var(--blue) 0 25%,var(--red) 25% 50%,var(--yell
 .brand{display:inline-flex;align-items:center;gap:1rem;color:var(--text);text-decoration:none}
 .brand img{display:block;width:auto;height:40px}
 /* One lockup per theme (static files: no inline SVG, so the CSP is unchanged); only the current one shows */
-.brand .logo-dark,.brand .logo-contrast,:root[data-theme=dark] .brand .logo-light,:root[data-theme=contrast] .brand .logo-light{display:none}
-:root[data-theme=dark] .brand .logo-dark,:root[data-theme=contrast] .brand .logo-contrast{display:block}
+.brand img:not(.logo-light),:root:is([data-theme=dark],[data-theme=retro],[data-theme=contrast]) .brand .logo-light{display:none}
+:root[data-theme=dark] .brand .logo-dark,:root[data-theme=retro] .brand .logo-retro,:root[data-theme=contrast] .brand .logo-contrast{display:block}
 .brand i{display:block;padding-left:1rem;border-left:1px solid var(--line);font:500 .75rem/1 var(--sans);letter-spacing:.12em;
 text-transform:uppercase;font-style:normal;color:var(--muted);white-space:nowrap}
 /* "Samples": a tonal pill with a four-colour dot */
