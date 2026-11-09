@@ -407,7 +407,8 @@
                 "JobDefinition": "${job_definition}",
                 "JobQueue": "${job_queue}",
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-                "Timeout": { "AttemptDurationSeconds": 3600 }
+                "Timeout": { "AttemptDurationSeconds": 3600 },
+                "Tags": { "Stage": "qc" }
               },
               "Retry": [
                 {
@@ -451,7 +452,8 @@
                 "JobDefinition.$": "$.batch_params.JobDefinition",
                 "JobQueue": "${job_queue}",
                 "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-                "Timeout": { "AttemptDurationSeconds": 14400 }
+                "Timeout": { "AttemptDurationSeconds": 14400 },
+                "Tags": { "Stage": "align" }
               },
               "Retry": [
                 {
@@ -534,7 +536,8 @@
                     { "Type": "MEMORY", "Value": "${qc_large_memory_mb}" }
                   ]
                 },
-                "Timeout": { "AttemptDurationSeconds": 7200 }
+                "Timeout": { "AttemptDurationSeconds": 7200 },
+                "Tags": { "Stage": "qc" }
               },
               "Retry": [
                 {
@@ -569,7 +572,8 @@
                     { "Type": "MEMORY", "Value": "${preflight_memory_mb}" }
                   ]
                 },
-                "Timeout": { "AttemptDurationSeconds": 7200 }
+                "Timeout": { "AttemptDurationSeconds": 7200 },
+                "Tags": { "Stage": "preflight" }
               },
               "Retry": [
                 {
@@ -626,7 +630,8 @@
                           { "Type": "MEMORY", "Value": "${chunk_memory_mb}" }
                         ]
                       },
-                      "Timeout": { "AttemptDurationSeconds": 3600 }
+                      "Timeout": { "AttemptDurationSeconds": 3600 },
+                      "Tags": { "Stage": "align_chunk" }
                     },
                     "Retry": [
                       {
@@ -660,7 +665,8 @@
                     { "Type": "MEMORY", "Value": "${align_merge_memory_mb}" }
                   ]
                 },
-                "Timeout": { "AttemptDurationSeconds": 14400 }
+                "Timeout": { "AttemptDurationSeconds": 14400 },
+                "Tags": { "Stage": "align_merge" }
               },
               "Retry": [
                 {
@@ -757,7 +763,8 @@
               "JobDefinition": "${deepvariant_cpu_job_definition}",
               "JobQueue": "${job_queue}",
               "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-              "Timeout": { "AttemptDurationSeconds": ${dv_part_timeout_seconds} }
+              "Timeout": { "AttemptDurationSeconds": ${dv_part_timeout_seconds} },
+              "Tags": { "Stage": "deepvariant_examples" }
             },
             "Retry": [
               {
@@ -818,7 +825,8 @@
         "JobDefinition": "${deepvariant_job_definition}",
         "JobQueue": "${gpu_job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": ${deepvariant_timeout_seconds} }
+        "Timeout": { "AttemptDurationSeconds": ${deepvariant_timeout_seconds} },
+        "Tags": { "Stage": "deepvariant" }
       },
       "Retry": [
         {
@@ -860,7 +868,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 1800 }
+        "Timeout": { "AttemptDurationSeconds": 1800 },
+        "Tags": { "Stage": "plan_regions" }
       },
       "Retry": [
         {
@@ -933,7 +942,8 @@
               "JobDefinition": "${job_definition}",
               "JobQueue": "${job_queue}",
               "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-              "Timeout": { "AttemptDurationSeconds": 7200 }
+              "Timeout": { "AttemptDurationSeconds": 7200 },
+              "Tags": { "Stage": "variants_shard" }
             },
             "Retry": [
               {
@@ -978,7 +988,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 7200 }
+        "Timeout": { "AttemptDurationSeconds": 7200 },
+        "Tags": { "Stage": "variants" }
       },
       "Retry": [
         {
@@ -1026,7 +1037,8 @@
         "JobDefinition": "${job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides.$": "$.batch_params.ContainerOverrides",
-        "Timeout": { "AttemptDurationSeconds": 900 }
+        "Timeout": { "AttemptDurationSeconds": 900 },
+        "Tags": { "Stage": "quality_gate" }
       },
       "Retry": [
         {
@@ -1148,7 +1160,8 @@
             { "Name": "CLOUDFRONT_DISTRIBUTION_ID", "Value": "${site_distribution_id}" }
           ]
         },
-        "Timeout": { "AttemptDurationSeconds": 900 }
+        "Timeout": { "AttemptDurationSeconds": 900 },
+        "Tags": { "Stage": "publish" }
       },
       "Retry": [
         {

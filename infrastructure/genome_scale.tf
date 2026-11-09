@@ -6,6 +6,8 @@
 # the app job definition again with large_disk_gb. Same image, roles, network, logs and retry rules.
 
 resource "aws_batch_job_definition" "geyser_app_large_job_def" {
+  # The job's tags (Stage, per state) and the default tags reach the task: Cost Explorer by stage (#64).
+  propagate_tags        = true
   name                  = "${var.project_name}-app-large-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]

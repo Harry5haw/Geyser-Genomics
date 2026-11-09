@@ -101,6 +101,7 @@ resource "aws_batch_job_definition" "geyser_publish_job_def" {
   name                  = "${var.project_name}-publish-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
+  propagate_tags        = true # the Stage tag reaches the Fargate task (#64)
   container_properties = jsonencode({
     image                        = "${aws_ecr_repository.geyser_publish.repository_url}:${var.publish_image_version}"
     executionRoleArn             = aws_iam_role.geyser_batch_execution_role.arn # image pull and logs, as every job

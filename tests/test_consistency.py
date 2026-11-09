@@ -200,6 +200,26 @@ def test_lifecycle_never_expires_raw_reads_references_or_outputs():
         assert not any(k.startswith(prefix) or prefix.startswith(k) for k in kept), (rule_id, prefix)
 
 
+def test_every_batch_job_carries_a_stage_tag():
+    # #64: Cost Explorer splits Batch cost by the Stage tag (propagated to the Fargate task), so every
+    # submitJob in the state machine, including any added later (shards), must set one.
+    with open(os.path.join(REPO_ROOT, "infrastructure", "state_machine.asl.json"), encoding="utf-8") as fh:
+        asl = fh.read()
+    submits = asl.count('"arn:aws:states:::batch:submitJob.sync"')
+    stages = re.findall(r'"Tags":\s*\{\s*"Stage":\s*"(\w+)"\s*\}', asl)
+    assert submits and len(stages) == submits, (submits, stages)
+    assert {"qc", "align", "variants"} <= set(stages)
+    # Every job definition, in any file, hands the job's tags to its task (Fargate or ECS on EC2).
+    import glob
+
+    for path in glob.glob(os.path.join(REPO_ROOT, "infrastructure", "*.tf")):
+        with open(path, encoding="utf-8") as fh:
+            tf = fh.read()
+        for block in re.split(r'(?m)^resource "', tf)[1:]:
+            if block.startswith('aws_batch_job_definition"'):
+                assert re.search(r"(?m)^  propagate_tags\s*=\s*true", block), (path, block.splitlines()[0])
+
+
 def test_queue_wait_widgets_read_the_terraform_event_log_group():
     # #138: batch_wait.tf sends Batch RUNNING events to this group; the dashboard queries it.
     import monitoring

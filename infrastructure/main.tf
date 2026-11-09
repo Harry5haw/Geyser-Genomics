@@ -95,6 +95,11 @@ resource "aws_ecr_repository" "geyser_app" {
   name         = "${var.project_name}-app"
   force_delete = true # Note: In production, consider removing this for safety.
   tags         = { Name = "${var.project_name}-ecr-repo" }
+
+  # Basic scanning (free): every pushed image is checked for known CVEs; findings show in the ECR console (#64).
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
 # Keep the 20 most recent images (any tag status) and expire the rest, so
@@ -223,6 +228,9 @@ resource "aws_batch_job_definition" "geyser_app_job_def" {
   name                  = "${var.project_name}-app-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
+  # The job's tags (Stage, set per stage by the state machine) and the default tags reach the Fargate
+  # task, so Cost Explorer can split Batch cost by stage once the tags are activated (#64).
+  propagate_tags = true
   container_properties = jsonencode(merge({
     image = "${aws_ecr_repository.geyser_app.repository_url}:${var.image_version}"
     # This role is for pulling the container and basic setup.

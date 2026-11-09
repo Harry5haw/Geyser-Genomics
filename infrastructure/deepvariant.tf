@@ -10,6 +10,11 @@ resource "aws_ecr_repository" "geyser_deepvariant" {
   name         = "${var.project_name}-deepvariant"
   force_delete = true
   tags         = { Name = "${var.project_name}-deepvariant-ecr-repo" }
+
+  # Basic scanning (free): known CVEs of every pushed image, in the ECR console (#64).
+  image_scanning_configuration {
+    scan_on_push = true
+  }
 }
 
 # ECR storage is $0.10/GB-month, and each image is ~9.8 GB: keep only the two newest (~$2/month).
@@ -26,6 +31,8 @@ resource "aws_ecr_lifecycle_policy" "geyser_deepvariant" {
 }
 
 resource "aws_batch_job_definition" "geyser_deepvariant_job_def" {
+  # The job's tags (Stage, per state) and the default tags reach the task: Cost Explorer by stage (#64).
+  propagate_tags        = true
   name                  = "${var.project_name}-deepvariant-job"
   type                  = "container"
   platform_capabilities = ["EC2"]

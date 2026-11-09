@@ -35,6 +35,7 @@ resource "aws_batch_job_definition" "geyser_deepvariant_cpu_job_def" {
   name                  = "${var.project_name}-deepvariant-cpu-job"
   type                  = "container"
   platform_capabilities = ["FARGATE"]
+  propagate_tags        = true # the Stage tag reaches the Fargate task (#64)
   container_properties = jsonencode({
     image                        = "${aws_ecr_repository.geyser_deepvariant_cpu.repository_url}:${var.deepvariant_cpu_image_version}"
     command                      = ["/opt/geyser-venv/bin/python", "deepvariant_task.py", "--help"] # set per run by the state machine

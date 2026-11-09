@@ -38,6 +38,11 @@ resource "aws_iam_policy" "geyser_sfn_execution_policy" {
         ]
       },
       {
+        # SubmitJob with Tags (the Stage tag per job, #64) also needs TagResource on the new job.
+        Sid      = "AWSBatchTagJobs", Effect = "Allow", Action = "batch:TagResource",
+        Resource = "arn:aws:batch:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:job/*"
+      },
+      {
         Sid = "CloudWatchLogsPermissions", Effect = "Allow", Action = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"], Resource = "*"
       },
       { Sid = "SNSPublishPermissions", Effect = "Allow", Action = "sns:Publish", Resource = aws_sns_topic.geyser_pipeline_status_topic.arn },
