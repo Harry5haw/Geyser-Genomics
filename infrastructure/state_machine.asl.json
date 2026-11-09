@@ -1176,7 +1176,7 @@
       "Comment": "tasks.py annotate --plan (#207): sizes the annotation from the run's calls (the formula lives in Python) and writes the plan to S3; annotates nothing. The annotate job definition at its smallest size, so the plan and the annotation come from the same image. The Atlas is the only source in the cloud (no AVI file in S3).",
       "Resource": "arn:aws:states:::batch:submitJob.sync",
       "Parameters": {
-        "JobName.$": "States.Format('AnnotatePlan-{}-{}', $.srr_id, $$.Execution.Name)",
+        "JobName.$": "States.Format('Annotate-Plan-{}-{}', $.srr_id, $$.Execution.Name)",
         "JobDefinition": "${annotate_job_definition}",
         "JobQueue": "${job_queue}",
         "ContainerOverrides": {

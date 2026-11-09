@@ -78,8 +78,13 @@ aws s3 cp reads.fastq.gz s3://<data-lake>/raw_reads/S1.fastq.gz --metadata gate-
   depth about 0.02x, 0% at 10x, GC 37.5%), so it fails them. `smoke` is calibrated on the cloud checkpoints
   CLOUD005-016 ([#157](../../../issues/157)); every one passes it.
 
-**AlphaGenome annotation (3.0, draft, not live yet):** an upload can ask for the optional annotation of its calls after
+**AlphaGenome annotation (v3.0):** an upload can ask for the optional annotation of its calls after
 the quality gate with S3 metadata `annotate=alphagenome` (on either mate); a manual start sets `"annotate": "alphagenome"`.
+- **Both routes, either caller:** every run that succeeds the quality gate can be annotated. The source in the cloud is
+  always the AlphaGenome Atlas (`--source atlas`; no AVI file in S3).
+- **Sized per run:** a small `Plan_Annotate` job (`tasks.py annotate --plan`) writes `intermediate/annotate-plan/<id>/<run>.json`;
+  `Annotate` takes its vCPU, memory and time limit from it. With nothing to annotate the plan says `run: false` and no
+  annotate job runs (the reason is in the execution's output, `annotate_plan`).
 - **Off by default.** `none` or no value means no annotation. Anything else fails the run before any job with
   `UnknownAnnotation`, like an unknown gate profile.
 - **Never fatal.** A failed annotation is noted in the execution's output (`annotate_error`) and the job log, and the run keeps

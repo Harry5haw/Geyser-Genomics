@@ -2102,7 +2102,7 @@ def test_annotate_alphagenome_runs_after_the_gate_passes_with_the_atlas(request,
         {"Type": "VCPU", "Value": "0.25"},
         {"Type": "MEMORY", "Value": "512"},
     ]
-    assert plan_job["JobName"] == f"AnnotatePlan-SAMPLE7-{desc['name']}"
+    assert plan_job["JobName"] == f"Annotate-Plan-SAMPLE7-{desc['name']}"
     assert sdk_calls(events, "Read_Annotate_Plan") == [{"Bucket": TEMPLATE_VARS["bucket"], "Key": key}]
     # The annotation: its size and time limit from the plan.
     overrides = params["ContainerOverrides"]
