@@ -811,3 +811,28 @@ def test_gate_value_widgets_match_what_the_gate_publishes():
     assert sorted(shown) == sorted(tasks.GATE_VALUE_CHECKS)
     titles = [w["properties"].get("title", "") for w in monitoring.build_dashboard()["widgets"]]
     assert sum(t.startswith("Quality gate:") for t in titles) == 2
+
+
+# --- O8 (v3.0): the AlphaGenome annotation as counts only ---------------------------------------------------
+
+
+def test_annotate_stage_and_call_metric_match_tasks_py():
+    import tasks
+
+    assert [s.task_name for s in monitoring.STAGE_GROUPS["annotate"]] == [tasks.ANNOTATE_METRIC]
+    assert monitoring.ANNOTATE_CALLS_METRIC == tasks.ANNOTATE_CALLS_METRIC
+
+
+def test_annotate_widgets_are_counts_only_and_never_read_logs():
+    widgets = monitoring.annotate_widgets("eu-west-2")
+    # Text and metrics only: no Logs Insights widget that could surface scores, tracks or genes (AlphaGenome terms).
+    assert {w["type"] for w in widgets} == {"text", "metric"}
+    (row,) = [r for w in widgets if w["type"] == "metric" for r in w["properties"]["metrics"]]
+    assert row[1:4] == [monitoring.ANNOTATE_CALLS_METRIC, "TaskName", "Annotate"] and row[4]["stat"] == "Sum"
+
+
+def test_the_dashboard_has_the_annotate_row_only_with_its_group():
+    with_group = json.dumps(monitoring.build_dashboard(groups=["core", "annotate"]))
+    assert "AlphaGenome API calls (per day)" in with_group
+    assert "Stage duration, seconds: AlphaGenome annotation (opt-in)" in with_group
+    assert "AlphaGenome API calls" not in json.dumps(monitoring.build_dashboard(groups=["core"]))
