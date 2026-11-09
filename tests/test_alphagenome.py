@@ -525,6 +525,12 @@ def test_a_failed_annotation_is_noted_never_fatal(stage, capsys, monkeypatch, se
         (["annotate", "S1", "chr20.fa", "--source", "fake", "--max-variants", "0"], {}),
         (["annotate", "S1", "chr20.fa", "--source", "fake"], {ag.MAX_VARIANTS_ENV: "lots"}),
         (["annotate", "S1"], {}),
+        (["annotate", "S1", "chr20.fa", "--source", "fake", "--max-variants", str(ag.MAX_VARIANTS_LIMIT + 1)], {}),
+        (["annotate", "S1", "chr20.fa", "--source", "fake", "--output-key", "x.json"], {}),  # needs --plan
+        # the cloud (S3 storage) takes the Atlas only: no AVI data in S3, and fake scores are test data
+        (["annotate", "S1", "chr20.fa", "--source", "fake"], {"STORAGE_BACKEND": "s3"}),
+        (["annotate", "S1", "chr20.fa", "--source", "avi-file"], {"STORAGE_BACKEND": "s3"}),
+        (["annotate", "S1", "chr20.fa", "--source", "fake", "--plan"], {"STORAGE_BACKEND": "s3"}),
     ],
 )
 def test_usage_errors_exit_2_before_anything_runs(stage, monkeypatch, argv, env):
@@ -690,3 +696,133 @@ def test_a_snv_only_source_spends_its_cap_on_snvs(tmp_path):
 )
 def test_each_backend_says_what_it_scores(cls, kinds):
     assert set(getattr(ag, cls).KINDS) == kinds
+
+
+# --- post-v2.0 rework: cloud sources, genome-scale selection, job size --------------------------------------
+
+
+def test_only_the_atlas_runs_on_s3_storage():
+    ag.check_source_for_storage("atlas", "s3")
+    for source in ("fake", "avi-file", "api"):
+        ag.check_source_for_storage(source, "local")
+        with pytest.raises(ValueError, match="offline only"):
+            ag.check_source_for_storage(source, "s3")
+
+
+def test_the_cap_has_an_upper_limit():
+    assert ag.check_max_variants(ag.MAX_VARIANTS_LIMIT) == ag.MAX_VARIANTS_LIMIT
+    for bad in (0, ag.MAX_VARIANTS_LIMIT + 1):
+        with pytest.raises(ValueError, match="selection cap"):
+            ag.check_max_variants(bad)
+    with pytest.raises(ValueError, match="selection cap"):
+        ag.max_variants_from_env({ag.MAX_VARIANTS_ENV: str(ag.MAX_VARIANTS_LIMIT + 1)})
+
+
+def _many_records(n):
+    # QUAL ties on purpose (bcftools caps QUAL): the heap must break them exactly as a full sort does.
+    bases = "ACGT"
+    out = []
+    for i in range(n):
+        ref = bases[i % 4]
+        alt = bases[(i + 1 + i // 4) % 4] if bases[(i + 1 + i // 4) % 4] != ref else bases[(i + 2) % 4]
+        if i % 7 == 0:
+            alt = ref + "T"  # an indel
+        qual = "." if i % 11 == 0 else (225 if i % 3 == 0 else 20 + i % 50)
+        out.append(
+            {
+                "chrom": "chr20",
+                "pos": 1000 + i,
+                "ref": ref,
+                "alts": [alt],
+                "qual": None if qual == "." else float(qual),
+                "filter": "PASS" if i % 13 else "LowQual",
+                "info": "DP=30",
+            }
+        )
+    return out
+
+
+def _sorted_selection(records, cap, kinds):
+    # the definition the bounded selection must match: rank every candidate, take the first cap
+    everything, _ = ag.select(records, ["chr20"], False, 10**9, kinds=kinds)
+    return everything[:cap]
+
+
+@pytest.mark.parametrize("cap", [1, 7, 100, 5000])
+@pytest.mark.parametrize("kinds", [("snv",), ("snv", "indel")])
+def test_the_bounded_selection_equals_a_full_ranking(cap, kinds):
+    records = _many_records(3000)
+    selected, counts = ag.select(iter(records), ["chr20"], False, cap, kinds=kinds)  # a one-pass iterator
+    assert selected == _sorted_selection(records, cap, kinds)
+    assert counts["records"] == 3000 and counts["selected"] == len(selected)
+    assert counts["candidates"] - counts["selected"] == counts["dropped_by_cap"]
+
+
+def test_scan_vcf_streams_the_records_and_matches_read_vcf(tmp_path):
+    path = tmp_path / "calls.vcf.gz"
+    with gzip.open(path, "wt") as fh:
+        fh.write(vcf([rec("chr20", 100 + i, "A", "G", qual=i) for i in range(50)]))
+    header, contigs, has_bcsq, records = ag.scan_vcf(str(path))
+    assert not isinstance(records, list) and contigs == ["chr20", "chr21"] and not has_bcsq
+    assert list(records) == ag.read_vcf(str(path))[3] and len(ag.read_vcf(str(path))[3]) == 50
+
+
+def test_scan_vcf_of_a_header_only_file(tmp_path):
+    path = tmp_path / "empty.vcf"
+    path.write_text(vcf([]))
+    assert list(ag.scan_vcf(str(path))[3]) == []
+
+
+def test_the_job_size_grows_with_the_vcf_and_the_cap():
+    small = ag.plan_resources(2_000_000, 500)  # a chr20 VCF
+    genome = ag.plan_resources(300_000_000, 500)  # a whole genome's
+    big_cap = ag.plan_resources(300_000_000, ag.MAX_VARIANTS_LIMIT)
+    assert small["schema"] == ag.PLAN_SCHEMA and small["source"] == "atlas"
+    assert (small["vcpus"], small["memory_mib"], small["disk_gib"]) == (1, ag.PLAN_BASE_MEMORY_MIB, 21)
+    assert small["timeout_seconds"] == 804  # 300 + 2 MB x 2 s + 500 x 1 s
+    assert genome["timeout_seconds"] > small["timeout_seconds"]
+    assert big_cap["vcpus"] == 2 and big_cap["memory_mib"] == ag.PLAN_BASE_MEMORY_MIB + 1024
+    assert big_cap["timeout_seconds"] == ag.PLAN_MAX_TIMEOUT
+    assert ag.plan_resources(0, 1)["timeout_seconds"] == ag.PLAN_MIN_TIMEOUT
+    with pytest.raises(ValueError):
+        ag.plan_resources(1, ag.MAX_VARIANTS_LIMIT + 1)
+
+
+def test_plan_prints_and_writes_the_job_size(stage, capsys):
+    stage["core_run"]()
+    stage["put_vcf"]("variants/S1.vcf.gz", LINES)
+    capsys.readouterr()  # the core run's log lines
+    argv = ["annotate", "S1", "chr20.fa", "--source", "fake", "--max-variants", "40", "--plan"]
+    assert tasks.main([*argv, "--output-key", "intermediate/annotate-plan/S1.json"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    size = (stage["root"] / "variants" / "S1.vcf.gz").stat().st_size
+    assert plan == {"run": True, "input": "variants/S1.vcf.gz", **ag.plan_resources(size, 40, "fake")}
+    assert json.loads((stage["root"] / "intermediate/annotate-plan/S1.json").read_text()) == plan
+    assert provenance.read_part(stage["store"], "S1", "Annotate") is None  # planning annotates nothing
+
+
+def test_plan_with_nothing_to_annotate_says_skip_and_exits_0(stage, capsys):
+    assert tasks.main(["annotate", "S1", "chr20.fa", "--source", "fake", "--plan"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["run"] is False and plan["reason"].startswith("no calls to annotate")
+
+
+def test_the_record_carries_the_terms_notice(stage):
+    stage["core_run"]()
+    stage["put_vcf"]("variants/S1.vcf.gz", LINES)
+    assert tasks.main(["annotate", "S1", "chr20.fa", "--source", "fake"]) == 0
+    record = provenance.read_record(stage["store"], "S1")
+    assert record["alphagenome"]["terms"] == ag.TERMS_NOTICE
+
+
+def test_annotate_reads_the_large_routes_vcf_too(stage):
+    # Both routes end in the same variants/{id}.vcf.gz and run record, so Annotate is route-agnostic: the run
+    # record of a large-route run (Preflight + the merge as Align) gives the same input.
+    stage["core_run"]()
+    provenance.begin("Preflight", "S1")
+    provenance.finish(stage["store"], "Success", 1.0)
+    stage["put_vcf"]("variants/S1.vcf.gz", LINES)
+    assert provenance.read_record(stage["store"], "S1")["route"] == "large"
+    assert tasks.annotate_input("S1") == "variants/S1.vcf.gz"
+    assert tasks.main(["annotate", "S1", "chr20.fa", "--source", "fake"]) == 0
+    assert provenance.read_part(stage["store"], "S1", "Annotate")["status"] == "Success"

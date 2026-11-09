@@ -15,6 +15,7 @@ Sources (backend_for; the P0 spike's decision record, 4 Nov 2026):
 - avi-file: the official AVI download (bgzip TSV `#CHROM POS REF ALT raw_score PHRED`, GRCh38, SNVs only, no chrM),
   a per-reference extract at reference/alphagenome/<reference>.avi.tsv.gz. A local lookup: no key, no calls, $0.
   AVI only (no gene or track in the file). AVI is a deleteriousness score (PHRED 20 = top 1% genome-wide).
+  Offline only: no AVI data is kept in S3, so on S3 storage only the Atlas runs (CLOUD_SOURCES).
 - atlas: the Atlas API (alphagenome.atlas.AtlasClient): precomputed per-track and per-gene scores, so it fills
   AG_GENE, AG_TOP_TRACK and AG_RNA_LFC (the RNA_SEQ log fold change for the top gene). SNVs only. Needs the key
   and the client (requirements-alphagenome.txt, ~500 MB with its dependencies: not in the pipeline image).
@@ -23,6 +24,10 @@ Sources (backend_for; the P0 spike's decision record, 4 Nov 2026):
 - fake: deterministic, offline, free, every field filled. Not predictions (AG_SOURCE=fake): for tests and the offline
   pipeline. Recorded responses from ALPHAGENOME_FAKE_RESPONSES where given, else values derived from a hash.
 
+Genome scale (post-v2.0 rework): scan_vcf streams the calls and select keeps only the best max_variants in a heap,
+so a whole genome selects in bounded memory; the cap is at most MAX_VARIANTS_LIMIT. plan_resources sizes the job
+from the VCF's size and the cap (tasks.py annotate --plan).
+
 No AWS or storage here: tasks.py does the I/O. The key is read from $ALPHAGENOME_API_KEY only, and is never
 logged, stored or put in an error message: client errors are redacted (redact) before they go anywhere.
 Never commit AVI or Atlas data (fixtures included): tests use synthetic tables.
@@ -30,6 +35,7 @@ Never commit AVI or Atlas data (fixtures included): tests use synthetic tables.
 
 import gzip
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -39,6 +45,10 @@ SOURCES = ("avi-file", "atlas", "api", "fake")
 API_KEY_ENV = "ALPHAGENOME_API_KEY"
 MAX_VARIANTS_ENV = "ALPHAGENOME_MAX_VARIANTS"
 DEFAULT_MAX_VARIANTS = 500  # the API is sized for "small to medium jobs"; chr20 has ~70k PASS SNVs per sample
+# The largest cap accepted (a usage error above it). The selection holds only the cap's variants in memory, so a
+# whole genome (~4-5 M PASS calls) costs a stream through the VCF, but every selected SNV is one Atlas request:
+# the cap bounds the job's time and the service's load.
+MAX_VARIANTS_LIMIT = 20_000
 FAKE_RESPONSES_ENV = "ALPHAGENOME_FAKE_RESPONSES"
 # score_variant's interval must be one of these (dna_client SEQUENCE_LENGTH_16KB/_100KB/_500KB/_1MB); the
 # gene-level scorers (RNA_SEQ) need the 1 Mb window, centred on the variant.
@@ -164,38 +174,63 @@ def parse_bcsq(info: str) -> tuple:
     return tuple(consequences), tuple(genes)
 
 
-def read_vcf(path):
-    """(header lines, contig names in order, has BCSQ, records) of a VCF (plain or bgzipped).
+def _vcf_record(line: str) -> dict:
+    cols = line.split("\t")
+    if len(cols) < 8:
+        raise ValueError(f"not a VCF data line (fewer than 8 columns): {line[:80]!r}")
+    return {
+        "chrom": cols[0],
+        "pos": int(cols[1]),
+        "ref": cols[3].upper(),
+        "alts": [a.upper() for a in cols[4].split(",")],
+        "qual": None if cols[5] == "." else float(cols[5]),
+        "filter": cols[6],
+        "info": cols[7],
+    }
 
-    records: one dict per data line with chrom, pos, ref, alts, qual, filter and info.
+
+def scan_vcf(path):
+    """(header lines, contig names in order, has BCSQ, records) of a VCF (plain or bgzipped), streamed.
+
+    records is a generator of one dict per data line (chrom, pos, ref, alts, qual, filter, info) that reads the
+    file as it goes and closes it at the end: a whole-genome VCF (~5 M records) is never held in memory. The
+    header is read up front (it comes first in a VCF).
     """
-    header, contigs, records = [], [], []
-    with _open_text(path) as fh:
+    fh = _open_text(path)
+    header, contigs, first = [], [], None
+    try:
         for line in fh:
             line = line.rstrip("\n")
             if line.startswith("##"):
                 header.append(line)
                 if line.startswith("##contig=<ID="):
                     contigs.append(line[len("##contig=<ID=") :].split(",")[0].rstrip(">"))
-                continue
-            if line.startswith("#") or not line:
-                continue
-            cols = line.split("\t")
-            if len(cols) < 8:
-                raise ValueError(f"not a VCF data line (fewer than 8 columns): {line[:80]!r}")
-            records.append(
-                {
-                    "chrom": cols[0],
-                    "pos": int(cols[1]),
-                    "ref": cols[3].upper(),
-                    "alts": [a.upper() for a in cols[4].split(",")],
-                    "qual": None if cols[5] == "." else float(cols[5]),
-                    "filter": cols[6],
-                    "info": cols[7],
-                }
-            )
+            elif line and not line.startswith("#"):
+                first = line
+                break
+    except BaseException:
+        fh.close()
+        raise
+
+    def records():
+        try:
+            if first is not None:
+                yield _vcf_record(first)
+            for line in fh:
+                line = line.rstrip("\n")
+                if line and not line.startswith("#"):
+                    yield _vcf_record(line)
+        finally:
+            fh.close()
+
     has_bcsq = any(line.startswith("##INFO=<ID=BCSQ,") for line in header)
-    return header, contigs, has_bcsq, records
+    return header, contigs, has_bcsq, records()
+
+
+def read_vcf(path):
+    """scan_vcf with the records as a list (small VCFs and tests)."""
+    header, contigs, has_bcsq, records = scan_vcf(path)
+    return header, contigs, has_bcsq, list(records)
 
 
 # --- selection -------------------------------------------------------------------------------------------
@@ -213,6 +248,14 @@ def max_variants_from_env(env=None) -> int:
         value = 0
     if value < 1:
         raise ValueError(f"{MAX_VARIANTS_ENV} must be a whole number >= 1, got {raw!r}")
+    check_max_variants(value)
+    return value
+
+
+def check_max_variants(value: int) -> int:
+    """value if 1 <= value <= MAX_VARIANTS_LIMIT, else ValueError."""
+    if not 1 <= value <= MAX_VARIANTS_LIMIT:
+        raise ValueError(f"the selection cap must be 1-{MAX_VARIANTS_LIMIT}, got {value}")
     return value
 
 
@@ -229,8 +272,17 @@ def _tie_break(key: str) -> bytes:
     return hashlib.sha256(key.encode()).digest()[:8]
 
 
+def _rank_in_selection(v: Variant) -> tuple:
+    """The selection's order: QUAL highest first ('.' last), then a stable hash of the variant."""
+    return (-(v.qual if v.qual is not None else -math.inf), _tie_break(v.key))
+
+
 def select(records, contigs, has_consequences: bool, max_variants: int, kinds=("snv", "indel")):
     """The alleles to score, ranked, and the counts behind the choice.
+
+    records: any iterable (scan_vcf streams them). Memory is bounded by max_variants, not by the VCF: a heap keeps
+    the best max_variants candidates seen so far, so a whole genome selects as a chromosome does. The result is
+    the same as ranking every candidate and taking the first max_variants.
 
     PASS records only ('.' counts as PASS: bcftools call sets no filters). One candidate per scorable ALT
     allele (SNVs and indels; not symbolic ALTs or MNPs). With bcftools csq consequences, only alleles of records
@@ -241,11 +293,13 @@ def select(records, contigs, has_consequences: bool, max_variants: int, kinds=("
     the chromosome instead of a spread. The same calls always give the same selection. (contigs: the VCF's contig
     order, unused since ties stopped being positional; kept so callers needn't change.)
     """
-    counts = {"records": len(records), "pass": 0, "snvs": 0, "indels": 0, "not_scorable": 0, "other_kind": 0}
+    counts = {"records": 0, "pass": 0, "snvs": 0, "indels": 0, "not_scorable": 0, "other_kind": 0}
     if has_consequences:
         counts["near_gene"] = 0
-    candidates = []
+    heap = []  # the best max_variants so far; heap[0] is the worst of them (heapq is a min-heap)
+    n_candidates = 0
     for rec in records:
+        counts["records"] += 1
         if rec["filter"] not in ("PASS", "."):
             continue
         counts["pass"] += 1
@@ -265,14 +319,18 @@ def select(records, contigs, has_consequences: bool, max_variants: int, kinds=("
             if has_consequences:
                 counts["near_gene"] += 1
             bcsq = _bcsq_value(rec["info"]) if has_consequences else None
-            candidates.append(
-                Variant(rec["chrom"], rec["pos"], rec["ref"], alt, rec["qual"], consequences, genes, bcsq)
-            )
-    candidates.sort(key=lambda v: (-(v.qual if v.qual is not None else -math.inf), _tie_break(v.key)))
-    selected = candidates[:max_variants]
-    counts["candidates"] = len(candidates)
+            v = Variant(rec["chrom"], rec["pos"], rec["ref"], alt, rec["qual"], consequences, genes, bcsq)
+            n_candidates += 1
+            q, tie = _rank_in_selection(v)
+            item = (-q, -int.from_bytes(tie, "big"), -n_candidates, v)  # larger = better; heap[0] = the worst kept
+            if len(heap) < max_variants:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
+    selected = sorted((item[3] for item in heap), key=_rank_in_selection)
+    counts["candidates"] = n_candidates
     counts["selected"] = len(selected)
-    counts["dropped_by_cap"] = len(candidates) - len(selected)
+    counts["dropped_by_cap"] = n_candidates - len(selected)
     return selected, counts
 
 
@@ -614,6 +672,56 @@ class ApiBackend(_KeyedBackend):
         if not variants:
             return {}
         raise NotImplementedError("the score_variant backend is not wired in yet (P2); use --source avi-file or fake")
+
+
+# Where each source may run. In the cloud (S3 storage) only the Atlas: no AVI data is kept in S3 (the AVI
+# download's terms and size), and fake scores must never reach a real run's outputs. avi-file and fake are for
+# offline runs and tests; api is a stub until P2.
+CLOUD_SOURCES = ("atlas",)
+
+
+def check_source_for_storage(source: str, storage_backend: str) -> None:
+    """ValueError when source may not run on this storage backend (CLOUD_SOURCES on s3)."""
+    if storage_backend == "s3" and source not in CLOUD_SOURCES:
+        raise ValueError(
+            f"--source {source} is offline only; on S3 storage the source must be one of {CLOUD_SOURCES} "
+            "(no AVI data is kept in S3, and fake scores are test data)"
+        )
+
+
+# --- job size (the state machine's Plan_Annotate reads plan_resources through tasks.py annotate --plan) -------
+# Selection streams the VCF, so memory doesn't grow with it; the Atlas client and its dependencies set the floor.
+# Time grows with the VCF (one pass to select) and with the cap (one Atlas request per selected SNV, ATLAS_WORKERS
+# at a time). Disk holds the downloaded VCF plus the outputs.
+PLAN_SCHEMA = 1
+PLAN_BASE_MEMORY_MIB = 2048
+PLAN_LARGE_CAP = 5_000  # above this cap, 2 vCPUs / +1 GiB: more requests in flight and bigger outputs
+PLAN_SECONDS_PER_VCF_MB = 2.0  # download and one parsing pass per MB of bgzipped VCF (generous)
+PLAN_SECONDS_PER_VARIANT = 1.0  # per selected variant: an Atlas request (~0.3-1 s) shared by ATLAS_WORKERS, padded
+PLAN_MIN_TIMEOUT, PLAN_MAX_TIMEOUT = 600, 4 * 3600
+PLAN_MIN_DISK_GIB = 21  # Fargate's floor
+
+
+def plan_resources(input_bytes: int, max_variants: int, source: str = "atlas") -> dict:
+    """The Annotate job's size for a VCF of input_bytes and a cap of max_variants (pure; no I/O).
+
+    {schema, source, max_variants, input_bytes, vcpus, memory_mib, timeout_seconds, disk_gib}. The Batch job takes
+    vcpus/memory_mib as resource overrides and timeout_seconds as its attempt duration (Rust's #209 wiring).
+    """
+    check_max_variants(max_variants)
+    mb = max(0, input_bytes or 0) / 1e6
+    large = max_variants > PLAN_LARGE_CAP
+    timeout = 300 + mb * PLAN_SECONDS_PER_VCF_MB + max_variants * PLAN_SECONDS_PER_VARIANT
+    return {
+        "schema": PLAN_SCHEMA,
+        "source": source,
+        "max_variants": max_variants,
+        "input_bytes": int(input_bytes or 0),
+        "vcpus": 2 if large else 1,
+        "memory_mib": PLAN_BASE_MEMORY_MIB + (1024 if large else 0),
+        "timeout_seconds": int(min(PLAN_MAX_TIMEOUT, max(PLAN_MIN_TIMEOUT, math.ceil(timeout)))),
+        "disk_gib": max(PLAN_MIN_DISK_GIB, math.ceil(3 * mb / 1000) + 5),
+    }
 
 
 def backend_for(source: str, table=None, env=None):

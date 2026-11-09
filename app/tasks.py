@@ -1627,12 +1627,15 @@ def gate_task(sample_id):
 
 ANNOTATE_METRIC = "Annotate"  # an extra stage: provenance.EXTRA_STAGES, so a failure never fails the run
 ANNOTATE_CALLS_METRIC = "AnnotateApiCalls"  # a count by TaskName (record_counts): the backend calls one annotation made
-ALPHAGENOME_PREFIX = REFERENCE_PREFIX + "alphagenome/"  # local AlphaGenome data per reference (never committed)
+ALPHAGENOME_PREFIX = (
+    REFERENCE_PREFIX + "alphagenome/"
+)  # offline AVI tables per reference (never in S3, never committed)
 
 
 def alphagenome_avi_key(reference_name: str) -> str:
-    """The AVI table for a reference (--source avi-file): an extract of the official download for its contigs,
-    as bgzip TSV `#CHROM POS REF ALT raw_score PHRED` (ag.AviFileBackend)."""
+    """The AVI table for a reference (--source avi-file, offline only): an extract of the official download for its
+    contigs, as bgzip TSV `#CHROM POS REF ALT raw_score PHRED` (ag.AviFileBackend). Never uploaded to S3: on S3
+    storage avi-file is refused (ag.check_source_for_storage)."""
     return f"{ALPHAGENOME_PREFIX}{reference_name}.avi.tsv.gz"
 
 
@@ -1657,10 +1660,8 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
 
     if source not in ag.SOURCES:  # before any download
         raise ValueError(f"unknown AlphaGenome source {source!r}; expected one of {ag.SOURCES}")
-    if max_variants is None:
-        max_variants = ag.max_variants_from_env()
-    elif max_variants < 1:
-        raise ValueError(f"max_variants must be >= 1, got {max_variants}")
+    ag.check_source_for_storage(source, storage_backend_name())
+    max_variants = ag.max_variants_from_env() if max_variants is None else ag.check_max_variants(max_variants)
     keys = keys_for(sample_id)
     wd = work_dir(sample_id)
     backend = None
@@ -1679,7 +1680,9 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
             provenance.note_input(avi_key, table)
         backend = ag.backend_for(source, table=table)
 
-        header, contigs, has_bcsq, records = ag.read_vcf(local_vcf)
+        header, contigs, has_bcsq, records = ag.scan_vcf(
+            local_vcf
+        )  # streamed: a whole genome selects in bounded memory
         selected, counts = ag.select(records, contigs, has_bcsq, max_variants, kinds=backend.KINDS)
         print(
             f"AlphaGenome ({source}): {counts['selected']} of {counts['candidates']} candidate variants selected "
@@ -1706,6 +1709,7 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
             "api_calls": backend.api_calls,
             **(backend.diagnostics() if hasattr(backend, "diagnostics") else {}),
             "vcf": "pending",
+            "terms": ag.TERMS_NOTICE,  # the Output Terms notice travels with the record as with the VCF and the TSV
         }
         provenance.note(alphagenome=summary)
 
@@ -1751,9 +1755,34 @@ def annotate_task(sample_id, reference_name, source, max_variants=None):
 ALPHAGENOME_SOURCE_ENV = "ALPHAGENOME_SOURCE"
 
 
+def storage_backend_name(env=None) -> str:
+    """STORAGE_BACKEND as storage.py reads it (default s3)."""
+    env = os.environ if env is None else env
+    return env.get("STORAGE_BACKEND", "s3").strip().lower()
+
+
+def annotate_plan(sample_id: str, source: str, max_variants: int) -> dict:
+    """The Annotate job's size for this sample (ag.plan_resources), from the size of the VCF it would read.
+
+    Never raises for a missing input: {"run": false, "reason": ...} tells the state machine to skip the
+    annotation (an extra stage), so planning can't fail a run either."""
+    import alphagenome_annotation as ag
+
+    try:
+        input_key = annotate_input(sample_id)
+        head = storage().head(input_key)
+    except Exception as err:  # noqa: BLE001 - no calls to annotate, or no record: skip, never fail
+        return {"schema": ag.PLAN_SCHEMA, "run": False, "reason": f"no calls to annotate: {err}"[:500]}
+    return {"run": True, "input": input_key, **ag.plan_resources(head.get("size") or 0, max_variants, source)}
+
+
 def annotate_main(argv) -> int:
-    """tasks.py annotate <srr_id> <reference_name> [--source atlas|api|fake] [--max-variants N]: AlphaGenome
-    regulatory-effect scores. Opt-in, research use only.
+    """tasks.py annotate <srr_id> <reference_name> [--source atlas|api|fake|avi-file] [--max-variants N]
+    [--plan [--output-key KEY]]: AlphaGenome regulatory-effect scores. Opt-in, research use only.
+
+    In the cloud (S3 storage) the source must be atlas (ag.CLOUD_SOURCES); avi-file and fake are offline only.
+    --plan doesn't annotate: it prints the job's size as JSON (annotate_plan; also written to KEY), for the state
+    machine to size the Annotate job by the VCF and the cap. It exits 0 even with nothing to annotate ("run": false).
 
     --source defaults to $ALPHAGENOME_SOURCE; with neither it is a usage error, so a run never falls back to fake
     scores unnoticed (run_local.py --annotate alphagenome picks fake offline). --max-variants defaults to
@@ -1769,8 +1798,14 @@ def annotate_main(argv) -> int:
     parser.add_argument("srr_id")
     parser.add_argument("reference_name")
     parser.add_argument("--source", help=f"one of {', '.join(ag.SOURCES)}; default ${ALPHAGENOME_SOURCE_ENV}")
-    parser.add_argument("--max-variants", type=int, help=f"selection cap; default ${ag.MAX_VARIANTS_ENV}")
+    parser.add_argument(
+        "--max-variants", type=int, help=f"selection cap (1-{ag.MAX_VARIANTS_LIMIT}); default ${ag.MAX_VARIANTS_ENV}"
+    )
+    parser.add_argument("--plan", action="store_true", help="print the job's size as JSON instead of annotating")
+    parser.add_argument("--output-key", help="with --plan: also write the JSON to this storage key")
     args = parser.parse_args(argv)
+    if args.output_key and not args.plan:
+        parser.error("--output-key needs --plan")
     source = (args.source or os.environ.get(ALPHAGENOME_SOURCE_ENV, "")).strip().lower()
     if source not in ag.SOURCES:
         parser.error(f"--source (or ${ALPHAGENOME_SOURCE_ENV}) must be one of {ag.SOURCES}, got {source!r}")
@@ -1780,8 +1815,25 @@ def annotate_main(argv) -> int:
             max_variants = ag.max_variants_from_env()
         except ValueError as err:
             parser.error(str(err))
-    elif max_variants < 1:
-        parser.error("--max-variants must be >= 1")
+    else:
+        try:
+            ag.check_max_variants(max_variants)
+        except ValueError as err:
+            parser.error(str(err))
+    try:
+        ag.check_source_for_storage(source, storage_backend_name())
+    except ValueError as err:
+        parser.error(str(err))
+    if args.plan:
+        plan = annotate_plan(args.srr_id, source, max_variants)
+        text = json.dumps(plan, indent=1)
+        if args.output_key:
+            path = os.path.join(work_dir(args.srr_id), "annotate-plan.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            storage().upload(path, args.output_key)
+        print(text, flush=True)
+        return 0
     try:
         annotate_task(args.srr_id, args.reference_name, source, max_variants)
     except Exception as err:  # noqa: BLE001 - noted in the run record (timed_stage); never fatal
