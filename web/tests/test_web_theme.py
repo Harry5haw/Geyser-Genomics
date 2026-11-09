@@ -13,7 +13,7 @@ import pytest
 CSS = os.path.join(os.path.dirname(__file__), "..", "samples", "templates", "samples", "_site.css")
 TARGET = {"light": 4.5, "dark": 4.5, "retro": 7.0, "contrast": 7.0}
 # Each theme's lockup wordmark colours (static/samples/geyser-lockup[-dark|-contrast].svg), on the header (--card)
-LOGO = {"light": ("#174ea6",), "retro": ("#000000",), "dark": ("#8ab4f8", "#e3e3e3"), "contrast": ("#ffffff",)}
+LOGO = {"light": ("#174ea6",), "retro": ("#000000",), "dark": ("#ffffff",), "contrast": ("#ffffff",)}
 
 
 def _block(css: str, selector: str) -> dict:

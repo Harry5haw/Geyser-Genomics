@@ -33,17 +33,16 @@ assert len(droplets) == 21 and len(helices) == 22, (len(droplets), len(helices))
 # --- theme recolouring (the brief's table) ------------------------------------------------------------------------
 THEMES = {
     "light": {"map": {}, "geyser": "#174EA6", "genomics": "#174EA6"},
-    "dark": {
-        "map": {
-            "#1A5BC4": "#8AB4F8",
-            "#174EA6": "#669DF6",
-            "#0D3373": "#4285F4",
-            "#2B7DE9": "#D2E3FC",
-            "#1A73E8": "#8AB4F8",
-            "#669DF6": "#D2E3FC",
+    "dark": {  # as rich as the light version: saturated blues, a thin light rim to lift it off the dark page
+        "map": {"#0D3373": "#8AB4F8", "#1A73E8": "#4285F4"},  # outline and opening ring -> rim; jets
+        "stops": {  # gradient stops in order (cone: top-left to base; jets: base to tip; vent: centre out)
+            "coneGrad": ["#4285F4", "#1967D2", "#174EA6"],
+            "jetGrad": ["#4285F4", "#4285F4", "#669DF6"],
+            "ventGlow": ["#FFFFFF", "#D2E3FC", "#4285F4"],
         },
-        "geyser": "#8AB4F8",
-        "genomics": "#E3E3E3",
+        "shade": "#0B2A66",  # the cone's translucent shadows stay dark (the rim colour is only for lines)
+        "geyser": "#FFFFFF",
+        "genomics": "#FFFFFF",
     },
     "retro": {  # flat ink-on-paper: one blue, black lines, white highlights
         "map": {
@@ -58,7 +57,7 @@ THEMES = {
         "geyser": "#000000",
         "genomics": "#000000",
     },
-    "contrast": {  # white on black, no gradients in effect (every stop one colour), thick outline
+    "contrast": {  # white on black, no gradients (every stop one colour), thick outline
         "map": {
             "#1A5BC4": "#000000",
             "#174EA6": "#000000",
@@ -71,6 +70,7 @@ THEMES = {
         "geyser": "#FFFFFF",
         "genomics": "#FFFFFF",
         "cone_stroke": "9",
+        "stops": {"coneGrad": ["#000000"] * 3, "jetGrad": ["#FFFFFF"] * 3, "ventGlow": ["#FFFFFF"] * 3},
     },
 }
 
@@ -94,14 +94,16 @@ def theme_parts(name, suffix):
         c = c.replace('stroke="#000000" stroke-width="3"', 'stroke="#000000" stroke-width="6"', 1)
     if name == "contrast":  # no fine shading: drop the cone's translucent shading shapes (shadow, highlights)
         c = re.sub(r'<(?:path|ellipse)\b[^>]*\bopacity="0\.\d+"[^>]*/>', "", c)
-    if name == "contrast":  # no gradients: every stop one colour (a black cone, white jets and vent)
-        for ident, colour in (("coneGrad", "#000000"), ("jetGrad", "#FFFFFF"), ("ventGlow", "#FFFFFF")):
-            g = re.sub(
-                rf'(<(?:linear|radial)Gradient id="{ident}".*?</(?:linear|radial)Gradient>)',
-                lambda m, col=colour: re.sub(r'stop-color="#[0-9A-Fa-f]{6}"', f'stop-color="{col}"', m.group(1)),
-                g,
-                flags=re.S,
-            )
+    for ident, colours in t.get("stops", {}).items():  # a theme's own gradient stops, in order
+
+        def restop(m, colours=colours):
+            it = iter(colours)
+            return re.sub(r'stop-color="#[0-9A-Fa-f]{6}"', lambda _: f'stop-color="{next(it)}"', m.group(1))
+
+        g = re.sub(rf'(<(?:linear|radial)Gradient id="{ident}".*?</(?:linear|radial)Gradient>)', restop, g, flags=re.S)
+    if "shade" in t:  # translucent shading shapes keep a dark tone (the map's rim colour is for lines only)
+        rim = t["map"]["#0D3373"]
+        c = c.replace(f'fill="{rim}" opacity', f'fill="{t["shade"]}" opacity')
     # Unique ids per file variant (several may sit in one page as <img>, but keep them distinct anyway).
     body = g + "".join(templates)
     for ident in ("coneGrad", "ventGlow", "jetGrad", "helix-blue", "helix-red", "helix-yellow", "helix-green"):
