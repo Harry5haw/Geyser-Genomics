@@ -121,8 +121,12 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
   # the very same file in Step Functions Local (Docker, no AWS). Only these values are filled in.
   # jsonencode(jsondecode(...)) sends it minified, the same document: the provider's request decomposer reads the
   # escaped definition with a 64 KB bufio.Scanner, and the indented file passed that in v1.5 ("token too long").
-  # Minified and escaped it is ~52 KB; tests/test_consistency.py keeps it under 56 KB.
-  definition = jsonencode(jsondecode(templatefile("${path.module}/state_machine.asl.json", {
+  # Minified and escaped it was ~55 KB with comments by v3.0 (#209), so the "Comment" keys are removed on the
+  # way (the regex below, at any depth: states, Parallel branches, Map iterators): ~41 KB. The source file keeps
+  # every comment; the console doesn't show them. tests/test_consistency.py keeps the rendered definition under
+  # 56 KB and checks it equals the source with only the Comment keys removed (every Comment is followed by
+  # another key, so the regex takes its trailing comma too).
+  definition = jsonencode(jsondecode(replace(templatefile("${path.module}/state_machine.asl.json", {
     job_definition             = aws_batch_job_definition.geyser_app_job_def.name
     job_queue                  = aws_batch_job_queue.geyser_queue.name
     deepvariant_job_definition = aws_batch_job_definition.geyser_deepvariant_job_def.name
@@ -177,7 +181,7 @@ resource "aws_sfn_state_machine" "geyser_pipeline_state_machine" {
     dv_shards_by_parts             = jsonencode(local.dv_shards_by_parts)
     dv_part_timeout_seconds        = var.dv_part_timeout_seconds
     deepvariant_timeout_seconds    = var.deepvariant_timeout_seconds
-  })))
+  }), "/\"Comment\":\\s*\"(?:[^\"\\\\]|\\\\.)*\",\\s*/", "")))
 
   lifecycle {
     precondition {

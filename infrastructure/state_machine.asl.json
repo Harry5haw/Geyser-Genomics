@@ -1185,8 +1185,8 @@
       "Default": "Pipeline_Succeeded"
     },
     "Pipeline_Succeeded": {
-      "Type": "Succeed",
-      "Comment": "Every successful run ends here, after the quality gate."
+      "Comment": "Every successful run ends here, after the quality gate. (Comment first: step_functions.tf removes Comment keys with their trailing comma.)",
+      "Type": "Succeed"
     },
     "Prepare_Run_Close": {
       "Type": "Pass",

@@ -360,8 +360,14 @@ MOCK_CONFIG = {
 }
 
 
-def render_definition(**overrides) -> str:
-    """templatefile() for this file: only ${name} placeholders, and every one must be filled."""
+# step_functions.tf's replace() on the rendered template: every "Comment" key, at any depth, with its trailing
+# comma (#209: the deployed definition must stay under the provider's 64 KB scanner). The same RE2/Python regex.
+COMMENT_KEY = r'"Comment":\s*"(?:[^"\\]|\\.)*",\s*'
+
+
+def render_definition(*, keep_comments=False, **overrides) -> str:
+    """What Terraform deploys: templatefile() for this file (only ${name} placeholders, every one filled), then
+    the Comment keys removed as step_functions.tf does. keep_comments=True gives the rendered source as is."""
     with open(ASL_PATH, encoding="utf-8") as fh:
         text = fh.read()
     assert "%{" not in text and "$${" not in text, "templatefile directives/escapes are not handled here"
@@ -369,6 +375,8 @@ def render_definition(**overrides) -> str:
     assert placeholders == set(TEMPLATE_VARS), placeholders
     for name, value in {**TEMPLATE_VARS, **overrides}.items():
         text = text.replace("${" + name + "}", value)
+    if not keep_comments:
+        text = re.sub(COMMENT_KEY, "", text)
     json.loads(text)
     return text
 

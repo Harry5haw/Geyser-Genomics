@@ -388,9 +388,37 @@ def test_the_definition_is_sent_minified_and_fits_the_providers_64_kb_scanner():
     # (Terraform's jsonencode also writes <, > and & as <...: a few hundred bytes more than measured here.)
     import test_state_machine_local as sfn_local
 
-    assert 'jsonencode(jsondecode(templatefile("${path.module}/state_machine.asl.json"' in _tf("step_functions.tf")
+    tf = _tf("step_functions.tf")
+    assert 'jsonencode(jsondecode(replace(templatefile("${path.module}/state_machine.asl.json"' in tf
+    # The RENDERED definition (Comment keys removed, #209), as deployed.
     minified = json.dumps(json.loads(sfn_local.render_definition()), separators=(",", ":"))
     assert len(json.dumps(minified)) < 56_000, len(json.dumps(minified))
+
+
+def _without_comment_keys(value):
+    if isinstance(value, dict):
+        return {k: _without_comment_keys(v) for k, v in value.items() if k != "Comment"}
+    if isinstance(value, list):
+        return [_without_comment_keys(v) for v in value]
+    return value
+
+
+def test_the_deployed_definition_is_the_source_with_only_the_comments_removed():
+    # #209: step_functions.tf removes "Comment" keys at every depth (states, Parallel branches, Map iterators)
+    # with a regex on the rendered text. Nothing else may change, and no Comment may survive (one that is the
+    # last key of its object would keep its place: the regex needs the trailing comma).
+    import test_state_machine_local as sfn_local
+
+    source = json.loads(sfn_local.render_definition(keep_comments=True))
+    deployed = json.loads(sfn_local.render_definition())
+    assert deployed == _without_comment_keys(source)
+    assert '"Comment"' not in json.dumps(deployed)
+    # Comments existed at every depth before (the test isn't vacuous).
+    text = sfn_local.render_definition(keep_comments=True)
+    assert text.count('"Comment"') > 50
+    # Terraform's pattern is the tests' pattern: the HCL string, unescaped, between the RE2 slashes.
+    (hcl,) = re.findall(r'\}\), ("/\\"Comment.*?/"), ""\)\)\)', _tf("step_functions.tf"))
+    assert json.loads(hcl) == "/" + sfn_local.COMMENT_KEY + "/"
 
 
 def test_the_dv_part_job_retries_spot_interruptions_five_times():
