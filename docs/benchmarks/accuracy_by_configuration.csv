@@ -3,12 +3,16 @@ HG003,30x,HG003_30x_chr20,bwa + bcftools,bwa,bcftools,,0.991795,0.94893,397,758,
 HG003,30x,HG003_30x_chr20,bwa + linear DV,bwa,deepvariant,,0.997474,0.995766,273,81,63,28,445,314,66,286,2026-11-02,#95
 HG003,30x,HG003_30x_chr20,bwa + pangenome DV,bwa,pangenome,,0.997575,0.996235,250,90,53,28,421,307,38,277,2026-11-02,#95
 HG003,30x,HG003_30x_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.99771,0.996189,251,70,53,29,403,285,45,253,2026-11-02,#51
+HG003,30x,HG003_WGS30x,bwa-mem2 + bcftools,bwa-mem2,bcftools,,0.990283,0.950572,28579,36189,27896,22914,115578,,,,2026-11-07,"#234, #244"
+HG003,30x,HG003_WGS30x,bwa-mem2 + linear DV,bwa-mem2,deepvariant,,0.995853,0.995038,21481,6054,3489,1571,32595,,,,2026-11-07,"#234, #244"
 HG003,35x,HG003_chr20,bwa + bcftools,bwa,bcftools,,0.991511,0.950708,361,835,582,487,2265,,,,2026-11-01,#70
-HG003,35x,HG003_chr20,bwa + linear DV,bwa,deepvariant,,0.997752,0.997061,263,52,48,15,378,281,52,257,2026-11-02,#70
-HG003,35x,HG003_chr20,bwa + pangenome DV,bwa,pangenome,,0.997718,0.997206,242,78,42,18,380,302,41,266,2026-11-02,#70
+HG003,35x,HG003_chr20,bwa + linear DV,bwa,deepvariant,,0.997752,0.997061,263,52,48,15,378,281,52,257,2026-11-03,benchmark_happy.py
+HG003,35x,HG003_chr20,bwa + pangenome DV,bwa,pangenome,,0.997718,0.997206,242,78,42,18,380,302,41,266,2026-11-03,benchmark_happy.py
+HG003,35x,HG003_chr20_r2vcf,bwa + pangenome DV,bwa,pangenome,,0.993507,0.993397,785,122,110,31,1048,710,110,567,2026-11-03,benchmark_happy.py
 HG003,35x,HG003_chr20_mq5,"bwa + pangenome DV, MAPQ>=5",bwa,pangenome,MAPQ>=5,0.997881,0.997114,235,62,43,19,359,276,46,240,2026-11-02,#145
-HG003,35x,HG003_chr20_vg,"vg giraffe + linear DV, VG flags",vg giraffe,deepvariant,VG flags,0.999152,0.996899,75,44,40,27,186,58,7,46,2026-11-02,#145
-HG003,35x,HG003_chr20_vg,vg giraffe + pangenome DV,vg giraffe,pangenome,,0.998747,0.997593,72,104,30,22,228,120,69,70,2026-11-02,#145
+HG003,35x,HG003_chr20_vg,"vg giraffe + linear DV, VG flags",vg giraffe,deepvariant,VG flags,0.999152,0.996899,75,44,40,27,186,58,7,46,2026-11-03,benchmark_happy.py
+HG003,35x,HG003_chr20_vg,vg giraffe + pangenome DV,vg giraffe,pangenome,,0.998747,0.997593,72,104,30,22,228,120,69,70,2026-11-03,benchmark_happy.py
+HG003,35x,HG003_chr20_vg_r2vcf,vg giraffe + pangenome DV,vg giraffe,pangenome,,0.995691,0.994029,515,88,91,37,731,369,60,243,2026-11-03,benchmark_happy.py
 HG003,35x,HG003_chr20_vg_mq5,"vg giraffe + pangenome DV, MAPQ>=5",vg giraffe,pangenome,MAPQ>=5,0.998697,0.996949,96,87,36,30,249,124,55,79,2026-11-02,#145
 HG003,35x,HG003_chr20_bwa,bwa + bcftools,bwa,bcftools,,0.989582,0.951429,350,1121,570,484,2525,,,,2026-11-02,#110
 HG003,35x,HG003_chr20_bwamem2,bwa-mem2 + bcftools,bwa-mem2,bcftools,,0.989582,0.951429,350,1121,570,484,2525,,,,2026-11-02,"#110, #129"
