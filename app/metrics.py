@@ -24,7 +24,9 @@ says why it stopped. ``getrusage`` is Unix-only: on Windows there is no usage, o
 
 Counts (``record_counts``): one value per kind under a single dimension, e.g. scripts/reconcile.py
 ``--publish-metrics`` (#O13): ``ReconcileProblems`` by ``Problem`` (``LoneMate``, ``Ignored`` ..., ``Total``).
-Every kind is sent each time, zeros included, so a graph shows 0 rather than a gap. Locally they are one
+Reconcile sends every kind each time, zeros included, so a graph shows 0 rather than a gap. ``unit`` defaults
+to Count; the quality gate's values (tasks.publish_gate_values, O11: ``QualityGateValue`` by ``Check``) use
+``None`` (percentages, depth and a ratio) and leave out what the gate couldn't measure. Locally they are one
 JSON line each without task/sample_id/status, so the web UI's stage reader (web/samples/status.py) skips them.
 
 DeepVariant's step metrics (``DeepVariant.CallVariants`` ...) also carry GPU utilisation and peak GPU memory
@@ -93,7 +95,7 @@ class NullMetrics:
     def record(self, task_name: str, sample_id: str, status: str, duration_seconds: float, usage=None) -> None:
         pass
 
-    def record_counts(self, metric_name: str, dimension: str, counts: dict) -> None:
+    def record_counts(self, metric_name: str, dimension: str, counts: dict, unit: str = "Count") -> None:
         pass
 
 
@@ -112,7 +114,7 @@ class LocalMetrics:
         entry.update({k: v for k, v in (usage or {}).items() if k in USAGE_METRICS})
         self._append([entry])
 
-    def record_counts(self, metric_name, dimension, counts):
+    def record_counts(self, metric_name, dimension, counts, unit="Count"):
         now = time.time()
         self._append(
             [
@@ -121,7 +123,7 @@ class LocalMetrics:
                     "metric": metric_name,
                     "dimensions": {dimension: kind},
                     "value": value,
-                    "unit": "Count",
+                    "unit": unit,
                 }
                 for kind, value in counts.items()
             ]
@@ -166,13 +168,13 @@ class CloudWatchMetrics:
             )
         self._client.put_metric_data(Namespace=METRIC_NAMESPACE, MetricData=data)
 
-    def record_counts(self, metric_name, dimension, counts):
+    def record_counts(self, metric_name, dimension, counts, unit="Count"):
         data = [
             {
                 "MetricName": metric_name,
                 "Dimensions": [{"Name": dimension, "Value": kind}],
                 "Value": value,
-                "Unit": "Count",
+                "Unit": unit,
             }
             for kind, value in counts.items()
         ]

@@ -1451,6 +1451,10 @@ GATE_BINARY = "geyser-gate"
 # Its stage name (metrics, run record part): an extra stage after the core three, like the shards
 # (scripts/monitoring.py STAGE_GROUPS["gate"]).
 GATE_METRIC = "QualityGate"
+# O11: the gate's key values as one metric per value (dimension Check), so a change of image or reference that
+# shifts quality shows as a step on a line, not only as pass/fail. Five values keep the custom metrics few.
+GATE_VALUES_METRIC = "QualityGateValue"
+GATE_VALUE_CHECKS = ("mapped_pct", "duplicate_pct", "mean_depth", "breadth_10x_pct", "tstv")
 GATE_TIMEOUT_SECONDS = 300  # it parses a few small files; minutes means something is wrong
 # keys_for names the gate reads (the run record comes from provenance.read_record, assembled fresh).
 GATE_INPUTS = ("qc_json", "flagstat", "mosdepth_summary", "mosdepth_dist", "bcftools_stats")
@@ -1524,6 +1528,23 @@ def _gate_problem(sample_id: str, key: str, wd: str, mode: str, message: str) ->
     print(f"WARNING: quality gate: {message} (GATE_MODE=warn: the run continues)", flush=True)
 
 
+def publish_gate_values(verdict: dict) -> dict:
+    """Send the verdict's GATE_VALUE_CHECKS (the numbers it measured) as metrics; best effort, never raises.
+    Returns what was sent (values the gate couldn't measure are left out, not sent as 0)."""
+    measured = verdict.get("metrics") or {}
+    values = {
+        name: float(measured[name])
+        for name in GATE_VALUE_CHECKS
+        if isinstance(measured.get(name), (int, float)) and not isinstance(measured.get(name), bool)
+    }
+    if values:
+        try:
+            metrics().record_counts(GATE_VALUES_METRIC, "Check", values, unit="None")
+        except Exception as err:  # noqa: BLE001 - metrics are best effort
+            print(f"WARNING: could not record the gate values: {err}", flush=True)
+    return values
+
+
 def _read_verdict(path: str) -> dict:
     """The verdict JSON, or ValueError if it isn't one (missing file, bad JSON, missing fields)."""
     try:
@@ -1578,6 +1599,7 @@ def gate_task(sample_id):
         except ValueError as err:
             return _gate_problem(sample_id, key, wd, mode, str(err))
         upload_output(verdict_path, key)
+        publish_gate_values(verdict)
         summary = {
             "verdict": verdict["verdict"],
             "reasons": verdict["reasons"],
