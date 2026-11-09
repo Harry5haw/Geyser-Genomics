@@ -665,9 +665,9 @@ def evaluate(args):
     gene_agreement = None
     with_gene = [v for v in positives if v["gene"]]
     if with_gene:
-        names = read_gene_names(args.gene_names) if args.gene_names else {}
-        resolved = [v for v in with_gene if gene_ids(v["gene"], names)]
-        hits = sum(1 for v in resolved if gene_ids(v["gene"], names) & eqtls[v["key"]][1])
+        gene_names = read_gene_names(args.gene_names) if args.gene_names else {}  # not `names`: the scores' list
+        resolved = [v for v in with_gene if gene_ids(v["gene"], gene_names)]
+        hits = sum(1 for v in resolved if gene_ids(v["gene"], gene_names) & eqtls[v["key"]][1])
         gene_agreement = {
             "positives_with_ag_gene": len(with_gene),
             "ag_gene_resolved_to_ensembl": len(resolved),
@@ -870,7 +870,11 @@ def main(argv=None):
     if args.out_md:
         with open(args.out_md, "w", encoding="utf-8") as fh:
             fh.write(md)
-    sys.stdout.write(md)
+    try:
+        sys.stdout.write(md)
+    except UnicodeEncodeError:  # a Windows console (cp1252) can't print the report's "Δ": print it as UTF-8
+        sys.stdout.flush()
+        sys.stdout.buffer.write(md.encode("utf-8"))
     return 0
 
 

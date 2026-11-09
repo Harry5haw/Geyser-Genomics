@@ -569,3 +569,20 @@ def test_the_assembled_record_and_the_plan_give_time_and_a_cost_estimate(synthet
     assert got["api_calls"] == 12 and got["seconds"] == 41.5 and got["plan"]["vcpus"] == 1
     # 41.5 s bills the 60 s minimum: 1 vCPU, 2 GiB and 1 GiB of storage over the free 20, at eu-west-2 prices
     assert 0 < got["cost_usd_estimate"] < 0.001 and "cost_usd_estimate" in md
+
+
+def test_gene_names_leave_the_coverage_per_score(synthetic, tmp_path):
+    # The gene-name table once reused the score names' variable: coverage then listed every gene (a 0.8 MB report).
+    meta = write_tsv(tmp_path / "meta.tsv", ["gene_id", "gene_name"], [["ENSG00001", "GENEA"], ["ENSG00002", "GENEB"]])
+    result, md = run(synthetic, tmp_path, "--gene-names", meta)
+    assert set(result["coverage"]["per_score"]) == {"rna_lfc", "avi"} and "GENEA" not in md
+
+
+def test_the_report_prints_on_a_console_that_cannot_encode_it(synthetic, tmp_path, monkeypatch):
+    import io
+
+    raw = io.BytesIO()
+    monkeypatch.setattr(ev.sys, "stdout", io.TextIOWrapper(raw, encoding="cp1252"))
+    run(synthetic, tmp_path, "--score", "rna_lfc:abs", "--score", "avi", "--delong")  # the comparison table has "Δ"
+    ev.sys.stdout.flush()
+    assert "Δ".encode() in raw.getvalue()
