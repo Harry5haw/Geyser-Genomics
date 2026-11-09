@@ -30,6 +30,7 @@
     return {
       // geometry: {pos, col, lines, lineCol} as Float32Arrays (xyz and rgb per vertex)
       load(geo) {
+        for (const m of meshes) { gl.deleteBuffer(m.p); gl.deleteBuffer(m.c); }
         meshes = [
           { p: buffer(geo.lines), c: buffer(geo.lineCol), mode: gl.LINES, n: geo.lines.length / 3 },
           { p: buffer(geo.pos), c: buffer(geo.col), mode: gl.TRIANGLES, n: geo.pos.length / 3 },
@@ -72,6 +73,8 @@
       } catch (err) {
         self.postMessage({ type: "fail", reason: String(err) });
       }
+    } else if (msg.type === "load" && renderer) {
+      renderer.load(msg.geometry); // a theme change: new colours
     } else if (msg.type === "draw" && renderer) {
       // Only the latest view matters: coalesce bursts of drags into one draw per animation frame.
       const first = !pending;

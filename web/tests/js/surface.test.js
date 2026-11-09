@@ -7,7 +7,8 @@ const vm = require("node:vm");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "..", "samples", "static", "samples", "surface.js"), "utf8");
 const window = {};
-vm.runInNewContext(src, { window });
+const document = { documentElement: { dataset: {} } }; // data-theme on <html> (theme.js sets it in the page)
+vm.runInNewContext(src, { window, document });
 const { build } = window.GeyserSurface;
 
 const RAMP = ["#000000", "#ffffff"]; // a two-stop ramp: the colour is the value's level on the scale
@@ -49,4 +50,28 @@ test("a grid JSON without a ramp (cached from before) still builds, coloured by 
   const { ramp, ...old } = grid([[0, 4, 4]]);
   const g = build(old);
   assert.ok(Math.abs(g.col[20] / 0.55 - 0x4e / 255) < 1e-3); // level 0: the low end's blue channel (#00224e)
+});
+
+// Themes: Turbo ("ramps.turbo") unless data-theme is "contrast", then cividis ("ramps.cividis").
+const firstWall = (g) => [g.col[18], g.col[19], g.col[20]].map((c) => +(c / 0.55).toFixed(3));
+const themed = { ...grid([[0, 4, 4]]), ramps: { turbo: ["#ff0000", "#ff0000"], cividis: ["#0000ff", "#0000ff"] } };
+
+test("the default and the dark theme colour by Turbo", () => {
+  for (const theme of [undefined, "light", "dark"]) {
+    document.documentElement.dataset.theme = theme;
+    assert.deepStrictEqual(firstWall(build(themed)), [1, 0, 0], String(theme));
+  }
+});
+
+test("the high-contrast theme colours by cividis", () => {
+  document.documentElement.dataset.theme = "contrast";
+  assert.deepStrictEqual(firstWall(build(themed)), [0, 0, 1]);
+  delete document.documentElement.dataset.theme;
+});
+
+test("a grid with one ramp (cached from before the themes) uses it in every theme", () => {
+  document.documentElement.dataset.theme = "contrast";
+  const { ramps, ...old } = themed;
+  assert.deepStrictEqual(firstWall(build({ ...old, ramp: ["#00ff00", "#00ff00"] })), [0, 1, 0]);
+  delete document.documentElement.dataset.theme;
 });

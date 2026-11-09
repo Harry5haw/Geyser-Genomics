@@ -5,8 +5,16 @@
 (() => {
   "use strict";
 
-  // The heat ramp comes with the grid (figures.py HEAT, cividis): one value -> colour mapping for every view.
+  // Ramps from the grid (figures.py RAMPS): Turbo, or cividis under data-theme="contrast" (theme.js).
   const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const themed = (d) => {
+    const s = (d.ramps || {})[document.documentElement.dataset.theme === "contrast" ? "cividis" : "turbo"] || d.ramp;
+    return s && s.length > 1 ? s : ["#00224e", "#b9ab6d"]; // a grid cached from before: one ramp, or none
+  };
+  const frame = () => { // hairlines in the theme's CSS --frame
+    const v = getComputedStyle(document.documentElement).getPropertyValue("--frame").trim();
+    return /^#[0-9a-f]{6}$/i.test(v) ? rgb(v) : [0.82, 0.8, 0.75];
+  };
   const heat = (stops) => {
     const R = stops.map(rgb);
     return (t) => {
@@ -15,7 +23,6 @@
       return [0, 1, 2].map((k) => R[i][k] + (R[i + 1][k] - R[i][k]) * f);
     };
   };
-  const LINE = [0.82, 0.8, 0.75]; // the table frame colour (#d2cbbe): hairlines one step off the beige stage
   const H = 0.75, D = 0.9; // terrain height and half depth, in world units (x spans -1..1)
 
   const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -43,8 +50,7 @@
 
   function build(data) {
     const xs = data.x.values, rows = data.rows.names, vals = data.values, n = rows.length;
-    // A grid JSON cached from before the ramp (max-age 300) has none: use its two ends.
-    const ramp = heat(Array.isArray(data.ramp) && data.ramp.length > 1 ? data.ramp : ["#00224e", "#b9ab6d"]);
+    const ramp = heat(themed(data));
     const x0 = xs[0], x1 = xs[xs.length - 1] === x0 ? x0 + 1 : xs[xs.length - 1];
     const top = data.z.clip || data.z.max || 1, base = data.z.base || 0, span = top - base || 1;
     const wx = (v) => -1 + ((v - x0) / (x1 - x0)) * 2;
@@ -104,8 +110,8 @@
 
   // The GL half (surface-gl.js): in a Worker on an OffscreenCanvas where the browser can (context creation and
   // drawing off the main thread), else the same file as a plain script drawing here.
-  // geometry(): the typed arrays to upload. Called again for the main-thread fallback, because the worker path
-  // transfers (detaches) the first set. Returns {canvas, draw}: the canvas is a fresh element after a fallback.
+  // geometry(): the typed arrays to upload (again for the fallback: the worker detached the first set).
+  // Returns {canvas, draw, load}; the canvas is a fresh element after a fallback.
   async function renderer(fig, canvas, geometry) {
     const url = fig.dataset.surfaceGl;
     if (canvas.transferControlToOffscreen && window.Worker) {
@@ -121,10 +127,10 @@
         });
         worker.postMessage({ type: "init", canvas: offscreen, geometry: geo }, transfer);
         await ready;
-        return { canvas, draw: (view) => worker.postMessage({ type: "draw", view }) };
+        const post = (type) => (x) => worker.postMessage({ type, view: x, geometry: x });
+        return { canvas, draw: post("draw"), load: post("load") };
       } catch (_) {
-        // No WebGL in a worker here (e.g. Safari before 17, which has OffscreenCanvas but not its WebGL), or the
-        // worker failed: stop it, and draw on the main thread on a fresh canvas (the old one now belongs to the worker).
+        // No WebGL in a worker (Safari < 17) or it failed: draw here on a fresh canvas (the worker owns the old one).
         if (worker) worker.terminate();
         const fresh = canvas.cloneNode(false);
         canvas.replaceWith(fresh);
@@ -142,18 +148,18 @@
     }
     const gl = window.GeyserGL(canvas);
     gl.load(geometry());
-    return { canvas, draw: gl.draw };
+    return { canvas, draw: gl.draw, load: gl.load };
   }
 
   async function mount(fig, data) {
     const stage = fig.querySelector(".stage");
     const g = build(data);
     let built = false;
-    const geometry = () => { // the first call reuses g's arrays; a later one (the fallback) builds new ones
+    const geometry = () => { // the first call reuses g's arrays; later ones (fallback, theme) build new ones
       const src = built ? build(data) : g;
       built = true;
-      const lineCol = new Float32Array(src.lines.length);
-      for (let k = 0; k < lineCol.length; k += 3) lineCol.set(LINE, k);
+      const lineCol = new Float32Array(src.lines.length), line = frame();
+      for (let k = 0; k < lineCol.length; k += 3) lineCol.set(line, k);
       return { pos: src.pos, col: src.col, lines: src.lines, lineCol };
     };
     await breathe();
@@ -290,6 +296,7 @@
 
     await breathe();
     new ResizeObserver(redraw).observe(stage);
+    document.addEventListener("geyser:theme", () => { live.load(geometry()); redraw(); });
     canvas.hidden = false;
     fig.classList.add("live"); // CSS hides the poster: the canvas takes its place in the same box, nothing shifts
     const button = fig.querySelector("[data-surface-start]"); // the same button, relabelled: no layout change
