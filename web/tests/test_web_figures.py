@@ -86,7 +86,7 @@ def test_a_flat_grid_draws_instead_of_failing(client, figdir):
     # Every value the same whole number: a stated baseline would equal the top (a division by zero before).
     flat = "label,read,cycle,mean,A,C,G,T\n" + "".join(f"S1,R1,{c},36,36,36,36,36\n" for c in range(1, 4))
     (figdir / "quality-surface.csv").write_bytes(flat.encode())
-    assert figures.poster_svg(figures.load("quality")).count("<path ") == 2  # one ridge per ramp
+    assert figures.poster_svg(figures.load("quality")).count("<path ") == 1  # one ridge, drawn once
     assert client.get("/figures/").status_code == 200
 
 
@@ -129,44 +129,69 @@ def test_the_poster_is_one_ridge_per_row_with_escaped_labels(figdir):
     (figdir / "coverage-terrain.csv").write_bytes(COVERAGE.replace("B · giraffe", "<b>x</b>").encode())
     svg = figures.poster_svg(figures.load("coverage"))
     assert svg.startswith('<svg class="poster"') and 'role="img"' in svg and "aria-label=" in svg
-    assert svg.count("<path ") == 4  # one ridge per row per ramp (turbo, cividis)
+    assert svg.count("<path ") == 2  # one ridge per row, drawn once (shown per ramp by <use>)
     assert "<b>x</b>" not in svg and "&lt;b&gt;x&lt;/b&gt;" in svg
 
 
 def test_the_poster_fills_each_ridge_by_value(figdir):
-    svg = figures.poster_svg(figures.load("coverage"))
-    # One heat gradient per ridge, from the ridge's baseline (bottom of the scale) up to the top of the scale.
-    # One per ramp: the theme's CSS shows one group (.ramp-turbo, or .ramp-cividis under data-theme=contrast).
+    grid = figures.load("coverage")
+    svg = figures.poster_svg(grid)
+    # One gradient per ramp for the whole poster, over the colour range's heights (each ridge is drawn from y=0 and
+    # placed by its <use>, so one gradient fits all); the theme's CSS shows one group per ramp.
     gradients = re.findall(
-        r'<linearGradient id="(heat-coverage-\d+-\w+)" gradientUnits="userSpaceOnUse"[^>]*>(.*?)</linear', svg
+        r'<linearGradient id="(heat-coverage-[\w-]+)" gradientUnits="userSpaceOnUse" x1="0" y1="([-\d.]+)" '
+        r'x2="0" y2="([-\d.]+)">(.*?)</linear',
+        svg,
     )
-    assert [g for g, _ in gradients] == [
-        "heat-coverage-0-turbo",
-        "heat-coverage-0-cividis",
-        "heat-coverage-1-turbo",
-        "heat-coverage-1-cividis",
-    ]
-    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', gradients[0][1]) == figures.HEAT_TURBO
-    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', gradients[1][1]) == figures.HEAT_CIVIDIS
-    for ramp in ("turbo", "cividis"):
+    assert [g[0] for g in gradients] == ["heat-coverage-turbo", "heat-coverage-turbo-dark", "heat-coverage-cividis"]
+    for (_, _, _, stops), ramp in zip(gradients, figures.RAMPS.values(), strict=True):
+        # a transparent first stop at the baseline (the body under a ridge fades out), then the ramp
+        assert re.findall(r'stop-color="(#[0-9a-f]{6})"', stops) == [ramp[0], *ramp]
+        assert stops.startswith('<stop offset="0" stop-color="' + ramp[0] + '" stop-opacity="0"/>')
+    c0, c1 = figures.colour_range(grid)
+    top = grid.clip or grid.vmax
+    lift = (figures.POSTER_H - figures.MARGIN_T - figures.MARGIN_B) / (len(grid.rows) + 1.5) * 2.5 / (top - grid.base)
+    assert float(gradients[0][1]) == 0  # from each ridge's baseline...
+    assert float(gradients[0][2]) == round(-(c1 - grid.base) * lift, 1)
+    assert svg.count("<path ") == 2  # one ridge per row, drawn once
+    for ramp in figures.RAMPS:
         group = re.search(rf'<g class="ramp-{ramp}">(.*?)</g>', svg).group(1)
-        assert group.count(f'-{ramp})"') == 2 and "style=" not in svg  # attributes only (CSP)
+        assert group.count(f'fill="url(#heat-coverage-{ramp})"') == 2
+    assert "style=" not in svg  # attributes only (CSP)
+
+
+def test_the_colour_range_is_the_robust_range_inside_the_height_scale():
+    G = figures.Grid
+    f = figures.FIGURES["coverage"]
+    values = [[float(v) for v in range(100)]]  # 0..99
+    grid = G(f, list(range(100)), ["a"], values, clip=None, base=0.0, vmin=0.0, vmax=99.0)
+    lo, hi = figures.colour_range(grid)
+    assert round(lo, 2) == 1.98 and round(hi, 2) == 97.02  # 2nd and 98th percentile
+    capped = G(f, list(range(100)), ["a"], values, clip=50.0, base=0.0, vmin=0.0, vmax=99.0)
+    assert figures.colour_range(capped)[1] == 50.0  # never above the height cap
+    flat = G(f, [1, 2], ["a"], [[3.0, 3.0]], base=3.0, vmin=3.0, vmax=3.0)
+    assert figures.colour_range(flat) == (3.0, 3.0)  # a flat grid: the scale itself, drawn flat
 
 
 def test_the_colour_bar_shows_the_scale_with_its_cap(figdir):
     coverage = figures.legend_svg(figures.load("coverage"))
     assert coverage.startswith('<svg class="colorbar"') and 'role="img"' in coverage
-    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', coverage) == figures.HEAT_TURBO + figures.HEAT_CIVIDIS
-    assert re.findall(r'<rect class="(ramp-\w+)"', coverage) == ["ramp-turbo", "ramp-cividis"]
+    assert re.findall(r'stop-color="(#[0-9a-f]{6})"', coverage) == [c for r in figures.RAMPS.values() for c in r]
+    assert re.findall(r'<rect class="(ramp-[\w-]+)"', coverage) == ["ramp-turbo", "ramp-turbo-dark", "ramp-cividis"]
+    # The bar shows the colour range actually used (the robust range), with <= / >= where the data goes beyond it.
     grid = figures.load("coverage")
+    c0, c1 = figures.colour_range(grid)
+    assert grid.vmin < c0 and grid.vmax > c1
     assert [t for t in re.findall(r">([^<]+)</text>", coverage)] == [
-        "0",
-        figures._num(grid.clip / 2),
-        f"≥ {figures._num(grid.clip)}",
+        f"≤ {figures._num(c0)}",
+        figures._num(figures.colour_knots(grid)[2]),  # by rank: the middle of the bar is the median
+        f"≥ {figures._num(c1)}",
     ]
-    quality = figures.legend_svg(figures.load("quality"))  # narrow range: from the stated baseline, no cap
-    assert re.findall(r">([^<]+)</text>", quality) == ["32", "34", "36"]
-    assert "Mean base quality from 32 to 36 Phred" in quality
+    assert f"from {figures._num(c0)} to {figures._num(c1)}" in coverage
+    quality = figures.legend_svg(figures.load("quality"))  # a range the data stays inside: no <= / >=
+    q0, q1 = figures.colour_range(figures.load("quality"))
+    texts = re.findall(r">([^<]+)</text>", quality)
+    assert texts[0].endswith(figures._num(q0)) and texts[2].endswith(figures._num(q1))
 
 
 def test_ticks_read_like_the_3d_labels():
@@ -186,7 +211,14 @@ def test_grid_json_is_what_the_renderer_reads(figdir):
     assert set(data) == {"title", "x", "rows", "z", "values", "ramp", "ramps"}
     assert data["ramp"] == figures.HEAT == figures.HEAT_TURBO  # the default, for a page cached before the themes
     # surface.js picks one by data-theme: the same stops as the poster and the colour bar.
-    assert data["ramps"] == {"turbo": figures.HEAT_TURBO, "cividis": figures.HEAT_CIVIDIS}
+    assert data["ramps"] == {
+        "turbo": figures.HEAT_TURBO,
+        "turbo-dark": figures.HEAT_TURBO_DARK,
+        "cividis": figures.HEAT_CIVIDIS,
+    }
+    # ...and colours over the same range as they do
+    grid = figures.load("quality")
+    assert data["z"]["colour"] == [round(c, 4) for c in figures.colour_knots(grid)]
     assert data["x"] == {
         "label": "Sequencing cycle",
         "unit": "cycle",
@@ -336,3 +368,21 @@ def test_surface_js_never_shadows_its_own_helpers():
         inner |= set(re.findall(r"(?:^|,\s*)(\w+) = ", line))
     assert "rgb" in helpers and "frame" in inner  # the patterns still see both levels
     assert not helpers & inner, helpers & inner
+
+
+def test_colour_knots_spread_the_ramp_by_rank():
+    G, f = figures.Grid, figures.FIGURES["coverage"]
+    # 96 values at 30-33 and a few spikes: the knots sit in the dense band, so it gets most of the rainbow.
+    values = [[30.0 + (k % 4) for k in range(96)] + [60.0, 80.0, 90.0, 99.0]]
+    grid = G(f, list(range(100)), ["a"], values, base=0.0, vmin=30.0, vmax=99.0)
+    knots = figures.colour_knots(grid)
+    assert len(knots) == 5 and knots == sorted(knots)
+    assert knots[1] >= 30 and knots[3] <= 33  # the middle half of the ramp covers 30-33
+    assert figures._value_at(knots, 0) == knots[0] and figures._value_at(knots, 1) == knots[-1]
+    assert figures._value_at(knots, 0.5) == knots[2]
+    # The poster's stops sit at the knots' values: offsets rise from 0 to 1 and bunch where the data is dense.
+    offsets = [float(o) for o in re.findall(r'offset="([\d.]+)"', figures._stops("turbo", knots))]
+    assert offsets[0] == 0 and offsets[-1] == 1 and offsets == sorted(offsets)
+    # No spread: the height scale, two knots.
+    flat = G(f, [1, 2], ["a"], [[3.0, 3.0]], base=3.0, vmin=3.0, vmax=3.0)
+    assert figures.colour_knots(flat) == [3.0, 3.0]

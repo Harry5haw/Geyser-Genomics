@@ -59,7 +59,7 @@ const data = {
   z: { label: "z", unit: "u", min: 0, max: 4, clip: null, base: 0 },
   values: [[0, 2, 4], [4, 2, 0]],
   ramp: ["#00ff00", "#00ff00"],
-  ramps: { turbo: ["#ff0000", "#ff0000"], cividis: ["#0000ff", "#0000ff"] },
+  ramps: { turbo: ["#ff0000", "#ff0000"], "turbo-dark": ["#ff00ff", "#ff00ff"], cividis: ["#0000ff", "#0000ff"] },
 };
 
 for (const theme of ["light", "dark", "retro", "contrast"]) {
@@ -70,7 +70,8 @@ for (const theme of ["light", "dark", "retro", "contrast"]) {
     assert.ok(fig.classList.names.has("live"));
     assert.strictEqual(loads.length, 1);
     const wall = (geo) => [geo.col[18], geo.col[19], geo.col[20]].map((c) => +(c / 0.55).toFixed(3));
-    assert.deepStrictEqual(wall(loads[0]), theme === "contrast" ? [0, 0, 1] : [1, 0, 0]);
+    const expect = { contrast: [0, 0, 1], dark: [1, 0, 1] }[theme] || [1, 0, 0];
+    assert.deepStrictEqual(wall(loads[0]), expect);
     // hairlines take the theme's --frame
     const want = [1, 3, 5].map((i) => +(parseInt({ light: "#d2cbbe", dark: "#4a4a4a", retro: "#c0c0c0", contrast: "#ffffff" }[theme].slice(i, i + 2), 16) / 255).toFixed(3));
     assert.deepStrictEqual(Array.from(loads[0].lineCol.slice(0, 3)).map((c) => +c.toFixed(3)), want);

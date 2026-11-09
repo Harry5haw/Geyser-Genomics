@@ -36,7 +36,11 @@ def test_the_web_figures_use_the_same_heat_ramp():
         for t in node.targets
         if getattr(t, "id", "").startswith("HEAT_")
     }
-    assert lists == {"HEAT_TURBO": figkit.HEAT_TURBO, "HEAT_CIVIDIS": figkit.HEAT_CIVIDIS}
+    assert lists == {
+        "HEAT_TURBO": figkit.HEAT_TURBO,
+        "HEAT_TURBO_DARK": figkit.HEAT_TURBO_DARK,
+        "HEAT_CIVIDIS": figkit.HEAT_CIVIDIS,
+    }
     assert figkit.HEAT == figkit.HEAT_TURBO  # the default ramp, on both sides (web: HEAT = HEAT_TURBO)
 
 
@@ -59,20 +63,28 @@ def test_cividis_lightness_rises_and_text_flips_on_the_dark_end():
     assert figkit.ink_on(1.0, figkit.HEAT_CIVIDIS) == figkit.INK
 
 
-def test_turbo_is_googles_turbo_sampled_from_010_to_090():
+def test_turbo_is_googles_turbo_all_of_it_and_trimmed_for_the_dark_stage():
     # The reference: matplotlib's "turbo", Google's lookup table (Mikhailov 2019, Apache 2.0).
     from matplotlib import colormaps
     from matplotlib.colors import to_hex
 
-    turbo, n = colormaps["turbo"], len(figkit.HEAT_TURBO)
-    assert n == 15
-    assert figkit.HEAT_TURBO == [to_hex(turbo(0.10 + 0.80 * k / (n - 1))) for k in range(n)]
+    turbo = colormaps["turbo"]
+    assert figkit.HEAT_TURBO == [to_hex(turbo(k / 16)) for k in range(17)]
+    assert figkit.HEAT_TURBO_DARK == [to_hex(turbo(0.09 + 0.82 * k / 14)) for k in range(15)]
 
 
-@pytest.mark.parametrize("stage", ["#f3efe6", "#262626", "#ffffff"])  # --deep: light, dark, retro (Turbo)
-def test_both_ends_of_turbo_clear_2_to_1_on_each_stage(stage):
-    assert _contrast(figkit.HEAT_TURBO[0], stage) >= 2.0
-    assert _contrast(figkit.HEAT_TURBO[-1], stage) >= 2.0
+@pytest.mark.parametrize(
+    "ramp, stage",
+    [
+        ("HEAT_TURBO", "#f3efe6"),  # light
+        ("HEAT_TURBO", "#ffffff"),  # retro
+        ("HEAT_TURBO_DARK", "#262626"),  # dark (and the #2d2d2d it was first specified with)
+        ("HEAT_TURBO_DARK", "#2d2d2d"),
+    ],
+)
+def test_both_ends_of_turbo_clear_2_to_1_on_their_stage(ramp, stage):
+    stops = getattr(figkit, ramp)
+    assert _contrast(stops[0], stage) >= 2.0 and _contrast(stops[-1], stage) >= 2.0
 
 
 def test_cividis_clears_2_to_1_on_the_high_contrast_stage():

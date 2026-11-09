@@ -54,13 +54,19 @@ test("a grid JSON without a ramp (cached from before) still builds, coloured by 
 
 // Themes: Turbo ("ramps.turbo") unless data-theme is "contrast", then cividis ("ramps.cividis").
 const firstWall = (g) => [g.col[18], g.col[19], g.col[20]].map((c) => +(c / 0.55).toFixed(3));
-const themed = { ...grid([[0, 4, 4]]), ramps: { turbo: ["#ff0000", "#ff0000"], cividis: ["#0000ff", "#0000ff"] } };
+const themed = {
+  ...grid([[0, 4, 4]]),
+  ramps: { turbo: ["#ff0000", "#ff0000"], "turbo-dark": ["#ff00ff", "#ff00ff"], cividis: ["#0000ff", "#0000ff"] },
+};
 
-test("the default and the dark theme colour by Turbo", () => {
-  for (const theme of [undefined, "light", "dark"]) {
+test("the default, light and retro themes colour by Turbo, the dark theme by Turbo trimmed for its stage", () => {
+  for (const theme of [undefined, "light", "retro"]) {
     document.documentElement.dataset.theme = theme;
     assert.deepStrictEqual(firstWall(build(themed)), [1, 0, 0], String(theme));
   }
+  document.documentElement.dataset.theme = "dark";
+  assert.deepStrictEqual(firstWall(build(themed)), [1, 0, 1]);
+  delete document.documentElement.dataset.theme;
 });
 
 test("the high-contrast theme colours by cividis", () => {
@@ -74,4 +80,14 @@ test("a grid with one ramp (cached from before the themes) uses it in every them
   const { ramps, ...old } = themed;
   assert.deepStrictEqual(firstWall(build({ ...old, ramp: ["#00ff00", "#00ff00"] })), [0, 1, 0]);
   delete document.documentElement.dataset.theme;
+});
+
+// The colour spans the figure's robust range (z.colour), not the whole height scale: values at or below its
+// low end take the first stop, at or above its high end the last, in between interpolated.
+test("colour follows z.colour, clamped at both ends", () => {
+  const g = build({ ...grid([[0, 1, 2]]), z: { label: "z", unit: "u", max: 4, clip: null, base: 0, colour: [1, 2] } });
+  // segment 0 starts at value 0 (below the range: level 0), segment 1 at value 1 (the range's low end: level 0)
+  assert.deepStrictEqual(wallLevels(g), [0, 0]);
+  const h = build({ ...grid([[1.5, 2, 4]]), z: { label: "z", unit: "u", max: 4, clip: null, base: 0, colour: [1, 2] } });
+  assert.deepStrictEqual(wallLevels(h), [0.5, 1]); // 1.5 is halfway; 2 (and above) is the top
 });

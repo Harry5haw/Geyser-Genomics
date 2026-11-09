@@ -71,16 +71,22 @@ def pyplot():
 # The heat ramps for magnitude (heatmaps, 3D surfaces, colour bars). The web page uses the same stops
 # (web/samples/figures.py HEAT_TURBO / HEAT_CIVIDIS; tests/test_figures.py checks they agree).
 # HEAT_TURBO, the default "rainbow heatcam": Google's Turbo colormap (Anton Mikhailov, 2019, "Turbo, An Improved
-# Rainbow Colormap for Visualization", Apache License 2.0), 15 stops sampled from 0.10 to 0.90 of its lookup table
-# (matplotlib's "turbo"), trimmed so both ends clear 2:1 against the light (#f3efe6) and dark (#262626) stage.
+# Rainbow Colormap for Visualization", Apache License 2.0), all of it, 17 stops from matplotlib's "turbo" table.
 HEAT_TURBO = [
-    "#4559cb", "#4680f6", "#3aa3fc", "#20c7df", "#19e3b9", "#38f491", "#71fe5f", "#a4fc3c",
-    "#c8ef34", "#e9d539", "#fbb838", "#fe9029", "#f36315", "#e14109", "#c32503",
+    "#30123b", "#4040a2", "#466be3", "#4294ff", "#28bceb", "#18ddc2", "#32f298", "#6dfe62", "#a4fc3c", "#cdec34",
+    "#eecf3a", "#fdac34", "#fb7e21", "#eb500e", "#d02f05", "#a91601", "#7a0403",
+]  # fmt: skip
+# HEAT_TURBO_DARK: Turbo from 0.09 to 0.91, for the web page's dark stage (#262626), where both ends clear 2:1.
+HEAT_TURBO_DARK = [
+    "#4454c3", "#477bf2", "#3ba0fd", "#22c5e2", "#19e2bb", "#38f491", "#71fe5f", "#a4fc3c", "#c8ef34", "#e9d539",
+    "#fbb637", "#fd8d27", "#f26014", "#dd3d08", "#be2102",
 ]  # fmt: skip
 # HEAT_CIVIDIS, the high-contrast (black-stage) alternative: cividis from 0.20 to 1, slate blue to yellow.
 # Perceptually uniform, lightness rises monotonically (reads in greyscale and with any colour-vision deficiency),
 # and the dark end is trimmed so it still clears 2:1 against the black stage.
-HEAT_CIVIDIS = ["#35456c", "#575d6d", "#757575", "#948e77", "#b7a96e", "#dbc75a", "#fee838"]
+HEAT_CIVIDIS = [
+    "#35456c", "#575d6d", "#757575", "#948e77", "#b7a96e", "#dbc75a", "#fee838",
+]  # fmt: skip
 HEAT = HEAT_TURBO  # the default ramp
 
 
