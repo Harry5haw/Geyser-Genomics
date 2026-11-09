@@ -13,6 +13,7 @@ import re
 import threading
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from django.core.management import CommandError, call_command
@@ -339,3 +340,62 @@ def test_a_deepvariant_called_sample_links_deepvariants_vcf(storage, tmp_path, s
     folder = run_publish(tmp_path / "folder", "S1")
     copied = (folder / "samples/S1/files/S1.vcf.gz").read_bytes()
     assert copied == Path(storage.describe("variants_deepvariant/S1.vcf.gz")).read_bytes()
+
+
+# ------------------------------------------------------------------ the Publish metric (O7)
+
+
+def _publish_metrics(storage):
+    path = Path(storage.root) / "metrics" / "metrics.jsonl"
+    lines = path.read_text().splitlines() if path.exists() else []
+    return [r for r in map(json.loads, lines) if r.get("task") == "Publish"]
+
+
+def test_a_publish_records_its_metric_beside_local_storage(storage, site, monkeypatch):
+    monkeypatch.delenv("METRICS_BACKEND", raising=False)
+    monkeypatch.delenv("METRICS_FILE", raising=False)
+    finished_sample(storage)
+    run_publish(site, "S1")
+    run_publish(site / "all", "--all")
+    recs = _publish_metrics(storage)
+    assert [(r["sample_id"], r["status"]) for r in recs] == [("S1", "Success"), ("all", "Success")]
+    assert all(r["duration_seconds"] >= 0 for r in recs)
+
+
+def test_a_failed_publish_records_failure_and_still_fails(storage, site, monkeypatch):
+    monkeypatch.delenv("METRICS_BACKEND", raising=False)
+    from samples.management.commands import publish as command
+
+    def broken(**kwargs):
+        raise publish_mod.PublishError("site bucket unreachable")
+
+    monkeypatch.setattr(command, "publish", broken)
+    with pytest.raises(CommandError, match="site bucket unreachable"):
+        run_publish(site, "S1", "S2")
+    assert [(r["sample_id"], r["status"]) for r in _publish_metrics(storage)] == [("several", "Failure")]
+
+
+def test_a_metrics_error_never_fails_a_publish(storage, site, monkeypatch, capsys):
+    from samples.management.commands import publish as command
+
+    class Broken:
+        def record(self, *args, **kwargs):
+            raise RuntimeError("CloudWatch down")
+
+    monkeypatch.setattr(command, "get_metrics", lambda: Broken())
+    finished_sample(storage)
+    run_publish(site, "S1")  # no exception
+    assert "could not record the Publish metric: RuntimeError: CloudWatch down" in capsys.readouterr().err
+
+
+def test_the_ui_never_picks_cloudwatch_from_local_storage(settings, monkeypatch):
+    from geyser_web.pipeline import get_metrics
+    from metrics import CloudWatchMetrics, LocalMetrics
+
+    monkeypatch.delenv("METRICS_BACKEND", raising=False)
+    monkeypatch.setenv("STORAGE_BACKEND", "s3")  # the process env says S3, but the UI's settings say local
+    settings.GEYSER_STORAGE_BACKEND = "local"
+    assert isinstance(get_metrics(), LocalMetrics)
+    settings.GEYSER_STORAGE_BACKEND = "s3"
+    with mock.patch("boto3.client"):
+        assert isinstance(get_metrics(), CloudWatchMetrics)  # the Publish job: S3 storage on AWS
