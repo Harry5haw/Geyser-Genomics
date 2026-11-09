@@ -59,7 +59,11 @@ def caller_stages(prefix: str) -> tuple:
 # To add a stage or caller, add it here: dashboards, alarms and tests pick it up.
 STAGE_GROUPS = {
     "core": (Stage("QualityControl"), Stage("Align"), Stage("CallVariants")),
+    # v1.3's large route: the pre-flight split and one AlignChunk per chunk; the merge is the core Align.
+    "genome": (Stage("Preflight"), Stage("AlignChunk")),
     "deepvariant": caller_stages("DeepVariant"),
+    # v1.5: make_examples split over CPU part jobs (no run-record part); the GPU job is the DeepVariant stage.
+    "dv_split": (Stage("DeepVariantExamples"),),
     "pangenome": caller_stages("PangenomeDeepVariant"),
     # Scatter-gather calling (#108): one CallVariantsShard per region; the merge is the core CallVariants.
     "shards": (Stage("CallVariantsShard"),),
@@ -68,6 +72,8 @@ STAGE_GROUPS = {
 }
 GROUP_TITLES = {
     "core": "Core pipeline (bcftools)",
+    "genome": "Large route (pre-flight and align chunks)",
+    "dv_split": "DeepVariant make_examples parts (CPU)",
     "deepvariant": "DeepVariant",
     "pangenome": "Pangenome-aware DeepVariant",
     "shards": "Variant calling shards (per region)",
@@ -531,6 +537,235 @@ def queue_wait_widgets(region: str = DEFAULT_REGION, log_group: str = BATCH_EVEN
     ]
 
 
+# The job-log line every stage writes after updating the run record (app/provenance.py RECORD_LOG_PREFIX).
+RUN_RECORD_PREFIX = "run-record: "
+RUN_RECORD_FIELDS = (
+    "task",
+    "sample_id",
+    "run_name",
+    "status",
+    "route",
+    "caller_outcome",
+    "infra_retries",
+    "app_version",
+    "reference",
+    "gate",
+)
+
+
+def _run_record_parse() -> list:
+    """Logs Insights lines that pull the run-record line's fields out (strings, numbers or null)."""
+    lines = [f"filter @message like /^{RUN_RECORD_PREFIX.strip()}/"]
+    for field in RUN_RECORD_FIELDS:
+        lines.append(f'| parse @message /"{field}": "?(?<r_{field}>[^",}}]*)"?/')
+    return lines
+
+
+def recent_runs_query() -> str:
+    """One row per run: its latest record line (the fullest view), newest first. Shows the route, whose calls
+    the VCF holds (a DeepVariant run that fell back to bcftools reads fallback_bcftools), the reference, the
+    image, the gate verdict and the attempts lost to Spot."""
+    return "\n".join(
+        [
+            *_run_record_parse(),
+            "| stats latest(r_sample_id) as sample, latest(r_status) as status, latest(r_route) as route, "
+            "latest(r_caller_outcome) as calls, latest(r_reference) as reference, latest(r_gate) as gate, "
+            "max(r_infra_retries) as spot_retries, latest(r_app_version) as image, latest(r_task) as last_stage, "
+            "max(@timestamp) as updated by r_run_name",
+            "| sort updated desc",
+            "| limit 50",
+        ]
+    )
+
+
+def caller_outcome_query() -> str:
+    """Runs per caller outcome (bcftools, deepvariant, pangenome, fallback_bcftools), from each run's latest line."""
+    return "\n".join(
+        [
+            *_run_record_parse(),
+            "| stats latest(r_caller_outcome) as outcome by r_run_name",
+            "| stats count(*) as runs by outcome",
+        ]
+    )
+
+
+def spot_retry_query() -> str:
+    """Jobs that started again after a lost attempt: Batch retries only infrastructure failures (Spot
+    interruptions, a host going away), and the RUNNING event of a retry lists the earlier attempt's reason."""
+    return "\n".join(
+        [
+            "fields detail.jobName as job, detail.attempts.0.statusReason as reason",
+            "| filter ispresent(detail.attempts.0.statusReason)",
+            *QUEUE_WAIT_PARSE[:1],
+            "| stats count(*) as retried_jobs by stage, reason",
+            "| sort retried_jobs desc",
+        ]
+    )
+
+
+def run_widgets(
+    region: str = DEFAULT_REGION,
+    batch_log_group: str = BATCH_LOG_GROUP,
+    batch_events_log_group: str = BATCH_EVENTS_LOG_GROUP,
+) -> list:
+    """Per-run widgets from the run-record log lines (#251) and the Batch RUNNING events."""
+    return [
+        _log_widget("Recent runs (from the run record)", recent_runs_query(), region, batch_log_group, height=7),
+        _log_widget(
+            "Whose calls: runs by caller outcome (fallback_bcftools = the run's own caller failed)",
+            caller_outcome_query(),
+            region,
+            batch_log_group,
+            width=12,
+        ),
+        _log_widget(
+            "Jobs retried after a lost attempt (Spot interruptions), by stage",
+            spot_retry_query(),
+            region,
+            batch_events_log_group,
+            width=12,
+        ),
+    ]
+
+
+def gpu_widgets(region: str, namespace: str, schema: str) -> list:
+    """DeepVariant's GPU step: utilisation and peak memory (#139). Aggregated schema only (one series per step)."""
+    if schema != "aggregated":
+        return []
+    task = "DeepVariant.CallVariants"
+    dims = ["TaskName", task, "Status", "Success"]
+    return [
+        _metric_widget(
+            "DeepVariant call_variants on the GPU: utilisation % (mean, peak)",
+            [
+                [
+                    namespace,
+                    "GpuUtilization",
+                    *dims,
+                    {"id": "gpu_util_mean", "stat": "Average", "label": "mean utilisation"},
+                ],
+                [
+                    namespace,
+                    "GpuUtilizationPeak",
+                    *dims,
+                    {"id": "gpu_util_peak", "stat": "Maximum", "label": "peak utilisation"},
+                ],
+            ],
+            region,
+            y_label="%",
+        ),
+        _metric_widget(
+            "DeepVariant call_variants on the GPU: peak memory, MiB",
+            [
+                [
+                    namespace,
+                    "GpuPeakMemory",
+                    *dims,
+                    {"id": "gpu_mem_peak", "stat": "Maximum", "label": "peak GPU memory"},
+                ]
+            ],
+            region,
+            y_label="MiB",
+        ),
+    ]
+
+
+# Spend guardrails (O9): the live values, read from AWS Budgets and .claude/hooks/guard_aws.py on 9 Nov 2026.
+# They change rarely and only by the user; update them here (and redeploy) when they do.
+GUARDRAILS = {
+    "checked": "9 Nov 2026",
+    "cap_usd": 30,  # budget geyser-claude-project-cap (CUSTOM period, ends 1 Nov 2027: renew before)
+    "kill_switch_usd": 27,  # its budget action: attaches the deny-all geyser-claude-kill-switch at actual spend
+    "run_block_usd": 24,  # guard_aws.py RUN_BLOCK_USD: no new runs from here
+    "gpu_block_usd": 20,  # guard_aws.py GPU_BLOCK_USD: no GPU jobs from here
+    "monthly_alert_usd": 10,  # budget geyser-monthly-cost
+}
+BUDGETS_URL = "https://us-east-1.console.aws.amazon.com/costmanagement/home#/budgets"
+COST_EXPLORER_URL = "https://us-east-1.console.aws.amazon.com/costmanagement/home#/cost-explorer"
+
+
+def spend_widgets(guardrails: dict = None) -> list:
+    """O9: the account's estimated charges this month (AWS/Billing, published only in us-east-1, free once
+    "Receive Billing Alerts" is on; hours ahead of Budgets) next to the guardrails' lines."""
+    g = guardrails or GUARDRAILS
+    charges = [
+        [
+            "AWS/Billing",
+            "EstimatedCharges",
+            "Currency",
+            "USD",
+            {"id": "charges", "stat": "Maximum", "label": "Estimated charges this month, USD", "region": "us-east-1"},
+        ]
+    ]
+    widget = _metric_widget(
+        "Estimated charges this month, USD (us-east-1, every ~6 h)", charges, "us-east-1", period=21600, y_label="USD"
+    )
+    widget["properties"]["annotations"] = {
+        "horizontal": [
+            {"label": f"kill switch ${g['kill_switch_usd']}", "value": g["kill_switch_usd"]},
+            {"label": f"no new runs ${g['run_block_usd']}", "value": g["run_block_usd"]},
+            {"label": f"no GPU jobs ${g['gpu_block_usd']}", "value": g["gpu_block_usd"]},
+        ]
+    }
+    lines = [
+        "### Spend guardrails",
+        "",
+        f"- Project cap **${g['cap_usd']}** (budget `geyser-claude-project-cap`, ends 1 Nov 2027: renew before)",
+        f"- Kill switch at **${g['kill_switch_usd']}** actual: attaches deny-all `geyser-claude-kill-switch` "
+        "(Budgets action status STANDBY = armed)",
+        f"- Guard hook: no new runs from **${g['run_block_usd']}**, no GPU jobs from **${g['gpu_block_usd']}**",
+        f"- Monthly alert ${g['monthly_alert_usd']} (`geyser-monthly-cost`)",
+        "",
+        f"[Budgets and actions]({BUDGETS_URL}) · [Cost Explorer]({COST_EXPLORER_URL}). "
+        f"Values checked {g['checked']}; Budgets lags hours, the estimate is the earlier hint.",
+    ]
+    text = _text_widget(
+        "\n".join(lines),
+        width=12,
+        height=6,
+    )
+    return [widget, text]
+
+
+def running_now_widgets(region: str) -> list:
+    """O10: what bills while idle. Running vCPUs from the free AWS/Usage metrics (EC2 by instance class: G/VT
+    is the GPU environment; Fargate on-demand and Spot), and every bucket's size (AWS/S3, daily)."""
+    usage = (
+        'SEARCH(\'{AWS/Usage,Class,Resource,Service,Type} Service="EC2" Type="Resource" Resource="vCPU"\', '
+        "'Maximum', 300)"
+    )
+    fargate = "SEARCH('{AWS/Usage,Class,Resource,Service,Type} Service=\"Fargate\" Type=\"Resource\"', 'Maximum', 300)"
+    buckets = (
+        'SEARCH(\'{AWS/S3,BucketName,StorageType} MetricName="BucketSizeBytes" StorageType="StandardStorage"\', '
+        "'Average', 86400)"
+    )
+    return [
+        _metric_widget(
+            "Running now: EC2 vCPUs by class (G/VT = GPU env) and Fargate tasks",
+            [
+                [{"expression": usage, "id": "ec2_vcpu", "label": "EC2 vCPUs"}],
+                [{"expression": fargate, "id": "fargate", "label": "Fargate"}],
+            ],
+            region,
+            period=300,
+            y_label="count",
+        ),
+        _metric_widget(
+            "S3 storage by bucket, GB (Standard, daily)",
+            [
+                [{"expression": buckets, "id": "bucket_bytes", "visible": False}],
+                [{"expression": "bucket_bytes / 1000000000", "id": "bucket_gb", "label": "GB"}],
+            ],
+            region,
+            period=86400,
+            y_label="GB",
+        ),
+    ]
+
+
+BENCHMARKS_URL = "https://github.com/Harry5haw/Geyser-Genomics/blob/main/docs/benchmarks/README.md"
+
+
 def storage_widgets(region: str, bucket: str) -> list:
     """Data lake size and object count (#62), from the free daily S3 storage metrics (AWS/S3, one
     datapoint a day per bucket and storage class, about a day behind). The lifecycle rules in
@@ -580,6 +815,8 @@ def build_dashboard(
     bucket: str = None,
     queue_wait: bool = True,
     batch_events_log_group: str = BATCH_EVENTS_LOG_GROUP,
+    runs: bool = True,
+    spend: bool = True,
 ) -> dict:
     """The full monitoring dashboard: alarm status, runs per day, end-to-end time, failures, result
     quality (from the Batch job logs), data lake storage (with a bucket name), stage durations."""
@@ -603,7 +840,8 @@ def build_dashboard(
             "# Geyser Genomics pipeline\n"
             f"{link_line}\n\n"
             f"Generated by `scripts/deploy_dashboard.py` (schema: **{schema}**). Edits made in the console are "
-            f"overwritten on the next deploy. Stage durations show {duration_note}; successful runs only.",
+            f"overwritten on the next deploy. Stage durations show {duration_note}; successful runs only. "
+            f"Accuracy (hap.py against GIAB) per configuration: [benchmark history]({BENCHMARKS_URL}).",
             width=GRID_WIDTH - 6 if alarm_arns else GRID_WIDTH,
             height=4,
         )
@@ -637,10 +875,16 @@ def build_dashboard(
             width=GRID_WIDTH,
         )
     )
+    if spend:
+        widgets += spend_widgets() + running_now_widgets(region)
+    if runs:
+        widgets += run_widgets(region, batch_log_group, batch_events_log_group)
     if quality:
         widgets += quality_widgets(region, batch_log_group, thresholds)
     if bucket:
         widgets += storage_widgets(region, bucket)
+    if "deepvariant" in groups:
+        widgets += gpu_widgets(region, namespace, schema)
     for name, stages in groups.items():
         widgets.append(
             _metric_widget(
