@@ -119,12 +119,15 @@ def dv_inputs(local_env, monkeypatch):
     return indexed
 
 
-def fake_run(vcf_bytes=None, code=0):
+def fake_run(vcf_bytes=None, code=0, tbi_bytes=None):
     def run(cmd, **_):
         out = next(c.split("=", 1)[1] for c in cmd if c.startswith("--output_vcf="))
         if vcf_bytes is not None:
             with open(out, "wb") as fh:
                 fh.write(vcf_bytes)
+        if tbi_bytes is not None:  # postprocess_variants writes the .tbi beside a .vcf.gz
+            with open(out + ".tbi", "wb") as fh:
+                fh.write(tbi_bytes)
         return code, SAMPLE_OUTPUT, 156.0
 
     return run
@@ -1092,3 +1095,37 @@ def test_gpu_metric_usage_drops_missing_values():
     assert dv.gpu_metric_usage({"utilization_mean_pct": None, "memory_peak_mib": 512.0}) == {
         "gpu_memory_peak_mib": 512.0
     }
+
+
+def test_stage_uploads_the_index_deepvariant_wrote_beside_the_vcf(local_env, dv_inputs, monkeypatch):
+    vcf = gzip.compress(b"##fileformat=VCFv4.2\n")
+    monkeypatch.setattr(dv, "run_streaming", fake_run(vcf, tbi_bytes=b"TBI"))
+    dv.deepvariant_task("S1", "ref.fa")
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz.tbi").read_bytes() == b"TBI"
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz").read_bytes() == vcf
+
+
+def test_a_missing_index_is_built_and_a_failed_build_only_warns(local_env, dv_inputs, monkeypatch, capsys):
+    vcf = gzip.compress(b"##fileformat=VCFv4.2\n")
+    monkeypatch.setattr(dv, "run_streaming", fake_run(vcf))
+    built = []
+
+    def fake_index(vcf_path, tbi):
+        built.append((vcf_path, tbi))
+        with open(tbi, "wb") as fh:
+            fh.write(b"BUILT")
+
+    monkeypatch.setattr(dv, "build_vcf_index", fake_index)
+    dv.deepvariant_task("S1", "ref.fa")
+    assert built and built[0][1] == built[0][0] + ".tbi"
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz.tbi").read_bytes() == b"BUILT"
+
+    def no_bcftools(vcf_path, tbi):
+        raise FileNotFoundError("bcftools")
+
+    monkeypatch.setattr(dv, "build_vcf_index", no_bcftools)
+    (local_env / "variants_deepvariant" / "S1.vcf.gz.tbi").unlink()
+    dv.deepvariant_task("S1", "ref.fa")
+    assert (local_env / "variants_deepvariant" / "S1.vcf.gz").exists()  # the VCF still lands
+    assert not (local_env / "variants_deepvariant" / "S1.vcf.gz.tbi").exists()
+    assert "uploading the VCF without a .tbi" in capsys.readouterr().out
