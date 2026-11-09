@@ -1,6 +1,6 @@
 {% extends "samples/base.html" %}
 {% load geyser %}
-{% block page_css %}{% inline_css "samples/_samples.css" %}{% endblock %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_motifs.css" %}{% endblock %}
 {% block sprite %}{% include "samples/_dna_sprite.html" %}{% endblock %}
 {% load geyser %}
 {% block title %}{{ sample.sample_id }} · Geyser Genomics{% endblock %}
@@ -83,8 +83,9 @@
 
 {% if alphagenome %}
   <section class="panel" id="alphagenome" aria-labelledby="alphagenome-heading">
-    <h2 id="alphagenome-heading">Variants of interest <small class="muted">(AlphaGenome{% if alphagenome.total %}, {{ alphagenome.total }} scored{% endif %})</small>
+    <div class="mhead"><h2 id="alphagenome-heading">Variants of interest <small class="muted">(AlphaGenome{% if alphagenome.total %}, {{ alphagenome.total }} scored{% endif %})</small>
       {% if alphagenome.test_data %}<span class="badge warn">Test data</span>{% endif %}</h2>
+      {% include "samples/_motif_ag.html" %}</div>
     <p class="note" role="note"><strong>Research use only, not for clinical use.</strong>
       These are AlphaGenome's predictions of how each variant may change gene regulation (expression, splicing, chromatin).
       They are not a diagnosis and have not been clinically validated.</p>

@@ -1,0 +1,32 @@
+/* ---- Motion motifs (T2): DeepVariant net (_motif_dv.html), AlphaGenome strip (_motif_ag.html). Decorative,
+aria-hidden, transform/opacity only; static under prefers-reduced-motion (_site.css's last rule). Original artwork. ---- */
+.mdv{display:flex;align-items:center;gap:.75rem;margin:.5rem 0}.mdv-art{flex:none;overflow:visible}
+.mdv line{stroke:var(--muted);stroke-width:1;opacity:.35}.mdv circle{transform-box:fill-box;transform-origin:center}
+.mdv .k1{fill:var(--blue)}.mdv .k2{fill:var(--red)}.mdv .k3{fill:var(--yellow)}.mdv .k4{fill:var(--green)}
+.mdv .ok{opacity:0}.mdv .ok circle{fill:var(--done)}.mdv .ok path{fill:none;stroke:var(--on-primary);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+.mdv.done .ok{opacity:1;animation:mdv-in .7s .2s ease-out backwards}.mdv.done .net{animation:mdv-settle 1s ease-out}
+.mdv.running .net{animation:mdv-drift 7s ease-in-out infinite}.mdv.running .nodes circle{animation:mdv-pulse 2.4s ease-in-out infinite}
+.mdv.running .nodes circle:nth-child(3n+2){animation-delay:-.8s}.mdv.running .nodes circle:nth-child(3n){animation-delay:-1.6s}
+.mdv.running line{animation:mdv-edge 1.8s ease-in-out infinite}.mdv.running .e2 line{animation-delay:.9s}
+.mdv.running .e1 line:nth-child(odd),.mdv.running .e2 line:nth-child(odd){animation-duration:2.2s}
+@keyframes mdv-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(2px,-1.5px)}50%{transform:translate(0,2px)}75%{transform:translate(-2px,-.5px)}}
+@keyframes mdv-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.3)}}
+@keyframes mdv-edge{0%,100%{opacity:.15}45%{opacity:1}}
+@keyframes mdv-settle{0%{transform:translate(2px,-1.5px)}100%{transform:none}}
+@keyframes mdv-in{0%{opacity:0;transform:scale(.6)}100%{opacity:1;transform:none}}
+.mdv .ok{transform-box:fill-box;transform-origin:center}
+:root[data-theme=contrast] .mdv line{stroke:#fff}:root[data-theme=contrast] .mdv :is(.k1,.k3){fill:#ffd600}:root[data-theme=contrast] .mdv :is(.k2,.k4){fill:#fff}
+:root[data-theme=contrast] .mdv .ok circle{fill:#ffd600}:root[data-theme=contrast] .mdv .ok path{stroke:#000}
+:root[data-theme=retro] .mdv line{stroke:#000}:root[data-theme=retro] .mdv .nodes circle{fill:#fff;stroke:#000;stroke-width:1.5}
+:root[data-theme=retro] .mdv .ok circle{fill:#000}:root[data-theme=retro] .mdv .ok path{stroke:#fff}
+.mhead{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1.25rem}.mhead h2{margin:0;flex:0 1 auto}
+.mag-art{flex:1 1 10rem;min-width:10rem;height:40px;width:100%}
+.mag-art .seq{font:700 9px var(--mono);text-anchor:middle}.mag-art .bA{fill:var(--nt-a)}.mag-art .bC{fill:var(--nt-c)}.mag-art .bG{fill:var(--nt-g)}.mag-art .bT{fill:var(--nt-t)}
+.mag-art .tr{fill-opacity:.16;stroke-width:1.6;stroke-linejoin:round}.mag-art .t1{stroke:var(--blue);fill:var(--blue)}.mag-art .t2{stroke:var(--red);fill:var(--red)}.mag-art .t3{stroke:var(--green);fill:var(--green)}
+.mag-art .tr{transform-box:fill-box;transform-origin:bottom}.mag-art :is(.seq,.sc){animation:mag-scroll 24s linear infinite}
+.mag-art .t1{animation:mag-rise 3.2s ease-in-out infinite}.mag-art .t2{animation:mag-rise 4.1s ease-in-out -1.3s infinite}.mag-art .t3{animation:mag-rise 3.7s ease-in-out -2.4s infinite}
+@keyframes mag-scroll{to{transform:translateX(-240px)}}
+@keyframes mag-rise{0%,100%{transform:scaleY(.35);opacity:.65}50%{transform:scaleY(1);opacity:1}}
+:root[data-theme=dark] .mag-art .t1{stroke:#8ab4f8;fill:#8ab4f8}:root[data-theme=dark] .mag-art .t2{stroke:#f28b82;fill:#f28b82}:root[data-theme=dark] .mag-art .t3{stroke:#81c995;fill:#81c995}
+:root[data-theme=contrast] .mag-art :is(.t1,.t3){stroke:#ffd600;fill:#ffd600}:root[data-theme=contrast] .mag-art .t2{stroke:#fff;fill:#fff}
+:root[data-theme=retro] .mag-art .tr{stroke:#000;fill:#000}:root[data-theme=retro] .mag-art .t2{stroke-dasharray:3 2}:root[data-theme=retro] .mag-art .t3{stroke-width:2.4}

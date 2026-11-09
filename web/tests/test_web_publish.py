@@ -131,7 +131,9 @@ def test_no_inline_style_attributes_and_every_inline_block_is_hashed(site):
 def test_a_one_sample_publish_keeps_every_page_types_csp_hashes(storage, site, tmp_path):
     whole = json.loads((run_publish(tmp_path / "whole", "--all") / "csp-hashes.json").read_text())
     one = json.loads((run_publish(site, "S1") / "csp-hashes.json").read_text())
-    assert one == whole and len(one["style"]) == 3  # the core CSS (404), plus the sample pages' or the figures page's
+    assert (
+        one == whole and len(one["style"]) == 4
+    )  # the core CSS (404); + the sample pages'; + the motifs (detail); figures
 
 
 def test_the_call_pages_stop_at_max_pages_and_point_at_the_vcf(storage, site):

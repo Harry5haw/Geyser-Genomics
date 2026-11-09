@@ -10,6 +10,7 @@
        aria-valuemin="0" aria-valuemax="{{ sample.stages|length }}" aria-valuenow="{{ sample.done_count }}">
     {% for st in sample.stages %}{% include "samples/_dna.html" with state=st.state name=st.name label=st.label %}{% endfor %}
   </div>
+  {% if sample.deepvariant %}{% include "samples/_motif_dv.html" with state=sample.deepvariant %}{% endif %}
   {% for st in sample.stages %}{% if st.state == "running" %}
     <p class="now">Now running: <strong class="s-{{ st.name }}">{{ st.label }}</strong></p>
   {% endif %}{% endfor %}

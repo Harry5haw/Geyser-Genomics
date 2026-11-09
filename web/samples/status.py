@@ -82,6 +82,8 @@ class SampleView:
     duration: float | None = None
     keys: dict = field(default_factory=dict)
     layout: str = SINGLE
+    # DeepVariant's state when it was (or is being) this run's caller: running | done (deepvariant_state); else None.
+    deepvariant: str | None = None
 
     @property
     def active(self) -> bool:
@@ -243,7 +245,22 @@ def build_sample(
         duration=sum(durations) if durations and not from_record else None,
         keys={**keys, "vcf": vcf_key},
         layout=layout,
+        deepvariant=deepvariant_state(record, state),
     )
+
+
+def deepvariant_state(record: dict | None, run_state: str) -> str | None:
+    """ "done" when DeepVariant called this run, "running" while its part is open in an active run, else None.
+
+    From the run record: a DeepVariant part (or caller_outcome "deepvariant"). A failed DeepVariant (the run fell
+    back to bcftools, or failed) shows nothing: the motif is only for a run whose calls DeepVariant made."""
+    record = record or {}
+    part = (record.get("stages") or {}).get("DeepVariant") or {}
+    if part.get("status") == "Success" or record.get("caller_outcome") == "deepvariant":
+        return "done"
+    if part and not part.get("status") and run_state in ACTIVE_STATES:
+        return "running"
+    return None
 
 
 # Every caller's VCF folder (variants/, variants_deepvariant/, variants_pangenome/).
