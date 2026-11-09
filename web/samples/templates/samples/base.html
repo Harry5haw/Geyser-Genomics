@@ -30,8 +30,14 @@
     {% block content %}{% endblock %}
   </main>
   <footer class="wrap">
-    Each upload runs fastp and BWA-MEM on the gzipped reads, then bcftools, the same containers AWS Batch runs in the cloud.
-    Storage: <code>{{ storage_backend }}</code>. <a href="{% url 'samples:figures' %}">Results in 3D</a>.
+    {% if published %}
+    Each run goes through fastp, an aligner (bwa-mem2 by default; the run record names the one used) and a variant
+    caller on AWS Batch, then the quality gate; these pages are published when the run ends.
+    {% else %}
+    Each upload runs fastp and an aligner (bwa-mem2 by default) on the gzipped reads, then a variant caller, in the
+    same container images AWS Batch runs in the cloud. Storage: <code>{{ storage_backend }}</code>.
+    {% endif %}
+    <a href="{% url 'samples:figures' %}">Results in 3D</a>.
   </footer>
 </body>
 </html>

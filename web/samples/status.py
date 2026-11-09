@@ -168,11 +168,19 @@ def build_sample(
         if task not in latest or ts >= (latest[task].get("timestamp") or 0):
             latest[task] = rec
 
+    # In the cloud (no worker record) there are no local metrics: a stage's time comes from its run record part.
+    recorded = ((record or {}).get("stages") or {}) if run is None else {}
+    from_record = False  # some stage's time came from the run record (a cloud run): no sequential total then
     stages = []
     for st in STAGES:
         variants = st.name == "variants" and vcf_key != keys["vcf"]
-        rec = latest.get(variant_metric if variants else st.metric)
+        metric = variant_metric if variants else st.metric
+        rec = latest.get(metric)
         duration = rec.get("duration_seconds") if rec else None
+        part = recorded.get(metric) or {}
+        if rec is None and part.get("status") == "Success" and part.get("duration_seconds") is not None:
+            duration = part["duration_seconds"]
+            from_record = True
         if variants:
             done = vcf_key in present
         else:
@@ -202,8 +210,10 @@ def build_sample(
     # Only without a worker record: locally, a re-run's record is the previous run's until its first stage writes a
     # part, and the worker's own state (queued/running) is the truth. (A cloud re-run of a sample whose last run
     # failed shows failed until its first stage finishes.)
+    # That holds even when every stage's output exists: a step after them (the quality gate in fail mode, the
+    # finalising steps) can still fail the run, and the record's close is the run's real outcome.
     record_failed = run is None and (record or {}).get("status") == "failed"
-    if all(s.state == "done" for s in stages):
+    if all(s.state == "done" for s in stages) and not record_failed:
         state = "succeeded"
     elif any(s.state == "failed" for s in stages) or run_state in ("failed", "succeeded") or record_failed:
         # 'succeeded' with outputs missing means they were removed afterwards; don't claim success.
@@ -228,8 +238,9 @@ def build_sample(
         stages=stages,
         run=run,
         updated=max(times) if any(times) else None,
-        # Local runs are sequential, so the stage times add up; in the cloud there are no local metrics.
-        duration=sum(durations) if durations else None,
+        # Local runs are sequential, so their metric times add up. In the cloud QC and align run side by side, so a sum
+        # of the record's stage times would overstate the run: no total there (each stage shows its own time).
+        duration=sum(durations) if durations and not from_record else None,
         keys={**keys, "vcf": vcf_key},
         layout=layout,
     )
