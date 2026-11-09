@@ -10,6 +10,7 @@
     The CSV under each one has every number.</p>
 </section>
 
+{{ bar_defs }}
 {% for card in cards %}
   <figure class="panel fig" id="fig-{{ card.name }}"{% if card.grid %} data-surface="{% url 'samples:figure_data' card.name %}" data-surface-js="{% static 'samples/surface.js' %}" data-surface-gl="{% static 'samples/surface-gl.js' %}"{% endif %}>
     <h2>{{ card.figure.title }}</h2>

@@ -2,7 +2,7 @@
 .fig{margin:0 0 1.5rem}.fig figcaption{color:var(--muted);font-size:.9rem}.fig figcaption .note{color:var(--text)}
 .stage{position:relative;aspect-ratio:16/9;background:var(--deep);border:1px solid var(--line);border-radius:.6rem;overflow:hidden;touch-action:none}
 .stage>svg,.stage>canvas{position:absolute;inset:0;width:100%;height:100%;display:block}.stage>canvas{cursor:grab}.stage>canvas:active{cursor:grabbing}
-.poster text{fill:var(--muted);font-size:13px}.poster path{stroke:var(--deep);stroke-width:1.5}
+.poster text{fill:var(--muted);font-size:13px}.poster path{stroke:var(--deep);stroke-width:3}
 .labels span{position:absolute;left:0;top:0;margin:-.5em 0 0 -1.5em;font-size:.7rem;color:var(--muted);white-space:nowrap;pointer-events:none}
 .labels .row{margin:-.7em 0 0 0;padding:0 .4em;border-radius:1em;background:var(--deep);box-shadow:0 0 0 1px var(--frame);color:var(--text);font-weight:600}.labels .z{margin-left:-2.5em}.labels .axis{color:var(--text);font-weight:600}
 .marker{position:absolute;left:-6px;top:-6px;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 2px var(--text);pointer-events:none}
