@@ -410,9 +410,9 @@ variable "web_api_reserved_concurrency" {
 }
 
 variable "web_max_upload_gb" {
-  description = "The largest file the web API starts an upload for, in GiB (a 30x paired FASTQ mate is ~30-50 GB)."
+  description = "The largest file the web API starts an upload for, in GiB. A 30x paired FASTQ mate is ~25 GiB (HG003 WGS: 24.2 + 25.2 GiB), so 256 leaves room for ~300x per mate or an unsplit file; the practical ceiling for one sample is the Fargate job disk (200 GiB), not this."
   type        = number
-  default     = 64
+  default     = 256
 }
 
 variable "publish_image_version" {
