@@ -751,3 +751,14 @@ def test_running_now_reads_usage_and_every_bucket():
     exprs = " ".join(r[0]["expression"] for r in vcpus["properties"]["metrics"])
     assert 'Service="EC2"' in exprs and 'Resource="vCPU"' in exprs and 'Service="Fargate"' in exprs
     assert 'MetricName="BucketSizeBytes"' in buckets["properties"]["metrics"][0][0]["expression"]
+
+
+def test_gate_value_widgets_match_what_the_gate_publishes():
+    import tasks
+
+    assert monitoring.GATE_VALUES_METRIC == tasks.GATE_VALUES_METRIC
+    assert monitoring.GATE_VALUE_CHECKS == tasks.GATE_VALUE_CHECKS
+    shown = [r[3] for w in monitoring.gate_value_widgets() for r in w["properties"]["metrics"]]
+    assert sorted(shown) == sorted(tasks.GATE_VALUE_CHECKS)
+    titles = [w["properties"].get("title", "") for w in monitoring.build_dashboard()["widgets"]]
+    assert sum(t.startswith("Quality gate:") for t in titles) == 2

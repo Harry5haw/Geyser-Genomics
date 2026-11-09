@@ -484,6 +484,38 @@ def quality_widgets(
     ]
 
 
+# O11: the quality gate's key values (app/tasks.py GATE_VALUES_METRIC / GATE_VALUE_CHECKS), one series per check.
+GATE_VALUES_METRIC = "QualityGateValue"
+GATE_VALUE_CHECKS = ("mapped_pct", "duplicate_pct", "mean_depth", "breadth_10x_pct", "tstv")
+
+
+def gate_value_widgets(region: str = DEFAULT_REGION, namespace: str = DEFAULT_NAMESPACE) -> list:
+    """The gate's measured values per run (one point per gate run), so a change of image or reference that
+    shifts quality shows as a step. Percentages on one widget; depth and Ti/Tv (other scales) on another."""
+
+    def rows(checks):
+        return [
+            [namespace, GATE_VALUES_METRIC, "Check", c, {"id": f"gate_{c}", "stat": "Average", "label": c}]
+            for c in checks
+        ]
+
+    return [
+        _metric_widget(
+            "Quality gate: mapped %, duplicate %, breadth at 10x % (per run)",
+            rows(("mapped_pct", "duplicate_pct", "breadth_10x_pct")),
+            region,
+            period=3600,
+            y_label="%",
+        ),
+        _metric_widget(
+            "Quality gate: mean depth and Ti/Tv (per run)",
+            rows(("mean_depth", "tstv")),
+            region,
+            period=3600,
+        ),
+    ]
+
+
 # The stage is the job name's first word: the state machine names jobs <Stage>-<sample>-<execution>
 # (QualityControl, AlignGenome, PlanRegions, CallVariantsShard, CallVariants; DeepVariant on the GPU queue).
 QUEUE_WAIT_PARSE = (
@@ -880,7 +912,7 @@ def build_dashboard(
     if runs:
         widgets += run_widgets(region, batch_log_group, batch_events_log_group)
     if quality:
-        widgets += quality_widgets(region, batch_log_group, thresholds)
+        widgets += quality_widgets(region, batch_log_group, thresholds) + gate_value_widgets(region, namespace)
     if bucket:
         widgets += storage_widgets(region, bucket)
     if "deepvariant" in groups:

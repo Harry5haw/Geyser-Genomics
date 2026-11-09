@@ -1539,7 +1539,7 @@ def publish_gate_values(verdict: dict) -> dict:
     }
     if values:
         try:
-            metrics().record_counts(GATE_VALUES_METRIC, "Check", values)
+            metrics().record_counts(GATE_VALUES_METRIC, "Check", values, unit="None")
         except Exception as err:  # noqa: BLE001 - metrics are best effort
             print(f"WARNING: could not record the gate values: {err}", flush=True)
     return values

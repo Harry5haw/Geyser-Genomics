@@ -294,7 +294,8 @@ class RecordingMetrics:
     def record(self, *args, **kwargs):
         pass
 
-    def record_counts(self, metric_name, dimension, counts):
+    def record_counts(self, metric_name, dimension, counts, unit="Count"):
+        assert unit == "None"  # percentages, depth and a ratio: not counts
         self.counts.append((metric_name, dimension, dict(counts)))
 
 
