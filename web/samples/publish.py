@@ -3,8 +3,8 @@
 Every page is the live UI's own view and template, rendered with a StaticSite on the request
 (samples/static_site.py), so the published pages and the Django pages can't drift apart:
 - index.html (the sample list), samples/<id>/index.html and samples/<id>/calls/<n>/index.html (the call pages,
-  up to max_pages per sample: past that the VCF has the rest), figures/ (--all only; each figure's data when its
-  CSV is here: they live in the repo, not the data lake), 404.html, and with an API base uploads/index.html (the
+  up to max_pages per sample: past that the VCF has the rest), figures/ (every publish, so every page's link to it
+  resolves; each figure's data when its CSV is here: they live in the repo, not the data lake), 404.html, and with an API base uploads/index.html (the
   token-gated upload page: the browser sends the reads to the data lake through the API);
 - the static files under static/ with their content-hashed names, as collectstatic writes them;
 - csp-hashes.json: the sha256 of every inline <script> and <style>, for the hosted site's strict CSP;
@@ -240,26 +240,22 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
                     views.sample_detail, path, site, sample_id=sample_id, page=page
                 )
 
-        # 3. The figures (with --all): each grid's JSON and CSV when its CSV is here (they live in the repo, not the
-        # data lake), and the page always, so every page's link to it resolves (a missing figure says so on its card).
-        figures_written = False
-        if everything:
-            for name in figures_mod.FIGURES:
-                try:
-                    grid = figures_mod.load(name)
-                except Exception as err:  # noqa: BLE001 - its card says so; the other figures still publish
-                    log(f"figure {name}: not published ({type(err).__name__})")
-                    continue
-                if grid is None:
-                    continue
-                writer.put(f"figures/{name}.json", figures_mod.grid_json(grid).encode("utf-8"), DATA_CACHE)
-                with open(figures_mod.csv_path(grid.figure), "rb") as fh:
-                    writer.put(f"figures/{name}.csv", fh.read(), DATA_CACHE)
-            pages["figures/index.html"] = _render(views.figures_page, reverse("samples:figures"), site)
-            figures_written = True
-        # The CSP covers the whole site, not only this call's pages: csp-hashes.json always has every page type's
-        # inline blocks (the figures page's own CSS too), so a one-sample publish doesn't drop the others' hashes.
-        figures_html = pages.get("figures/index.html") or _render(views.figures_page, reverse("samples:figures"), site)
+        # 3. The figures, with every publish: each grid's JSON and CSV when its CSV is here (they live in the repo, not
+        # the data lake), and the page always. Every page links to it (footer, list, 404), and the publish job can't
+        # read the bucket to see whether an earlier --all wrote it, so a site that only ever had one-sample publishes
+        # would otherwise have a dead link. A missing figure says so on its card.
+        for name in figures_mod.FIGURES:
+            try:
+                grid = figures_mod.load(name)
+            except Exception as err:  # noqa: BLE001 - its card says so; the other figures still publish
+                log(f"figure {name}: not published ({type(err).__name__})")
+                continue
+            if grid is None:
+                continue
+            writer.put(f"figures/{name}.json", figures_mod.grid_json(grid).encode("utf-8"), DATA_CACHE)
+            with open(figures_mod.csv_path(grid.figure), "rb") as fh:
+                writer.put(f"figures/{name}.csv", fh.read(), DATA_CACHE)
+        pages["figures/index.html"] = _render(views.figures_page, reverse("samples:figures"), site)
 
         request = RequestFactory().get("/404.html")
         request.geyser_static = site
@@ -268,7 +264,7 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
         if site.api_base:  # the upload page talks to the web API: without one there is nothing to upload to
             pages["uploads/index.html"] = _render(views.upload_page, reverse("samples:upload_page"), site)
 
-    hashes = csp_hashes({**pages, "figures/index.html": figures_html})
+    hashes = csp_hashes(pages)
     writer.put("csp-hashes.json", json.dumps(hashes, indent=1).encode("utf-8"), DATA_CACHE)
     # 4. Pages last, the list after the sample pages it links to.
     for path in sorted(pages, key=lambda p: (p == "index.html", p)):
@@ -276,7 +272,7 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
 
     invalidated = []
     if distribution_id and isinstance(writer, S3Writer):
-        changed = ["/", "/index.html", "/404.html", *(f"/samples/{i}/*" for i in targets)]
+        changed = ["/", "/index.html", "/404.html", "/figures/*", *(f"/samples/{i}/*" for i in targets)]
         if site.api_base:
             changed.append("/uploads/*")  # it lists the IDs on the site (to ask before replacing one)
         invalidated = ["/*"] if everything else changed
@@ -286,7 +282,7 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
         "pages": len(pages),
         "assets": assets,
         "samples": [i for i in targets if not site.samples[i].active],
-        "figures": figures_written,
+        "figures": True,
         "csp": hashes,
         "invalidated": invalidated,
     }
