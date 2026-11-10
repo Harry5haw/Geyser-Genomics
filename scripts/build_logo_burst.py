@@ -1,0 +1,108 @@
+"""Split the header lockups for the logo eruption: an empty geyser per theme, and one inline burst.
+
+From the four committed lockups (scripts/build_logo.py's output) it writes:
+- web/samples/static/samples/geyser-lockup-empty{,-dark,-retro,-contrast}.svg: the lockup without its water jets,
+  droplets and helices (the cone and the wordmark), shown by the header's <img>s;
+- web/samples/templates/samples/_logo_burst.html: one inline, decorative SVG with just those parts, in the same
+  coordinates, drawn over the <img>. Together they are the full lockup. The helices and droplets keep Google's four
+  colours in every theme; only the jets' gradient changes, through CSS on its stops (.j0-.j2, _site.css).
+
+The eruption itself is CSS (_site.css) armed by _theme_boot.js. Deterministic: run it again after build_logo.py.
+
+    python -I scripts/build_logo_burst.py
+"""
+
+import os
+import re
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+STATIC = os.path.join(ROOT, "web", "samples", "static", "samples")
+PARTIAL = os.path.join(ROOT, "web", "samples", "templates", "samples", "_logo_burst.html")
+THEMES = {"light": "", "dark": "-dark", "retro": "-retro", "contrast": "-contrast"}
+VENT = (492, 598)  # the vent's centre in the source's units (the cone's opening ellipse)
+
+JETS = re.compile(r'<g fill="url\(#jetGrad[^"]*\)">.*?</g>', re.S)
+DROPS = re.compile(r"<g>\s*(?:<circle [^>]+/>\s*)+</g>")
+USES = re.compile(r'<use href="#helix-[^"]+"[^>]*/>')
+
+
+def parts(svg):
+    """The lockup's moving parts, and the lockup without them."""
+    jets, drops, uses = JETS.findall(svg), DROPS.findall(svg), USES.findall(svg)
+    assert len(jets) == 1 and len(drops) == 1 and len(uses) == 5, (len(jets), len(drops), len(uses))
+    empty = USES.sub("", DROPS.sub("", JETS.sub("", svg)))
+    # Drop the defs nothing uses any more (the jets' gradient, the helix templates).
+    empty = re.sub(r'<linearGradient id="jetGrad[^"]*".*?</linearGradient>', "", empty, flags=re.S)
+    empty = re.sub(r'<g id="helix-\w+-\w+">.*?\n    </g>', "", empty, flags=re.S)
+    return jets[0], drops[0], uses, empty
+
+
+def jet_stops(svg):
+    grad = re.search(r'<linearGradient id="jetGrad[^"]*".*?</linearGradient>', svg, re.S).group(0)
+    return re.findall(r'stop-color="(#[0-9A-Fa-f]{6})"', grad)
+
+
+def burst(light):
+    """The inline SVG: the light lockup's jets, droplets and helices, ids made unique to the page."""
+    jets, drops, uses, _ = parts(light)
+    group = re.search(r'<g transform="(translate\([^)]*\) scale\([^)]*\))">', light).group(1)
+    templates = re.findall(r'<g id="helix-\w+-light">.*?\n    </g>', light, re.S)
+    assert len(templates) == 4
+    stops = re.findall(
+        r'<stop offset="[^"]+" stop-color="[^"]+"/>',
+        re.search(r'<linearGradient id="jetGrad-light".*?</linearGradient>', light, re.S).group(0),
+    )
+    grad = (
+        '<linearGradient id="burst-jet" x1="50%" y1="100%" x2="50%" y2="0%">'
+        + "".join(s.replace("<stop ", f'<stop class="j{k}" ') for k, s in enumerate(stops))
+        + "</linearGradient>"
+    )
+    defs = grad + "".join(templates).replace('id="helix-', 'id="burst-helix-')
+    jets = jets.replace('fill="url(#jetGrad-light)"', 'class="burst-jets" fill="url(#burst-jet)"')
+    drops = drops.replace("<g>", '<g class="burst-d">', 1)
+    helices = []
+    for k, u in enumerate(uses):
+        x, y = map(float, re.search(r"translate\(([\d.]+), ([\d.]+)\)", u).groups())
+        u = u.replace('href="#helix-', 'href="#burst-helix-')
+        # Each helix in its own group: the CSS moves the group from the vent (--x/--y: the vent minus its place).
+        helices.append(f'<g class="burst-h h{k}">{u}</g>')
+    svg = (
+        '<svg class="burst" viewBox="0 0 720 160" aria-hidden="true" focusable="false">'
+        + f"<defs>{defs}</defs>"
+        + f'<g transform="{group}">{jets}{drops}{"".join(helices)}</g></svg>'
+    )
+    return re.sub(r">\s+<", "><", svg)
+
+
+def offsets(light):
+    """--x/--y per helix (CSS): from its place back to the vent, in the source's units."""
+    _, _, uses, _ = parts(light)
+    out = []
+    for u in uses:
+        x, y = map(float, re.search(r"translate\(([\d.]+), ([\d.]+)\)", u).groups())
+        out.append((round(VENT[0] - x), round(VENT[1] - y)))
+    return out
+
+
+def main():
+    light = None
+    for theme, suffix in THEMES.items():
+        path = os.path.join(STATIC, f"geyser-lockup{suffix}.svg")
+        svg = open(path, encoding="utf-8").read()
+        if theme == "light":
+            light = svg
+        empty = parts(svg)[3].replace('aria-label="Geyser Genomics"', 'aria-label="Geyser Genomics"', 1)
+        with open(os.path.join(STATIC, f"geyser-lockup-empty{suffix}.svg"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(empty)
+        print(theme, "jets", jet_stops(svg))
+    with open(PARTIAL, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(
+            "{# Generated by scripts/build_logo_burst.py from the lockups: the parts that erupt (decorative). #}\n"
+            + burst(light)
+            + "\n"
+        )
+    print("helix offsets", offsets(light))
+
+
+if __name__ == "__main__":
+    main()

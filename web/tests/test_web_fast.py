@@ -83,7 +83,7 @@ def test_a_file_missing_from_a_stale_manifest_is_served_plain(client, storage, t
         staticfiles_storage.hashed_files, _ = staticfiles_storage.load_manifest()  # (paths, manifest hash)
         body = client.get("/").content.decode()
         assert 'src="/static/samples/geyser.js"' in body
-        assert re.search(r'src="/static/samples/geyser-lockup\.[0-9a-f]{12}\.svg"', body)  # the rest stay hashed
+        assert re.search(r'src="/static/samples/geyser-lockup-empty\.[0-9a-f]{12}\.svg"', body)  # the rest stay hashed
         asset = client.get("/static/samples/geyser.js")
         assert asset.status_code == 200
         asset.close()
@@ -136,7 +136,7 @@ def test_assets_get_content_hashed_names(client, collected):
     body = client.get("/").content.decode()
     for name, ext in (
         ("geyser", "js"),
-        ("geyser-lockup", "svg"),
+        ("geyser-lockup-empty", "svg"),
         ("geyser-icon", "svg"),
         ("favicon-32", "png"),
         ("apple-touch-icon", "png"),
@@ -180,7 +180,10 @@ def test_no_framework_and_no_stylesheet_request(client, storage):
     assert len(re.findall(r"<script src=", body)) == 2
     assert re.search(r'<script src="[^"]+theme[^"]*\.js" defer>', body)
     assert re.search(
-        r"<script>\(function \(\) \{ var t = null.*?setAttribute\(\"data-theme\", t\); \}\)\(\);</script>", body
+        # The theme first, then the logo eruption's arming (both before the first paint, in the one inline script).
+        r"<script>\(function \(\) \{ var t = null.*?setAttribute\(\"data-theme\", t\); \}\)\(\);\s*"
+        r"\(function \(\) \{ var r = document\.documentElement.*?\}\)\(\);</script>",
+        body,
     )
     assert re.search(r'<script src="[^"]+geyser[^"]*\.js" defer>', body)
 

@@ -131,14 +131,14 @@ button{width:100%;padding:.75rem 1.25rem;font:500 1rem/1.2 var(--sans);color:var
 button:hover{background:var(--primary-hover)}button.upload{background:var(--primary)}button.upload:hover{background:var(--primary-hover)}
 .note{border-left:.35rem solid var(--warn-line);padding:.5rem .9rem;background:var(--warn-bg);border-radius:.5rem;font-size:.9rem}
 .note,.msg{overflow-wrap:anywhere}
-.brand{position:relative}.erupt{position:absolute;left:0;top:50%;width:40px;height:40px;margin-top:-20px;overflow:visible;pointer-events:none}
-.erupt>use,.erupt>circle{opacity:0;transform-box:fill-box;transform-origin:center}
-.brand:is(:hover,:focus-visible) .erupt>*{animation:erupt .9s cubic-bezier(.2,.8,.3,1) var(--d,0s) both}
-.brand:is(:hover,:focus-visible) img{animation:vent .35s ease-out;transform-origin:10% 85%}
-.e1{--x:-7px;--y:-20px;--r:-30deg}.e2{--x:1px;--y:-24px;--r:20deg;--d:.06s}.e3{--x:8px;--y:-19px;--r:40deg;--d:.12s}
-.e4{--x:-4px;--y:-15px;--d:.03s}.e5{--x:5px;--y:-17px;--d:.09s}.e6{--x:-10px;--y:-11px;--d:.15s}.e7{--x:10px;--y:-12px;--d:.18s}
-@keyframes erupt{0%{opacity:0;transform:scale(.3)}20%{opacity:1}70%{opacity:1}100%{opacity:0;transform:translate(var(--x),var(--y)) rotate(var(--r,0deg)) scale(1)}}
-@keyframes vent{30%{transform:translateY(1px) scaleY(.95)}65%{transform:translateY(-1px) scaleY(1.02)}}
-:root[data-theme=contrast] .erupt>*{stroke:#FFD600}:root[data-theme=contrast] .erupt>circle{fill:#00E5FF}
-@media (max-width:576px){.erupt{width:32px;height:32px;margin-top:-16px}}
+.brand{position:relative}.burst{position:absolute;left:0;top:50%;width:180px;height:40px;margin-top:-20px;overflow:visible;pointer-events:none}
+@media (max-width:576px){.burst{width:144px;height:32px;margin-top:-16px}}
+:root[data-theme=dark] .j0,:root[data-theme=dark] .j1{stop-color:#4285F4}:root[data-theme=retro] .burst stop{stop-color:#0842A0}:root[data-theme=contrast] .burst stop{stop-color:#fff}
+.burst-jets{transform-box:fill-box;transform-origin:50% 100%}.burst-h,.burst-d{transform-box:fill-box;transform-origin:50% 50%}
+.h0{--x:-4px;--y:176px}.h1{--x:60px;--y:253px;--d:.08s}.h2{--x:-76px;--y:256px;--d:.16s}.h3{--x:158px;--y:274px;--d:.24s}.h4{--x:-22px;--y:353px;--d:.32s}
+.logo-armed .burst-jets{transform:scaleY(0)}.logo-armed .burst-h,.logo-armed .burst-d{opacity:0}
+.logo-erupt .burst-jets{animation:jets .45s cubic-bezier(.2,.9,.3,1) both}.logo-erupt .burst-d{animation:drops .5s .25s ease-out both}
+.logo-erupt .burst-h{animation:pop .8s cubic-bezier(.2,.8,.3,1) calc(.15s + var(--d,0s)) both}
+@keyframes jets{from{transform:scaleY(0)}}@keyframes drops{from{opacity:0;transform:scale(.3)}}
+@keyframes pop{0%{opacity:0;transform:translate(var(--x),var(--y)) rotate(-30deg) scale(.3)}20%{opacity:1}60%{transform:translateY(-40px) rotate(6deg) scale(1.06)}78%{transform:translateY(12px) scale(.98)}90%{transform:translateY(-4px)}100%{opacity:1;transform:none}}
 @media (prefers-reduced-motion:reduce){*,::before,::after{animation:none!important;transition:none!important}}
