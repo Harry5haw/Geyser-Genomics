@@ -31,4 +31,4 @@ aria-hidden, transform/opacity only (the DeepVariant nodes also hand their fill 
 :root[data-theme=dark] .mag-art .t1{stroke:#8ab4f8;fill:#8ab4f8}:root[data-theme=dark] .mag-art .t2{stroke:#f28b82;fill:#f28b82}:root[data-theme=dark] .mag-art .t3{stroke:#81c995;fill:#81c995}
 :root[data-theme=contrast] .mag-art :is(.t1,.t3){stroke:#ffd600;fill:#ffd600}:root[data-theme=contrast] .mag-art .t2{stroke:#fff;fill:#fff}
 :root[data-theme=retro] .mag-art .tr{stroke:#000;fill:#000}:root[data-theme=retro] .mag-art .t2{stroke-dasharray:3 2}:root[data-theme=retro] .mag-art .t3{stroke-width:2.4}
-:root[data-theme=retro] .mdv :is(.r1,.r2,.r3){stroke:#000;fill:#000}
+:root[data-theme=retro] .mdv :is(.r1,.r2,.r3){stroke:#000}:root[data-theme=retro] .mdv .cm .tr{stroke-width:1.2}:root[data-theme=retro] .mdv .cm .hd{stroke-width:1.4}:root[data-theme=retro] .mdv .nodes .g{fill:none;stroke-width:1.2}

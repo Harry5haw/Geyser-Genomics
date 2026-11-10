@@ -149,3 +149,14 @@ def test_the_net_fills_the_heading_row_as_one_interconnected_network():
     ends = {tuple(map(int, m)) for m in re.findall(r"L(\d+) (\d+)", edge)}
     assert {x for x, _ in ends} == {48, 80}  # each column joins the next, and the period's last joins the next period
     assert svg.count('<use href="#dv-e"') == 15 and svg.count('<circle class="k') == 15 * 7
+
+
+def test_retro_draws_the_signal_paths_as_a_fine_pen_line():
+    css = read("_motifs.css")
+    assert ":root[data-theme=retro] .mdv .cm .tr{stroke-width:1.2}" in css  # about half the other themes' width
+    assert ":root[data-theme=retro] .mdv .nodes .g{fill:none;stroke-width:1.2}" in css  # a ring, not an ink blob
+
+
+def test_retro_never_fills_the_route_paths():
+    # an ink fill on the comets' <use> would fill the zig-zag polygons (a black band across the net)
+    assert ":is(.r1,.r2,.r3){stroke:#000}" in read("_motifs.css") and "r3){stroke:#000;fill" not in read("_motifs.css")
