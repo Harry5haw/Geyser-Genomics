@@ -5,6 +5,7 @@ the worker (manage.py runworker) notices the new key; in the cloud the Lambda do
 """
 
 import os
+import time
 
 from django.conf import settings
 from django.contrib import messages
@@ -302,6 +303,39 @@ def _progress_context(storage, sample):
         "turbo": stops(figures_mod.HEAT_TURBO),
         "turbo_dark": stops(figures_mod.HEAT_TURBO_DARK),
     }
+
+
+def _progress_demo_context(request):
+    if not settings.DEBUG:
+        raise Http404("Debug only")
+    try:
+        start = float(request.GET.get("start") or "")
+    except ValueError:
+        start = time.time()
+    now = time.time()
+    sample, expected = progress_mod.demo_sample(now - start, now)
+    titles = {"running": "A run in progress", "succeeded": "Done", "failed": "Failed"}
+    stops = lambda colours: [(round(i / (len(colours) - 1), 4), c) for i, c in enumerate(colours)]  # noqa: E731
+    return {
+        "start": f"{start:.3f}",
+        "title": titles.get(sample.state, sample.state),
+        "progress": progress_mod.progress(sample, expected, now=now),
+        "helix": progress_mod.HELIX,
+        "turbo": stops(figures_mod.HEAT_TURBO),
+        "turbo_dark": stops(figures_mod.HEAT_TURBO_DARK),
+    }
+
+
+@require_GET
+def progress_demo(request):
+    """Debug only: the progress helix on a simulated run, looping (a real demo run is over in seconds)."""
+    return render(request, "samples/progress_demo.html", _progress_demo_context(request))
+
+
+@require_GET
+def progress_demo_frame(request):
+    """The polled fragment of progress_demo (geyser.js replaces it every second, as on a live sample page)."""
+    return render(request, "samples/_progress_demo.html", _progress_demo_context(request))
 
 
 def _current_annotated_vcf(storage, sample):

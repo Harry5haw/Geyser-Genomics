@@ -150,3 +150,52 @@ def _rungs() -> str:
 
 
 HELIX = {"a": _strand(1), "b": _strand(-1), "rungs": _rungs()}
+
+
+# --- A simulated run for the debug-only preview (/demo/progress/, views.progress_demo): the real component, driven
+# by a fake clock, so the bar can be watched for a whole run (a real demo sample finishes in seconds).
+DEMO_STAGES = (
+    ("qc", "Quality control", 8.0),
+    ("align", "Alignment", 20.0),
+    ("variants", "Variant calling", 14.0),
+    ("gate", "Quality gate", 4.0),
+    ("annotate", "Annotation", 10.0),
+    ("publish", "Publishing", 6.0),
+)
+DEMO_HOLD = 10.0  # seconds the finished bar stays (green, then red) before the next run
+DEMO_FAIL_AT = "variants"  # the second run fails here
+VERBS.update({"gate": "Checking the quality gate", "annotate": "Annotating", "publish": "Publishing"})
+
+
+def demo_sample(elapsed: float, now: float):
+    """(SampleView, expected) for the simulation at `elapsed` seconds into its loop: a run that succeeds, a hold, a run
+    that fails at DEMO_FAIL_AT, a hold, then again."""
+    from .status import SampleView, StageView
+
+    total = sum(s for _, _, s in DEMO_STAGES)
+    fail_start = sum(s for n, _, s in DEMO_STAGES[: [n for n, _, _ in DEMO_STAGES].index(DEMO_FAIL_AT)])
+    fail_end = fail_start + 0.4 * dict((n, s) for n, _, s in DEMO_STAGES)[DEMO_FAIL_AT]
+    loop = total + DEMO_HOLD + fail_end + DEMO_HOLD
+    t = elapsed % loop
+    failing = t >= total + DEMO_HOLD
+    if failing:
+        t -= total + DEMO_HOLD
+    stages, start, state = [], 0.0, "running"
+    for name, label, seconds in DEMO_STAGES:
+        end = start + seconds
+        if failing and name == DEMO_FAIL_AT and t >= fail_end:
+            stages.append(StageView(name, label, "failed", None))
+            state = "failed"
+        elif state == "failed":
+            stages.append(StageView(name, label, "pending", None))
+        elif t >= end:
+            stages.append(StageView(name, label, "done", seconds))
+        elif t >= start:
+            stages.append(StageView(name, label, "running", None))
+        else:
+            stages.append(StageView(name, label, "pending", None))
+        start = end
+    if state != "failed" and all(s.state == "done" for s in stages):
+        state = "succeeded"
+    expected = {n: s for n, _, s in DEMO_STAGES}
+    return SampleView("DEMO", state, stages, run={"started": now - t}), expected

@@ -116,3 +116,41 @@ def test_the_sample_page_shows_the_bar_and_no_per_stage_helices(client, storage)
     assert page.count('role="progressbar"') == 1 and "hp-strand" in page
     assert "<symbol" not in page and 'class="dna' not in page
     assert "<symbol" not in client.get("/").content.decode()
+
+
+# ------------------------------------------------------------------ the debug-only preview (/demo/progress/)
+
+
+def test_the_preview_is_404_without_debug(client, settings):
+    settings.DEBUG = False
+    assert client.get("/demo/progress/").status_code == 404
+    assert client.get("/demo/progress/frame/?start=1").status_code == 404
+
+
+def test_the_preview_polls_the_real_component_with_debug(client, settings):
+    settings.DEBUG = True
+    page = client.get("/demo/progress/").content.decode()
+    assert 'role="progressbar"' in page and 'data-poll="/demo/progress/frame/?start=' in page
+    frame = client.get("/demo/progress/frame/?start=1").content.decode()
+    assert frame.startswith('<section class="panel" id="progress-demo" data-poll=')  # geyser.js swaps this in
+
+
+def test_the_simulation_loops_running_done_failed():
+    seen = []
+    for t in range(0, 240, 2):
+        sample, expected = pm.demo_sample(t, now=T0 + t)
+        p = pm.progress(sample, expected, now=T0 + t)
+        if not seen or seen[-1] != p.state:
+            seen.append(p.state)
+    assert seen[:5] == ["running", "succeeded", "running", "failed", "running"]
+
+
+def test_publish_never_writes_the_preview(storage, tmp_path):
+    from samples import publish as publish_mod
+
+    from .web_helpers import fastq_gz, put
+
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    out = tmp_path / "site"
+    publish_mod.publish(everything=True, out=str(out), log=lambda m: None)
+    assert not (out / "demo").exists()
