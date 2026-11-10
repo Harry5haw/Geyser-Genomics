@@ -63,9 +63,11 @@ def pairs(t: dict, name: str) -> list:
     out += [("text on row hover", t["text"], t["hover"]), ("link on row hover", t["link"], t["hover"])]
     out += [("Samples pill", t["run"], t["run-bg"]), ("Samples pill, hover", t["tube-hover-text"], t["tube-hover"])]
     out += [(f"done pill on --stage-{s}", t["on"], t[f"stage-{s}"]) for s in ("qc", "align", "variants")]
-    out += [(f"base {b} on --{bg}", t[f"nt-{b}"], t[bg]) for b in "acgt" for bg in ("card", "zebra")]
+    chips = "nt-a-bg" in t and t["bg"] != "#1f1f1f"  # every theme but dark draws the bases as chips
+    if not chips:  # dark: coloured letters straight on the table rows
+        out += [(f"base {b} on --{bg}", t[f"nt-{b}"], t[bg]) for b in "acgt" for bg in ("card", "zebra")]
     out += [("lockup wordmark", colour, t["card"]) for colour in LOGO[name]]
-    if "nt-a-bg" in t:  # retro's base chips: a black letter on each tinted fill
+    if "nt-a-bg" in t and t.get("bg") != "#1f1f1f":  # the base chips (all but dark): letter on each fill
         out += [(f"base {b} chip", t[f"nt-{b}"], t[f"nt-{b}-bg"]) for b in "acgt"]
     return out
 
@@ -95,15 +97,20 @@ def test_every_theme_sets_the_same_tokens():
         css = fh.read()
     dark = _block(css, ":root[data-theme=dark]")
     colours = {k for k, v in _block(css, ":root").items() if v.startswith("#")} - {"blue", "red", "yellow", "green"}
-    assert colours - set(dark) - {"on"} == set()  # dark keeps the brand quartet and the dark label on the pills
-    for name in ("retro", "contrast"):
-        assert colours - set(_block(css, f":root[data-theme={name}]")) == set(), name
+    chip = {f"nt-{b}-{k}" for b in "acgt" for k in ("bg", "line")}  # dark draws no base chips
+    assert colours - set(dark) - {"on"} - chip == set()  # dark keeps the brand quartet and the pills' dark label
+    assert colours - set(_block(css, ":root[data-theme=retro]")) - chip == set()  # retro shares light's chip tints
+    assert colours - set(_block(css, ":root[data-theme=contrast]")) == set()
 
 
-def test_retro_base_chips_are_four_distinct_tints_with_their_own_edges():
-    t = theme("retro")
+@pytest.mark.parametrize("name", ["light", "retro", "contrast"])
+def test_base_chips_are_four_distinct_fills_and_each_reads_as_a_chip(name):
+    t = theme(name)
     fills = [t[f"nt-{b}-bg"] for b in "acgt"]
     lines = [t[f"nt-{b}-line"] for b in "acgt"]
-    assert len(set(fills)) == 4 and len(set(lines)) == 4
-    # each edge stands out from its fill, so a chip reads as a chip
-    assert all(contrast(line, fill) >= 3 for line, fill in zip(lines, fills, strict=True))
+    assert len(set(fills)) == 4
+    if name == "contrast":  # white edges against the black page: the strong fills tell the four apart
+        assert set(lines) == {"#fff"} and all(contrast(line, t["bg"]) >= 7 for line in lines)
+        assert all(contrast(fill, t["bg"]) >= 7 for fill in fills)
+    else:  # a coloured edge that stands out from its tint
+        assert len(set(lines)) == 4 and all(contrast(line, fill) >= 3 for line, fill in zip(lines, fills, strict=True))

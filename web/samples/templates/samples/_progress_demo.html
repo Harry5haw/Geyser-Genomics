@@ -1,0 +1,4 @@
+<section class="panel" id="progress-demo" data-poll="{% url 'samples:progress_demo_frame' %}?start={{ start }}" data-poll-seconds="5">
+  <h2>{{ title }}</h2>
+  {% include "samples/_progress.html" with p=progress %}
+</section>

@@ -176,8 +176,11 @@ def test_no_framework_and_no_stylesheet_request(client, storage):
     body = client.get("/samples/S1/").content.decode()
     assert "<style>" in body and 'rel="stylesheet"' not in body
     assert "pico" not in body.lower() and "htmx" not in body.lower() and "hx-" not in body
-    # The theme boot inline (before the first paint, no request); theme.js and geyser.js deferred.
-    assert len(re.findall(r"<script src=", body)) == 2
+    # The theme boot inline (before the first paint, no request); theme.js, geyser.js and (a sample page only)
+    # progress.js deferred.
+    assert len(re.findall(r"<script src=", body)) == 3 and re.search(
+        r'<script src="[^"]+progress[^"]*\.js" defer>', body
+    )
     assert re.search(r'<script src="[^"]+theme[^"]*\.js" defer>', body)
     assert re.search(
         # The theme first, then the logo eruption's arming (both before the first paint, in the one inline script).
