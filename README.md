@@ -1,6 +1,9 @@
 <div align="center">
 
-<img src="web/samples/static/samples/geyser-lockup.svg" alt="Geyser Genomics" width="460"/>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/geyser-erupt-dark.gif">
+  <img src="docs/assets/geyser-erupt-light.gif" alt="Geyser Genomics" width="425" height="112">
+</picture>
 
 <h2>Upload a genome. Get your variants. In the cloud, for pennies.</h2>
 
