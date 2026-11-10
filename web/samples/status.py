@@ -85,6 +85,9 @@ class SampleView:
     layout: str = SINGLE
     annotated: bool = False  # the run record has an AlphaGenome Annotate part (opt-in per run)
     deepvariant: bool = False  # DeepVariant (linear or pangenome) ran in this sample's run (its part exists)
+    # DeepVariant's state when it made (or is making) this run's calls: running | done (deepvariant_state), else None:
+    # the sample page's DeepVariant card and its motif.
+    dv_state: str | None = None
 
     @property
     def active(self) -> bool:
@@ -265,7 +268,22 @@ def build_sample(
         duration=sum(durations) if durations and not from_record else None,
         keys={**keys, "vcf": vcf_key},
         layout=layout,
+        dv_state=deepvariant_state(record, state),
     )
+
+
+def deepvariant_state(record: dict | None, run_state: str) -> str | None:
+    """ "done" when DeepVariant called this run, "running" while its part is open in an active run, else None.
+
+    From the run record: a DeepVariant part (or caller_outcome "deepvariant"). A failed DeepVariant (the run fell
+    back to bcftools, or failed) shows nothing: the motif is only for a run whose calls DeepVariant made."""
+    record = record or {}
+    part = (record.get("stages") or {}).get("DeepVariant") or {}
+    if part.get("status") == "Success" or record.get("caller_outcome") == "deepvariant":
+        return "done"
+    if part and not part.get("status") and run_state in ACTIVE_STATES:
+        return "running"
+    return None
 
 
 # Every caller's VCF folder (variants/, variants_deepvariant/, variants_pangenome/).

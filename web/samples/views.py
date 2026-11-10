@@ -41,7 +41,7 @@ from .demo import DemoError, create_demo_sample
 from .forms import UploadForm
 from .gate import read_gate
 from .qc import read_qc_summary
-from .record import load_record, record_view
+from .record import deepvariant_view, load_record, record_view
 from .runs import is_valid_sample_id, log_key, read_text
 from .static_site import GATE_PROFILES, PUBLIC_KINDS, static_of
 from .vcf import check_truth, page_of, planted_positions, read_truth, read_variants, truth_key
@@ -479,6 +479,7 @@ def sample_detail(request, sample_id, page=None):
         "downloads": downloads,
         "gate": read_gate(storage, sample.keys["gate_verdict"], record),
         "record": record_view(record),
+        "deepvariant": deepvariant_view(record, sample.dv_state),
         "alphagenome": alphagenome,
         "alphagenome_terms_url": alphagenome_mod.TERMS_URL,
         "variant_pager": _pager(sample_id, variants, size, static.max_pages if static else None),
