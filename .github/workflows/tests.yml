@@ -126,6 +126,11 @@ jobs:
       - run: pytest tests/test_e2e_docker.py -v
         env:
           GEYSER_E2E: "1"
+      # The large route's S3 paths (presigned GETs, range reads, the ETag-verified index) against moto's S3 server,
+      # with the same image (#231).
+      - run: pytest tests/test_e2e_s3.py -v
+        env:
+          GEYSER_S3_E2E: "1"
       # The static publisher's image (W2): geyser-app + the web UI, a pip install on top, so it rides on this job's
       # geyser-app. FROM geyser-app is the image loaded above, which only the daemon's own builder can see.
       - run: docker buildx build --builder default --load -f app-publish/Dockerfile -t geyser-publish .
