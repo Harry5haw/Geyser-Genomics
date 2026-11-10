@@ -27,13 +27,13 @@ def test_the_list_tags_rows_from_the_run_record_parts_and_offers_the_filters(sto
     rows = dict(re.findall(r'<tr data-tags="([^"]*)"[^>]*>\s*<td class="id"><a href="/samples/(\w+)/"', body))
     assert {v: k for k, v in rows.items()} == {"DV1": "deepvariant", "AG1": "alphagenome", "PLAIN": ""}
     assert '<span class="tag">DeepVariant</span>' in body and '<span class="tag">AlphaGenome</span>' in body
-    group = re.search(r'<div class="filters" role="group" aria-label="Show samples" hidden>(.*?)</div>', body, re.S)
+    group = re.search(r'<div class="filters" role="group" aria-label="Show samples">(.*?)</div>', body, re.S)
     assert group and re.findall(r'data-filter-choice="(\w+)" aria-pressed="(\w+)"', group.group(1)) == [
         ("all", "true"),
         ("deepvariant", "false"),
         ("alphagenome", "false"),
         ("failed", "false"),
-    ]  # hidden until geyser.js runs: without it the buttons would do nothing
+    ]  # invisible (space kept: no layout shift) until geyser.js sets data-ready: without it they'd do nothing
 
 
 def test_css_hides_the_other_rows_for_each_filter_and_the_script_switches_it():

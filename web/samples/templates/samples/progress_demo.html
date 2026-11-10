@@ -1,4 +1,6 @@
 {% extends "samples/base.html" %}
+{% load static %}
+{% block scripts %}<script src="{% static 'samples/progress.js' %}" defer></script>{% endblock %}
 {% load geyser %}
 {% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_progress.css" %}{% endblock %}
 {% block title %}Progress preview · Geyser Genomics{% endblock %}

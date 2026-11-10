@@ -45,12 +45,12 @@ def test_the_running_stage_grows_with_time_and_never_reaches_its_tick():
     assert max(values) <= A0 + pm.CAP * (A1 - A0) < A1  # an overrunning stage slows towards the cap, short of the tick
 
 
-def test_share_is_linear_then_eases_without_a_kink_and_matches_geyser_js():
+def test_share_is_linear_then_eases_without_a_kink_and_matches_progress_js():
     xs = [0, 0.4, 0.8, 0.81, 1.0, 2.0, 50.0]
     got = [pm.share(x) for x in xs]
     assert got[:3] == [pm.MIN_SHOWN, 0.4, 0.8] and got == sorted(got) and got[-1] <= pm.CAP
     assert (pm.share(0.8001) - pm.share(0.8)) / 0.0001 == pytest.approx(1, abs=0.01)  # slope 1 at the knee
-    js_path = os.path.join(os.path.dirname(CSS), "..", "..", "static", "samples", "geyser.js")
+    js_path = os.path.join(os.path.dirname(CSS), "..", "..", "static", "samples", "progress.js")
     with open(js_path, encoding="utf-8") as fh:
         js = fh.read()
     assert "(x <= 0.8 ? Math.max(0.04, x) : 0.8 + 0.17 * (1 - Math.exp(-(x - 0.8) / 0.17)))" in js
