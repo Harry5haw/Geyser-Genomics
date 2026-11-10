@@ -1,20 +1,23 @@
-{% with u=uid|default:"hp" %}<div class="hp {{ p.state }}" role="progressbar" aria-label="Pipeline progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ p.percent }}" aria-valuetext="{{ p.valuetext }}"{% if p.stage_started %} data-stage-start="{{ p.stage_started|stringformat:'.3f' }}" data-expected="{{ p.expected|stringformat:'.3f' }}" data-later="{{ p.later|stringformat:'.3f' }}" data-from="{{ p.span.0|stringformat:'.5f' }}" data-to="{{ p.span.1|stringformat:'.5f' }}" data-now="{{ p.now|stringformat:'.3f' }}" data-lead="{{ p.lead }}"{% endif %}>
+{% with u=uid|default:"hp" %}<div class="hp {{ p.state }}" role="progressbar" aria-label="Pipeline progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ p.percent }}" aria-valuetext="{{ p.valuetext }}" data-key="{{ p.key }}" data-state="{{ p.state }}" data-value="{{ p.value|stringformat:'.5f' }}"{% if p.fail_at is not None %} data-fail="{{ p.fail_at|stringformat:'.5f' }}"{% endif %}{% if p.stage_started %} data-stage-start="{{ p.stage_started|stringformat:'.3f' }}" data-expected="{{ p.expected|stringformat:'.3f' }}" data-later="{{ p.later|stringformat:'.3f' }}" data-from="{{ p.span.0|stringformat:'.5f' }}" data-to="{{ p.span.1|stringformat:'.5f' }}" data-now="{{ p.now|stringformat:'.3f' }}" data-lead="{{ p.lead }}"{% endif %}>
   <svg class="hp-svg" viewBox="0 0 1000 40" preserveAspectRatio="none" aria-hidden="true" focusable="false">
     <defs>
       <linearGradient id="{{ u }}-turbo" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1000" y2="0">{% for stop in turbo %}<stop offset="{{ stop.0 }}" stop-color="{{ stop.1 }}"/>{% endfor %}</linearGradient>
       <linearGradient id="{{ u }}-turbo-dark" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1000" y2="0">{% for stop in turbo_dark %}<stop offset="{{ stop.0 }}" stop-color="{{ stop.1 }}"/>{% endfor %}</linearGradient>
-      <clipPath id="{{ u }}-clip"><rect x="0" y="0" width="{{ p.width }}" height="40"/></clipPath>
+      <g id="{{ u }}-helix"><path d="{{ helix.rungs }}" stroke-width="1.5" stroke-opacity=".7" vector-effect="non-scaling-stroke"/><path d="{{ helix.a }}" stroke-width="3" vector-effect="non-scaling-stroke"/><path d="{{ helix.b }}" stroke-width="3" vector-effect="non-scaling-stroke"/></g>
+      <linearGradient id="{{ u }}-tip" class="hp-tip" gradientUnits="userSpaceOnUse" x1="{{ p.tip.0 }}" y1="0" x2="{{ p.tip.1 }}" y2="0"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>
+      <mask id="{{ u }}-draw" maskUnits="userSpaceOnUse" x="0" y="-10" width="1100" height="60"><rect x="0" y="-10" width="1100" height="60" fill="url(#{{ u }}-tip)"/></mask>
+      {% if p.state == "failed" %}<linearGradient id="{{ u }}-red" class="hp-red" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0.5" y2="0"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient>
+      <mask id="{{ u }}-spread" maskUnits="userSpaceOnUse" x="-100" y="-10" width="1200" height="60"><rect x="-100" y="-10" width="1200" height="60" fill="url(#{{ u }}-red)"/></mask>{% endif %}
     </defs>
     <path class="hp-rail" d="M0 20H1000" vector-effect="non-scaling-stroke"/>
-    <g clip-path="url(#{{ u }}-clip)"><g class="hp-flow">
-      <path class="hp-rung" d="{{ helix.rungs }}" vector-effect="non-scaling-stroke"/>
-      <path class="hp-strand" d="{{ helix.a }}" vector-effect="non-scaling-stroke"/>
-      <path class="hp-strand" d="{{ helix.b }}" vector-effect="non-scaling-stroke"/>
-    </g></g>
+    <g class="hp-body"><g mask="url(#{{ u }}-draw)"><g class="hp-spin">
+      <use class="hp-run" href="#{{ u }}-helix"/>
+      {% if p.state == "succeeded" or p.state == "failed" %}<use class="hp-final" href="#{{ u }}-helix"{% if p.state == "failed" %} mask="url(#{{ u }}-spread)"{% endif %}/>{% endif %}
+    </g></g></g>
     {% for x in p.tick_xs %}<path class="hp-tick" d="M{{ x }} 2V38" vector-effect="non-scaling-stroke"/>{% endfor %}
     {% if p.fail_at is not None %}<path class="hp-break" d="M{{ p.width|add:-8 }} 6L{{ p.width|add:8 }} 34M{{ p.width|add:8 }} 6L{{ p.width|add:-8 }} 34" vector-effect="non-scaling-stroke"/>{% endif %}
   </svg>
-  <ol class="hp-labels n{{ p.ticks|length }}">{% for t in p.ticks %}<li class="{{ t.state }}">{{ t.label }}</li>{% endfor %}</ol>
+  <ol class="hp-labels n{{ p.ticks|length }}">{% for t in p.ticks %}<li class="{{ t.state }}" data-mid="{{ t.mid|stringformat:'.5f' }}">{{ t.label }}</li>{% endfor %}</ol>
   <p class="hp-now">{{ p.valuetext }}</p>
 </div>
 {% endwith %}

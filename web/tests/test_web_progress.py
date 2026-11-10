@@ -29,17 +29,32 @@ def aligning():
     return s
 
 
-def test_equal_shares_and_ticks_at_their_ends():
+A0, A1 = 10 / 160, 110 / 160  # alignment's span with EXPECTED: 10 + 100 + 50 s
+
+
+def test_stage_spans_follow_expected_time_so_the_pace_is_steady():
     p = pm.progress(aligning(), EXPECTED, now=T0 + 20)
-    assert [(t.start, t.end) for t in p.ticks] == [(0, 1 / 3), (1 / 3, 2 / 3), (2 / 3, 1)]
-    assert p.tick_xs == [333, 667]
+    assert [(t.start, t.end) for t in p.ticks] == [(0, A0), (A0, A1), (A1, 1)]
+    assert p.tick_xs == [62, 688] and [round(t.mid, 4) for t in p.ticks] == [0.0312, 0.375, 0.8438]
 
 
 def test_the_running_stage_grows_with_time_and_never_reaches_its_tick():
     values = [pm.progress(aligning(), EXPECTED, now=T0 + 10 + s).value for s in (0, 25, 50, 75, 99, 500, 10_000)]
     assert values == sorted(values)  # monotonic
-    assert values[2] == pytest.approx(1 / 3 + 0.5 / 3)  # halfway through its expected time: halfway along its share
-    assert max(values) == pytest.approx(1 / 3 + pm.CAP / 3) and max(values) < 2 / 3  # capped short of the tick
+    assert values[2] == pytest.approx(A0 + 0.5 * (A1 - A0))  # halfway through its expected time: halfway along
+    assert max(values) <= A0 + pm.CAP * (A1 - A0) < A1  # an overrunning stage slows towards the cap, short of the tick
+
+
+def test_share_is_linear_then_eases_without_a_kink_and_matches_geyser_js():
+    xs = [0, 0.4, 0.8, 0.81, 1.0, 2.0, 50.0]
+    got = [pm.share(x) for x in xs]
+    assert got[:3] == [pm.MIN_SHOWN, 0.4, 0.8] and got == sorted(got) and got[-1] <= pm.CAP
+    assert (pm.share(0.8001) - pm.share(0.8)) / 0.0001 == pytest.approx(1, abs=0.01)  # slope 1 at the knee
+    js_path = os.path.join(os.path.dirname(CSS), "..", "..", "static", "samples", "geyser.js")
+    with open(js_path, encoding="utf-8") as fh:
+        js = fh.read()
+    assert "(x <= 0.8 ? Math.max(0.04, x) : 0.8 + 0.17 * (1 - Math.exp(-(x - 0.8) / 0.17)))" in js
+    assert (pm.KNEE, round(pm.CAP - pm.KNEE, 2), pm.MIN_SHOWN) == (0.8, 0.17, 0.04)
 
 
 def test_time_left_counts_the_stages_still_to_come():
@@ -52,13 +67,13 @@ def test_done_fills_and_failed_stops_at_the_failed_stage():
     done = pm.progress(sample("succeeded", [(*QC, "done", 1), (*AL, "done", 1), (*VC, "done", 1)]), EXPECTED)
     assert (done.value, done.fail_at, done.valuetext) == (1.0, None, "Complete, all stages done")
     failed = pm.progress(sample("failed", [(*QC, "done", 1), (*AL, "failed", None), (*VC, "pending", None)]), EXPECTED)
-    assert failed.value == failed.fail_at == pytest.approx(1 / 3) and failed.valuetext == "Failed at Alignment"
+    assert failed.value == failed.fail_at == pytest.approx(A0) and failed.valuetext == "Failed at Alignment"
 
 
 def test_queued_is_empty_and_a_cloud_run_without_a_start_shows_a_sliver_without_an_estimate():
     assert pm.progress(sample("queued", [(*QC, "pending", None)]), EXPECTED).value == 0
     cloud = pm.progress(sample("running", [(*QC, "running", None), (*AL, "pending", None)], started=None), EXPECTED)
-    assert cloud.value == pytest.approx(pm.MIN_SHOWN / 2) and cloud.seconds_left is None
+    assert cloud.value == pytest.approx(pm.MIN_SHOWN * 10 / 110) and cloud.seconds_left is None
     assert cloud.valuetext == "Checking quality, stage 1 of 2"
 
 
@@ -90,7 +105,10 @@ def test_the_bar_renders_as_an_accessible_progressbar(state):
     )
     assert f'class="hp {p.state}" role="progressbar"' in html and f'aria-valuenow="{p.percent}"' in html
     assert f'aria-valuetext="{p.valuetext}"' in html and html.count("<li ") == 3
-    assert f'<rect x="0" y="0" width="{p.width}"' in html  # the drawn length
+    x1, x2 = p.tip
+    assert f'class="hp-tip" gradientUnits="userSpaceOnUse" x1="{x1}" y1="0" x2="{x2}"' in html  # the drawn length
+    assert x2 - x1 == 0.5  # a crisp end (no fade: the user's call)
+    assert ('class="hp-final"' in html) == (state in ("succeeded", "failed"))  # the green or red layer
     assert ('class="hp-break"' in html) == (state == "failed")  # the helix breaks where the run failed
     assert "style=" not in html  # the hosted CSP allows no inline style
 
@@ -99,7 +117,9 @@ def test_only_a_running_bar_flows_and_reduced_motion_stops_it():
     here = os.path.dirname(CSS)
     with open(os.path.join(here, "_progress.css"), encoding="utf-8") as fh:
         css = fh.read()
-    assert re.findall(r"([^{}\n]+)\{animation:hp-flow", css) == [".hp.running .hp-flow"]
+    assert re.findall(r"([^{}\n]+)\{animation:hp-flow", css) == [".hp.running .hp-spin"]
+    assert ".hp.spinning .hp-spin{animation:hp-spin" in css and ".hp.snapping .hp-body{animation:hp-snap" in css
+    assert ".hp.fading .hp-final{animation:hp-in .6s ease-out!important}" in css  # reduced motion: a fade only
     with open(CSS, encoding="utf-8") as fh:
         assert "@media (prefers-reduced-motion:reduce){*,::before,::after{animation:none!important" in fh.read()
 
@@ -115,7 +135,7 @@ def test_the_sample_page_shows_the_bar_and_no_per_stage_helices(client, storage)
 
     put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
     page = client.get("/samples/S1/").content.decode()
-    assert page.count('role="progressbar"') == 1 and "hp-strand" in page
+    assert page.count('role="progressbar"') == 1 and 'class="hp-run"' in page and 'data-key="S1"' in page
     assert "<symbol" not in page and 'class="dna' not in page
     assert "<symbol" not in client.get("/").content.decode()
 
@@ -162,17 +182,17 @@ def test_the_running_stage_starts_when_the_last_one_finished_and_the_bar_carries
     s = sample("running", [(*QC, "done", 10.0), (*AL, "running", None), (*VC, "pending", None)])
     s.stages[0].finished = T0 + 300  # a preview delay, a queue: the stage ended well after started + duration
     p = pm.progress(s, EXPECTED, now=T0 + 350)
-    assert p.stage_started == T0 + 300 and p.value == pytest.approx(1 / 3 + 0.5 / 3)  # 50 s of 100: halfway
+    assert p.stage_started == T0 + 300 and p.value == pytest.approx(A0 + 0.5 * (A1 - A0))  # 50 s of 100: halfway
     assert (p.expected, p.later, p.span, p.now, p.lead) == (
         100.0,
         50.0,
-        (1 / 3, 2 / 3),
+        (A0, A1),
         T0 + 350,
         "Aligning, stage 2 of 3",
     )
     html = render_to_string("samples/_progress.html", {"p": p, "helix": pm.HELIX, "turbo": [], "turbo_dark": []})
     assert f'data-stage-start="{T0 + 300:.3f}"' in html and 'data-expected="100.000"' in html
-    assert 'data-from="0.33333" data-to="0.66667"' in html and 'data-lead="Aligning, stage 2 of 3"' in html
+    assert 'data-from="0.06250" data-to="0.68750"' in html and 'data-lead="Aligning, stage 2 of 3"' in html
     done = pm.progress(sample("succeeded", [(*QC, "done", 1)]), EXPECTED)
     assert "data-stage-start" not in render_to_string(
         "samples/_progress.html", {"p": done, "helix": pm.HELIX, "turbo": [], "turbo_dark": []}

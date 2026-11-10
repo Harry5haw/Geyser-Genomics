@@ -20,8 +20,21 @@ from . import status as status_mod
 
 DEFAULT_SECONDS = {"qc": 60.0, "align": 300.0, "variants": 180.0}  # a small sample on a laptop or Fargate
 VERBS = {"qc": "Checking quality", "align": "Aligning", "variants": "Calling variants"}
-CAP = 0.95  # the running stage never draws past 95% of its share: the next tick means "done"
+CAP = 0.97  # the running stage never draws past 97% of its share: the next tick means "done"
+KNEE = 0.8  # up to 80% of its expected time a stage grows linearly; past it, it eases towards CAP (slows, never stops)
 MIN_SHOWN = 0.04  # a stage that has just started shows a sliver, so the bar visibly moves on
+
+
+def share(x: float) -> float:
+    """How much of the running stage's span to draw at x = elapsed / expected: linear to KNEE, then easing towards
+    CAP with the same slope at the knee, so an overrunning stage slows smoothly instead of stopping at a wall.
+    geyser.js has the same function (keep them equal; test_web_progress checks the values)."""
+    import math
+
+    if x <= KNEE:
+        return max(MIN_SHOWN, x)
+    room = CAP - KNEE
+    return KNEE + room * (1 - math.exp(-(x - KNEE) / room))
 
 
 @dataclass
@@ -31,6 +44,10 @@ class Tick:
     state: str  # done | running | failed | pending
     start: float  # 0..1 along the bar
     end: float
+
+    @property
+    def mid(self) -> float:
+        return (self.start + self.end) / 2
 
 
 @dataclass
@@ -49,6 +66,7 @@ class Progress:
     span: tuple = (0.0, 0.0)  # the running stage's share of the bar (start, end), 0..1
     now: float | None = None  # the server's clock when rendered (the browser corrects for its own)
     lead: str = ""  # "Aligning, stage 2 of 3": the text before the time left
+    key: str = ""  # the sample: geyser.js keeps the drawn length per sample across polls (never jumps back)
 
     @property
     def percent(self) -> int:
@@ -62,6 +80,12 @@ class Progress:
     @property
     def tick_xs(self) -> list:
         return [round(t.end * 1000) for t in self.ticks[:-1]]
+
+    @property
+    def tip(self) -> tuple:
+        """Where the drawn helix ends (the mask gradient's x1, x2): a crisp edge."""
+        end = self.value * 1000
+        return (round(end, 1), round(end + 0.5, 1))
 
 
 def expected_durations(metrics=None) -> dict:
@@ -91,25 +115,30 @@ def progress(sample, expected=None, now=None) -> Progress:
     expected = {**DEFAULT_SECONDS, **(expected or {})}
     now = time.time() if now is None else now
     stages = sample.stages
-    n = len(stages) or 1
-    ticks = [Tick(s.name, s.label, s.state, i / n, (i + 1) / n) for i, s in enumerate(stages)]
+    # Each stage's span is its share of the expected run time, so a steady clock draws a steady line.
+    weights = [max(1.0, expected.get(s.name, 60.0)) for s in stages] or [1.0]
+    total, ticks, at = sum(weights), [], 0.0
+    for s, w in zip(stages, weights, strict=False):
+        ticks.append(Tick(s.name, s.label, s.state, at / total, (at + w) / total))
+        at += w
     done = [t for t in ticks if t.state == "done"]
+    key = getattr(sample, "sample_id", "")
 
     if sample.state == "succeeded":
-        return Progress("succeeded", 1.0, ticks, valuetext="Complete, all stages done")
+        return Progress("succeeded", 1.0, ticks, valuetext="Complete, all stages done", key=key)
     failed = next((t for t in ticks if t.state == "failed"), None)
     if sample.state == "failed":
         at = failed.start if failed else (max((t.end for t in done), default=0.0))
         label = failed.label if failed else ""
         text = f"Failed at {label}" if label else "Failed"
-        return Progress("failed", at, ticks, current=label, fail_at=at, valuetext=text)
+        return Progress("failed", at, ticks, current=label, fail_at=at, valuetext=text, key=key)
     if sample.state == "queued":
-        return Progress("queued", 0.0, ticks, valuetext="Queued, waiting to start")
+        return Progress("queued", 0.0, ticks, valuetext="Queued, waiting to start", key=key)
 
     running = [t for t in ticks if t.state == "running"]
     if not running:  # under way, but no stage reports running yet
         value = max((t.end for t in ticks if t.state == "done"), default=0.0)
-        return Progress("running", value, ticks, valuetext="Starting")
+        return Progress("running", value, ticks, valuetext="Starting", key=key)
     cur = running[0]
     # The running stage's start: local runs go one stage at a time from the worker's start.
     run = sample.run or {}
@@ -118,8 +147,7 @@ def progress(sample, expected=None, now=None) -> Progress:
     started = max((m for m in marks if m), default=None)
     elapsed = None if started is None else max(0.0, now - started)
     exp = expected.get(cur.name, 60.0)
-    share = MIN_SHOWN if elapsed is None else min(CAP, max(MIN_SHOWN, elapsed / exp))
-    value = cur.start + share * (cur.end - cur.start)
+    value = cur.start + (MIN_SHOWN if elapsed is None else share(elapsed / exp)) * (cur.end - cur.start)
     later = sum(expected.get(t.name, 60.0) for t in ticks if t.state == "pending")
     seconds_left = None if elapsed is None else round(max(0.0, exp - elapsed) + later)
     index = ticks.index(cur) + 1
@@ -139,6 +167,7 @@ def progress(sample, expected=None, now=None) -> Progress:
         span=(cur.start, cur.end),
         now=now,
         lead=lead,
+        key=key,
     )
 
 

@@ -495,7 +495,9 @@ def sample_status(request, sample_id):
     storage = get_storage()
     sample = _load_sample_or_404(storage, sample_id)
     if request.GET.get("was_active") and not sample.active:
-        response = HttpResponse(status=204)
+        # The run just ended: send its final status (the progress bar plays its finish or failure), and the header
+        # tells geyser.js to reload the page afterwards, to show the results.
+        response = render(request, "samples/_status.html", _status_context(storage, sample))
         response["Geyser-Refresh"] = "true"
         return response
     return render(request, "samples/_status.html", _status_context(storage, sample))

@@ -113,7 +113,8 @@ def test_detail_page_for_running_sample_polls_and_shows_live_log(client, storage
 def test_status_partial_asks_for_reload_when_run_finishes(client, storage):
     finished_sample(storage)
     resp = client.get("/samples/S1/status/?was_active=1")
-    assert resp.status_code == 204 and resp["Geyser-Refresh"] == "true"  # geyser.js reloads the page
+    # the final status (the progress bar plays its finish), and geyser.js reloads the page afterwards
+    assert resp.status_code == 200 and resp["Geyser-Refresh"] == "true" and b'class="hp succeeded"' in resp.content
     resp = client.get("/samples/S1/status/")
     assert resp.status_code == 200 and b"run-status" in resp.content
 
