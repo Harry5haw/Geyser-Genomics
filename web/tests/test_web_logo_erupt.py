@@ -92,5 +92,6 @@ def test_geyser_js_waits_for_load_and_respects_motion_and_storage():
     js = _read(STATIC, "geyser.js")
     block = js[js.index("The header logo's eruption") :]
     assert '"(prefers-reduced-motion: reduce)"' in block
-    assert 'window.addEventListener("load", rest' in block  # the first paint keeps the static lockup
+    assert 'window.addEventListener("load", ready' in block  # the first paint keeps the static lockup
+    assert '"largest-contentful-paint"' in block  # and the largest paint is in before the swap
     assert "sessionStorage.getItem(ERUPTED)" in block and "catch (_)" in block

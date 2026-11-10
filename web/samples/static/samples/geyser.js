@@ -243,8 +243,24 @@
         ["touchstart", "scroll"].forEach((t) => window.addEventListener(t, erupt, { passive: true }));
       }
     };
-    if (document.readyState === "complete") rest();
-    else if (window.addEventListener) window.addEventListener("load", rest, { once: true });
+    // Rest only once the page has loaded AND the browser has recorded its largest paint (on a fast machine that
+    // comes after load): swapping earlier would make the empty geyser, fetched by this script, the LCP image.
+    const lcp = typeof PerformanceObserver !== "undefined" &&
+      (PerformanceObserver.supportedEntryTypes || []).includes("largest-contentful-paint");
+    let waits = lcp ? 2 : 1;
+    const ready = () => {
+      if (--waits) return;
+      if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(rest));
+      else rest();
+    };
+    if (lcp) {
+      const seen = new PerformanceObserver((list) => {
+        if (list.getEntries().length) { seen.disconnect(); ready(); }
+      });
+      seen.observe({ type: "largest-contentful-paint", buffered: true });
+    }
+    if (document.readyState === "complete") ready();
+    else if (window.addEventListener) window.addEventListener("load", ready, { once: true });
     brand.addEventListener("pointerover", erupt);
     brand.addEventListener("focusin", erupt);
   }

@@ -12,7 +12,7 @@ const STATIC = "/static/samples/geyser-lockup.svg";
 const EMPTY = "/static/samples/geyser-empty-light.svg";
 const ERUPT = "/static/samples/geyser-erupt-light.svg";
 
-function load({ stored = null, storage = true, reduced = false, hoverNone = false, readyState = "loading" } = {}) {
+function load({ stored = null, storage = true, reduced = false, hoverNone = false, readyState = "loading", lcpApi = false } = {}) {
   const listeners = {};
   const brand = {
     addEventListener: (t, fn) => { (listeners[t] = listeners[t] || new Set()).add(fn); },
@@ -40,10 +40,23 @@ function load({ stored = null, storage = true, reduced = false, hoverNone = fals
     HTMLScriptElement: { supports: () => true },
     setTimeout: (fn, ms) => timers.push({ fn, ms }), Promise, Set, Map, Number, String, JSON, Math, Date, Array, Object,
   };
+  const observers = [];
+  const frames = [];
+  if (lcpApi) {
+    context.PerformanceObserver = class {
+      constructor(cb) { this.cb = cb; this.on = true; observers.push(this); }
+      observe(opts) { this.opts = opts; }
+      disconnect() { this.on = false; }
+      static get supportedEntryTypes() { return ["largest-contentful-paint", "paint"]; }
+    };
+    context.requestAnimationFrame = (fn) => frames.push(fn);
+  }
   vm.runInNewContext(src, context);
+  const lcp = () => observers.filter((o) => o.on).forEach((o) => o.cb({ getEntries: () => [{}] }));
+  const frame = () => frames.splice(0).forEach((fn) => fn());
   const fire = (t) => [...(listeners[t] || [])].forEach((fn) => fn());
   const fireWin = (t) => [...(winListeners[t] || [])].forEach((fn) => fn());
-  return { img, store, fire, fireWin, loaded: () => fireWin("load"), timers, winListeners };
+  return { img, store, fire, fireWin, loaded: () => fireWin("load"), timers, winListeners, lcp, frame, observers };
 }
 
 test("the static lockup until load, then the empty geyser, then the eruption on the first hover", () => {
@@ -101,4 +114,27 @@ test("still: already erupted this session, reduced motion, or no storage", () =>
     assert.strictEqual(img.src, STATIC, JSON.stringify(opts));
     assert.strictEqual(timers.length, 0);
   }
+});
+
+test("where the browser reports LCP, it rests only after load and the largest paint, a frame later", () => {
+  const { img, loaded, lcp, frame, observers } = load({ lcpApi: true });
+  assert.strictEqual(JSON.stringify(observers[0].opts), JSON.stringify({ type: "largest-contentful-paint", buffered: true }));
+  loaded();
+  frame(); frame();
+  assert.strictEqual(img.src, STATIC); // loaded, but the largest paint isn't in yet (a fast machine): wait
+  lcp();
+  assert.strictEqual(img.src, STATIC); // not in the same frame
+  frame(); frame();
+  assert.strictEqual(img.src, EMPTY);
+  assert.ok(!observers[0].on); // one entry is enough
+});
+
+test("the largest paint before load also waits for load", () => {
+  const { img, loaded, lcp, frame } = load({ lcpApi: true });
+  lcp();
+  frame(); frame();
+  assert.strictEqual(img.src, STATIC);
+  loaded();
+  frame(); frame();
+  assert.strictEqual(img.src, EMPTY);
 });
