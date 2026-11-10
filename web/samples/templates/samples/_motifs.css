@@ -19,7 +19,7 @@ aria-hidden, transform/opacity only (the DeepVariant nodes also hand their fill 
 @keyframes mdv-c3{0%{fill:var(--c3)}25%{fill:var(--c4)}50%{fill:var(--c1)}75%{fill:var(--c2)}100%{fill:var(--c3)}}
 @keyframes mdv-c4{0%{fill:var(--c4)}25%{fill:var(--c1)}50%{fill:var(--c2)}75%{fill:var(--c3)}100%{fill:var(--c4)}}
 :root[data-theme=contrast] .mdv{--c1:#ffd600;--c2:#fff;--c3:#ffd600;--c4:#fff}:root[data-theme=contrast] .mdv .edges{stroke:#fff;opacity:.5}
-:root[data-theme=retro] .mdv{--c1:#000;--c2:#fff;--c3:#000;--c4:#fff}:root[data-theme=retro] .mdv .edges{stroke:#000;opacity:.6}:root[data-theme=retro] .mdv .nodes circle{stroke:#000;stroke-width:1.2}
+:root[data-theme=retro] .mdv{--c1:#8a8a8a;--c2:#fff;--c3:#8a8a8a;--c4:#fff}:root[data-theme=retro] .mdv .edges{stroke:#c8c8c8;opacity:1}:root[data-theme=retro] .mdv .nodes circle{stroke:#9a9a9a;stroke-width:1.2}
 .mhead{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1.25rem}.mhead h2{margin:0;flex:0 1 auto}
 .mag-art{flex:1 1 10rem;min-width:10rem;height:40px;width:100%}
 .mag-art .seq{font:700 9px var(--mono);text-anchor:middle}.mag-art .bA{fill:var(--nt-a)}.mag-art .bC{fill:var(--nt-c)}.mag-art .bG{fill:var(--nt-g)}.mag-art .bT{fill:var(--nt-t)}
@@ -31,4 +31,4 @@ aria-hidden, transform/opacity only (the DeepVariant nodes also hand their fill 
 :root[data-theme=dark] .mag-art .t1{stroke:#8ab4f8;fill:#8ab4f8}:root[data-theme=dark] .mag-art .t2{stroke:#f28b82;fill:#f28b82}:root[data-theme=dark] .mag-art .t3{stroke:#81c995;fill:#81c995}
 :root[data-theme=contrast] .mag-art :is(.t1,.t3){stroke:#ffd600;fill:#ffd600}:root[data-theme=contrast] .mag-art .t2{stroke:#fff;fill:#fff}
 :root[data-theme=retro] .mag-art .tr{stroke:#000;fill:#000}:root[data-theme=retro] .mag-art .t2{stroke-dasharray:3 2}:root[data-theme=retro] .mag-art .t3{stroke-width:2.4}
-:root[data-theme=retro] .mdv :is(.r1,.r2,.r3){stroke:#000}:root[data-theme=retro] .mdv .cm .tr{stroke-width:1.2}:root[data-theme=retro] .mdv .cm .hd{stroke-width:1.4}:root[data-theme=retro] .mdv .nodes .g{fill:none;stroke-width:1.2}
+:root[data-theme=retro] .mdv :is(.r1,.r2,.r3){stroke:#000}:root[data-theme=retro] .mdv .cm .tr{stroke-width:1.2}:root[data-theme=retro] .mdv .cm .hd{stroke-width:1.4}:root[data-theme=retro] .mdv .nodes .g{fill:none;stroke:#000;stroke-width:1.2}

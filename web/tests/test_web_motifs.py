@@ -154,7 +154,10 @@ def test_the_net_fills_the_heading_row_as_one_interconnected_network():
 def test_retro_draws_the_signal_paths_as_a_fine_pen_line():
     css = read("_motifs.css")
     assert ":root[data-theme=retro] .mdv .cm .tr{stroke-width:1.2}" in css  # about half the other themes' width
-    assert ":root[data-theme=retro] .mdv .nodes .g{fill:none;stroke-width:1.2}" in css  # a ring, not an ink blob
+    assert ":root[data-theme=retro] .mdv .nodes .g{fill:none;stroke:#000;stroke-width:1.2}" in css  # an ink ring
+    # the resting net in light grey, so the moving pen lines stand out
+    assert ":root[data-theme=retro] .mdv .edges{stroke:#c8c8c8;opacity:1}" in css
+    assert ":root[data-theme=retro] .mdv{--c1:#8a8a8a;--c2:#fff;--c3:#8a8a8a;--c4:#fff}" in css
 
 
 def test_retro_never_fills_the_route_paths():
