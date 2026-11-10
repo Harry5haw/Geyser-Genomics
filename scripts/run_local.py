@@ -432,9 +432,18 @@ def run_env(sample_id, image):
     }
 
 
+STAGE_DELAY_ENV = "GEYSER_STAGE_DELAY_SECONDS"  # preview only: hold N s before each stage (see run_job)
+
+
 def run_job(job, runner, root, dv_memory=None, env=None, memory=None, label=None):
-    """env: extra variables for the stage (run_env), on top of the pass-through knobs. memory: a hard cap for
+    """GEYSER_STAGE_DELAY_SECONDS (for previewing the web UI's progress bar only; never set in the cloud): wait that
+    long before the stage starts, so a synthetic demo run lasts long enough to watch.
+    env: extra variables for the stage (run_env), on top of the pass-through knobs. memory: a hard cap for
     the pipeline-stage containers (DeepVariant's is dv_memory); label: a docker label on every container."""
+    delay = float(os.environ.get(STAGE_DELAY_ENV) or 0)
+    if delay > 0:
+        print(f"(preview) holding {delay:g} s before {job['name']}", flush=True)
+        time.sleep(delay)
     if runner == "docker":
         # Pipeline and DeepVariant knobs are passed through to the container when set on the host
         # (the host runner inherits the whole environment anyway).

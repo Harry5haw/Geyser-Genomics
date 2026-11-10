@@ -1,0 +1,12 @@
+{% extends "samples/base.html" %}
+{% load static %}
+{% block scripts %}<script src="{% static 'samples/progress.js' %}" defer></script>{% endblock %}
+{% load geyser %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_progress.css" %}{% endblock %}
+{% block title %}Progress preview · Geyser Genomics{% endblock %}
+{% block content %}
+<h1>Progress preview</h1>
+<p class="lead">A simulated run (local and debug only): the real progress component, re-rendered every 5 s through the same polling as a live
+  sample page, and grown smoothly in between by geyser.js, as a live page is. It loops: a run that succeeds, then one that fails at variant calling.</p>
+{% include "samples/_progress_demo.html" %}
+{% endblock %}
