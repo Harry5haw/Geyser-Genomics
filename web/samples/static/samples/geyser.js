@@ -214,8 +214,9 @@
   }
   // The header logo's eruption (scripts/build_logo_burst.py). The page shows the static lockup (no JS, reduced
   // motion, or already erupted this session). Otherwise, once the page has loaded (so the static lockup stays the
-  // first paint and the LCP image): the empty geyser, then on the first hover or focus (or 0.7 s later on a screen
-  // without hover) the animated lockup, which plays once in the <img> (SMIL) and holds the full logo.
+  // first paint and the LCP image): the empty geyser, then on the first hover or focus (on a screen without hover,
+  // the first touch or scroll anywhere) the animated lockup, which plays once in the <img> (SMIL) and holds the full
+  // logo. Never on a timer: an animation nobody started would be paint work inside every page-load measurement.
   // data-erupt = "<empty URL> <animated URL>": hashed static names, which a script can't work out.
   const logos = document.querySelectorAll(".brand img[data-erupt]");
   const ERUPTED = "geyser-erupted";
@@ -231,13 +232,16 @@
       done = true;
       brand.removeEventListener("pointerover", erupt);
       brand.removeEventListener("focusin", erupt);
+      ["touchstart", "scroll"].forEach((t) => window.removeEventListener && window.removeEventListener(t, erupt));
       try { sessionStorage.setItem(ERUPTED, "1"); } catch (_) { /* private mode: it may erupt again */ }
       use(1);
     };
     const rest = () => {
       if (done) return;
       use(0);
-      if (media("(hover: none)")) setTimeout(erupt, 700);
+      if (media("(hover: none)") && window.addEventListener) {
+        ["touchstart", "scroll"].forEach((t) => window.addEventListener(t, erupt, { passive: true }));
+      }
     };
     if (document.readyState === "complete") rest();
     else if (window.addEventListener) window.addEventListener("load", rest, { once: true });

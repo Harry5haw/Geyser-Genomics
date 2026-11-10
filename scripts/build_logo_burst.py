@@ -11,7 +11,7 @@ From geyser-lockup{,-dark,-retro,-contrast}.svg (scripts/build_logo.py's output)
 
 The header keeps the static lockup <img> (the LCP element; the no-JS and reduced-motion logo). geyser.js swaps its
 src to the empty one once the page has loaded (first visit in a session, motion allowed), then to the animated
-one on the first hover/focus (or after 0.7 s on a screen without hover). The two URLs ride on the <img>'s
+one on the first hover/focus (on a screen without hover: the first touch or scroll). The two URLs ride on the <img>'s
 data-erupt attribute: hashed static names that a script can't work out. Deterministic: run it again after
 build_logo.py.
 

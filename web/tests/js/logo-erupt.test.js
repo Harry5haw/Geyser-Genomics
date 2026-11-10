@@ -1,6 +1,6 @@
 // geyser.js's header-logo eruption, on a fake DOM: the static lockup until the page has loaded, then the empty
-// geyser, then the animated lockup on the first hover/focus (or 0.7 s after load without hover); once a session;
-// never with reduced motion or without storage.
+// geyser, then the animated lockup on the first hover/focus (without hover: the first touch or scroll); once a
+// session; never on a timer, with reduced motion or without storage.
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
@@ -27,7 +27,8 @@ function load({ stored = null, storage = true, reduced = false, hoverNone = fals
   const timers = [];
   const window = {
     matchMedia: (q) => ({ matches: (q.includes("reduced-motion") && reduced) || (q.includes("hover: none") && hoverNone) }),
-    addEventListener: (t, fn) => { winListeners[t] = fn; },
+    addEventListener: (t, fn) => { (winListeners[t] = winListeners[t] || new Set()).add(fn); },
+    removeEventListener: (t, fn) => winListeners[t] && winListeners[t].delete(fn),
   };
   const document = {
     readyState,
@@ -41,7 +42,8 @@ function load({ stored = null, storage = true, reduced = false, hoverNone = fals
   };
   vm.runInNewContext(src, context);
   const fire = (t) => [...(listeners[t] || [])].forEach((fn) => fn());
-  return { img, store, fire, loaded: () => winListeners.load && winListeners.load(), timers };
+  const fireWin = (t) => [...(winListeners[t] || [])].forEach((fn) => fn());
+  return { img, store, fire, fireWin, loaded: () => fireWin("load"), timers, winListeners };
 }
 
 test("the static lockup until load, then the empty geyser, then the eruption on the first hover", () => {
@@ -78,14 +80,17 @@ test("a hover before load erupts, and load doesn't empty it again", () => {
   assert.strictEqual(img.src, ERUPT);
 });
 
-test("without hover it erupts 0.7 s after load", () => {
-  const { img, loaded, timers } = load({ hoverNone: true });
-  assert.strictEqual(timers.length, 0); // not before load
-  loaded();
-  assert.strictEqual(img.src, EMPTY);
-  assert.deepStrictEqual(timers.map((t) => t.ms), [700]);
-  timers[0].fn();
-  assert.strictEqual(img.src, ERUPT);
+test("without hover: the first touch or scroll erupts it, never a timer", () => {
+  for (const first of ["touchstart", "scroll"]) {
+    const { img, loaded, fireWin, timers, winListeners } = load({ hoverNone: true });
+    assert.ok(!winListeners[first]); // not before load
+    loaded();
+    assert.strictEqual(img.src, EMPTY);
+    assert.strictEqual(timers.length, 0); // nothing animates unless someone is there
+    fireWin(first);
+    assert.strictEqual(img.src, ERUPT);
+    assert.strictEqual(winListeners.touchstart.size + winListeners.scroll.size, 0); // once only
+  }
 });
 
 test("still: already erupted this session, reduced motion, or no storage", () => {
