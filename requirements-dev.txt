@@ -5,3 +5,5 @@
 pytest==9.2.0
 pytest-django==4.14.0
 ruff==0.17.4
+# S3 server for tests/test_e2e_s3.py (#231): moto's server mode, in-process, no image.
+moto[server]==5.2.4
