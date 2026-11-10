@@ -1,6 +1,7 @@
-// geyser.js's header-logo eruption, on a fake DOM: the static lockup until someone is there, then the animated lockup
-// on the first hover/focus (without hover: the first touch or scroll); nothing at load or on a timer; once a session;
-// never with reduced motion or without storage.
+// geyser.js's header-logo eruption, on a fake DOM. The <picture> shows the empty geyser at first paint by itself
+// (its <source>); the script does nothing at load or on a timer. On the first hover/focus (without hover: the first
+// touch or scroll) the <img> becomes the animated lockup and the <source> goes; once a session (later pages, and
+// a browser without storage, drop the <source>: the full logo); never with reduced motion.
 const test = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
@@ -19,7 +20,13 @@ function load({ stored = null, storage = true, reduced = false, hoverNone = fals
   const brandL = {};
   const winL = {};
   const brand = on(brandL);
-  const img = { src: STATIC, dataset: { erupt: ERUPT }, parentNode: brand };
+  const sources = [];
+  const picture = { tagName: "PICTURE", querySelectorAll: (q) => (q === "source" ? [...sources] : []) };
+  sources.push({ remove: () => sources.splice(sources.indexOf(sources[0]), 1) });
+  const img = {
+    src: STATIC, dataset: { erupt: ERUPT }, parentNode: picture,
+    closest: (q) => (q === ".brand" ? brand : null),
+  };
   const store = { "geyser-erupted": stored };
   const sessionStorage = storage
     ? { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; } }
@@ -42,15 +49,17 @@ function load({ stored = null, storage = true, reduced = false, hoverNone = fals
   vm.runInNewContext(src, context);
   const fire = (bag) => (t) => [...(bag[t] || [])].forEach((fn) => fn());
   const count = (bag) => Object.values(bag).reduce((n, s) => n + s.size, 0);
-  return { img, store, fire: fire(brandL), fireWin: fire(winL), timers, brandL, winL, count };
+  return { img, sources, store, fire: fire(brandL), fireWin: fire(winL), timers, brandL, winL, count };
 }
 
-test("the static lockup until the first hover, then the animated one, once", () => {
-  const { img, store, fire, timers, brandL, count } = load();
-  assert.strictEqual(img.src, STATIC); // nothing at load: page-load measurements see the static page
+test("nothing at load: the <picture> keeps its empty-geyser source; the first hover erupts it, once", () => {
+  const { img, sources, store, fire, timers, brandL, count } = load();
+  assert.strictEqual(img.src, STATIC);
+  assert.strictEqual(sources.length, 1); // the empty geyser, picked by the browser at first paint
   assert.strictEqual(timers.length, 0);
   fire("pointerover");
   assert.strictEqual(img.src, ERUPT);
+  assert.strictEqual(sources.length, 0); // the <source> would otherwise win over the <img>'s new src
   assert.strictEqual(store["geyser-erupted"], "1");
   assert.strictEqual(count(brandL), 0); // once only: the listeners are gone
 });
@@ -79,12 +88,19 @@ test("a screen with hover doesn't listen to scrolling", () => {
   assert.strictEqual(img.src, STATIC);
 });
 
-test("still: already erupted this session, reduced motion, or no storage", () => {
-  for (const opts of [{ stored: "1" }, { reduced: true }, { storage: false }]) {
-    const { img, fire, fireWin, timers } = load({ ...opts, hoverNone: true });
+test("already erupted this session, or no storage: the full logo (the source goes), no eruption", () => {
+  for (const opts of [{ stored: "1" }, { storage: false }]) {
+    const { img, sources, fire, fireWin } = load({ ...opts, hoverNone: true });
+    assert.strictEqual(sources.length, 0, JSON.stringify(opts));
     fire("pointerover");
     fireWin("touchstart");
     assert.strictEqual(img.src, STATIC, JSON.stringify(opts));
-    assert.strictEqual(timers.length, 0);
   }
+});
+
+test("reduced motion: nothing to do (the source's media doesn't match), no eruption", () => {
+  const { img, sources, fire } = load({ reduced: true });
+  assert.strictEqual(sources.length, 1);
+  fire("pointerover");
+  assert.strictEqual(img.src, STATIC);
 });

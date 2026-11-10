@@ -212,25 +212,31 @@
     document.addEventListener("mouseover", prefetch, { passive: true });
     document.addEventListener("touchstart", prefetch, { passive: true });
   }
-  // The header logo's eruption (scripts/build_logo_burst.py). The page shows the static lockup, and nothing changes
-  // until someone is there: on the first hover or focus (on a screen without hover, the first touch or scroll) the
-  // <img> swaps to the animated lockup, which plays once (SMIL: the cone empties, the jets surge, the helices fly up
-  // and land) and holds the full logo. Nothing at load or on a timer, so page-load measurements see the static page.
-  // Once a session; never with reduced motion or without storage. data-erupt = the animated file's hashed URL.
+  // The header logo's eruption (scripts/build_logo_burst.py). The header's <picture> already shows the empty geyser
+  // at first paint where motion is allowed and scripts run (its <source>; else the full lockup <img>): nothing runs
+  // at load or on a timer, so page-load measurements see a static page. On the first hover or focus (on a screen
+  // without hover, the first touch or scroll) the <img> becomes the animated lockup, which plays once (SMIL: the
+  // jets surge, the helices fly up and land) and holds the full logo. Once a session: later pages drop the <source>
+  // (the full logo), as does a browser without storage. data-erupt = the animated file's hashed URL.
   const logos = document.querySelectorAll(".brand img[data-erupt]");
   const ERUPTED = "geyser-erupted";
   const media = (q) => Boolean(window.matchMedia && window.matchMedia(q).matches);
+  const full = (img) => {
+    const pic = img.parentNode;
+    if (pic && pic.tagName === "PICTURE") pic.querySelectorAll("source").forEach((s) => s.remove());
+  };
   let erupted;
   try { erupted = sessionStorage.getItem(ERUPTED); } catch (_) { erupted = "1"; /* no storage: keep it still */ }
-  if (logos.length && !erupted && !media("(prefers-reduced-motion: reduce)")) {
-    const brand = logos[0].parentNode;
+  if (logos.length && erupted) logos.forEach(full);
+  else if (logos.length && !media("(prefers-reduced-motion: reduce)")) {
+    const brand = logos[0].closest(".brand");
     const touch = media("(hover: none)") && window.addEventListener ? ["touchstart", "scroll"] : [];
     const erupt = () => {
       brand.removeEventListener("pointerover", erupt);
       brand.removeEventListener("focusin", erupt);
       touch.forEach((t) => window.removeEventListener(t, erupt));
       try { sessionStorage.setItem(ERUPTED, "1"); } catch (_) { /* private mode: it may erupt again */ }
-      logos.forEach((img) => { img.src = img.dataset.erupt; });
+      logos.forEach((img) => { full(img); img.src = img.dataset.erupt; });
     };
     brand.addEventListener("pointerover", erupt);
     brand.addEventListener("focusin", erupt);

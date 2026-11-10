@@ -29,13 +29,15 @@ def _builder():
 
 
 @pytest.mark.parametrize("theme", THEMES)
-def test_the_files_are_the_lockups_animated(theme):
+def test_the_files_are_the_lockups_split_and_animated(theme):
     # What the script makes from the committed lockups (run it again after build_logo.py).
     b = _builder()
     lockup = _read(STATIC, f"geyser-lockup{THEMES[theme]}.svg")
-    erupt = _read(STATIC, f"geyser-erupt-{theme}.svg")
+    empty, erupt = _read(STATIC, f"geyser-empty-{theme}.svg"), _read(STATIC, f"geyser-erupt-{theme}.svg")
+    assert empty == b.parts(lockup)[3]
     assert erupt == b.erupting(lockup)
-    assert not os.path.exists(os.path.join(STATIC, f"geyser-empty-{theme}.svg"))
+    # The empty geyser: no jets, droplets or helices (and their defs gone).
+    assert "jetGrad" not in empty and "<use " not in empty and "helix-" not in empty and "<circle" not in empty
     # The animated one: every part of the lockup, so it holds the full logo at the end.
     jets, drops, uses, _ = b.parts(lockup)
     assert jets in erupt and drops in erupt
@@ -73,11 +75,18 @@ def test_the_helices_rise_from_the_vent():
         assert f'type="translate" values="{dx} {dy};0 -40;0 12;0 -4;0 0"' in erupt
 
 
-def test_the_header_keeps_its_static_lockups_and_names_the_animated_file():
+def test_the_header_picture_rests_empty_where_it_can_erupt_and_full_elsewhere():
     base = _read(TEMPLATES, "base.html")
+    media = "(prefers-reduced-motion: no-preference) and (scripting: enabled)"
+    # One <span> holds the four <picture>s: a single flex item in .brand, as the single visible <img> was (an
+    # empty <picture> per hidden theme would add a gap each).
+    span = re.search(r'<a class="brand" [^>]*><span>((?:<picture>.*?</picture>){4})</span>', base).group(1)
     for theme, suffix in THEMES.items():
-        img = re.search(rf'<img class="logo-{theme}" [^>]*>', base).group(0)
-        assert f"{{% static 'samples/geyser-lockup{suffix}.svg' %}}" in img  # the LCP image, no JS needed
+        pic = re.search(rf"<picture>(<source [^>]*>)(<img class=\"logo-{theme}\" [^>]*>)</picture>", span)
+        source, img = pic.groups()
+        # The browser picks the empty geyser at first paint, with no script, where motion is allowed and scripts run.
+        assert source == f'<source media="{media}" srcset="{{% static \'samples/geyser-empty-{theme}.svg\' %}}">'
+        assert f"{{% static 'samples/geyser-lockup{suffix}.svg' %}}" in img  # no JS / reduced motion: the full logo
         assert f"data-erupt=\"{{% static 'samples/geyser-erupt-{theme}.svg' %}}\"" in img
     # No inline code for it: the CSP hashes of the inline blocks don't change.
     assert "erupt" not in _read(TEMPLATES, "_site.css") and "erupt" not in _read(TEMPLATES, "_theme_boot.js")
@@ -90,3 +99,4 @@ def test_geyser_js_only_on_interaction_and_respects_motion_and_storage():
     # Nothing at load or on a timer: page-load measurements (Lighthouse) see the static page.
     assert '"load"' not in block and "setTimeout" not in block and "requestAnimationFrame" not in block
     assert "sessionStorage.getItem(ERUPTED)" in block and "catch (_)" in block
+    assert 'querySelectorAll("source").forEach((s) => s.remove())' in block  # the full logo once erupted
