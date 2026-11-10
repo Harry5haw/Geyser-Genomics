@@ -100,8 +100,10 @@ def test_motif_css_is_transform_and_opacity_only_and_sample_pages_only():
     css = read("_motifs.css")
     for name, frames in re.findall(r"@keyframes ([\w-]+)\{(.*?\})\}", css):
         props = set(re.findall(r"([a-z-]+):", frames))
-        # the DeepVariant nodes hand their colour on (the user's choice): fill only, on small circles
-        allowed = {"fill"} if re.fullmatch(r"mdv-c\d", name) else {"transform", "opacity"}
+        # the DeepVariant nodes hand their colour on (fill) and the signal comets move along their routes
+        # (stroke-dashoffset): the user's choices; everything else is transform and opacity
+        special = {"mdv-comet": {"stroke-dashoffset"}, "mdv-trail": {"stroke-dashoffset"}}
+        allowed = {"fill"} if re.fullmatch(r"mdv-c\d", name) else special.get(name, {"transform", "opacity"})
         assert props <= allowed, (name, props)
     for shared in ("_site.css", "_samples.css"):  # the detail page's own sheet only: 0 bytes on the other pages
         assert "mdv" not in read(shared) and "mag-" not in read(shared)
@@ -114,19 +116,30 @@ def test_the_motif_comments_never_reach_the_page(name):
     assert "{#" not in read(name)
 
 
-def test_the_net_loops_continuously_with_a_pulse_and_edges_on_the_wave_front():
-    css = read("_motifs.css")
-    # every DeepVariant card, finished or running: an infinite colour hand-off plus a pulse, in one 4 s period (slowed from 1.6 s at the user's request)
-    assert ".mdv .k1{animation:mdv-c1 4s linear infinite,mdv-pulse 4s ease-in-out infinite}" in css
-    assert ".mdv .edges>use{opacity:.22;animation:mdv-edge 4s ease-in-out infinite}" in css
-    assert ".mdv.done" not in css and ".mdv.running" not in css  # no play-once or rest state any more
-    # one period spread over the 30 columns (and the 15 edge tiles), so the wave front travels seamlessly
-    assert ".mdv .nodes>g:nth-child(30)>*{animation-delay:3.88s}" in css
-    assert ".mdv .edges>use:nth-child(15){animation-delay:3.73s}" in css
-    assert "@keyframes mdv-c1{0%{fill:var(--c1)}" in css and "100%{fill:var(--c1)}}" in css  # seamless loop
-    assert ".ok" not in css and "<path" not in read("_motif_dv.html").split("</defs>")[1]  # no tick
+def test_signals_travel_three_routes_left_to_right_continuously():
+    css, svg = read("_motifs.css"), read("_motif_dv.html")
+    # every DeepVariant card, finished or running, loops: a 4 s period (slowed from 1.6 s at the user's request)
+    assert ".mdv .k1{animation:mdv-c1 4s linear infinite}" in css  # the other nodes: a subtle colour hand-off
+    assert ".mdv .nodes circle{transform-box:fill-box;transform-origin:center;opacity:.6}" in css
+    assert ".mdv.done" not in css and ".mdv.running" not in css  # no play-once or rest state
+    assert ".mdv .nodes>g:nth-child(30)>*{animation-delay:3.88s}" in css  # one period across the 30 columns
+    # three routes, one node per column: a comet head and a trail behind it, a third of a period apart
+    routes = re.findall(r'<path id="dv-r(\d)" pathLength="100" d="M([^"]+)"', svg)
+    assert [r for r, _ in routes] == ["1", "2", "3"]
+    for _, d in routes:
+        xs = [int(p.split()[0]) for p in d.split("L")]
+        assert len(xs) == 30 and xs == sorted(xs) and xs[0] == 16 and xs[-1] == 944  # far left to far right
+    assert svg.count('class="hd r') == 3 and svg.count('class="tr r') == 3
+    assert "@keyframes mdv-comet{from{stroke-dashoffset:3}to{stroke-dashoffset:-100}}" in css
+    assert "@keyframes mdv-trail{from{stroke-dashoffset:18}to{stroke-dashoffset:-85}}" in css  # ends at the head
+    assert ".mdv .cm .tr{" in css  # beats .mdv .cm use, so the trail keeps its own keyframes
+    assert ".mdv .cm .r2{animation-delay:-2.67s}" in css and ".mdv .cm .r3{animation-delay:-1.33s}" in css
+    # each route node lights up as its comet passes (a glow per route node, in its column, phase-shifted per route)
+    assert svg.count('<circle class="g r') == 3 * 30
+    assert "@keyframes mdv-g2{0%,33.3%{opacity:0" in css and "@keyframes mdv-g3{0%,66.7%{opacity:0" in css
+    assert ".ok" not in css
     with open(os.path.join(TEMPLATES, "..", "..", "static", "samples", "geyser.js"), encoding="utf-8") as fh:
-        assert ".dv-card" not in fh.read()  # nothing to replay: no JS for the motif
+        assert ".dv-card" not in fh.read()  # no JS for the motif
 
 
 def test_the_net_fills_the_heading_row_as_one_interconnected_network():
@@ -135,4 +148,4 @@ def test_the_net_fills_the_heading_row_as_one_interconnected_network():
     edge = re.search(r'<path id="dv-e" d="([^"]+)"', svg).group(1)
     ends = {tuple(map(int, m)) for m in re.findall(r"L(\d+) (\d+)", edge)}
     assert {x for x, _ in ends} == {48, 80}  # each column joins the next, and the period's last joins the next period
-    assert svg.count('<use href="#dv-e"') == 15 and svg.count("<circle") == 15 * 7
+    assert svg.count('<use href="#dv-e"') == 15 and svg.count('<circle class="k') == 15 * 7
