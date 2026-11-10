@@ -188,7 +188,9 @@ def test_no_framework_and_no_stylesheet_request(client, storage):
 def test_the_inlined_css_has_no_comments(client, storage):
     style = re.search(r"<style>(.*?)</style>", client.get("/").content.decode(), re.S).group(1)
     assert "/*" not in style and "--primary" in style
-    assert len(style) < 20 * 1024  # four themes; the page budget (HTML+CSS+JS <= 30 KB, gzip) is Lighthouse's check
+    # four themes and the header's logo eruption; a guard only: the real budget is the gzipped page (HTML+CSS+JS
+    # <= 30 KB, Lighthouse's check) and inlined CSS gzips to ~27%. Raised 20 -> 24 KB as agreed with T3 (9 Nov 2026).
+    assert len(style) < 24 * 1024
 
 
 def test_images_have_their_size_so_nothing_shifts(client, storage):

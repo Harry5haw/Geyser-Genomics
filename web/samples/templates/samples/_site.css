@@ -135,8 +135,8 @@ button:hover{background:var(--primary-hover)}button.upload{background:var(--prim
 .erupt>use,.erupt>circle{opacity:0;transform-box:fill-box;transform-origin:center}
 .brand:is(:hover,:focus-visible) .erupt>*{animation:erupt .9s cubic-bezier(.2,.8,.3,1) var(--d,0s) both}
 .brand:is(:hover,:focus-visible) img{animation:vent .35s ease-out;transform-origin:10% 85%}
-.e1{--x:-11px;--y:-30px;--r:-40deg}.e2{--x:1px;--y:-38px;--r:25deg;--d:.06s}.e3{--x:12px;--y:-29px;--r:55deg;--d:.12s}
-.e4{--x:-6px;--y:-22px;--d:.03s}.e5{--x:7px;--y:-25px;--d:.09s}.e6{--x:-15px;--y:-14px;--d:.15s}.e7{--x:15px;--y:-17px;--d:.18s}
+.e1{--x:-7px;--y:-20px;--r:-30deg}.e2{--x:1px;--y:-24px;--r:20deg;--d:.06s}.e3{--x:8px;--y:-19px;--r:40deg;--d:.12s}
+.e4{--x:-4px;--y:-15px;--d:.03s}.e5{--x:5px;--y:-17px;--d:.09s}.e6{--x:-10px;--y:-11px;--d:.15s}.e7{--x:10px;--y:-12px;--d:.18s}
 @keyframes erupt{0%{opacity:0;transform:scale(.3)}20%{opacity:1}70%{opacity:1}100%{opacity:0;transform:translate(var(--x),var(--y)) rotate(var(--r,0deg)) scale(1)}}
 @keyframes vent{30%{transform:translateY(1px) scaleY(.95)}65%{transform:translateY(-1px) scaleY(1.02)}}
 :root[data-theme=contrast] .erupt>*{stroke:#FFD600}:root[data-theme=contrast] .erupt>circle{fill:#00E5FF}
