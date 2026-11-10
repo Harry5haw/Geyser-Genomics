@@ -40,21 +40,28 @@ def test_the_page_shows_the_empty_lockups_and_the_burst_over_them(client, storag
 def test_the_burst_and_the_empty_lockups_are_the_lockups_split():
     # The generated files are what the script makes from the committed lockups (rerun it after build_logo.py).
     b = _builder()
-    light = _read(STATIC, "geyser-lockup.svg")
-    partial = _read(TEMPLATES, "_logo_burst.html")
-    assert b.burst(light) in partial
-    for suffix in ("", "-dark", "-retro", "-contrast"):
-        jets, drops, uses, empty = b.parts(_read(STATIC, f"geyser-lockup{suffix}.svg"))
+    lockups = {
+        t: _read(STATIC, f"geyser-lockup{s}.svg")
+        for t, s in (("light", ""), ("dark", "-dark"), ("retro", "-retro"), ("contrast", "-contrast"))
+    }
+    light = lockups["light"]
+    assert b.burst(light) in _read(TEMPLATES, "_logo_burst.html")
+    art = _read(STATIC, "geyser-burst.svg")
+    assert art == b.art(lockups)
+    for theme, svg in lockups.items():
+        jets, drops, uses, empty = b.parts(svg)
+        suffix = "" if theme == "light" else f"-{theme}"
         assert _read(STATIC, f"geyser-lockup-empty{suffix}.svg") == empty
         assert "jetGrad" not in empty and "<use " not in empty and "helix-" not in empty
-        assert len(uses) == 5 and len(re.findall(r"<circle ", drops)) == len(re.findall(r"<circle ", partial))
-    # Each theme's jet colours are the lockup's own: light in the markup, the others in the CSS.
+        # The theme's own jets and jet colours are in the art file, by id.
+        grad = re.search(rf'<linearGradient id="jet-{theme}".*?</linearGradient>', art).group(0)
+        assert re.findall(r'stop-color="(#[0-9A-Fa-f]{6})"', grad) == b.jet_stops(svg)
+        assert f'id="jets-{theme}" fill="url(#jet-{theme})"' in art
+        assert len(uses) == 5 and len(re.findall(r"<circle ", drops)) == len(re.findall(r"<circle ", art))
+    # The art file draws nothing on its own: everything is in <defs>, used by id from the page.
+    assert re.fullmatch(r"<svg [^>]*>(<!--.*?-->)?<defs>.*</defs></svg>\n", art, re.S)
     css = _read(TEMPLATES, "_site.css")
-    assert b.jet_stops(light) == re.findall(r'class="j\d" offset="[^"]+" stop-color="(#[0-9A-Fa-f]{6})"', partial)
-    assert ":root[data-theme=dark] .j0,:root[data-theme=dark] .j1{stop-color:#4285F4}" in css
-    assert b.jet_stops(_read(STATIC, "geyser-lockup-dark.svg")) == ["#4285F4", "#4285F4", "#669DF6"]
-    assert set(b.jet_stops(_read(STATIC, "geyser-lockup-retro.svg"))) == {"#0842A0"}
-    assert set(b.jet_stops(_read(STATIC, "geyser-lockup-contrast.svg"))) == {"#FFFFFF"}
+    assert ":root[data-theme=dark] .jt-dark" in css  # one jets <use> per theme, CSS shows the theme's
     # The CSS moves each helix from the vent: its --x/--y are the script's offsets.
     for k, (x, y) in enumerate(b.offsets(light)):
         assert re.search(rf"\.h{k}\{{--x:{x}px;--y:{y}px", css), (k, x, y)

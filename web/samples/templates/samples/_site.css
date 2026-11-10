@@ -126,7 +126,8 @@ button:hover{background:var(--primary-hover)}button.upload{background:var(--prim
 .note,.msg{overflow-wrap:anywhere}
 .brand{position:relative}.burst{position:absolute;left:0;top:50%;width:180px;height:40px;margin-top:-20px;overflow:visible;pointer-events:none}
 @media (max-width:576px){.burst{width:144px;height:32px;margin-top:-16px}}
-:root[data-theme=dark] .j0,:root[data-theme=dark] .j1{stop-color:#4285F4}:root[data-theme=retro] .burst stop{stop-color:#0842A0}:root[data-theme=contrast] .burst stop{stop-color:#fff}
+.jt-dark,.jt-retro,.jt-contrast,:root:is([data-theme=dark],[data-theme=retro],[data-theme=contrast]) .jt-light{display:none}
+:root[data-theme=dark] .jt-dark,:root[data-theme=retro] .jt-retro,:root[data-theme=contrast] .jt-contrast{display:inline}
 .burst-jets{transform-box:fill-box;transform-origin:50% 100%}.burst-h,.burst-d{transform-box:fill-box;transform-origin:50% 50%}
 .h0{--x:-4px;--y:176px}.h1{--x:60px;--y:253px;--d:.08s}.h2{--x:-76px;--y:256px;--d:.16s}.h3{--x:158px;--y:274px;--d:.24s}.h4{--x:-22px;--y:353px;--d:.32s}
 .logo-armed .burst-jets{transform:scaleY(0)}.logo-armed .burst-h,.logo-armed .burst-d{opacity:0}
