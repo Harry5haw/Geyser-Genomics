@@ -21,26 +21,124 @@ from xml.sax.saxutils import escape
 
 from django.conf import settings
 
-# The heat ramp: cividis from 0.3 to 1 (low = dark blue-grey, high = yellow). Perceptually uniform with lightness
-# rising monotonically, so it reads in greyscale and with any colour-vision deficiency; the dark end is trimmed so
-# the lowest values still clear 2:1 against the dark stage (#042c20). The same 13 stops as scripts/figures/figkit.py
-# HEAT, so a value has the same colour here as in the 2D figures (tests/test_figures.py checks they agree).
-# surface.js gets them in the grid JSON: this list is the web page's only copy.
-HEAT = [
-    "#4f576c",
-    "#5d616e",
-    "#6a6c71",
-    "#777776",
-    "#848279",
-    "#928d78",
-    "#a19975",
-    "#b0a571",
-    "#c0b16a",
-    "#d0be62",
-    "#e0cb56",
-    "#f1d945",
+# The heat ramps. The same stops as scripts/figures/figkit.py (tests/test_figures.py checks they agree), so a value
+# has the same colour here as in the 2D figures. surface.js gets all three in the grid JSON and picks one by the
+# page's theme (data-theme on <html>); the poster and colour bar carry all three, and the theme's CSS shows one
+# (.ramp-turbo, .ramp-turbo-dark, .ramp-cividis).
+#
+# HEAT_TURBO, the light and retro themes' "rainbow heatcam": Google's Turbo colormap (Anton Mikhailov, 2019,
+# "Turbo, An Improved Rainbow Colormap for Visualization", Apache License 2.0), all of it, 17 stops sampled from
+# matplotlib's "turbo" lookup table. Both ends are dark (>= 9:1 against the #f3efe6 and #fff stages).
+HEAT_TURBO = [
+    "#30123b",
+    "#4040a2",
+    "#466be3",
+    "#4294ff",
+    "#28bceb",
+    "#18ddc2",
+    "#32f298",
+    "#6dfe62",
+    "#a4fc3c",
+    "#cdec34",
+    "#eecf3a",
+    "#fdac34",
+    "#fb7e21",
+    "#eb500e",
+    "#d02f05",
+    "#a91601",
+    "#7a0403",
+]
+# HEAT_TURBO_DARK, the dark theme's: Turbo from 0.09 to 0.91 (15 stops), so both ends still clear 2:1 against the
+# dark stage (#262626).
+HEAT_TURBO_DARK = [
+    "#4454c3",
+    "#477bf2",
+    "#3ba0fd",
+    "#22c5e2",
+    "#19e2bb",
+    "#38f491",
+    "#71fe5f",
+    "#a4fc3c",
+    "#c8ef34",
+    "#e9d539",
+    "#fbb637",
+    "#fd8d27",
+    "#f26014",
+    "#dd3d08",
+    "#be2102",
+]
+# HEAT_CIVIDIS, for the high-contrast (low-vision, black-stage) theme: cividis from 0.20 to 1 (low = slate blue,
+# high = yellow). Perceptually uniform with lightness rising monotonically, so it reads in greyscale and with any
+# colour-vision deficiency; the dark end is trimmed so the lowest values still clear 2:1 against the black stage.
+HEAT_CIVIDIS = [
+    "#35456c",
+    "#575d6d",
+    "#757575",
+    "#948e77",
+    "#b7a96e",
+    "#dbc75a",
     "#fee838",
 ]
+HEAT = HEAT_TURBO  # the default ramp
+RAMPS = {"turbo": HEAT_TURBO, "turbo-dark": HEAT_TURBO_DARK, "cividis": HEAT_CIVIDIS}  # 3D, by theme
+# The 2D view (posters, their colour bar): a linear vertical gradient from each ridge's baseline to the top of
+# the scale, Turbo 0.09-0.91 in every theme but high contrast (cividis). The user found it easier to read than
+# the rank spread the 3D view uses. CSS shows .ramp-flat, or .ramp-cividis under data-theme=contrast.
+FLAT_RAMPS = {"flat": HEAT_TURBO_DARK, "cividis": HEAT_CIVIDIS}
+
+
+COLOUR_QUANTILES = (0.02, 0.25, 0.5, 0.75, 0.98)
+
+
+def flat_window(grid) -> tuple:
+    """The values the 2D view's ramp spans (the user's choice): the median +/- 2 interquartile ranges, inside the
+    height scale (base to the cap, or the largest value). Typical values sit mid-rainbow, lows go blue and highs
+    (pile-ups) red; values outside take the end colours. Without spread: the height scale."""
+    top = grid.clip or grid.vmax or 1
+    vals = sorted(v for line in grid.values for v in line if v is not None)
+    if not vals:
+        return grid.base, top
+
+    def pct(q):
+        k = (len(vals) - 1) * q
+        lo = int(k)
+        return vals[lo] + (vals[min(lo + 1, len(vals) - 1)] - vals[lo]) * (k - lo)
+
+    med, iqr = pct(0.5), pct(0.75) - pct(0.25)
+    lo, hi = max(grid.base, med - 2 * iqr), min(top, med + 2 * iqr)
+    return (lo, hi) if hi > lo else (grid.base, top)
+
+
+def colour_knots(grid) -> list:
+    """Where the colour ramp's quarters fall: the 2nd, 25th, 50th, 75th and 98th percentiles of the plotted values
+    (inside the height scale: base to the cap, or the largest value). The ramp is spread by rank between them, a
+    quarter of it per step, so the whole rainbow is used even when most values sit in a narrow band (coverage around
+    the median depth): a ramp over the whole height scale showed only two or three colours. Values outside the
+    outer knots take the end colours (the colour bar marks them with <= and >=). A grid without spread falls back to
+    the height scale."""
+    top = grid.clip or grid.vmax or 1
+    vals = sorted(v for line in grid.values for v in line if v is not None)
+
+    def pct(q):
+        k = (len(vals) - 1) * q
+        lo = int(k)
+        return vals[lo] + (vals[min(lo + 1, len(vals) - 1)] - vals[lo]) * (k - lo)
+
+    knots = [min(top, max(grid.base, pct(q))) for q in COLOUR_QUANTILES] if vals else []
+    return knots if knots and knots[-1] > knots[0] else [grid.base, top]
+
+
+def colour_range(grid) -> tuple:
+    """The values from the first to the last colour (the outer knots)."""
+    knots = colour_knots(grid)
+    return knots[0], knots[-1]
+
+
+def _value_at(knots: list, t: float) -> float:
+    """The value at fraction t (0..1) of the ramp: piecewise linear between the knots, an equal share each."""
+    n = len(knots) - 1
+    i = min(int(t * n), n - 1)
+    return knots[i] + (knots[i + 1] - knots[i]) * (t * n - i)
 
 
 @dataclass(frozen=True)
@@ -308,9 +406,11 @@ def grid_json(grid: Grid) -> str:
                 "max": grid.vmax,
                 "clip": grid.clip,
                 "base": grid.base,
+                "colour": [round(c, 4) for c in colour_knots(grid)],  # surface.js: tone() between these
             },
             "values": [[None if v is None else round(v, 2) for v in line] for line in grid.values],
-            "ramp": HEAT,
+            "ramp": HEAT,  # the default; kept for a page cached before the theme switch
+            "ramps": RAMPS,  # surface.js picks one by data-theme
         },
         separators=(",", ":"),
     )
@@ -336,7 +436,20 @@ def poster_svg(grid: Grid) -> str:
     span = (
         top - grid.base
     ) or 1.0  # a flat grid (every value equal to the baseline) draws flat, not a ZeroDivisionError
-    paths, gradients = [], []
+    w0, w1 = flat_window(grid)
+    lift = band * 2.5 / span  # pixels per unit of value
+    # A linear vertical gradient through the ramp, from the baseline (bottom of the scale) to the top of the scale,
+    # so a point's colour is its value's height. One gradient per ramp for the whole poster: each ridge is drawn from
+    # its own baseline at y=0 and put in place by its <use>'s y, so the gradient's user space is the same for every
+    # ridge; each <use> sets the fill the ridge inherits. The theme's CSS shows one group (.ramp-flat, or
+    # .ramp-cividis in high contrast). The stroke is the stage colour: a gap that keeps overlapping ridges apart
+    # (CSS: .poster path). Ids are page-wide: several posters share the page.
+    gradients = [
+        f'<linearGradient id="heat-{f.name}-{ramp}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0" '
+        f'y2="{round(-2 * (w1 - grid.base) * lift)}">{_stops(ramp, (w0 - grid.base) / ((w1 - grid.base) or 1))}</linearGradient>'
+        for ramp in FLAT_RAMPS
+    ]
+    paths, ridges = {}, []
     for i, name in enumerate(grid.rows):
         base = MARGIN_T + band * (i + 2.5)
         points = []
@@ -345,22 +458,18 @@ def poster_svg(grid: Grid) -> str:
             if v is None:
                 continue
             px = MARGIN_L + (grid.x[j] - x0) / (x1 - x0) * plot_w
-            py = base - max(0.0, min(v, top) - grid.base) / span * band * 2.5
-            points.append(f"{px:.1f},{py:.1f}")
+            py = -max(0.0, min(v, top) - grid.base) * lift
+            points.append(f"{round(2 * px)},{round(2 * py)}")  # half units, as integers (smaller)
         if not points:
             continue
         line = " ".join(points)
         first, last = points[0].split(",")[0], points[-1].split(",")[0]
-        gid = f"heat-{f.name}-{i}"  # ids are page-wide: several posters share the page
-        gradients.append(
-            f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="0" y1="{base:.1f}" x2="0" '
-            f'y2="{base - band * 2.5:.1f}">{_stops()}</linearGradient>'
-        )
-        # The stroke is the stage colour: a gap that keeps overlapping ridges apart (CSS: .poster path).
-        paths.append(
-            f'<path d="M{first},{base:.1f} L{line} L{last},{base:.1f}Z" fill="url(#{gid})">'
-            f"<title>{escape(name)}</title></path>"
-        )
+        rid = f"ridge-{f.name}-{i}"
+        ridges.append(f'<path id="{rid}" d="M{first},0 L{line} L{last},0Z"/>')
+        for ramp in FLAT_RAMPS:
+            paths.setdefault(ramp, []).append(
+                f'<use href="#{rid}" y="{round(2 * base)}" fill="url(#heat-{f.name}-{ramp})"><title>{escape(name)}</title></use>'
+            )
     ticks = []
     named = grid.x_ticks or [(x0 + (x1 - x0) * k / 4, f"{x0 + (x1 - x0) * k / 4:.3g}") for k in range(5)]
     for value, text in named:
@@ -373,15 +482,23 @@ def poster_svg(grid: Grid) -> str:
     )
     return (
         f'<svg class="poster" viewBox="0 0 {POSTER_W} {POSTER_H}" role="img" aria-label="{label}">'
-        + f"<defs>{''.join(gradients)}</defs>"
-        + "".join(paths)
+        + f"<defs>{''.join(gradients)}{''.join(ridges)}</defs>"
+        # The ridges are drawn at twice the scale in whole numbers and scaled back: the same 0.5-unit precision as
+        # one decimal place, in fewer bytes (the page's first-window budget).
+        + "".join(f'<g class="ramp-{ramp}" transform="scale(.5)">{"".join(p)}</g>' for ramp, p in paths.items())
         + f'<g class="ticks">{"".join(ticks)}</g></svg>'
     )
 
 
-def _stops() -> str:
-    last = len(HEAT) - 1
-    return "".join(f'<stop offset="{k / last:.3f}" stop-color="{c}"/>' for k, c in enumerate(HEAT))
+def _stops(ramp: str = "turbo", start: float = 0.0) -> str:
+    """The ramp's stops, evenly spaced from `start` to 1. With start > 0 (the 2D poster, whose gradient runs from a
+    ridge's baseline), a first stop at 0 fades the first colour to transparent: the body under a ridge's line below
+    the window falls away to the stage, so the figure isn't heavy."""
+    stops = {**RAMPS, **FLAT_RAMPS}[ramp]
+    last = len(stops) - 1
+    out = [f'<stop offset="0" stop-color="{stops[0]}" stop-opacity="0"/>'] if start > 0 else []
+    out += [f'<stop offset="{start + (1 - start) * k / last:.3f}" stop-color="{c}"/>' for k, c in enumerate(stops)]
+    return "".join(out)
 
 
 def _num(v: float) -> str:
@@ -394,27 +511,57 @@ def _num(v: float) -> str:
 
 
 def legend_svg(grid: Grid) -> str:
-    """The colour bar under a figure: the heat ramp from the bottom of the scale (the baseline) to the top (the
-    height cap, or the largest value), with the bottom, middle and top values marked. The same scale as the
-    terrain's heights and colours. Text is filled by CSS (.colorbar text), so it follows the page's theme."""
+    """The colour bars under a figure, one per view; CSS shows the 3D one only in a live 3D view (.bar-3d), else the
+    2D one (.bar-2d). 2D: the poster's linear ramp from the bottom of the scale (the baseline) to the top (the height
+    cap, or the largest value). 3D: the rank spread surface.js colours by (figures.py colour_knots), ticked at the
+    outer knots and the median, with <= / >= where the data goes beyond them. Text is filled by CSS
+    (.colorbar text), so it follows the page's theme."""
     f = grid.figure
-    top = grid.clip or grid.vmax or 1
-    w, bar_h = 240, 10
-    ticks = []
+    knots = colour_knots(grid)
+    c0, c1 = knots[0], knots[-1]
+    w0, w1 = flat_window(grid)
+    flat = [_num(w0), _num((w0 + w1) / 2), _num(w1)]
+    if grid.vmin < w0:
+        flat[0] = "≤ " + flat[0]
+    if grid.vmax > w1:
+        flat[2] = "≥ " + flat[2]
+    rank = []
     for k in range(3):
-        value = grid.base + (top - grid.base) * k / 2
-        text = _num(value)
-        if k == 2 and grid.clip:
+        text = _num(_value_at(knots, k / 2))  # by rank: the bar's middle is the median, not the midpoint
+        if k == 0 and grid.vmin < c0:
+            text = "≤ " + text
+        if k == 2 and grid.vmax > c1:
             text = "≥ " + text
-        x = w * k / 2
-        ticks.append(
-            f'<line x1="{x:.0f}" y1="{bar_h}" x2="{x:.0f}" y2="{bar_h + 4}"/>'
-            f'<text x="{x:.0f}" y="{bar_h + 18}" text-anchor="middle">{escape(text)}</text>'
-        )
-    label = escape(f"Colour scale: {f.z_label} from {_num(grid.base)} to {_num(top)} {f.z_unit}")
-    return (
-        f'<svg class="colorbar" viewBox="-20 0 {w + 40} {bar_h + 22}" role="img" aria-label="{label}">'
-        f'<defs><linearGradient id="heat-bar-{f.name}">{_stops()}</linearGradient></defs>'
-        f'<rect width="{w}" height="{bar_h}" rx="3" fill="url(#heat-bar-{f.name})"/>'
-        f'<g class="ticks">{"".join(ticks)}</g></svg>'
+        rank.append(text)
+    return _bar(f, "2d", FLAT_RAMPS, flat, f"from {_num(w0)} to {_num(w1)}") + _bar(
+        f, "3d", RAMPS, rank, f"by rank, from {_num(c0)} to {_num(c1)}"
     )
+
+
+def bar_defs() -> str:
+    """The colour bars' ramps, once per page (every bar is the same horizontal ramp; only the ticks differ): a
+    zero-size SVG whose gradients the bars reference by id. Not display:none, which some browsers treat as unusable
+    gradients."""
+    ramps = {**RAMPS, **FLAT_RAMPS}
+    return (
+        '<svg class="bar-defs" width="0" height="0" aria-hidden="true" focusable="false"><defs>'
+        + "".join(f'<linearGradient id="heat-bar-{r}">{_stops(r)}</linearGradient>' for r in ramps)
+        + "</defs></svg>"
+    )
+
+
+def _bar(f, view: str, ramps: dict, ticks: list, span: str) -> str:
+    w, bar_h = 240, 10
+    marks = "".join(
+        f'<line x1="{w * k / 2:.0f}" y1="{bar_h}" x2="{w * k / 2:.0f}" y2="{bar_h + 4}"/>'
+        f'<text x="{w * k / 2:.0f}" y="{bar_h + 18}" text-anchor="middle">{escape(t)}</text>'
+        for k, t in enumerate(ticks)
+    )
+    label = escape(f"Colour scale ({view.upper()} view): {f.z_label} {span} {f.z_unit}")
+    return (
+        f'<svg class="colorbar bar-{view}" viewBox="-20 0 {w + 40} {bar_h + 22}" role="img" aria-label="{label}">'
+        + "".join(
+            f'<rect class="ramp-{r}" width="{w}" height="{bar_h}" rx="3" fill="url(#heat-bar-{r})"/>' for r in ramps
+        )
+        + f'<g class="ticks">{marks}</g></svg>'
+    )  # the ramps: bar_defs(), once per page

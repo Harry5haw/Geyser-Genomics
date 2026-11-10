@@ -1,4 +1,6 @@
 {% extends "samples/base.html" %}
+{% load geyser %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% endblock %}
 {% load static %}
 {% block title %}Upload reads · Geyser Genomics{% endblock %}
 {% block content %}

@@ -2,14 +2,24 @@
 .fig{margin:0 0 1.5rem}.fig figcaption{color:var(--muted);font-size:.9rem}.fig figcaption .note{color:var(--text)}
 .stage{position:relative;aspect-ratio:16/9;background:var(--deep);border:1px solid var(--line);border-radius:.6rem;overflow:hidden;touch-action:none}
 .stage>svg,.stage>canvas{position:absolute;inset:0;width:100%;height:100%;display:block}.stage>canvas{cursor:grab}.stage>canvas:active{cursor:grabbing}
-.poster text{fill:var(--muted);font-size:13px}.poster path{stroke:var(--deep);stroke-width:1.5}
+.poster text{fill:var(--muted);font-size:13px}.poster path{stroke:var(--deep);stroke-width:3}
 .labels span{position:absolute;left:0;top:0;margin:-.5em 0 0 -1.5em;font-size:.7rem;color:var(--muted);white-space:nowrap;pointer-events:none}
-.labels .row{margin-left:0}.labels .z{margin-left:-2.5em}.labels .axis{color:var(--text);font-weight:600}
-.marker{position:absolute;left:-6px;top:-6px;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 2px var(--ink);pointer-events:none}
-.readout{position:absolute;top:.6rem;left:.6rem;max-width:70%;padding:.4rem .6rem;background:var(--ink);border:1px solid var(--frame);border-radius:.4rem;font-size:.8rem;color:var(--muted);pointer-events:none}
-.readout strong{display:block;font-size:1.05rem;color:#fff}
+.labels .row{margin:-.7em 0 0 0;padding:0 .4em;border-radius:1em;background:var(--deep);box-shadow:0 0 0 1px var(--frame);color:var(--text);font-weight:600}.labels .z{margin-left:-2.5em}.labels .axis{color:var(--text);font-weight:600}
+.marker{position:absolute;left:-6px;top:-6px;width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 2px var(--text);pointer-events:none}
+.readout{position:absolute;top:.6rem;left:.6rem;max-width:70%;padding:.4rem .6rem;background:var(--card);border:1px solid var(--frame);border-radius:.5rem;font-size:.8rem;color:var(--muted);box-shadow:var(--shadow);pointer-events:none}
+.readout strong{display:block;font-size:1.05rem;color:var(--text)}
 .legend{display:grid;grid-template-columns:auto minmax(10rem,18rem);gap:.1rem .75rem;align-items:center;margin:.75rem 0;font-size:.8rem;color:var(--muted)}
 .colorbar{display:block;width:100%;max-width:18rem;height:auto}.colorbar text{fill:var(--muted);font-size:14px}.colorbar line{stroke:var(--muted)}
 .howto{display:flex;flex-wrap:wrap;gap:.5rem 1rem;align-items:center}.howto small{flex:1 1 16rem}
-button.ghost{width:auto;padding:.45rem .9rem;background:transparent;border:1px solid var(--mint);color:var(--mint)}button.ghost:hover{background:rgba(134,229,181,.1)}
+button.ghost{width:auto;padding:.45rem 1rem;background:transparent;border:1px solid var(--frame);color:var(--link);box-shadow:none}button.ghost:hover{background:var(--hover)}
 .fig.live .poster,.no3d-note,.fig.live .no3d-note{display:none}.fig.no3d .no3d-note{display:inline}.fig.no3d [data-surface-start]{visibility:hidden}
+/* The heat ramp per theme (figures.py, surface.js): Turbo; Turbo trimmed on the dark stage; cividis in high contrast */
+.ramp-turbo-dark,.ramp-cividis,:root[data-theme=dark] .ramp-turbo,:root[data-theme=contrast] .ramp-turbo,:root[data-theme=contrast] .ramp-flat{display:none}:root[data-theme=dark] .ramp-turbo-dark,:root[data-theme=contrast] .ramp-cividis{display:inline}
+/* 2D/3D (geyser.js): .flat shows the poster and hides the canvas, its overlays, the 3D how-to and Reset view */
+.views{display:inline-flex}.views button{border-radius:0}.views button:first-child{border-radius:.5rem 0 0 .5rem}.views button+button{border-radius:0 .5rem .5rem 0;margin-left:-1px}
+.views button[aria-pressed=true]{background:var(--hover);color:var(--text);font-weight:600}.views button:disabled{opacity:.5;cursor:not-allowed}
+.fig.flat .poster{display:block}.fig.flat .stage>canvas,.fig.flat .labels,.fig.flat .marker,.fig.flat .readout,.fig.flat .howto small.muted,.fig.flat [data-surface-start],.fig:not(.live) [data-surface-start]{display:none}
+/* 3D ridge key (figures.html): the ridges are numbered at their far end, beyond the mesh; names are listed here */
+.ridge-key{display:none;position:absolute;top:.6rem;right:.6rem;max-width:45%;margin:0;padding:.35rem .6rem .35rem 1.9rem;background:var(--card);border:1px solid var(--frame);border-radius:.5rem;font-size:.72rem;color:var(--text);pointer-events:none}.fig.live:not(.flat) .ridge-key{display:block}
+/* One colour bar per view (figures.py legend_svg): the 3D one only while the 3D view is live */
+.fig .bar-3d,.fig.live:not(.flat) .bar-2d{display:none}.fig.live:not(.flat) .bar-3d{display:block}
