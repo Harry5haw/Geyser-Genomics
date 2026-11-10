@@ -177,23 +177,35 @@ def progress(sample, expected=None, now=None) -> Progress:
 PERIOD, AMPLITUDE, MID = 40, 11, 20
 
 
-def _strand(sign: int) -> str:
-    import math
+# Each half-wave is one cubic Bezier (controls fitted to the sine: under 0.04 units off at amplitude 11) in
+# relative commands, so every half-wave is the same few bytes and the page's gzip folds them away: the sample page
+# must fit Lighthouse's first round trip (~14.6 KB on the wire) or its LCP pays a whole extra trip (~150 ms).
+CTRL_X, CTRL_Y = 8.25, 14.7
 
-    points = []
-    for x in range(-80, 1081, 4):
-        points.append(f"{x} {MID + sign * AMPLITUDE * math.sin(2 * math.pi * x / PERIOD):.1f}")
-    return "M" + " L".join(points)
+
+def _strand(sign: int) -> str:
+    half = PERIOD // 2
+    out = [f"M-80 {MID}"]
+    for i in range((1080 + 80) // half):
+        up = sign if i % 2 == 0 else -sign  # strand a first goes down the page (y + A sin), as the sine it replaces
+        out.append(f"c{CTRL_X} {up * CTRL_Y} {half - CTRL_X} {up * CTRL_Y} {half} 0")
+    return "".join(out)
 
 
 def _rungs() -> str:
     import math
 
-    out = []
+    out, here = [], None
     for x in range(-80, 1081, 5):
         s = abs(math.sin(2 * math.pi * x / PERIOD))
         if s > 0.3:
-            out.append(f"M{x} {MID - AMPLITUDE * s:.1f}V{MID + AMPLITUDE * s:.1f}")
+            top, length = round(MID - AMPLITUDE * s, 1), round(2 * AMPLITUDE * s, 1)
+            if here is None:
+                out.append(f"M{x} {top}")
+            else:
+                out.append(f"m{x - here[0]} {round(top - here[1], 1)}")
+            out.append(f"v{length}")
+            here = (x, round(top + length, 1))
     return "".join(out)
 
 
