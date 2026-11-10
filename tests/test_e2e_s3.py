@@ -33,7 +33,8 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 
 BUCKET = "geyser-test"
 REF = "synthetic_ref.fa"
-WINDOW = 8000  # bp per calling shard: several regions on the 50 kb synthetic contig
+LENGTH = 300_000  # bp: ~60,000 reads at 30x, several CRAM containers (10,000 records each), so a shard can seek
+WINDOW = 50_000  # bp per calling shard: 6 regions
 CHUNKS = 4
 
 
@@ -44,8 +45,10 @@ def _free_port():
 
 
 @pytest.fixture(scope="module")
-def s3():
+def s3(tmp_path_factory):
     """A fresh moto S3 server, a client for it from the host, and the URL the job containers use."""
+    # The request recorder appends to a file (default: ./moto_recording, kept across runs): one of our own instead.
+    os.environ["MOTO_RECORDER_FILEPATH"] = str(tmp_path_factory.mktemp("moto") / "recording")
     import boto3
     import requests
     from moto.server import ThreadedMotoServer
@@ -58,6 +61,7 @@ def s3():
         "s3", endpoint_url=host_url, aws_access_key_id="test", aws_secret_access_key="test", region_name="us-east-1"
     )
     client.create_bucket(Bucket=BUCKET)
+    requests.post(f"{host_url}/moto-api/recorder/reset-recording").raise_for_status()
 
     class S3:
         url = host_url
@@ -65,12 +69,13 @@ def s3():
 
         @staticmethod
         def record(on):
+            requests.post(f"{host_url}/moto-api/recorder/reset-recording").raise_for_status()
             requests.post(f"{host_url}/moto-api/recorder/{'start' if on else 'stop'}-recording").raise_for_status()
 
         @staticmethod
         def recording():
+            requests.post(f"{host_url}/moto-api/recorder/stop-recording").raise_for_status()
             text = requests.get(f"{host_url}/moto-api/recorder/download-recording").text
-            requests.post(f"{host_url}/moto-api/recorder/clear-recording")
             return [json.loads(line) for line in text.splitlines() if line.strip()]
 
     S3.client = client
@@ -131,7 +136,7 @@ def test_the_large_route_on_s3_streams_through_presigned_range_reads_and_matches
     import make_test_data
 
     root = tmp_path / "data"
-    make_test_data.main(["--root", str(root)])
+    make_test_data.main(["--root", str(root), "--length", str(LENGTH)])
     _upload_tree(s3, root)
     # The same reads as a second sample for the small route (one align job, one unsharded variants job).
     s3.client.upload_file(str(root / "raw_reads" / "SYNTH001.fastq.gz"), BUCKET, "raw_reads/SINGLE001.fastq.gz")
@@ -165,8 +170,11 @@ def test_the_large_route_on_s3_streams_through_presigned_range_reads_and_matches
     shard_requests = s3.recording()
     _job(s3, "variants", "SYNTH001", REF, "--window", str(WINDOW), run_name=run)
     cram = [r for r in shard_requests if _key_of(r) == "alignments/SYNTH001.cram" and r["method"] == "GET"]
-    assert cram and all("Range" in r["headers"] for r in cram)  # range reads only: never the whole CRAM
-    assert all("Signature=" in r["url"] for r in cram)  # through presigned URLs, as htslib can't sign
+    assert cram and all("Signature=" in r["url"] for r in cram)  # through presigned URLs, as htslib can't sign
+    # htslib opens the CRAM at offset 0 (its header) and then seeks: a seek past what it has buffered is a new GET
+    # with a Range from that offset (a region inside the first buffer needs none: 4 of 6 shards seek here).
+    starts = {int(r["headers"]["Range"].split("=")[1].split("-")[0]) for r in cram if "Range" in r["headers"]}
+    assert len({s for s in starts if s > 0}) >= len(regions) // 2, starts
 
     # The VCF: the same records as the single-job route (the sample name is only in the header).
     assert _records(s3, "variants/SYNTH001.vcf.gz") == _records(s3, "variants/SINGLE001.vcf.gz")
