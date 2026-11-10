@@ -1,24 +1,17 @@
 /* ---- Motion motifs (T2): DeepVariant net (_motif_dv.html), AlphaGenome strip (_motif_ag.html). Decorative,
-aria-hidden, transform/opacity only; static under prefers-reduced-motion (_site.css's last rule). Original artwork. ---- */
-.mdv-art{flex:none;overflow:visible;margin-left:auto}
-.mdv line{stroke:var(--muted);stroke-width:1;opacity:.35}.mdv circle{transform-box:fill-box;transform-origin:center}
-.mdv .k1{fill:var(--blue)}.mdv .k2{fill:var(--red)}.mdv .k3{fill:var(--yellow)}.mdv .k4{fill:var(--green)}
-.mdv .ok{opacity:0}.mdv .ok circle{fill:var(--done)}.mdv .ok path{fill:none;stroke:var(--on-primary);stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
-.mdv.done .ok{opacity:1;animation:mdv-in .6s 3s ease-out backwards}.mdv.done .net{animation:mdv-drift 3s ease-in-out}
-.mdv.done .nodes circle{animation:mdv-pulse 1.5s ease-in-out 2}.mdv.done line{animation:mdv-edge 1.5s ease-in-out 2}.mdv.done .e2 line{animation-delay:.75s}
-.mdv.running .net{animation:mdv-drift 7s ease-in-out infinite}.mdv.running .nodes circle{animation:mdv-pulse 2.4s ease-in-out infinite}
-.mdv.running .nodes circle:nth-child(3n+2){animation-delay:-.8s}.mdv.running .nodes circle:nth-child(3n){animation-delay:-1.6s}
-.mdv.running line{animation:mdv-edge 1.8s ease-in-out infinite}.mdv.running .e2 line{animation-delay:.9s}
-.mdv.running .e1 line:nth-child(odd),.mdv.running .e2 line:nth-child(odd){animation-duration:2.2s}
-@keyframes mdv-drift{0%,100%{transform:translate(0,0)}25%{transform:translate(2px,-1.5px)}50%{transform:translate(0,2px)}75%{transform:translate(-2px,-.5px)}}
-@keyframes mdv-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.3)}}
-@keyframes mdv-edge{0%,100%{opacity:.15}45%{opacity:1}}
-@keyframes mdv-in{0%{opacity:0;transform:scale(.6)}100%{opacity:1;transform:none}}
-.mdv .ok{transform-box:fill-box;transform-origin:center}
-:root[data-theme=contrast] .mdv line{stroke:#fff}:root[data-theme=contrast] .mdv :is(.k1,.k3){fill:#ffd600}:root[data-theme=contrast] .mdv :is(.k2,.k4){fill:#fff}
-:root[data-theme=contrast] .mdv .ok circle{fill:#ffd600}:root[data-theme=contrast] .mdv .ok path{stroke:#000}
-:root[data-theme=retro] .mdv line{stroke:#000}:root[data-theme=retro] .mdv .nodes circle{fill:#fff;stroke:#000;stroke-width:1.5}
-:root[data-theme=retro] .mdv .ok circle{fill:#000}:root[data-theme=retro] .mdv .ok path{stroke:#fff}
+aria-hidden, transform/opacity only (the DeepVariant nodes also hand their fill colour on); static under prefers-reduced-motion (_site.css's last rule). Original artwork. ---- */
+.mdv-art{flex:1 1 10rem;min-width:10rem;height:50px;width:100%}
+.mdv .edges{stroke:var(--muted);stroke-width:.8;opacity:.3}
+.mdv{--c1:var(--blue);--c2:var(--red);--c3:var(--yellow);--c4:var(--green)}.mdv .k1{fill:var(--c1)}.mdv .k2{fill:var(--c2)}.mdv .k3{fill:var(--c3)}.mdv .k4{fill:var(--c4)}
+.mdv.running .k1{animation:mdv-c1 1.6s linear infinite}.mdv.running .k2{animation:mdv-c2 1.6s linear infinite}.mdv.running .k3{animation:mdv-c3 1.6s linear infinite}.mdv.running .k4{animation:mdv-c4 1.6s linear infinite}
+.mdv.done .k1{animation:mdv-c1 1.6s linear}.mdv.done .k2{animation:mdv-c2 1.6s linear}.mdv.done .k3{animation:mdv-c3 1.6s linear}.mdv.done .k4{animation:mdv-c4 1.6s linear}
+.mdv .nodes>g:nth-child(2)>*{animation-delay:0.05s}.mdv .nodes>g:nth-child(3)>*{animation-delay:0.10s}.mdv .nodes>g:nth-child(4)>*{animation-delay:0.15s}.mdv .nodes>g:nth-child(5)>*{animation-delay:0.20s}.mdv .nodes>g:nth-child(6)>*{animation-delay:0.25s}.mdv .nodes>g:nth-child(7)>*{animation-delay:0.30s}.mdv .nodes>g:nth-child(8)>*{animation-delay:0.35s}.mdv .nodes>g:nth-child(9)>*{animation-delay:0.40s}.mdv .nodes>g:nth-child(10)>*{animation-delay:0.45s}.mdv .nodes>g:nth-child(11)>*{animation-delay:0.50s}.mdv .nodes>g:nth-child(12)>*{animation-delay:0.55s}.mdv .nodes>g:nth-child(13)>*{animation-delay:0.60s}.mdv .nodes>g:nth-child(14)>*{animation-delay:0.65s}.mdv .nodes>g:nth-child(15)>*{animation-delay:0.70s}.mdv .nodes>g:nth-child(16)>*{animation-delay:0.75s}.mdv .nodes>g:nth-child(17)>*{animation-delay:0.80s}.mdv .nodes>g:nth-child(18)>*{animation-delay:0.85s}.mdv .nodes>g:nth-child(19)>*{animation-delay:0.90s}.mdv .nodes>g:nth-child(20)>*{animation-delay:0.95s}.mdv .nodes>g:nth-child(21)>*{animation-delay:1.00s}.mdv .nodes>g:nth-child(22)>*{animation-delay:1.05s}.mdv .nodes>g:nth-child(23)>*{animation-delay:1.10s}.mdv .nodes>g:nth-child(24)>*{animation-delay:1.15s}.mdv .nodes>g:nth-child(25)>*{animation-delay:1.20s}.mdv .nodes>g:nth-child(26)>*{animation-delay:1.25s}.mdv .nodes>g:nth-child(27)>*{animation-delay:1.30s}.mdv .nodes>g:nth-child(28)>*{animation-delay:1.35s}.mdv .nodes>g:nth-child(29)>*{animation-delay:1.40s}.mdv .nodes>g:nth-child(30)>*{animation-delay:1.45s}
+@keyframes mdv-c1{0%{fill:var(--c1)}25%{fill:var(--c2)}50%{fill:var(--c3)}75%{fill:var(--c4)}100%{fill:var(--c1)}}
+@keyframes mdv-c2{0%{fill:var(--c2)}25%{fill:var(--c3)}50%{fill:var(--c4)}75%{fill:var(--c1)}100%{fill:var(--c2)}}
+@keyframes mdv-c3{0%{fill:var(--c3)}25%{fill:var(--c4)}50%{fill:var(--c1)}75%{fill:var(--c2)}100%{fill:var(--c3)}}
+@keyframes mdv-c4{0%{fill:var(--c4)}25%{fill:var(--c1)}50%{fill:var(--c2)}75%{fill:var(--c3)}100%{fill:var(--c4)}}
+:root[data-theme=contrast] .mdv{--c1:#ffd600;--c2:#fff;--c3:#ffd600;--c4:#fff}:root[data-theme=contrast] .mdv .edges{stroke:#fff;opacity:.5}
+:root[data-theme=retro] .mdv{--c1:#000;--c2:#fff;--c3:#000;--c4:#fff}:root[data-theme=retro] .mdv .edges{stroke:#000;opacity:.6}:root[data-theme=retro] .mdv .nodes circle{stroke:#000;stroke-width:1.2}
 .mhead{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1.25rem}.mhead h2{margin:0;flex:0 1 auto}
 .mag-art{flex:1 1 10rem;min-width:10rem;height:40px;width:100%}
 .mag-art .seq{font:700 9px var(--mono);text-anchor:middle}.mag-art .bA{fill:var(--nt-a)}.mag-art .bC{fill:var(--nt-c)}.mag-art .bG{fill:var(--nt-g)}.mag-art .bT{fill:var(--nt-t)}

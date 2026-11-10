@@ -98,10 +98,11 @@ def test_the_motifs_are_decorative_inline_svg_only(name):
 
 def test_motif_css_is_transform_and_opacity_only_and_sample_pages_only():
     css = read("_motifs.css")
-    block = css
-    for frames in re.findall(r"@keyframes [\w-]+\{(.*?\})\}", block):
+    for name, frames in re.findall(r"@keyframes ([\w-]+)\{(.*?\})\}", css):
         props = set(re.findall(r"([a-z-]+):", frames))
-        assert props <= {"transform", "opacity"}, props
+        # the DeepVariant nodes hand their colour on (the user's choice): fill only, on small circles
+        allowed = {"fill"} if name.startswith("mdv-c") else {"transform", "opacity"}
+        assert props <= allowed, (name, props)
     for shared in ("_site.css", "_samples.css"):  # the detail page's own sheet only: 0 bytes on the other pages
         assert "mdv" not in read(shared) and "mag-" not in read(shared)
     assert "@media (prefers-reduced-motion:reduce)" in read("_site.css")  # stops every animation, these included
@@ -113,11 +114,21 @@ def test_the_motif_comments_never_reach_the_page(name):
     assert "{#" not in read(name)
 
 
-def test_a_finished_run_plays_once_then_shows_the_tick_and_hover_replays_it():
+def test_a_finished_run_plays_once_then_rests_and_hover_replays_it():
     css = read("_motifs.css")
-    assert ".mdv.done .net{animation:mdv-drift 3s ease-in-out}" in css  # one iteration, not infinite
-    assert ".mdv.done .ok{opacity:1;animation:mdv-in .6s 3s" in css  # the tick after the play
+    assert ".mdv.done .k1{animation:mdv-c1 1.6s linear}" in css  # one pass of the colour hand-off, not infinite
+    assert "@keyframes mdv-c1{0%{fill:var(--c1)}" in css and "100%{fill:var(--c1)}}" in css  # ends at rest
+    assert ".ok" not in css and "<path" not in read("_motif_dv.html").split("</defs>")[1]  # no tick any more
     assert "infinite" not in "".join(rule for rule in css.split("}") if ".mdv.done" in rule)
     with open(os.path.join(TEMPLATES, "..", "..", "static", "samples", "geyser.js"), encoding="utf-8") as fh:
         js = fh.read()
     assert '".dv-card"' in js and '"mouseenter"' in js and '"focusin"' in js
+
+
+def test_the_net_fills_the_heading_row_as_one_interconnected_network():
+    svg = read("_motif_dv.html")
+    assert 'viewBox="0 0 960 50" preserveAspectRatio="xMinYMid slice" height="50"' in svg  # fixed height: no shift
+    edge = re.search(r'<path id="dv-e" d="([^"]+)"', svg).group(1)
+    ends = {tuple(map(int, m)) for m in re.findall(r"L(\d+) (\d+)", edge)}
+    assert {x for x, _ in ends} == {48, 80}  # each column joins the next, and the period's last joins the next period
+    assert svg.count('<use href="#dv-e"') == 15 and svg.count("<circle") == 15 * 7
