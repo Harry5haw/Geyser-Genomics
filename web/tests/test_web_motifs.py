@@ -116,13 +116,13 @@ def test_the_motif_comments_never_reach_the_page(name):
 
 def test_the_net_loops_continuously_with_a_pulse_and_edges_on_the_wave_front():
     css = read("_motifs.css")
-    # every DeepVariant card, finished or running: an infinite colour hand-off plus a pulse, in one 1.6 s period
-    assert ".mdv .k1{animation:mdv-c1 1.6s linear infinite,mdv-pulse 1.6s ease-in-out infinite}" in css
-    assert ".mdv .edges>use{opacity:.22;animation:mdv-edge 1.6s ease-in-out infinite}" in css
+    # every DeepVariant card, finished or running: an infinite colour hand-off plus a pulse, in one 4 s period (slowed from 1.6 s at the user's request)
+    assert ".mdv .k1{animation:mdv-c1 4s linear infinite,mdv-pulse 4s ease-in-out infinite}" in css
+    assert ".mdv .edges>use{opacity:.22;animation:mdv-edge 4s ease-in-out infinite}" in css
     assert ".mdv.done" not in css and ".mdv.running" not in css  # no play-once or rest state any more
     # one period spread over the 30 columns (and the 15 edge tiles), so the wave front travels seamlessly
-    assert ".mdv .nodes>g:nth-child(30)>*{animation-delay:1.55s}" in css
-    assert ".mdv .edges>use:nth-child(15){animation-delay:1.49s}" in css
+    assert ".mdv .nodes>g:nth-child(30)>*{animation-delay:3.88s}" in css
+    assert ".mdv .edges>use:nth-child(15){animation-delay:3.73s}" in css
     assert "@keyframes mdv-c1{0%{fill:var(--c1)}" in css and "100%{fill:var(--c1)}}" in css  # seamless loop
     assert ".ok" not in css and "<path" not in read("_motif_dv.html").split("</defs>")[1]  # no tick
     with open(os.path.join(TEMPLATES, "..", "..", "static", "samples", "geyser.js"), encoding="utf-8") as fh:
