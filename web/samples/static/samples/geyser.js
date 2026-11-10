@@ -212,4 +212,36 @@
     document.addEventListener("mouseover", prefetch, { passive: true });
     document.addEventListener("touchstart", prefetch, { passive: true });
   }
+  // The header logo's eruption (scripts/build_logo_burst.py). The page shows the static lockup (no JS, reduced
+  // motion, or already erupted this session). Otherwise, once the page has loaded (so the static lockup stays the
+  // first paint and the LCP image): the empty geyser, then on the first hover or focus (or 0.7 s later on a screen
+  // without hover) the animated lockup, which plays once in the <img> (SMIL) and holds the full logo.
+  // data-erupt = "<empty URL> <animated URL>": hashed static names, which a script can't work out.
+  const logos = document.querySelectorAll(".brand img[data-erupt]");
+  const ERUPTED = "geyser-erupted";
+  const media = (q) => Boolean(window.matchMedia && window.matchMedia(q).matches);
+  let erupted;
+  try { erupted = sessionStorage.getItem(ERUPTED); } catch (_) { erupted = "1"; /* no storage: keep it still */ }
+  if (logos.length && !erupted && !media("(prefers-reduced-motion: reduce)")) {
+    const brand = logos[0].parentNode;
+    const use = (k) => logos.forEach((img) => { img.src = img.dataset.erupt.split(" ")[k]; });
+    let done = false;
+    const erupt = () => {
+      if (done) return;
+      done = true;
+      brand.removeEventListener("pointerover", erupt);
+      brand.removeEventListener("focusin", erupt);
+      try { sessionStorage.setItem(ERUPTED, "1"); } catch (_) { /* private mode: it may erupt again */ }
+      use(1);
+    };
+    const rest = () => {
+      if (done) return;
+      use(0);
+      if (media("(hover: none)")) setTimeout(erupt, 700);
+    };
+    if (document.readyState === "complete") rest();
+    else if (window.addEventListener) window.addEventListener("load", rest, { once: true });
+    brand.addEventListener("pointerover", erupt);
+    brand.addEventListener("focusin", erupt);
+  }
 })();
