@@ -1,19 +1,17 @@
-"""The header logo's eruption: per theme, an empty geyser and an animated one, made from the committed lockups.
+"""The header logo's eruption: per theme, an animated lockup, made from the committed lockups.
 
-From geyser-lockup{,-dark,-retro,-contrast}.svg (scripts/build_logo.py's output) it writes, per theme
-(light, dark, retro, contrast), to web/samples/static/samples/:
-- geyser-empty-<theme>.svg: the lockup without its water jets, droplets and helices (the cone and the wordmark);
-- geyser-erupt-<theme>.svg: the whole lockup, animated with SMIL (<animateTransform>/<animate>, begin="0s",
-  fill="freeze"): the jets surge up from the vent, the logo's own five helices fly up from the vent with a spin,
-  overshoot, rebound and land, the droplets pop in. About 1.3 s, played once when the image loads, then it holds
-  the full logo. No <style> element or style attribute (the hosted site's CSP would block those inside the SVG
-  too); SMIL attributes and presentation attributes aren't style.
+From geyser-lockup{,-dark,-retro,-contrast}.svg (scripts/build_logo.py's output) it writes
+web/samples/static/samples/geyser-erupt-<theme>.svg (light, dark, retro, contrast): the whole lockup animated with
+SMIL (<animateTransform>/<animate>, begin="0s", fill="freeze"). The cone starts empty, the water jets surge up from
+the vent, the logo's own five helices fly up from the vent with a spin, overshoot, rebound and land, the droplets
+pop in. About 1.3 s, played once when the image loads, then it holds the full logo. No <style> element or style
+attribute (the hosted site's CSP would block those inside the SVG too); SMIL attributes and presentation attributes
+aren't style.
 
 The header keeps the static lockup <img> (the LCP element; the no-JS and reduced-motion logo). geyser.js swaps its
-src to the empty one once the page has loaded (first visit in a session, motion allowed), then to the animated
-one on the first hover/focus (on a screen without hover: the first touch or scroll). The two URLs ride on the <img>'s
-data-erupt attribute: hashed static names that a script can't work out. Deterministic: run it again after
-build_logo.py.
+src to the animated one on the first hover/focus (on a screen without hover, the first touch or scroll), never at
+load or on a timer, so page-load measurements see the static page. The URL rides on the <img>'s data-erupt
+attribute: a hashed static name that a script can't work out. Deterministic: run it again after build_logo.py.
 
     python -I scripts/build_logo_burst.py
 """
@@ -119,9 +117,8 @@ def main():
     for theme, suffix in THEMES.items():
         with open(os.path.join(STATIC, f"geyser-lockup{suffix}.svg"), encoding="utf-8") as fh:
             svg = fh.read()
-        for name, body in (("empty", parts(svg)[3]), ("erupt", erupting(svg))):
-            with open(os.path.join(STATIC, f"geyser-{name}-{theme}.svg"), "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(body)
+        with open(os.path.join(STATIC, f"geyser-erupt-{theme}.svg"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(erupting(svg))
     print("helix moves", [d for _, d in offsets(svg)])
 
 

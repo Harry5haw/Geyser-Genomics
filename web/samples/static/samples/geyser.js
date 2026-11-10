@@ -212,12 +212,11 @@
     document.addEventListener("mouseover", prefetch, { passive: true });
     document.addEventListener("touchstart", prefetch, { passive: true });
   }
-  // The header logo's eruption (scripts/build_logo_burst.py). The page shows the static lockup (no JS, reduced
-  // motion, or already erupted this session). Otherwise, once the page has loaded (so the static lockup stays the
-  // first paint and the LCP image): the empty geyser, then on the first hover or focus (on a screen without hover,
-  // the first touch or scroll anywhere) the animated lockup, which plays once in the <img> (SMIL) and holds the full
-  // logo. Never on a timer: an animation nobody started would be paint work inside every page-load measurement.
-  // data-erupt = "<empty URL> <animated URL>": hashed static names, which a script can't work out.
+  // The header logo's eruption (scripts/build_logo_burst.py). The page shows the static lockup, and nothing changes
+  // until someone is there: on the first hover or focus (on a screen without hover, the first touch or scroll) the
+  // <img> swaps to the animated lockup, which plays once (SMIL: the cone empties, the jets surge, the helices fly up
+  // and land) and holds the full logo. Nothing at load or on a timer, so page-load measurements see the static page.
+  // Once a session; never with reduced motion or without storage. data-erupt = the animated file's hashed URL.
   const logos = document.querySelectorAll(".brand img[data-erupt]");
   const ERUPTED = "geyser-erupted";
   const media = (q) => Boolean(window.matchMedia && window.matchMedia(q).matches);
@@ -225,43 +224,16 @@
   try { erupted = sessionStorage.getItem(ERUPTED); } catch (_) { erupted = "1"; /* no storage: keep it still */ }
   if (logos.length && !erupted && !media("(prefers-reduced-motion: reduce)")) {
     const brand = logos[0].parentNode;
-    const use = (k) => logos.forEach((img) => { img.src = img.dataset.erupt.split(" ")[k]; });
-    let done = false;
+    const touch = media("(hover: none)") && window.addEventListener ? ["touchstart", "scroll"] : [];
     const erupt = () => {
-      if (done) return;
-      done = true;
       brand.removeEventListener("pointerover", erupt);
       brand.removeEventListener("focusin", erupt);
-      ["touchstart", "scroll"].forEach((t) => window.removeEventListener && window.removeEventListener(t, erupt));
+      touch.forEach((t) => window.removeEventListener(t, erupt));
       try { sessionStorage.setItem(ERUPTED, "1"); } catch (_) { /* private mode: it may erupt again */ }
-      use(1);
+      logos.forEach((img) => { img.src = img.dataset.erupt; });
     };
-    const rest = () => {
-      if (done) return;
-      use(0);
-      if (media("(hover: none)") && window.addEventListener) {
-        ["touchstart", "scroll"].forEach((t) => window.addEventListener(t, erupt, { passive: true }));
-      }
-    };
-    // Rest only once the page has loaded AND the browser has recorded its largest paint (on a fast machine that
-    // comes after load): swapping earlier would make the empty geyser, fetched by this script, the LCP image.
-    const lcp = typeof PerformanceObserver !== "undefined" &&
-      (PerformanceObserver.supportedEntryTypes || []).includes("largest-contentful-paint");
-    let waits = lcp ? 2 : 1;
-    const ready = () => {
-      if (--waits) return;
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(() => requestAnimationFrame(rest));
-      else rest();
-    };
-    if (lcp) {
-      const seen = new PerformanceObserver((list) => {
-        if (list.getEntries().length) { seen.disconnect(); ready(); }
-      });
-      seen.observe({ type: "largest-contentful-paint", buffered: true });
-    }
-    if (document.readyState === "complete") ready();
-    else if (window.addEventListener) window.addEventListener("load", ready, { once: true });
     brand.addEventListener("pointerover", erupt);
     brand.addEventListener("focusin", erupt);
+    touch.forEach((t) => window.addEventListener(t, erupt, { passive: true }));
   }
 })();
