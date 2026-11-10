@@ -105,9 +105,7 @@ def test_the_bar_renders_as_an_accessible_progressbar(state):
     )
     assert f'class="hp {p.state}" role="progressbar"' in html and f'aria-valuenow="{p.percent}"' in html
     assert f'aria-valuetext="{p.valuetext}"' in html and html.count("<li ") == 3
-    x1, x2 = p.tip
-    assert f'class="hp-tip" gradientUnits="userSpaceOnUse" x1="{x1}" y1="0" x2="{x2}"' in html  # the drawn length
-    assert x2 - x1 == 0.5  # a crisp end (no fade: the user's call)
+    assert f'<rect class="hp-clip" x="0" y="-10" width="{p.width}" height="60"/>' in html  # the drawn length
     assert ('class="hp-final"' in html) == (state in ("succeeded", "failed"))  # the green or red layer
     assert ('class="hp-break"' in html) == (state == "failed")  # the helix breaks where the run failed
     assert "style=" not in html  # the hosted CSP allows no inline style

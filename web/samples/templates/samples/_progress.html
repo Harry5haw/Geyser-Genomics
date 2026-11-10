@@ -4,13 +4,12 @@
       <linearGradient id="{{ u }}-turbo" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1000" y2="0">{% for stop in turbo %}<stop offset="{{ stop.0 }}" stop-color="{{ stop.1 }}"/>{% endfor %}</linearGradient>
       <linearGradient id="{{ u }}-turbo-dark" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="1000" y2="0">{% for stop in turbo_dark %}<stop offset="{{ stop.0 }}" stop-color="{{ stop.1 }}"/>{% endfor %}</linearGradient>
       <g id="{{ u }}-helix"><path d="{{ helix.rungs }}" stroke-width="1.5" stroke-opacity=".7" vector-effect="non-scaling-stroke"/><path d="{{ helix.a }}" stroke-width="3" vector-effect="non-scaling-stroke"/><path d="{{ helix.b }}" stroke-width="3" vector-effect="non-scaling-stroke"/></g>
-      <linearGradient id="{{ u }}-tip" class="hp-tip" gradientUnits="userSpaceOnUse" x1="{{ p.tip.0 }}" y1="0" x2="{{ p.tip.1 }}" y2="0"><stop offset="0" stop-color="#fff"/><stop offset="1" stop-color="#000"/></linearGradient>
-      <mask id="{{ u }}-draw" maskUnits="userSpaceOnUse" x="0" y="-10" width="1100" height="60"><rect x="0" y="-10" width="1100" height="60" fill="url(#{{ u }}-tip)"/></mask>
+      <clipPath id="{{ u }}-draw"><rect class="hp-clip" x="0" y="-10" width="{{ p.width }}" height="60"/></clipPath>
       {% if p.state == "failed" %}<linearGradient id="{{ u }}-red" class="hp-red" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="0.5" y2="0"><stop offset="0" stop-color="#000"/><stop offset="1" stop-color="#fff"/></linearGradient>
       <mask id="{{ u }}-spread" maskUnits="userSpaceOnUse" x="-100" y="-10" width="1200" height="60"><rect x="-100" y="-10" width="1200" height="60" fill="url(#{{ u }}-red)"/></mask>{% endif %}
     </defs>
     <path class="hp-rail" d="M0 20H1000" vector-effect="non-scaling-stroke"/>
-    <g class="hp-body"><g mask="url(#{{ u }}-draw)"><g class="hp-spin">
+    <g class="hp-body"><g clip-path="url(#{{ u }}-draw)"><g class="hp-spin">
       <use class="hp-run" href="#{{ u }}-helix"/>
       {% if p.state == "succeeded" or p.state == "failed" %}<use class="hp-final" href="#{{ u }}-helix"{% if p.state == "failed" %} mask="url(#{{ u }}-spread)"{% endif %}/>{% endif %}
     </g></g></g>

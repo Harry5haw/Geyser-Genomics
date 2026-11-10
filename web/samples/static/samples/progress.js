@@ -15,12 +15,9 @@
   const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
   const shown = {}; // sample -> {v: drawn length 0..1, state}
   let last = 0;
-  const tipAt = (bar, v) => {
-    const g = bar.querySelector(".hp-tip");
-    if (g) {
-      g.setAttribute("x1", String(v * 1000));
-      g.setAttribute("x2", String(v * 1000 + 0.5));
-    }
+  const tipAt = (bar, v) => { // the drawn length: a clip (cheaper to paint than a mask)
+    const r = bar.querySelector(".hp-clip");
+    if (r) r.setAttribute("width", String(v * 1000));
   };
   const target = (bar) => {
     const d = bar.dataset;
@@ -103,20 +100,41 @@
     };
     requestAnimationFrame(race);
   };
+  // The loop runs only while a bar is queued or running (a finished run's bar is static; its finish or failure
+  // animates on its own): no per-frame work on a finished page. A poll that brings a live bar restarts it.
+  const live = () => [...document.querySelectorAll(".hp")].some((b) => b.dataset.state === "running" || b.dataset.state === "queued");
+  let looping = false;
   const progressBars = (now) => {
     const dt = last ? Math.min(0.25, (now - last) / 1000) : 0.016;
     last = now;
     for (const bar of document.querySelectorAll(".hp")) update(bar, dt);
   };
-  window.GeyserProgress = (root) => { for (const bar of root.querySelectorAll(".hp")) update(bar, 0); }; // geyser.js polls
+  const run = () => {
+    if (looping || !live()) return;
+    looping = true;
+    last = 0;
+    if (still || typeof requestAnimationFrame !== "function") {
+      const timer = setInterval(() => {
+        progressBars(Date.now());
+        if (!live()) { clearInterval(timer); looping = false; }
+      }, 1000);
+      return;
+    }
+    const frame = (t) => {
+      progressBars(t);
+      if (live()) requestAnimationFrame(frame);
+      else looping = false;
+    };
+    requestAnimationFrame(frame);
+  };
+  window.GeyserProgress = (root) => { // geyser.js, after a poll's swap
+    for (const bar of root.querySelectorAll(".hp")) update(bar, 0);
+    run();
+  };
   const bars = document.querySelectorAll(".hp");
   if (bars.length) {
     for (const bar of bars) update(bar, 0); // settle what the server sent before the first paint
     for (const k of Object.keys(shown)) shown[k].settled = false; // from now on, a change is live
-    if (still || typeof requestAnimationFrame !== "function") setInterval(() => progressBars(Date.now()), 1000);
-    else {
-      const frame = (t) => { progressBars(t); requestAnimationFrame(frame); };
-      requestAnimationFrame(frame);
-    }
+    run();
   }
 })();
