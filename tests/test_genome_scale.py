@@ -184,7 +184,7 @@ def preflighted(local_env, layout=tasks.PAIRED, n=2):
 def test_chunk_command_has_no_markdup(tmp_path):
     paired = tasks.chunk_align_command("r.fa", ["a_R1.fq.gz", "a_R2.fq.gz"], "o.bam", 8, "/w", "S1", "bwa-mem2")
     stages = paired.split(" | ")
-    assert stages[0].startswith("bwa-mem2 mem -t 8 -R '@RG\\tID:S1\\tSM:S1' r.fa a_R1.fq.gz a_R2.fq.gz")
+    assert stages[0].startswith("bwa-mem2 mem -t 8 -K 100000000 -R '@RG\\tID:S1\\tSM:S1' r.fa a_R1.fq.gz a_R2.fq.gz")
     assert stages[1] == "samtools fixmate -m -u - -" and stages[2].startswith("samtools sort -l 1")
     assert "markdup" not in paired and shlex.split(stages[2])[-3:] == ["-o", "o.bam", "-"]
     single = tasks.chunk_align_command("r.fa", ["a.fq.gz"], "o.bam", 2, "/w", "S1", "bwa")
