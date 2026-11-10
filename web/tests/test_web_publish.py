@@ -131,7 +131,9 @@ def test_no_inline_style_attributes_and_every_inline_block_is_hashed(site):
 def test_a_one_sample_publish_keeps_every_page_types_csp_hashes(storage, site, tmp_path):
     whole = json.loads((run_publish(tmp_path / "whole", "--all") / "csp-hashes.json").read_text())
     one = json.loads((run_publish(site, "S1") / "csp-hashes.json").read_text())
-    assert one == whole and len(one["style"]) == 3  # the core CSS (404), plus the sample pages' or the figures page's
+    assert (
+        one == whole and len(one["style"]) == 4
+    )  # core (404); +samples (list, upload); +samples+progress+motifs (detail); +figures
 
 
 def test_the_call_pages_stop_at_max_pages_and_point_at_the_vcf(storage, site):
@@ -298,7 +300,7 @@ def test_a_cloud_run_closed_as_failed_shows_failed_not_running(storage, client):
     part = {"task": "Finalize", "status": "failed", "run_name": "F1-run", "error": {"stage": "Align"}}
     put(storage, "runs/F1.provenance/Finalize.json", json.dumps(part))
     body = client.get("/").content.decode()
-    row = re.search(r"<tr>\s*<td class=\"id\"><a href=\"/samples/F1/\">.*?</tr>", body, re.S).group()
+    row = re.search(r"<tr[^>]*>\s*<td class=\"id\"><a href=\"/samples/F1/\">.*?</tr>", body, re.S).group()
     assert 'class="badge failed"' in row
 
 
