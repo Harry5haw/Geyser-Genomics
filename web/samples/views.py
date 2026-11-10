@@ -297,6 +297,9 @@ def _progress_context(storage, sample):
     """The one-helix progress bar (samples/_progress.html): where the run is, from this site's earlier stage times."""
     stops = lambda colours: [(round(i / (len(colours) - 1), 4), c) for i, c in enumerate(colours)]  # noqa: E731
     expected = progress_mod.expected_durations(status_mod.read_metrics(storage)) if sample.active else None
+    delay = float(os.environ.get("GEYSER_STAGE_DELAY_SECONDS") or 0) if settings.DEBUG else 0.0
+    if expected and delay > 0:  # a preview run (run_local holds each stage that long): expect it
+        expected = {name: seconds + delay for name, seconds in expected.items()}
     return {
         "progress": progress_mod.progress(sample, expected),
         "helix": progress_mod.HELIX,

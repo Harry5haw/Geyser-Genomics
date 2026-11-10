@@ -42,6 +42,13 @@ class Progress:
     seconds_left: int | None = None
     fail_at: float | None = None  # where the helix breaks (the failed stage's start)
     valuetext: str = ""
+    # For geyser.js to keep growing the bar between polls (running, with a known stage start only):
+    stage_started: float | None = None  # epoch seconds
+    expected: float | None = None  # the running stage's expected seconds
+    later: float = 0.0  # expected seconds of the stages after it
+    span: tuple = (0.0, 0.0)  # the running stage's share of the bar (start, end), 0..1
+    now: float | None = None  # the server's clock when rendered (the browser corrects for its own)
+    lead: str = ""  # "Aligning, stage 2 of 3": the text before the time left
 
     @property
     def percent(self) -> int:
@@ -106,10 +113,10 @@ def progress(sample, expected=None, now=None) -> Progress:
     cur = running[0]
     # The running stage's start: local runs go one stage at a time from the worker's start.
     run = sample.run or {}
-    started = run.get("started")
-    elapsed = None
-    if started:
-        elapsed = max(0.0, now - started - sum(s.duration or 0 for s in stages if s.state == "done"))
+    # Local runs go one stage at a time: the running stage began when the last one finished (or the run started).
+    marks = [s.finished for s in stages if s.state == "done" and s.finished] + [run.get("started")]
+    started = max((m for m in marks if m), default=None)
+    elapsed = None if started is None else max(0.0, now - started)
     exp = expected.get(cur.name, 60.0)
     share = MIN_SHOWN if elapsed is None else min(CAP, max(MIN_SHOWN, elapsed / exp))
     value = cur.start + share * (cur.end - cur.start)
@@ -117,10 +124,22 @@ def progress(sample, expected=None, now=None) -> Progress:
     seconds_left = None if elapsed is None else round(max(0.0, exp - elapsed) + later)
     index = ticks.index(cur) + 1
     verb = VERBS.get(cur.name, cur.label)
-    text = f"{verb}, stage {index} of {len(ticks)}"
-    if seconds_left is not None:
-        text += f", {_say(seconds_left)}"
-    return Progress("running", value, ticks, current=cur.label, seconds_left=seconds_left, valuetext=text)
+    lead = f"{verb}, stage {index} of {len(ticks)}"
+    text = lead + (f", {_say(seconds_left)}" if seconds_left is not None else "")
+    return Progress(
+        "running",
+        value,
+        ticks,
+        current=cur.label,
+        seconds_left=seconds_left,
+        valuetext=text,
+        stage_started=started if elapsed is not None else None,
+        expected=exp,
+        later=later,
+        span=(cur.start, cur.end),
+        now=now,
+        lead=lead,
+    )
 
 
 # --- The helix drawn by samples/_progress.html: a 1000-unit-wide viewBox stretched to the page width (the strokes
@@ -189,7 +208,7 @@ def demo_sample(elapsed: float, now: float):
         elif state == "failed":
             stages.append(StageView(name, label, "pending", None))
         elif t >= end:
-            stages.append(StageView(name, label, "done", seconds))
+            stages.append(StageView(name, label, "done", seconds, now - t + end))
         elif t >= start:
             stages.append(StageView(name, label, "running", None))
         else:

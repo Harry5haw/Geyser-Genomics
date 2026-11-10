@@ -24,6 +24,39 @@
     });
   }
 
+  // The progress helix (samples/_progress.html): between polls, keep growing the running stage's share from its start
+  // time and expected duration (data-*), capped short of the next tick: the next poll moves it on. data-now is the
+  // server's clock, so the browser's own clock offset doesn't matter. Reduced motion: a step a second, not every frame.
+  const say = (s) => (s < 90 ? `about ${Math.max(5, Math.round(s / 5) * 5)} s left`
+    : s < 3600 ? `about ${Math.round(s / 60)} min left` : `about ${(s / 3600).toFixed(1)} h left`);
+  const grow = () => {
+    for (const bar of document.querySelectorAll(".hp[data-stage-start]")) {
+      const d = bar.dataset;
+      if (!d.offset) d.offset = String(Date.now() / 1000 - Number(d.now));
+      const elapsed = Math.max(0, Date.now() / 1000 - Number(d.offset) - Number(d.stageStart));
+      const expected = Number(d.expected) || 60;
+      const share = Math.min(0.95, Math.max(0.04, elapsed / expected)); // progress.py's CAP and MIN_SHOWN
+      const value = Number(d.from) + share * (Number(d.to) - Number(d.from));
+      const rect = bar.querySelector("clipPath rect");
+      if (rect) rect.setAttribute("width", String(Math.round(value * 1000)));
+      bar.setAttribute("aria-valuenow", String(Math.round(value * 100)));
+      const text = `${d.lead}, ${say(Math.max(0, expected - elapsed) + Number(d.later || 0))}`;
+      const now = bar.querySelector(".hp-now");
+      if (now && now.textContent !== text) {
+        now.textContent = text;
+        bar.setAttribute("aria-valuetext", text);
+      }
+    }
+  };
+  if (document.querySelectorAll(".hp").length) {
+    const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (still || typeof requestAnimationFrame !== "function") setInterval(grow, 1000);
+    else {
+      const frame = () => { grow(); requestAnimationFrame(frame); };
+      requestAnimationFrame(frame);
+    }
+  }
+
   // Status polling: an element with data-poll="<url>" is replaced by the server's fresh copy every
   // data-poll-seconds. The copy keeps polling only while it still has data-poll (a finished sample table
   // doesn't). A response with a Geyser-Refresh header means the run finished: reload to show the results.

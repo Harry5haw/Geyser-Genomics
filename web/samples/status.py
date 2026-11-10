@@ -70,6 +70,7 @@ class StageView:
     label: str
     state: str  # done | running | failed | pending
     duration: float | None = None
+    finished: float | None = None  # when a done stage ended (its metric's timestamp), for the progress bar
 
 
 @dataclass
@@ -213,7 +214,8 @@ def build_sample(
             state = "failed"
         else:
             state, duration = "pending", None
-        stages.append(StageView(st.name, st.label, state, duration))
+        finished = (rec.get("timestamp") if rec else None) if state == "done" else None
+        stages.append(StageView(st.name, st.label, state, duration, finished))
 
     run_state = run.get("state") if run else None
     done = {s.name for s in stages if s.state == "done"}

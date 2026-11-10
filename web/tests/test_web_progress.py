@@ -24,7 +24,9 @@ EXPECTED = {"qc": 10.0, "align": 100.0, "variants": 50.0}
 
 
 def aligning():
-    return sample("running", [(*QC, "done", 10.0), (*AL, "running", None), (*VC, "pending", None)])
+    s = sample("running", [(*QC, "done", 10.0), (*AL, "running", None), (*VC, "pending", None)])
+    s.stages[0].finished = T0 + 10  # QC ended 10 s after the run started: alignment began then
+    return s
 
 
 def test_equal_shares_and_ticks_at_their_ends():
@@ -154,3 +156,24 @@ def test_publish_never_writes_the_preview(storage, tmp_path):
     out = tmp_path / "site"
     publish_mod.publish(everything=True, out=str(out), log=lambda m: None)
     assert not (out / "demo").exists()
+
+
+def test_the_running_stage_starts_when_the_last_one_finished_and_the_bar_carries_its_clock():
+    s = sample("running", [(*QC, "done", 10.0), (*AL, "running", None), (*VC, "pending", None)])
+    s.stages[0].finished = T0 + 300  # a preview delay, a queue: the stage ended well after started + duration
+    p = pm.progress(s, EXPECTED, now=T0 + 350)
+    assert p.stage_started == T0 + 300 and p.value == pytest.approx(1 / 3 + 0.5 / 3)  # 50 s of 100: halfway
+    assert (p.expected, p.later, p.span, p.now, p.lead) == (
+        100.0,
+        50.0,
+        (1 / 3, 2 / 3),
+        T0 + 350,
+        "Aligning, stage 2 of 3",
+    )
+    html = render_to_string("samples/_progress.html", {"p": p, "helix": pm.HELIX, "turbo": [], "turbo_dark": []})
+    assert f'data-stage-start="{T0 + 300:.3f}"' in html and 'data-expected="100.000"' in html
+    assert 'data-from="0.33333" data-to="0.66667"' in html and 'data-lead="Aligning, stage 2 of 3"' in html
+    done = pm.progress(sample("succeeded", [(*QC, "done", 1)]), EXPECTED)
+    assert "data-stage-start" not in render_to_string(
+        "samples/_progress.html", {"p": done, "helix": pm.HELIX, "turbo": [], "turbo_dark": []}
+    )  # nothing to grow once it's over
