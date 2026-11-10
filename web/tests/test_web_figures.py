@@ -134,9 +134,9 @@ def test_the_poster_is_one_ridge_per_row_with_escaped_labels(figdir):
 
 
 def test_the_poster_fills_each_ridge_by_value(figdir):
-    # The 2D view keeps the linear colouring (the user's choice): a vertical gradient from each ridge's baseline to
-    # the top of the scale, evenly spaced stops, Turbo 0.09-0.91 (or cividis in high contrast). One gradient per ramp
-    # for the whole poster: each ridge is drawn once from y=0 and placed by its <use>.
+    # The 2D view (the user's choice): linear Turbo 0.09-0.91 (or cividis in high contrast) over the figure's
+    # median +/- 2 IQR window, the body under a ridge's line fading to transparent below the window. One gradient
+    # per ramp for the whole poster: each ridge is drawn once from y=0 and placed by its <use>.
     grid = figures.load("coverage")
     svg = figures.poster_svg(grid)
     gradients = re.findall(
@@ -147,17 +147,22 @@ def test_the_poster_fills_each_ridge_by_value(figdir):
     assert [g[0] for g in gradients] == ["heat-coverage-flat", "heat-coverage-cividis"]
     top = grid.clip or grid.vmax
     lift = (figures.POSTER_H - figures.MARGIN_T - figures.MARGIN_B) / (len(grid.rows) + 1.5) * 2.5 / (top - grid.base)
+    w0, w1 = figures.flat_window(grid)
+    start = (w0 - grid.base) / (w1 - grid.base)
     for (_, y1, y2, stops), ramp in zip(gradients, figures.FLAT_RAMPS.values(), strict=True):
-        assert float(y1) == 0 and float(y2) == round(-2 * (top - grid.base) * lift)  # baseline to the top (2x units)
-        assert re.findall(r'stop-color="(#[0-9a-f]{6})"', stops) == ramp
-        offsets = [float(o) for o in re.findall(r'offset="([\d.]+)"', stops)]
-        assert offsets == [round(k / (len(ramp) - 1), 3) for k in range(len(ramp))]  # evenly spaced
+        # from the baseline (transparent) to the window's top: linear in value
+        assert float(y1) == 0 and float(y2) == round(-2 * (w1 - grid.base) * lift)  # 2x whole units
+        assert re.findall(r'stop-color="(#[0-9a-f]{6})"', stops) == [ramp[0], *ramp]
+        assert stops.startswith(f'<stop offset="0" stop-color="{ramp[0]}" stop-opacity="0"/>')  # the fade
+        offsets = [float(o) for o in re.findall(r'offset="([\d.]+)"', stops)][1:]
+        want = [round(start + (1 - start) * k / (len(ramp) - 1), 3) for k in range(len(ramp))]
+        assert offsets == want  # the ramp evenly over the window, its first colour at the window's start
     assert figures.FLAT_RAMPS["flat"] == figures.HEAT_TURBO_DARK  # blue bottoms, as before the rank spread
     assert svg.count("<path ") == 2  # one ridge per row, drawn once
     for ramp in figures.FLAT_RAMPS:
         group = re.search(rf'<g class="ramp-{ramp}"[^>]*>(.*?)</g>', svg).group(1)
         assert group.count(f'fill="url(#heat-coverage-{ramp})"') == 2
-    assert "stop-opacity" not in svg and "style=" not in svg  # no fade; attributes only (CSP)
+    assert "style=" not in svg  # attributes only (CSP)
 
 
 def test_the_colour_range_is_the_robust_range_inside_the_height_scale():
@@ -189,7 +194,13 @@ def test_the_colour_bar_shows_the_scale_with_its_cap(figdir):
         grad = re.search(rf'<linearGradient id="heat-bar-{r}">(.*?)</linearGradient>', defs).group(1)
         assert re.findall(r'stop-color="(#[0-9a-f]{6})"', grad) == ramp
     assert 'width="0" height="0" aria-hidden="true"' in defs and "display:none" not in defs
-    assert re.findall(r">([^<]+)</text>", flat) == ["0", figures._num(grid.clip / 2), f"≥ {figures._num(grid.clip)}"]
+    w0, w1 = figures.flat_window(grid)
+    assert grid.vmax > w1  # the pile-up goes beyond the window: >= on the top tick
+    assert re.findall(r">([^<]+)</text>", flat) == [
+        ("≤ " if grid.vmin < w0 else "") + figures._num(w0),  # <= only where the data goes below the window
+        figures._num((w0 + w1) / 2),
+        f"≥ {figures._num(w1)}",
+    ]
     knots = figures.colour_knots(grid)
     assert grid.vmin < knots[0] and grid.vmax > knots[-1]
     assert re.findall(r">([^<]+)</text>", rank) == [
@@ -199,8 +210,12 @@ def test_the_colour_bar_shows_the_scale_with_its_cap(figdir):
     ]
     quality = figures.legend_svg(figures.load("quality"))  # narrow range, from the stated baseline, no cap
     flat_q = re.findall(r'<svg class="colorbar bar-2d".*?</svg>', quality)[0]
-    assert re.findall(r">([^<]+)</text>", flat_q) == ["32", "34", "36"]
-    assert "Mean base quality from 32 to 36 Phred" in flat_q
+    qgrid = figures.load("quality")
+    q0, q1 = figures.flat_window(qgrid)
+    ticks = re.findall(r">([^<]+)</text>", flat_q)
+    assert ticks[1] == figures._num((q0 + q1) / 2) and ticks[0].endswith(figures._num(q0))
+    assert ticks[2].endswith(figures._num(q1)) and q1 <= qgrid.vmax  # clamped inside the height scale
+    assert f"Mean base quality from {figures._num(q0)} to {figures._num(q1)} Phred" in flat_q
 
 
 def test_ticks_read_like_the_3d_labels():
@@ -454,3 +469,28 @@ def test_the_poster_draws_in_whole_half_units(figdir):
     assert paths and all(re.fullmatch(r"[MLZ0-9, -]+", d) for d in paths)  # integers only
     assert all(re.fullmatch(r"\d+", y) for y in re.findall(r'<use href="#ridge-[^"]+" y="([^"]+)"', svg))
     assert svg.count('transform="scale(.5)"') == len(figures.FLAT_RAMPS)
+
+
+def test_the_2d_window_is_the_median_plus_minus_two_iqr_clamped():
+    G, f = figures.Grid, figures.FIGURES["coverage"]
+    values = [[float(v) for v in range(101)]]  # 0..100: median 50, IQR 50 -> window -50..150, clamped
+    grid = G(f, list(range(101)), ["a"], values, clip=80.0, base=0.0, vmin=0.0, vmax=100.0)
+    assert figures.flat_window(grid) == (0.0, 80.0)  # inside the height scale: base .. cap
+    narrow = [[30.0 + (k % 5) for k in range(100)]]  # 30..34: median 32, IQR 2 -> 28..36
+    grid = G(f, list(range(100)), ["a"], narrow, base=0.0, vmin=30.0, vmax=34.0)
+    assert figures.flat_window(grid) == (28.0, 34.0)  # the top clamped to the largest value (no cap)
+    capped = G(f, list(range(100)), ["a"], narrow, base=0.0, vmin=30.0, vmax=40.0)
+    assert figures.flat_window(capped) == (28.0, 36.0)  # room above: median + 2 IQR
+    flat = G(f, [1, 2], ["a"], [[3.0, 3.0]], base=3.0, vmin=3.0, vmax=3.0)
+    assert figures.flat_window(flat) == (3.0, 3.0)  # no spread: the scale itself
+
+
+def test_the_real_coverage_window_puts_typical_depth_mid_rainbow(settings):
+    settings.GEYSER_FIGURES_DIR = settings.REPO_ROOT / "docs" / "figures" / "csv"
+    figures._load.cache_clear()
+    grid = figures.load("coverage")
+    figures._load.cache_clear()
+    w0, w1 = figures.flat_window(grid)
+    med = figures.colour_knots(grid)[2]
+    assert w0 < med < w1 and abs((med - w0) / (w1 - w0) - 0.5) < 0.05  # the median sits in the middle
+    assert w1 < grid.clip  # pile-ups beyond the window take the last (red) colour

@@ -77,7 +77,7 @@ def _span(seconds):
 def deepvariant_view(record, state):
     """The DeepVariant card's facts, from the run record, when DeepVariant made (or is making) this run's calls.
 
-    state: SampleView.deepvariant ("running" | "done" | None). Every fact is optional: older records have no
+    state: SampleView.dv_state ("running" | "done" | None). Every fact is optional: older records have no
     make_examples or GPU notes (#251). DeepVariant's VCF stats are over PASS calls (#147)."""
     if not state:
         return None

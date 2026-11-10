@@ -70,6 +70,7 @@ class StageView:
     label: str
     state: str  # done | running | failed | pending
     duration: float | None = None
+    finished: float | None = None  # when a done stage ended (its metric's timestamp), for the progress bar
 
 
 @dataclass
@@ -82,8 +83,11 @@ class SampleView:
     duration: float | None = None
     keys: dict = field(default_factory=dict)
     layout: str = SINGLE
-    # DeepVariant's state when it was (or is being) this run's caller: running | done (deepvariant_state); else None.
-    deepvariant: str | None = None
+    annotated: bool = False  # the run record has an AlphaGenome Annotate part (opt-in per run)
+    deepvariant: bool = False  # DeepVariant (linear or pangenome) ran in this sample's run (its part exists)
+    # DeepVariant's state when it made (or is making) this run's calls: running | done (deepvariant_state), else None:
+    # the sample page's DeepVariant card and its motif.
+    dv_state: str | None = None
 
     @property
     def active(self) -> bool:
@@ -94,6 +98,24 @@ class SampleView:
         if self.state == "running" and self.run is None:
             return "In progress"
         return STATE_LABELS[self.state]
+
+    @property
+    def caller(self) -> str:
+        """The run's variant caller, from where its calls are: deepvariant, pangenome or bcftools."""
+        vcf = self.keys.get("vcf") or ""
+        return (
+            "pangenome"
+            if vcf.startswith("variants_pangenome/")
+            else ("deepvariant" if vcf.startswith("variants_deepvariant/") else "bcftools")
+        )
+
+    @property
+    def tags(self) -> str:
+        """Space-separated tags the list's filters match (data-tags): deepvariant, alphagenome, failed."""
+        tags = ["deepvariant"] if self.deepvariant or self.caller != "bcftools" else []
+        tags += ["alphagenome"] if self.annotated else []
+        tags += ["failed"] if self.state == "failed" else []
+        return " ".join(tags)
 
     @property
     def done_count(self) -> int:
@@ -195,7 +217,8 @@ def build_sample(
             state = "failed"
         else:
             state, duration = "pending", None
-        stages.append(StageView(st.name, st.label, state, duration))
+        finished = (rec.get("timestamp") if rec else None) if state == "done" else None
+        stages.append(StageView(st.name, st.label, state, duration, finished))
 
     run_state = run.get("state") if run else None
     done = {s.name for s in stages if s.state == "done"}
@@ -245,7 +268,7 @@ def build_sample(
         duration=sum(durations) if durations and not from_record else None,
         keys={**keys, "vcf": vcf_key},
         layout=layout,
-        deepvariant=deepvariant_state(record, state),
+        dv_state=deepvariant_state(record, state),
     )
 
 
@@ -288,15 +311,23 @@ CALLER_PART_NAMES = tuple(f"/{stage}.json" for stage in STAGE_VCF if stage != "C
 RECORD_PART_NAMES = (*CALLER_PART_NAMES, "/Finalize.json")
 
 
-def _samples_with_caller_parts(storage) -> set:
-    """Samples whose run record changes their row: a DeepVariant or pangenome part (DeepVariant's VCF can be their
-    calls) or a Finalize part (the run failed; the cloud has no other sign of it). One LIST of runs/, so the list
-    page reads records for these samples only, not one per sample."""
-    found = set()
+def _samples_with_caller_parts(storage) -> tuple:
+    """(samples whose run record changes their row, samples with an Annotate part, samples with a DeepVariant part). The first: a DeepVariant or
+    pangenome part (DeepVariant's VCF can be their calls) or a Finalize part (the run failed; the cloud has no other
+    sign of it). The second: AlphaGenome-annotated runs, for the list's badge and filter. One LIST of runs/, so the
+    list page reads records for those samples only, not one per sample."""
+    found, annotated, deepvariant = set(), set(), set()
     for key in storage.list_keys("runs/"):
-        if key.endswith(RECORD_PART_NAMES) and ".provenance/" in key:
-            found.add(key[len("runs/") :].split(".provenance/", 1)[0])
-    return found
+        if ".provenance/" not in key:
+            continue
+        sample_id = key[len("runs/") :].split(".provenance/", 1)[0]
+        if key.endswith(RECORD_PART_NAMES):
+            found.add(sample_id)
+            if key.endswith(CALLER_PART_NAMES):
+                deepvariant.add(sample_id)
+        elif key.endswith("/Annotate.json"):
+            annotated.add(sample_id)
+    return found, annotated, deepvariant
 
 
 def load_all(storage) -> list:
@@ -305,11 +336,14 @@ def load_all(storage) -> list:
     if not layouts:
         return []
     present, metrics, runs = _present_keys(storage), read_metrics(storage), read_all_runs(storage)
-    with_callers = _samples_with_caller_parts(storage)
+    with_callers, annotated, deepvariant = _samples_with_caller_parts(storage)
     samples = [
         build_sample(i, present, metrics, runs.get(i), layout, _load_record(storage, i) if i in with_callers else None)
         for i, layout in layouts.items()
     ]
+    for s in samples:
+        s.annotated = s.sample_id in annotated
+        s.deepvariant = s.sample_id in deepvariant
     samples.sort(key=lambda s: (s.updated or 0, s.sample_id), reverse=True)
     return samples
 
