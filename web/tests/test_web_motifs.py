@@ -101,7 +101,7 @@ def test_motif_css_is_transform_and_opacity_only_and_sample_pages_only():
     for name, frames in re.findall(r"@keyframes ([\w-]+)\{(.*?\})\}", css):
         props = set(re.findall(r"([a-z-]+):", frames))
         # the DeepVariant nodes hand their colour on (the user's choice): fill only, on small circles
-        allowed = {"fill"} if name.startswith("mdv-c") else {"transform", "opacity"}
+        allowed = {"fill"} if re.fullmatch(r"mdv-c\d", name) else {"transform", "opacity"}
         assert props <= allowed, (name, props)
     for shared in ("_site.css", "_samples.css"):  # the detail page's own sheet only: 0 bytes on the other pages
         assert "mdv" not in read(shared) and "mag-" not in read(shared)
@@ -114,15 +114,19 @@ def test_the_motif_comments_never_reach_the_page(name):
     assert "{#" not in read(name)
 
 
-def test_a_finished_run_plays_once_then_rests_and_hover_replays_it():
+def test_the_net_loops_continuously_with_a_pulse_and_edges_on_the_wave_front():
     css = read("_motifs.css")
-    assert ".mdv.done .k1{animation:mdv-c1 1.6s linear}" in css  # one pass of the colour hand-off, not infinite
-    assert "@keyframes mdv-c1{0%{fill:var(--c1)}" in css and "100%{fill:var(--c1)}}" in css  # ends at rest
-    assert ".ok" not in css and "<path" not in read("_motif_dv.html").split("</defs>")[1]  # no tick any more
-    assert "infinite" not in "".join(rule for rule in css.split("}") if ".mdv.done" in rule)
+    # every DeepVariant card, finished or running: an infinite colour hand-off plus a pulse, in one 1.6 s period
+    assert ".mdv .k1{animation:mdv-c1 1.6s linear infinite,mdv-pulse 1.6s ease-in-out infinite}" in css
+    assert ".mdv .edges>use{opacity:.22;animation:mdv-edge 1.6s ease-in-out infinite}" in css
+    assert ".mdv.done" not in css and ".mdv.running" not in css  # no play-once or rest state any more
+    # one period spread over the 30 columns (and the 15 edge tiles), so the wave front travels seamlessly
+    assert ".mdv .nodes>g:nth-child(30)>*{animation-delay:1.55s}" in css
+    assert ".mdv .edges>use:nth-child(15){animation-delay:1.49s}" in css
+    assert "@keyframes mdv-c1{0%{fill:var(--c1)}" in css and "100%{fill:var(--c1)}}" in css  # seamless loop
+    assert ".ok" not in css and "<path" not in read("_motif_dv.html").split("</defs>")[1]  # no tick
     with open(os.path.join(TEMPLATES, "..", "..", "static", "samples", "geyser.js"), encoding="utf-8") as fh:
-        js = fh.read()
-    assert '".dv-card"' in js and '"mouseenter"' in js and '"focusin"' in js
+        assert ".dv-card" not in fh.read()  # nothing to replay: no JS for the motif
 
 
 def test_the_net_fills_the_heading_row_as_one_interconnected_network():
