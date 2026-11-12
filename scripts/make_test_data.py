@@ -49,6 +49,7 @@ COMPLEMENT = str.maketrans("ACGT", "TGCA")
 # covered by many reads) and the share of errors that are 1 bp indels rather than substitutions.
 LONG_READ_MEAN = 5000
 LONG_READ_INDEL_FRACTION = 0.3
+MIN_LONG_READ = 500  # --long-reads: shorter pieces clipped at a contig end are dropped
 
 
 def make_reference(rng, length):
@@ -90,12 +91,21 @@ def simulate_long_reads(rng, genome, coverage, mean_length, error_rate, indel_fr
 
     Errors: error_rate per base, indel_fraction of them a 1 bp insertion or deletion (HiFi's residual errors
     are mostly small indels in homopolymers), the rest substitutions. Qualities are flat: the callers' error
-    models (mpileup -X pacbio-ccs, DeepVariant PACBIO) don't need realistic ones to call the planted SNPs."""
+    models (mpileup -X pacbio-ccs, DeepVariant PACBIO) don't need realistic ones to call the planted SNPs.
+
+    A read may start up to one read length before the contig and run past its end; the part off the contig is
+    clipped. Otherwise coverage would thin out over the last read length at each end (a 50 kb contig with 5 kb
+    reads: 1-2x at the very ends), and a single read's error there becomes a call, which a real chromosome,
+    whose molecules don't stop at an artificial edge, wouldn't show. Clipped pieces under MIN_LONG_READ bases
+    are dropped."""
     target, i, total = len(genome) * coverage, 0, 0
     while total < target:
         length = long_read_length(rng, mean_length, len(genome))
-        start = rng.randrange(0, len(genome) - length + 1)
-        seq = genome[start : start + length]
+        start = rng.randrange(-length + 1, len(genome))
+        seq = genome[max(0, start) : min(len(genome), start + length)]
+        if len(seq) < MIN_LONG_READ:
+            continue
+        length = len(seq)
         if rng.random() < 0.5:
             seq = seq.translate(COMPLEMENT)[::-1]
         seq = add_long_read_errors(rng, seq, error_rate, indel_fraction)

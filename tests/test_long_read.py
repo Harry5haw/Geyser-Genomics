@@ -277,7 +277,7 @@ def test_make_test_data_long_reads(tmp_path):
     seqs, quals = lines[1::4], lines[3::4]
     lengths = [len(s) for s in seqs]
     assert all(len(s) == len(q) for s, q in zip(seqs, quals, strict=True))
-    assert 4000 < statistics.mean(lengths) < 6000 and min(lengths) >= mtd.LONG_READ_MEAN // 4 - 50
+    assert 4000 < statistics.mean(lengths) < 6000 and min(lengths) >= mtd.MIN_LONG_READ - 50  # clipped ends
     assert sum(lengths) >= 50_000 * 30  # the default 30x
     truth = json.loads((tmp_path / "truth" / "HIFI001.json").read_text())
     assert truth["read_type"] == "hifi" and len(truth["snps"]) == 10 and truth["planted_duplicates"] == 0

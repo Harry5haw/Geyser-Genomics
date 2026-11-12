@@ -1152,7 +1152,8 @@ def align_task(sample_id, reference_name):
             files = prepare_graph(os.path.dirname(ref), giraffe["graph"], giraffe["sampling"])
         else:
             aligner = prepare_aligner(reference_name, ref, aligner)
-        print(f"Aligning with {aligner} (READ_TYPE={read_type})", flush=True)
+        long_note = f" (READ_TYPE={read_type})" if read_type in LONG_READ_TYPES else ""  # short reads: log unchanged
+        print(f"Aligning with {aligner}{long_note}", flush=True)
         provenance.note(
             aligner=aligner,
             layout=layout,
