@@ -19,13 +19,12 @@ test:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
     DEBIAN_FRONTEND: noninteractive
+  # cache:key:files takes at most two files (four made GitLab reject the whole config). requirements-dev.txt
+  # pulls the others in with -r; a change only there reuses the old cache, and pip just downloads the difference.
   cache:
     key:
       files:
         - requirements-dev.txt
-        - app/requirements.txt
-        - web/requirements.txt
-        - requirements-figures.txt
     paths:
       - .cache/pip
   script:
