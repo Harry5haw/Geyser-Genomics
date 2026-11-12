@@ -49,7 +49,8 @@ For eighteen years I lived with an illness nobody could name. Then my mother, my
   <a href="https://github.com/Harry5haw/Geyser-Genomics/releases"><img src="https://img.shields.io/badge/Releases-v0.3%20to%20v3.0-1A73E8?style=for-the-badge" alt="Releases"></a>
 </p>
 
-<p><a href="https://github.com/Harry5haw/Geyser-Genomics/actions/workflows/web-perf.yml"><img src="https://img.shields.io/github/actions/workflow/status/Harry5haw/Geyser-Genomics/web-perf.yml?branch=main&style=flat-square&label=Web%20performance%20budgets" alt="Web performance budgets (Lighthouse CI on main)"></a></p>
+<p><a href="https://github.com/Harry5haw/Geyser-Genomics/actions/workflows/web-perf.yml"><img src="https://img.shields.io/github/actions/workflow/status/Harry5haw/Geyser-Genomics/web-perf.yml?branch=main&style=flat-square&label=Web%20performance%20budgets" alt="Web performance budgets (Lighthouse CI on main)"></a>
+  <a href="https://gitlab.com/Harry5haw/geyser-genomics/-/pipelines"><img src="https://gitlab.com/Harry5haw/geyser-genomics/badges/main/pipeline.svg?key_text=GitLab%20CI%20(mirror)&amp;key_width=110" alt="GitLab CI on the mirror (ruff and the unit tests)"></a></p>
 
 </div>
 
