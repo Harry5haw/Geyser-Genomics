@@ -55,16 +55,26 @@ For eighteen years I lived with an illness nobody could name. Then my mother, my
 
 ## What I built
 
-- **An event-driven genomics pipeline on AWS.** Uploading a FASTQ to S3 starts a run: a Lambda starts Step Functions, which runs quality control (fastp) and alignment (bwa-mem2) side by side, then variant calling, each as a container on AWS Batch (Fargate Spot first). Single- or paired-end, one chromosome or a whole genome.
-- **Scatter-gather variant calling.** A Step Functions `Map` splits calling by region, runs the shards in parallel and merges them into a VCF identical to an unsplit call (tested with mutations planted on the region boundaries).
-- **GPU DeepVariant in the cloud.** Google's deep-learning caller on an EC2 GPU Batch environment that scales to zero, with an automatic fallback to bcftools. On the HG003 whole genome it cut SNP errors by 57% and indel errors by 90%.
-- **A pangenome evaluation.** Pangenome-aware DeepVariant and graph alignment (vg giraffe on Human Pangenome Reference Consortium graphs), benchmarked with hap.py against the GIAB truth sets on HG003 and HG005. Graph alignment halved DeepVariant's errors against BWA on chr20 (−51%).
-- **AlphaGenome annotation, with a pre-registered evaluation.** An optional, never-fatal step scores a run's variants of interest with Google DeepMind's AlphaGenome and shows them on the run's page (research use only). How it would be judged was written down before any results ([pre-registration](docs/prereg/rp1-alphagenome.md)).
-- **A quality gate in Rust.** A single static binary checks every run's QC statistics against thresholds calibrated on real genomes, and fails the run with named reasons: a run can succeed and still not be good enough.
-- **Everything as code, deployed safely.** About 3,600 lines of Terraform across three state files. GitHub Actions signs in to AWS with OIDC (no stored keys, read-only CI roles, prod trusts only `main`). CI runs lint, about 1,400 unit tests, about 250 Step Functions Local tests and four Docker end-to-end suites.
-- **Cost guardrails.** No NAT gateway, capped Batch capacity, a monthly budget alert, and a project budget whose kill switch attaches a deny-all policy to the automation role by itself. A real chromosome costs about $0.07; between runs, only storage costs anything.
-- **A hosted results site.** A static, read-only site on CloudFront with token-gated uploads up to 256 GiB per file. Four themes (light, dark, retro, and high contrast at WCAG AAA 7:1), interactive 3D figures, and Lighthouse budgets in CI: every page under 30 KB, LCP under 1 s on an emulated phone over slow 4G.
-- **Observability.** A CloudWatch dashboard (runs, spend, stage durations, gate results), per-stage metrics, and a provenance record for every run: inputs, reference checksum, tool versions and each stage's timing.
+**Python on AWS, end to end**
+- **Python backend and data processing:** about 34,000 lines of Python. A CLI stage dispatcher, storage and metrics layers with S3/CloudWatch and local back ends behind one interface, two Lambdas (the S3 trigger, a web API with multipart presigned uploads), a provenance record per run, a Django app and the ops tooling.
+- **Event-driven services on AWS:** an S3 upload fires a Lambda, which starts Step Functions. Each stage then runs as its own container on AWS Batch (Fargate Spot first, on-demand fallback, an EC2 GPU environment for DeepVariant). Five images, one per kind of job; stages talk only through S3 key conventions.
+- **Resilience:** infrastructure failures (lost Spot hosts, failed task starts) are retried; tool failures and corrupt uploads fail at once, with a notification. Every stage and run has a time limit, and a pre-flight pass rejects a bad input in minutes, before any alignment. The 30x whole-genome run took 20 Spot interruptions, and every one was retried and recovered.
+- **Performance, measured:** a 25-run cost × turnaround grid chose the job sizes. bwa-mem2 made alignment 1.56× faster, a slim image cut job start-up waits by 26%, and DeepVariant on a GPU calls 2.4× faster than on CPU.
+
+**Distributed data processing at scale**
+- **A whole human genome in 2 h 59 min:** 718 million reads streamed through a pre-flight check, dealt into 30 chunks aligned 15 at a time, merged in place over presigned HTTPS (no local copy), then called in 244 region shards, 48 at a time. On real chr20, the chunked route scores within 0.00005 F1 of a single alignment job.
+- **Scatter-gather orchestration:** Step Functions `Parallel` and `Map` states, a size-based route (under or over 5 GB), and per-run overrides validated before any job starts. Calling shards read only their region of a 16 GB CRAM, with HTTP range reads checked against the ETag.
+
+**Testing, infrastructure as code and delivery**
+- **Test automation:** about 1,400 unit tests (about 40% of the code is tests), about 250 tests that run the deployed state machine in Step Functions Local, an offline S3 end-to-end suite on moto, and four Docker end-to-end suites. The pipeline's truth check builds a genome with planted mutations and fails unless exactly those are found.
+- **Terraform:** about 3,600 lines over three state files (dev, web, account), with S3 state and locking. Every change is a reviewed plan, with the expected add/change/destroy counts written down before planning.
+- **CI/CD and code review:** GitHub Actions with OIDC (no stored AWS keys, read-only CI roles). Every change goes through a pull request (170 merged) behind a protected `main` with 7 required checks and a code review. Work was tracked as issues, milestones and releases on a project board.
+- **Cost guardrails:** a budget alert and a project budget whose kill switch attaches a deny-all policy by itself. A real chromosome costs about $0.07; between runs only storage costs anything.
+- **Front end and observability:** a static results site on CloudFront (JavaScript: WebGL 3D figures in a Worker, multipart uploads up to 256 GiB). It has four themes including WCAG AAA high contrast and Lighthouse budgets in CI. A CloudWatch dashboard tracks runs, spend, stage durations and quality-gate results.
+
+**The genomics**
+- **Accuracy against the GIAB truth sets:** GPU DeepVariant cut SNP errors by 57% and indel errors by 90% against bcftools on the HG003 whole genome. Graph alignment (vg giraffe, Human Pangenome Reference Consortium graphs) halved DeepVariant's errors against BWA on chr20 (−51%).
+- **A quality gate in Rust** fails a run that succeeded but isn't good enough, with named reasons, against thresholds calibrated on real genomes. **AlphaGenome annotation** scores the variants of interest, with an evaluation [pre-registered](docs/prereg/rp1-alphagenome.md) before any results.
 
 **How it was built:** the code was written with Claude Code (Anthropic's AI coding agent); I designed the system and directed the work. The decisions and reviews were mine, and infrastructure changes ran under rules I set: Claude's applies needed a reviewed plan or a narrow standing approval, and account-level, compute and CDN changes were mine. The agents worked under a [bounded AWS role with its own kill switch](docs/design/claude-guardrails.md), and an AI-assistance log is kept with the project's write-up.
 
