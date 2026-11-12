@@ -19,20 +19,29 @@ from __future__ import annotations
 import argparse
 import sys
 
-# The stages a record can carry (app/provenance.py, one part each). A stage a cohort never ran is simply a null
-# column, so a table from bcftools-only runs has the same columns as one with DeepVariant.
+# The stages a record can carry: one part per stage (app/provenance.py), plus the jobs a closing Finalize part can
+# name as the failing one (provenance.JOB_NAME_STAGES: PlanRegions, a shard, a chunk, Publish). A stage a cohort never
+# ran is simply a null column, so a table from bcftools-only runs has the same columns as one with DeepVariant.
+# Listed by hand because a Glue job has no app/ to import; tests/test_cohort_runs.py checks it against provenance.
 STAGES = (
     "Preflight",
+    "AlignChunk",
     "QualityControl",
     "Align",
+    "PlanRegions",
+    "CallVariantsShard",
     "CallVariants",
     "DeepVariant",
     "PangenomeDeepVariant",
     "QualityGate",
     "Annotate",
+    "Publish",
 )
 
-# (output column, path in the record). Paths into the stats block are the G4 summaries the gate reads.
+# (output column, path in the record). The stats block holds the parsed stats/{id}/ summaries (G4). They are
+# flagstat's own figures over all records (secondary and supplementary included), not the gate's primary-only rates:
+# the gate reads flagstat.txt itself, and the record carries no primary-only duplicate count. primary_mapped_pct is the
+# one flagstat gives over primary records.
 FIELDS = (
     ("sample_id", "sample_id"),
     ("run_name", "run_name"),
@@ -44,8 +53,11 @@ FIELDS = (
     ("reference_name", "reference.name"),
     ("reference_md5", "reference.md5"),
     ("updated", "updated"),
-    ("reads_total", "stats.flagstat.in_total"),
-    ("mapped_pct", "stats.flagstat.mapped_pct"),
+    ("failed_stage", "failure.stage"),
+    ("failure_reason", "failure.reason"),
+    ("failure_exit_code", "failure.exit_code"),
+    ("records_total", "stats.flagstat.in_total"),
+    ("primary_mapped_pct", "stats.flagstat.primary_mapped_pct"),
     ("properly_paired_pct", "stats.flagstat.properly_paired_pct"),
     ("duplicates", "stats.flagstat.duplicates"),
     ("mean_depth", "stats.mosdepth.mean_depth"),
@@ -91,17 +103,20 @@ def cohort_frame(records):
     from pyspark.sql import functions as F
 
     numeric = {
-        "reads_total": "long",
+        "complete": "boolean",
+        "records_total": "long",
+        "failure_exit_code": "long",
         "duplicates": "long",
         "variant_records": "long",
         "snps": "long",
         "indels": "long",
-        "mapped_pct": "double",
+        "primary_mapped_pct": "double",
         "properly_paired_pct": "double",
         "mean_depth": "double",
         "tstv": "double",
     }
-    columns = [_col(records, path, name, numeric.get(name)) for name, path in FIELDS]
+    # Every column typed: a field no record has would otherwise be an untyped null, which Parquet refuses.
+    columns = [_col(records, path, name, numeric.get(name, "string")) for name, path in FIELDS]
     for stage in STAGES:
         base = f"stages.{stage}"
         columns += [
@@ -120,7 +135,8 @@ def cohort_frame(records):
         .withColumn("cpu_seconds_total", F.round(sum(cpu[1:], cpu[0]), 2))
         # greatest() skips nulls; all-null (no stage reported resources) stays null.
         .withColumn("peak_memory_mib_max", F.greatest(*memory))
-        .withColumn("duplicate_pct", F.round(100.0 * F.col("duplicates") / F.col("reads_total"), 2))
+        # Duplicate records over all records (flagstat's definition), not the gate's primary-only duplicate rate.
+        .withColumn("duplicate_records_pct", F.round(100.0 * F.col("duplicates") / F.col("records_total"), 2))
     )
     return flat.orderBy("sample_id")
 
@@ -129,7 +145,15 @@ def summary(frame):
     """Cohort-level numbers over the samples: counts by status and the spread of the QC stats."""
     from pyspark.sql import functions as F
 
-    stats = ["mean_depth", "mapped_pct", "duplicate_pct", "tstv", "snps", "indels", "stage_seconds_total"]
+    stats = [
+        "mean_depth",
+        "primary_mapped_pct",
+        "duplicate_records_pct",
+        "tstv",
+        "snps",
+        "indels",
+        "stage_seconds_total",
+    ]
     aggregates = [F.count(F.lit(1)).alias("samples")]
     aggregates += [F.sum(F.when(F.col("status") == "succeeded", 1).otherwise(0)).alias("succeeded")]
     for name in stats:

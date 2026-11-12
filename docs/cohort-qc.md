@@ -24,11 +24,15 @@ On Linux or macOS with Java 11: `pip install -r requirements-dev.txt -r requirem
 ## Caller comparison (`cohort_qc.py`)
 
 ```bash
-# Look up the samples under a storage root in the pipeline's layout (local_bucket/ or a copy of the bucket)
+# Look up the samples under a storage root in the pipeline's layout (a copy of the bucket, or local_bucket/)
 python scripts/cohort_qc.py --root /data --samples HG003_chr20 HG005_chr20 --out /data/cohort/qc
 # Or list the call sets yourself
 python scripts/cohort_qc.py --vcf HG003:bcftools:/data/a.vcf.gz --vcf HG003:deepvariant:/data/b.vcf.gz --out out/
 ```
+
+Contigs must exist in `--reference-genome` (default GRCh38, so `chr20`; `GRCh37` for b37's `20`). A VCF on any
+other contig, such as the synthetic genome's from `make_test_data.py`, fails the import with an error rather than
+giving an empty result.
 
 Each call set is read from the pipeline's own key (`app/provenance.py` `STAGE_VCF`): `variants/{id}.vcf.gz`,
 `variants_deepvariant/{id}.vcf.gz` and `variants_pangenome/{id}.vcf.gz`. The job then does four things:
@@ -54,9 +58,14 @@ Outputs under `--out`:
 | `variants.parquet/` | One row per variant: `hl.variant_qc` over all the call sets, plus `n_samples_<caller>` (how many samples each caller called it in) |
 | `summary.md` | The comparison and overlap tables in markdown |
 
-**Sites vs alleles.** `hl.sample_qc` counts alternate *alleles*: a hom-var SNP counts as two SNP alleles and two
-transitions (or transversions). `bcftools stats`, and so the quality gate, counts *sites*. The caller comparison
-counts sites, so its Ti/Tv can be compared with the gate's; the sample_qc Parquet keeps Hail's own definitions.
+**How calls are counted.** `hl.sample_qc` counts alternate allele *copies*: a hom-var SNP counts as two SNP alleles
+and two transitions (or transversions). The caller comparison counts each called variant once, as `bcftools stats`
+does, so a hom-var is one call. The variants are the split ones, so a multi-allelic site counts once per alternate
+allele, and a `1/2` genotype is two het calls (about 1% of the real chr20 records are multi-allelic). The sample_qc
+Parquet keeps Hail's own definitions.
+
+A call set with no PASS calls at all still gets a row (zeros) and a warning, and it still counts as one of the
+sample's callers for "shared by all callers". `--vcf` only accepts the three caller names.
 
 ## Cohort table from the run records (`cohort_runs.py`, Glue-ready)
 
@@ -66,9 +75,15 @@ python scripts/cohort_runs.py --runs local_bucket/runs --out cohort/runs --csv
 
 This reads every `runs/{id}.provenance.json`. It skips the per-stage parts in `runs/{id}.provenance/` and the web
 worker's `runs/{id}.json`. Each record becomes one flat row: sample, run name, status, layout, aligner, reference
-MD5, app version, and the gate's numbers (mapped %, properly paired %, duplicate %, mean depth, SNPs, indels, Ti/Tv).
-Every stage that can appear in a record (Preflight, QualityControl, Align, CallVariants, DeepVariant,
-PangenomeDeepVariant, QualityGate, Annotate) gets status, seconds, CPU seconds and peak memory columns, plus totals.
+MD5, app version, where and why a failed run failed (`failed_stage`, `failure_reason`, `failure_exit_code`, from the
+record's failure block), and the stats/{id}/ summaries: flagstat's primary mapped %, properly paired % and duplicate
+records %, mosdepth's mean depth, and bcftools stats' SNPs, indels and Ti/Tv. These are flagstat's own figures over
+all records (supplementary included), not the quality gate's primary-only rates. The gate reads `flagstat.txt`
+itself, and the record has no primary-only duplicate count, so compare them with each other, not with the gate's
+thresholds. Every stage a record can hold gets status, seconds, CPU seconds and peak memory columns, plus totals.
+That covers the stages that write parts (Preflight, QualityControl, Align, CallVariants, DeepVariant,
+PangenomeDeepVariant, QualityGate, Annotate) and the jobs Finalize can name as the failing one (AlignChunk,
+PlanRegions, CallVariantsShard, Publish).
 A stage a run never had is a null column, so tables from different cohorts line up. `summary/` holds the cohort's
 min, mean and max for each stat.
 
@@ -96,17 +111,21 @@ The Glue role needs `s3:GetObject` on `runs/*`, `s3:ListBucket`, and `s3:PutObje
 ## Tests
 
 `tests/test_cohort_qc.py` and `tests/test_cohort_runs.py` use small synthetic VCFs and records with hand-computed
-answers: RefCall/NoCall excluded, a multi-allelic site split, unique and shared calls, per-site Ti/Tv, record
-discovery, null stages. Without Hail, pyspark or Java they skip, so the main unit job doesn't need them. The
-**Cohort QC (Hail, PySpark)** CI job installs them (Java 11, no Docker) and runs on pull requests that touch the
-cohort files, and on every push to main.
+answers: RefCall/NoCall excluded, a multi-allelic site split next to a duplicate locus, unique and shared calls,
+per-variant Ti/Tv, an empty call set, an unknown contig, record discovery, failure columns and null stages. Both
+files share one Spark session (`cohort_spark` in `tests/conftest.py`), which Hail starts when it's installed, so the
+test order doesn't matter. Without Hail, pyspark or Java they skip, so the main unit job doesn't need them. The
+**Cohort QC (Hail, PySpark)** CI job installs them (Java 11, no Docker). On pull requests it runs only when the
+`changes` job sees a file the cohort code runs, imports or installs (its own files, `app/`, any requirements file,
+`tests/conftest.py`, the workflow). It always runs on pushes to main.
 
 ## Results
 
 From the project's own chr20 call sets, 12 Nov 2026: three samples (two GIAB individuals, HG003 at two depths:
 Google's case-study BAM and the 30x set; and HG005), three callers each. "Cohort" here means a set of samples
-analysed together, not a cohort in the population-genetics sense. 9 call sets, PASS only, counted per site. The run took 6.6 min in `geyser-cohort` (4 CPUs,
-4 GB driver), including the run-record table.
+analysed together, not a cohort in the population-genetics sense. 9 call sets, PASS only, each call counted once.
+The run took 6.6 min in `geyser-cohort` (4 CPUs, 4 GB driver), including the run-record table, before the
+combined MatrixTable was checkpointed (each output re-read every VCF then).
 
 | Sample | Caller | PASS calls | SNPs | Indels | Ti/Tv | Het/hom | Unique to caller | Shared by all 3 |
 |---|---|---|---|---|---|---|---|---|
@@ -134,5 +153,5 @@ What the table shows:
 
 The run-record table over the six real-input cloud runs (`geyser-data/real-inputs/results/bucket/runs`) has six rows,
 all succeeded. The 15x negative control shows mean depth 16.1 (the gate's depth failure). The single-end runs have
-higher duplicate rates (13-17% against 9.5-11% paired: without mates, markdup flags reads that start at the same
-position by chance).
+more duplicate records (13-17% of records against 9.5-11% paired: without mates, markdup flags reads that start at
+the same position by chance).

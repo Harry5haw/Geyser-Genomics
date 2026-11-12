@@ -20,7 +20,7 @@ Writes, under --out:
     variants.parquet/         one row per variant: hl.variant_qc over all call sets + how many samples each caller
                               called it in
     caller_comparison.csv     per (sample, caller): calls, unique to that caller, shared by all, Ti/Tv, het/hom
-                              (per site, like bcftools stats; hl.sample_qc counts alleles)
+                              (each call once, like bcftools stats; hl.sample_qc counts allele copies)
     summary.md                the same as a markdown table, plus the overlap counts
 
 Runs with requirements-cohort.txt (Hail 0.2.139 on Spark 3.5) and Java 11, on Linux or macOS (Hail has no
@@ -72,6 +72,9 @@ def parse_vcf_arg(text: str) -> CallSet:
     parts = text.split(":", 2)
     if len(parts) != 3 or not all(parts):
         raise argparse.ArgumentTypeError(f"expected SAMPLE:CALLER:PATH, got {text!r}")
+    if parts[1] not in CALLERS:
+        # A typo would otherwise be a fourth caller, and "unique"/"shared by all" would be computed over it.
+        raise argparse.ArgumentTypeError(f"caller {parts[1]!r} is not one of {', '.join(CALLERS)}")
     return CallSet(*parts)
 
 
@@ -83,20 +86,15 @@ def is_pass(filters):
     return hl.is_missing(filters) | (hl.len(filters) == 0)
 
 
-def load_call_set(cs: CallSet, reference_genome: str | None):
+def load_call_set(cs: CallSet, reference_genome: str):
     """One VCF as a single-column MatrixTable with a common schema: PASS rows only, multi-allelics split, entries
     reduced to GT and DP (FORMAT/DP where the caller writes it, else the sum of AD: bcftools' calls here carry
     GT:PL:AD), so call sets from different callers can be joined."""
     import hail as hl
 
-    mt = hl.import_vcf(
-        cs.path,
-        reference_genome=reference_genome,
-        force_bgz=cs.path.endswith(".gz"),
-        # bcftools and DeepVariant both write 'chr20'; hl.import_vcf would otherwise reject a contig the reference
-        # doesn't know rather than skipping it.
-        skip_invalid_loci=True,
-    )
+    # No skip_invalid_loci: a contig the reference genome doesn't have (the synthetic genome's, b37's "20") fails the
+    # import loudly instead of silently dropping every call on it.
+    mt = hl.import_vcf(cs.path, reference_genome=reference_genome, force_bgz=cs.path.endswith(".gz"))
     mt = mt.filter_rows(is_pass(mt.filters))
     # Rows down to the key before splitting: no INFO field is used, and per-allele INFO can't be split anyway.
     mt = mt.select_rows().select_globals()
@@ -119,7 +117,7 @@ def load_call_set(cs: CallSet, reference_genome: str | None):
     return mt.select_cols("sample", "caller")
 
 
-def combine(call_sets: list[CallSet], reference_genome: str | None):
+def combine(call_sets: list[CallSet], reference_genome: str):
     """All call sets as one MatrixTable (outer join on variants: a call set with no call there has a missing GT)."""
     mts = [load_call_set(cs, reference_genome) for cs in call_sets]
     mt = mts[0]
@@ -136,12 +134,13 @@ def variant_type(alleles):
 
 
 def analyse(mt, callers):
-    """sample_qc per call set, variant_qc per variant, per-site counts per call set, and the caller overlap.
+    """sample_qc per call set, variant_qc per variant, per-variant counts per call set, and the caller overlap.
 
-    hl.sample_qc counts alternate *alleles* (a hom-var SNP is two SNP alleles, two transitions or transversions), so
-    its n_snp and r_ti_tv differ from bcftools stats, which counts sites (the numbers the quality gate reads). The
-    per_call table counts sites, like bcftools stats; sample_qc is kept in its own output for everything else
-    (call rate, depth, singletons)."""
+    hl.sample_qc counts alternate allele *copies* (a hom-var SNP is two SNP alleles, two transitions or
+    transversions). The per_call table counts each called variant once, as bcftools stats does: a hom-var is one call.
+    Variants are the split ones, so a multi-allelic site counts once per alternate allele (a 1/2 genotype is two het
+    calls); about 1% of the real chr20 records are multi-allelic. sample_qc is kept in its own output for everything
+    else (call rate, depth, singletons)."""
     import hail as hl
 
     mt = hl.sample_qc(mt)
@@ -179,21 +178,28 @@ def analyse(mt, callers):
     return sample_qc, variants, per_call, overlap
 
 
-def comparison_rows(per_call_df, overlap_df):
-    """Per (sample, caller): PASS calls, SNPs, indels, Ti/Tv and het/hom (all per site), plus the calls unique to that
-    caller and the calls every caller of that sample made."""
+COUNTS = ("pass_calls", "n_het", "n_hom_var", "snps", "indels", "transitions", "transversions")
+
+
+def comparison_rows(call_sets, per_call_df, overlap_df):
+    """Per input call set: PASS calls, SNPs, indels, Ti/Tv and het/hom (per variant), plus the calls unique to that
+    caller and the calls every caller of that sample made. The callers of a sample are the call sets it was given, so a
+    call set with no PASS calls at all still has a row (zeros) and still counts in "shared by all"."""
+    counts = {(r["sample"], r["caller"]): r for r in per_call_df.to_dict("records")}
     rows = []
-    for _, col in per_call_df.sort_values(["sample", "caller"]).iterrows():
-        sample, caller = col["sample"], col["caller"]
-        mine = overlap_df[overlap_df["sample"] == sample]
-        n_callers = int(per_call_df[per_call_df["sample"] == sample]["caller"].nunique())
+    for cs in sorted(call_sets, key=lambda c: (c.sample, c.caller)):
+        col = counts.get((cs.sample, cs.caller), dict.fromkeys(COUNTS, 0))
+        if (cs.sample, cs.caller) not in counts:
+            print(f"cohort_qc: WARNING: {cs.column} has no PASS calls", file=sys.stderr)
+        mine = overlap_df[overlap_df["sample"] == cs.sample]
+        n_callers = sum(1 for c in call_sets if c.sample == cs.sample)
         combos = mine["callers"].str.split("+")
-        unique = int(mine[combos.apply(lambda c, caller=caller: c == [caller])]["n"].sum())
+        unique = int(mine[combos.apply(lambda c, caller=cs.caller: c == [caller])]["n"].sum())
         shared_all = int(mine[combos.apply(len) == n_callers]["n"].sum()) if n_callers > 1 else None
         rows.append(
             {
-                "sample": sample,
-                "caller": caller,
+                "sample": cs.sample,
+                "caller": cs.caller,
                 "pass_calls": int(col["pass_calls"]),
                 "snps": int(col["snps"]),
                 "indels": int(col["indels"]),
@@ -229,8 +235,8 @@ def write_outputs(out: str, sample_qc, variants, per_call, overlap, call_sets) -
     overlap.to_spark(flatten=True).write.mode("overwrite").parquet(os.path.join(out, "caller_overlap.parquet"))
     variants.to_spark(flatten=True).write.mode("overwrite").parquet(os.path.join(out, "variants.parquet"))
 
-    rows = comparison_rows(per_call.to_pandas(), overlap.to_pandas())
     overlap_df = overlap.to_pandas()
+    rows = comparison_rows(call_sets, per_call.to_pandas(), overlap_df)
     columns = list(rows[0]) if rows else []
     with open(os.path.join(out, "caller_comparison.csv"), "w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
@@ -262,15 +268,19 @@ def init_hail(cores: int, driver_memory: str, tmp_dir: str | None):
     )
 
 
-def run(call_sets: list[CallSet], out: str, reference_genome: str | None = "GRCh38") -> list[dict]:
+def run(call_sets: list[CallSet], out: str, reference_genome: str = "GRCh38") -> list[dict]:
     """The whole job on an initialised Hail. Returns the caller-comparison rows."""
+    import hail as hl
+
     if not call_sets:
         raise SystemExit("cohort_qc: no call sets to analyse")
     columns = [c.column for c in call_sets]
     if len(set(columns)) != len(columns):
         raise SystemExit(f"cohort_qc: duplicate sample/caller pairs: {sorted(columns)}")
     callers = sorted({c.caller for c in call_sets})
-    mt = combine(call_sets, reference_genome)
+    # Checkpointed once: the outputs are several Spark actions, and without it each would re-import, split, sort and
+    # join every VCF again.
+    mt = combine(call_sets, reference_genome).checkpoint(hl.utils.new_temp_file("cohort", "mt"))
     return write_outputs(out, *analyse(mt, callers), call_sets)
 
 
@@ -281,7 +291,9 @@ def main(argv=None) -> int:
     parser.add_argument("--callers", nargs="+", default=list(CALLERS), choices=CALLERS)
     parser.add_argument("--vcf", action="append", type=parse_vcf_arg, default=[], help="SAMPLE:CALLER:PATH")
     parser.add_argument("--out", required=True, help="output directory")
-    parser.add_argument("--reference-genome", default="GRCh38", help="Hail reference genome, or 'none'")
+    parser.add_argument(
+        "--reference-genome", default="GRCh38", help="Hail reference genome: GRCh38 (chr20), GRCh37 (20) ..."
+    )
     parser.add_argument("--cores", type=int, default=4)
     parser.add_argument("--driver-memory", default="4g")
     parser.add_argument("--tmp-dir", default=None, help="Hail/Spark scratch (default: <out>/_tmp)")
@@ -292,7 +304,7 @@ def main(argv=None) -> int:
         call_sets += discover(args.root, args.samples, args.callers)
     elif args.samples:
         parser.error("--samples needs --root")
-    reference = None if args.reference_genome.lower() == "none" else args.reference_genome
+    reference = args.reference_genome
 
     tmp_dir = args.tmp_dir or os.path.join(args.out, "_tmp")
     os.makedirs(tmp_dir, exist_ok=True)

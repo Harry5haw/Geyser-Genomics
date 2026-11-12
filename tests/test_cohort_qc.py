@@ -20,7 +20,6 @@ Sample S1 has all three callers, S2 only bcftools. Expected, PASS calls only (by
 
 import argparse
 import os
-import shutil
 
 import pytest
 
@@ -151,7 +150,8 @@ def test_comparison_rows_counts_unique_and_shared():
             {"sample": "S1", "callers": "deepvariant", "variant_type": "indel", "n": 1},
         ]
     )
-    rows = {r["caller"]: r for r in cohort_qc.comparison_rows(per_call, overlap)}
+    call_sets = [cohort_qc.CallSet("S1", c, "-") for c in ("bcftools", "deepvariant")]
+    rows = {r["caller"]: r for r in cohort_qc.comparison_rows(call_sets, per_call, overlap)}
     assert rows["bcftools"]["unique_to_caller"] == 1
     assert rows["deepvariant"]["unique_to_caller"] == 1
     assert rows["bcftools"]["shared_by_all_callers"] == 1
@@ -159,30 +159,32 @@ def test_comparison_rows_counts_unique_and_shared():
     assert rows["bcftools"]["het_hom"] == 1.0
 
 
+def test_a_call_set_without_pass_calls_keeps_its_row_and_counts_as_a_caller(capsys):
+    """Its row shows zeros, and calls the other two share are not "shared by all callers"."""
+    pd = pytest.importorskip("pandas")
+    counts = {"pass_calls": 1, "n_het": 1, "n_hom_var": 0, "snps": 1, "indels": 0, "transitions": 1, "transversions": 0}
+    per_call = pd.DataFrame([{"sample": "S1", "caller": c, **counts} for c in ("bcftools", "deepvariant")])
+    overlap = pd.DataFrame([{"sample": "S1", "callers": "bcftools+deepvariant", "variant_type": "SNP", "n": 1}])
+    call_sets = [cohort_qc.CallSet("S1", c, "-") for c in cohort_qc.CALLERS]
+    rows = {r["caller"]: r for r in cohort_qc.comparison_rows(call_sets, per_call, overlap)}
+    assert rows["pangenome"]["pass_calls"] == 0 and rows["pangenome"]["ti_tv"] is None
+    assert rows["bcftools"]["shared_by_all_callers"] == 0
+    assert "S1/pangenome has no PASS calls" in capsys.readouterr().err
+
+
+def test_vcf_arg_refuses_an_unknown_caller():
+    with pytest.raises(argparse.ArgumentTypeError, match="not one of"):
+        cohort_qc.parse_vcf_arg("HG003:deepvarient:/data/x.vcf.gz")
+
+
 # --- Hail: skip without it -----------------------------------------------------------------------------------------
 
 
 @pytest.fixture(scope="module")
-def hail(tmp_path_factory):
-    hl = pytest.importorskip("hail")
-    if not (shutil.which("java") or os.environ.get("JAVA_HOME")):
-        pytest.skip("Hail needs a JVM (Java 11)")
-    if os.name == "nt":
-        pytest.skip("Hail has no Windows build: run in app-cohort/Dockerfile")
-    tmp = str(tmp_path_factory.mktemp("hail"))
-    from pyspark import SparkContext
-
-    # Share a SparkContext with test_cohort_runs.py if it started one first (one per process).
-    hl.init(
-        sc=SparkContext._active_spark_context,
-        master=None if SparkContext._active_spark_context else "local[2]",
-        quiet=True,
-        tmp_dir=tmp,
-        local_tmpdir=tmp,
-        log=os.path.join(tmp, "hail.log"),
-        idempotent=True,
-    )
-    return hl
+def hail(cohort_spark):
+    """Hail on the shared Spark session (tests/conftest.py), whichever cohort test file runs first."""
+    pytest.importorskip("hail")
+    return cohort_spark[1]
 
 
 @pytest.fixture(scope="module")
@@ -252,6 +254,14 @@ def test_variant_table_counts_samples_per_caller(hail, result):
     assert variants.where("`locus.position` IN (500, 600)").count() == 0
     # 100, 200, 300, 400 x2, 700, 800, and S2's 900 x3 (multi-allelic split + a duplicate locus)
     assert variants.count() == 10
+
+
+def test_a_contig_the_reference_lacks_fails_loudly(hail, tmp_path):
+    """Not a silent empty result: the synthetic genome's contig isn't in GRCh38."""
+    path = tmp_path / "synth.vcf"
+    path.write_text(vcf_text("S9", [(100, "A", "G", ".", "0/1")]).replace("chr20", "synth1"), newline="\n")
+    with pytest.raises(Exception, match="synth1"):
+        cohort_qc.run([cohort_qc.CallSet("S9", "bcftools", str(path))], str(tmp_path / "out"))
 
 
 def test_duplicate_call_sets_are_refused(hail, tmp_path):

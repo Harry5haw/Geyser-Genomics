@@ -6,7 +6,6 @@ Synthetic records shaped like app/provenance.py's (the real ones are in geyser-d
 
 import json
 import os
-import shutil
 
 import pytest
 
@@ -41,7 +40,7 @@ def record(sample_id, depth, status="succeeded", caller_stage="CallVariants", la
     }
     if stats:
         rec["stats"] = {
-            "flagstat": {"in_total": 1000, "duplicates": 50, "mapped_pct": 99.5, "properly_paired_pct": 98.0},
+            "flagstat": {"in_total": 1000, "duplicates": 50, "primary_mapped_pct": 99.5, "properly_paired_pct": 98.0},
             "mosdepth": {"mean_depth": depth, "length": 64444167, "bases": 1},
             "bcftools_stats": {"records": 120, "snps": 100, "indels": 20, "tstv": 2.0},
         }
@@ -49,22 +48,9 @@ def record(sample_id, depth, status="succeeded", caller_stage="CallVariants", la
 
 
 @pytest.fixture(scope="module")
-def spark():
-    pytest.importorskip("pyspark")
-    if not (shutil.which("java") or os.environ.get("JAVA_HOME")):
-        pytest.skip("Spark needs a JVM (Java 11)")
-    if os.name == "nt":
-        pytest.skip("Spark on Windows needs winutils to write Parquet: run in app-cohort/Dockerfile")
-    from pyspark.sql import SparkSession
-
-    # getOrCreate: shares the process's one SparkContext with test_cohort_qc.py (Hail) whichever starts first.
-    # Never stopped here for the same reason.
-    return (
-        SparkSession.builder.master("local[2]")
-        .config("spark.sql.session.timeZone", "UTC")
-        .config("spark.ui.enabled", "false")
-        .getOrCreate()
-    )
+def spark(cohort_spark):
+    """The shared session (tests/conftest.py): Hail's when Hail is installed, so test order doesn't matter."""
+    return cohort_spark[0]
 
 
 @pytest.fixture
@@ -75,7 +61,11 @@ def runs(tmp_path):
         "A": record("A", 32.0),
         "B": record("B", 14.5, layout="single"),
         # DeepVariant instead of bcftools, and a failed run with no stats yet.
-        "C": record("C", 30.0, status="failed", caller_stage="DeepVariant", stats=False),
+        "C": record("C", 30.0, status="failed", caller_stage="DeepVariant", stats=False)
+        | {
+            # A run Finalize closed after a shard failed: the failing job's stage is in stages too.
+            "failure": {"stage": "CallVariantsShard", "reason": "OutOfMemoryError: Container killed", "exit_code": 137},
+        },
     }
     for sample_id, rec in records.items():
         (runs / f"{sample_id}.provenance.json").write_text(json.dumps(rec, indent=2))
@@ -97,13 +87,18 @@ def test_one_row_per_record(spark, runs, tmp_path):
     assert a["stage_seconds_total"] == 120.0  # 10 + 100 + 10
     assert a["cpu_seconds_total"] == 340.0
     assert a["peak_memory_mib_max"] == 2000.0
-    assert a["duplicate_pct"] == 5.0
+    assert a["duplicate_records_pct"] == 5.0
     # A stage the run never had is a null column, not an error.
     assert a["DeepVariant_seconds"] is None
 
     c = rows["C"]
     assert (c["status"], c["DeepVariant_status"], c["CallVariants_status"]) == ("failed", "Success", None)
-    assert c["mean_depth"] is None and c["duplicate_pct"] is None
+    assert c["mean_depth"] is None and c["duplicate_records_pct"] is None
+    # Where and why it failed, from the record's failure block.
+    assert (c["failed_stage"], c["failure_exit_code"]) == ("CallVariantsShard", 137)
+    assert c["failure_reason"].startswith("OutOfMemoryError")
+    assert a["failed_stage"] is None
+    assert a["primary_mapped_pct"] == 99.5
 
 
 def test_summary_and_csv(spark, runs, tmp_path):
@@ -146,4 +141,6 @@ def test_stage_list_covers_the_pipeline():
     import provenance
 
     known = set(provenance.CORE_STAGES) | set(provenance.CALLER_STAGES.values()) | set(provenance.UPSTREAM)
+    # The jobs a Finalize part can name as the failing one go into stages too.
+    known |= {stage for _, stage in provenance.JOB_NAME_STAGES}
     assert known <= set(cohort_runs.STAGES)
