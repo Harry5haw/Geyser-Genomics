@@ -4,17 +4,30 @@
 {% load static %}
 {% block title %}Upload reads · Geyser Genomics{% endblock %}
 {% block content %}
-<section class="panel">
+<section>
   <h1>Upload reads</h1>
-  <p>Gzipped FASTQ goes straight from this browser to the pipeline's storage, in parts. Each part is retried if the
-    connection drops, and an interrupted upload carries on from where it stopped when you choose the same files
-    again, even after closing the tab. The run starts as soon as the reads are in.</p>
-  <p class="muted"><small>Uploading needs the upload token. It stays in this page and is sent only to the upload
-    service: it isn't saved anywhere.</small></p>
+  <p class="lead">Gzipped FASTQ goes straight from this browser to the pipeline's storage. The run starts as soon as the
+    reads are in, and the sample gets its own page here when it ends.</p>
+</section>
+<noscript><p class="note">This page needs JavaScript to send the files.</p></noscript>
+<div id="up-pending" class="note" hidden></div>
 
-  <noscript><p class="note">This page needs JavaScript to send the files.</p></noscript>
-  <div id="up-pending" class="note" hidden></div>
-
+{# Two cards side by side, as on the local UI's home page: what happens, and the form. #}
+<section class="actions">
+  <div class="card">
+    <h3>What happens</h3>
+    <ul class="checklist">
+      <li>Sent in parts: a dropped connection retries the part, not the whole file</li>
+      <li>An interrupted upload carries on where it stopped when you choose the same files again, even after closing the tab</li>
+      <li>Quality control, alignment and variant calling start on their own</li>
+      <li>The quality gate checks the run against the profile you choose</li>
+      <li>Calls, QC, gate verdict and run record published on the sample's page</li>
+    </ul>
+    <p class="muted"><small>Uploading needs the upload token. It stays in this page and is sent only to the upload
+      service: it isn't saved anywhere.</small></p>
+  </div>
+  <div class="card">
+    <h3>Your reads</h3>
   {# novalidate: upload.js checks every field itself (and says what's wrong in the status line). #}
   <form id="upload-form" data-api="{{ api_base }}" data-existing="{{ existing|join:' ' }}" novalidate>
     <label>
@@ -63,6 +76,7 @@
     <progress id="up-progress" max="1" value="0" aria-label="Upload progress"></progress>
     <p id="up-status" role="status" aria-live="polite"></p>
   </form>
+  </div>
 </section>
 <script src="{% static 'samples/upload.js' %}" defer></script>
 {% endblock %}
