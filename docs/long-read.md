@@ -76,11 +76,31 @@ lists `minimap2` with its version under `tools`.
   minimap2, samtools and bcftools in the image recover all 10 planted SNPs and call nothing else. No read is
   flagged as a duplicate. Sharded calling gives exactly the single job's records.
 
+## In the cloud
+
+The state machine takes an optional `read_type` in the execution input (`short`, `hifi` or `ont`; left out means
+`short`). Start a long-read run by hand:
+
+```bash
+aws stepfunctions start-execution --state-machine-arn <arn> --name <sample>-<UTC time>-<hash> \
+  --input '{"srr_id": "HIFI001", "reference_name": "chr20.fa", "read_type": "hifi", "caller": "deepvariant"}'
+```
+
+- `hifi` or `ont` sets the aligner to minimap2 (`ALIGNER=minimap2`, `READ_TYPE` on the align job). An explicit
+  `aligner` other than `minimap2` (bwa-mem2, giraffe) fails before any job with `AlignerNotForLongReads`, and an
+  unknown `read_type` fails with `UnknownReadType`, so a typo never calls long reads with a short-read model.
+- `READ_TYPE` also reaches every calling job: DeepVariant (single job, split make_examples parts and the call job)
+  picks its model from it, and the bcftools shards and merge pick mpileup's error model.
+- **bcftools on long reads is allowed, as a weaker fallback.** `caller` left out (bcftools) or DeepVariant's
+  bcftools fallback both call with `-X pacbio-ccs` / `-X ont`. DeepVariant is the caller to use for long reads.
+- The large (chunked) route aligns with bwa-mem2 only, so it refuses a long-read input (`AlignerNotOnLargeRoute`).
+
 ## Not yet
 
-- **The cloud route.** The trigger and the state machine don't pass `READ_TYPE` yet, so cloud runs are short-read.
-  That needs a small infrastructure change, and the large (chunked) route stays bwa-mem2 only. Locally, everything
-  above runs.
+- **Uploads can't say they are long reads.** The trigger Lambda starts every upload as a short-read run; a
+  `read-type` metadata key on the upload is the follow-up (#295). Until then, start long-read runs by hand as
+  above. The upload to `raw_reads/` still starts its own short-read run, so give it a `gate-profile` the state
+  machine rejects (`--metadata gate-profile=manual-start`): that run fails before any job, at no cost.
 - **Real-data accuracy.** The benchmark on GIAB HG002 HiFi reads (minimap2 + DeepVariant `PACBIO`, scored with
   hap.py) is run separately and recorded in the [benchmark history](benchmarks/README.md).
 

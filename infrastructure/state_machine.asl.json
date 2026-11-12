@@ -283,7 +283,74 @@
         "dv_parts.$": "$.run_check.settings.dv_parts"
       },
       "ResultPath": "$.run_settings",
+      "Next": "Check_Read_Type"
+    },
+    "Check_Read_Type": {
+      "Type": "Choice",
+      "Comment": "read_type in the input (long reads, docs/long-read.md): absent or short is the short-read run as before; hifi (PacBio HiFi) or ont (Oxford Nanopore R10.4.1) is the long-read route: minimap2 aligns, duplicates aren't marked, and READ_TYPE picks DeepVariant's model and bcftools' error model (tasks.READ_TYPES). Anything else fails before any job, so a typo never calls long reads with a short-read model.",
+      "Choices": [
+        { "Not": { "Variable": "$.read_type", "IsPresent": true }, "Next": "Default_Read_Type" },
+        {
+          "And": [
+            { "Variable": "$.read_type", "IsString": true },
+            { "Variable": "$.read_type", "StringEquals": "short" }
+          ],
+          "Next": "Choose_Start"
+        },
+        {
+          "And": [
+            { "Variable": "$.read_type", "IsString": true },
+            {
+              "Or": [
+                { "Variable": "$.read_type", "StringEquals": "hifi" },
+                { "Variable": "$.read_type", "StringEquals": "ont" }
+              ]
+            }
+          ],
+          "Next": "Check_Long_Read_Aligner"
+        }
+      ],
+      "Default": "Prepare_Read_Type_Error"
+    },
+    "Default_Read_Type": {
+      "Type": "Pass",
+      "Comment": "Every job that reads READ_TYPE gets one: short, the app's own default.",
+      "Result": "short",
+      "ResultPath": "$.read_type",
       "Next": "Choose_Start"
+    },
+    "Check_Long_Read_Aligner": {
+      "Type": "Choice",
+      "Comment": "Long reads align with minimap2 only (bwa-mem2 and giraffe are short-read aligners). Without an aligner the run gets minimap2; any other aligner fails here, before any job. With aligner = minimap2 set, the large (chunked, bwa-mem2) route refuses a long-read input too (Check_Large_Aligner).",
+      "Choices": [
+        { "Not": { "Variable": "$.aligner", "IsPresent": true }, "Next": "Set_Long_Read_Aligner" },
+        { "Variable": "$.aligner", "StringEquals": "minimap2", "Next": "Set_Long_Read_Aligner" }
+      ],
+      "Default": "Prepare_Long_Read_Aligner_Error"
+    },
+    "Set_Long_Read_Aligner": {
+      "Type": "Pass",
+      "Result": "minimap2",
+      "ResultPath": "$.aligner",
+      "Next": "Choose_Start"
+    },
+    "Prepare_Read_Type_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "UnknownReadType",
+        "Cause.$": "States.Format('read_type {} is not one of short, hifi or ont (or left out for short reads)', States.JsonToString($.read_type))"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
+    },
+    "Prepare_Long_Read_Aligner_Error": {
+      "Type": "Pass",
+      "Parameters": {
+        "Error": "AlignerNotForLongReads",
+        "Cause.$": "States.Format('aligner {} can not align read_type {}: long reads align with minimap2. Leave aligner out, or set minimap2', States.JsonToString($.aligner), $.read_type)"
+      },
+      "ResultPath": "$.error",
+      "Next": "Prepare_Run_Close"
     },
     "Choose_Start": {
       "Type": "Choice",
@@ -503,9 +570,32 @@
               "Choices": [
                 { "Not": { "Variable": "$.aligner", "IsPresent": true }, "Next": "Prepare_Align_Command" },
                 { "Variable": "$.aligner", "StringEquals": "bwa-mem2", "Next": "Prepare_Align_Command" },
-                { "Variable": "$.aligner", "StringEquals": "giraffe", "Next": "Prepare_Giraffe_Command" }
+                { "Variable": "$.aligner", "StringEquals": "giraffe", "Next": "Prepare_Giraffe_Command" },
+                { "Variable": "$.aligner", "StringEquals": "minimap2", "Next": "Prepare_Minimap2_Command" }
               ],
               "Default": "Unknown_Aligner"
+            },
+            "Prepare_Minimap2_Command": {
+              "Type": "Pass",
+              "Comment": "Prepare_Align_Command with ALIGNER=minimap2 and the run's READ_TYPE (geyser-app has minimap2): READ_TYPE picks the preset (short: sr, hifi: map-hifi, ont: lr:hq) and whether duplicates are marked (long reads: not). Same command, keys, job name and size, so everything downstream sees an ordinary align job.",
+              "Parameters": {
+                "JobName.$": "States.Format('AlignGenome-{}-{}', $.srr_id, $$.Execution.Name)",
+                "JobDefinition": "${job_definition}",
+                "ContainerOverrides": {
+                  "Command.$": "States.Array('python', 'tasks.py', 'align', $.srr_id, $.reference_name)",
+                  "Environment": [
+                    { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+                    { "Name": "ALIGNER", "Value": "minimap2" },
+                    { "Name": "READ_TYPE", "Value.$": "$.read_type" }
+                  ],
+                  "ResourceRequirements": [
+                    { "Type": "VCPU", "Value.$": "$.run_settings.align_vcpu" },
+                    { "Type": "MEMORY", "Value.$": "$.run_settings.align_memory_mb" }
+                  ]
+                }
+              },
+              "ResultPath": "$.batch_params",
+              "Next": "Align_Genome"
             },
             "Prepare_Giraffe_Command": {
               "Type": "Pass",
@@ -528,7 +618,7 @@
             "Unknown_Aligner": {
               "Type": "Fail",
               "Error": "UnknownAligner",
-              "Cause": "aligner must be bwa-mem2 or giraffe (or left out for bwa-mem2)"
+              "Cause": "aligner must be bwa-mem2, giraffe or minimap2 (or left out for bwa-mem2)"
             }
           }
         }
@@ -763,7 +853,8 @@
         "reference_name.$": "$.reference_name",
         "part.$": "States.Format('{}', $$.Map.Item.Value)",
         "parts.$": "$.dv_split.parts_text",
-        "shards.$": "$.dv_split.shards_text"
+        "shards.$": "$.dv_split.shards_text",
+        "read_type.$": "$.read_type"
       },
       "MaxConcurrency": 0,
       "Iterator": {
@@ -778,7 +869,8 @@
                 "Environment": [
                   { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
                   { "Name": "PIPELINE_CALLER", "Value": "deepvariant" },
-                  { "Name": "DEEPVARIANT_SHARDS", "Value.$": "$.shards" }
+                  { "Name": "DEEPVARIANT_SHARDS", "Value.$": "$.shards" },
+                  { "Name": "READ_TYPE", "Value.$": "$.read_type" }
                 ]
               }
             },
@@ -824,7 +916,8 @@
           "Command.$": "States.Array('/opt/geyser-venv/bin/python', 'deepvariant_task.py', $.srr_id, $.reference_name, '--from-examples')",
           "Environment": [
             { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
-            { "Name": "PIPELINE_CALLER", "Value": "deepvariant" }
+            { "Name": "PIPELINE_CALLER", "Value": "deepvariant" },
+            { "Name": "READ_TYPE", "Value.$": "$.read_type" }
           ]
         }
       },
@@ -839,7 +932,8 @@
           "Command.$": "States.Array('/opt/geyser-venv/bin/python', 'deepvariant_task.py', $.srr_id, $.reference_name)",
           "Environment": [
             { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
-            { "Name": "PIPELINE_CALLER", "Value": "deepvariant" }
+            { "Name": "PIPELINE_CALLER", "Value": "deepvariant" },
+            { "Name": "READ_TYPE", "Value.$": "$.read_type" }
           ]
         }
       },
@@ -942,7 +1036,8 @@
         "srr_id.$": "$.srr_id",
         "reference_name.$": "$.reference_name",
         "region.$": "$$.Map.Item.Value",
-        "index.$": "$$.Map.Item.Index"
+        "index.$": "$$.Map.Item.Index",
+        "read_type.$": "$.read_type"
       },
       "MaxConcurrencyPath": "$.run_settings.calling_concurrency",
       "Iterator": {
@@ -950,11 +1045,15 @@
         "States": {
           "Prepare_Shard_Command": {
             "Type": "Pass",
+            "Comment": "READ_TYPE: bcftools mpileup's error model (long reads: -X pacbio-ccs / -X ont). For long reads bcftools is the weaker caller, here mainly as DeepVariant's fallback (docs/long-read.md).",
             "Parameters": {
               "JobName.$": "States.Format('CallVariantsShard-{}-{}', $.index, $$.Execution.Name)",
               "ContainerOverrides": {
                 "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--region', $.region)",
-                "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+                "Environment": [
+                  { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+                  { "Name": "READ_TYPE", "Value.$": "$.read_type" }
+                ],
                 "ResourceRequirements": [
                   { "Type": "VCPU", "Value": "${variants_vcpu}" },
                   { "Type": "MEMORY", "Value": "${variants_memory_mb}" }
@@ -1000,7 +1099,10 @@
         "JobName.$": "States.Format('CallVariants-{}-{}', $.srr_id, $$.Execution.Name)",
         "ContainerOverrides": {
           "Command.$": "States.Array('python', 'tasks.py', 'variants', $.srr_id, $.reference_name, '--window', $.run_settings.variant_region_window)",
-          "Environment": [{ "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" }],
+          "Environment": [
+            { "Name": "RUN_NAME", "Value.$": "$$.Execution.Name" },
+            { "Name": "READ_TYPE", "Value.$": "$.read_type" }
+          ],
           "ResourceRequirements": [
             { "Type": "VCPU", "Value": "${merge_vcpu}" },
             { "Type": "MEMORY", "Value": "${merge_memory_mb}" }
