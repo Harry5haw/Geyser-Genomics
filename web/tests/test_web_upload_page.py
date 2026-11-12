@@ -86,3 +86,15 @@ def test_a_one_sample_publish_invalidates_the_upload_page(site, monkeypatch):
     monkeypatch.setenv("CLOUDFRONT_DISTRIBUTION_ID", "E1")
     call_command("publish", "S1", "--out", "s3://b", "--api-base", API)
     assert "uploads/index.html" in fake.objects and "/uploads/*" in invalidations[0]
+
+
+def test_the_token_field_is_text_until_focus_then_a_password_field(site):
+    # A password field at load sets the browser's password manager parsing the form during first paint (a 70-80 ms
+    # task, the uploads page's TBT budget); upload.js makes it a password field on first focus, before any typing.
+    page = (publish(site, "--all", "--api-base", "https://api.example") / "uploads" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    (field,) = re.findall(r'<input[^>]*id="up-token"[^>]*>', page)
+    assert 'type="text"' in field and 'autocomplete="one-time-code"' in field
+    js = (Path(live_settings.BASE_DIR) / "samples" / "static" / "samples" / "upload.js").read_text(encoding="utf-8")
+    assert 'fields[0].type = "password"' in js and 'addEventListener("focus", hide, { once: true })' in js

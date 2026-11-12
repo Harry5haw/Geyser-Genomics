@@ -205,6 +205,11 @@
     const status = $("up-status"), bar = $("up-progress"), cancel = $("up-cancel"), pending = $("up-pending");
     const submit = form.querySelector("button[type=submit]");
     const fields = ["up-token", "up-r1", "up-r2", "up-id"].map($);
+    // The token field is served as text and becomes a password field on first focus (before anything is typed), so
+    // the browser's password manager doesn't parse the form during first paint (the uploads page's TBT).
+    const hide = () => { fields[0].type = "password"; };
+    if (doc.activeElement === fields[0]) hide();
+    else fields[0].addEventListener("focus", hide, { once: true });
     let current = null; // the running upload's AbortController
     let confirmedReplace = "", busy = false, followed = 0;
 
