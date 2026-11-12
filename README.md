@@ -66,7 +66,7 @@ For eighteen years I lived with an illness nobody could name. Then my mother, my
 - **A hosted results site.** A static, read-only site on CloudFront with token-gated uploads up to 256 GiB per file. Four themes (light, dark, retro, and high contrast at WCAG AAA 7:1), interactive 3D figures, and Lighthouse budgets in CI: every page under 30 KB, LCP under 1 s on an emulated phone over slow 4G.
 - **Observability.** A CloudWatch dashboard (runs, spend, stage durations, gate results), per-stage metrics, and a provenance record for every run: inputs, reference checksum, tool versions and each stage's timing.
 
-Designed and directed by me, built with AI coding agents (Claude Code); decisions, reviews and every infrastructure change were mine. The agents worked under a [bounded AWS role with its own kill switch](docs/design/claude-guardrails.md), and an AI-assistance log is kept with the project's write-up.
+**How it was built:** the code was written with Claude Code, Anthropic's AI coding agent, which I designed and directed. The decisions and reviews were mine, and every infrastructure change ran under rules I set and approved: most were my own applies, and the rest fell under narrow standing approvals. The agents worked under a [bounded AWS role with its own kill switch](docs/design/claude-guardrails.md), and an AI-assistance log is kept with the project's write-up.
 
 ## What's new
 
