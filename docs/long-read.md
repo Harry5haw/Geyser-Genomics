@@ -95,6 +95,28 @@ aws stepfunctions start-execution --state-machine-arn <arn> --name <sample>-<UTC
   bcftools fallback both call with `-X pacbio-ccs` / `-X ont`. DeepVariant is the caller to use for long reads.
 - The large (chunked) route aligns with bwa-mem2 only, so it refuses a long-read input (`AlignerNotOnLargeRoute`).
 
+### Cloud checkpoint (CLOUDLR001, 12 Nov 2026)
+
+4,199 HG002 HiFi reads overlapping chr20:10,000,001-12,000,000 (cut from the 30x data above), started by hand with
+`read_type: hifi` and `caller: deepvariant`. Every stage succeeded on its first Batch attempt: QC (fastp), align
+(minimap2 `map-hifi`, 33 s on 4 vCPU / 8 GB, peak 660 MiB) and DeepVariant (`--model_type=PACBIO`, 1.3 min on a
+g6.4xlarge, NVIDIA L4, after 4.5 min for the instance to boot). Wall time 8.8 min; about $0.006 of Fargate plus the
+GPU instance. The run record says `read_type: hifi`, `minimap2_preset: map-hifi`, `duplicates_marked: false`.
+
+| Calls (hap.py, GIAB v4.2.1, in the window) | SNP TP / FN / FP | SNP F1 | Indel TP / FN / FP | Indel F1 |
+| :--- | :--- | ---: | :--- | ---: |
+| Cloud (CLOUDLR001) | 2,581 / 0 / 0 | 1.000000 | 425 / 1 / 1 | 0.997700 |
+| Local 30x DeepVariant, same window | 2,581 / 0 / 0 | 1.000000 | 425 / 1 / 1 | 0.997700 |
+
+The two VCFs hold the same 3,367 PASS records with the same genotypes; 243 differ only in phase orientation
+(`0|1` vs `1|0`), which DeepVariant's phasing leaves arbitrary.
+
+**The execution ends FAILED, at the quality gate, by design.** The reads cover 2 Mb of chr20's 64.4 Mb, so the
+mean depth over the chromosome is 0.925 (minimum 20) and 3% of it is covered at 10x (minimum 90%). The gate is
+right to reject that as too shallow for a chromosome. Every other check passed (Q30 97.2%, 100% mapped, no
+duplicates, Ti/Tv 2.15). No gate profile describes a windowed real-data checkpoint (`smoke` expects the simulated
+50 kb CLOUD0xx data), and none was added: a possible follow-up, noted on #295.
+
 ## Not yet
 
 - **Uploads can't say they are long reads.** The trigger Lambda starts every upload as a short-read run; a
