@@ -274,10 +274,30 @@ def test_the_state_machines_aligners_are_the_apps():
     start = asl.index('"Choose_Aligner": {')
     choice = asl[start : asl.index('"Prepare_Giraffe_Command": {', start)]
     routes = dict(re.findall(r'"StringEquals": "([\w-]+)", "Next": "(\w+)"', choice))
-    assert routes == {tasks.DEFAULT_ALIGNER: "Prepare_Align_Command", "giraffe": "Prepare_Giraffe_Command"}
+    assert routes == {
+        tasks.DEFAULT_ALIGNER: "Prepare_Align_Command",
+        "giraffe": "Prepare_Giraffe_Command",
+        tasks.MINIMAP2: "Prepare_Minimap2_Command",
+    }
     assert set(routes) <= set(tasks.ALIGNERS)
     with open(os.path.join(REPO_ROOT, "app-giraffe", "Dockerfile"), encoding="utf-8") as fh:
         assert re.search(r"^ENV ALIGNER=giraffe\b", fh.read(), re.M)
+
+
+def test_the_state_machines_read_types_are_the_apps():
+    # Check_Read_Type (long reads): the read types a run may name are exactly tasks.READ_TYPES, the default is the
+    # app's, and the long ones are the ones that need minimap2 (Check_Long_Read_Aligner).
+    asl = asl_text()
+    start = asl.index('"Check_Read_Type": {')
+    choice = asl[start : asl.index('"Default_Read_Type": {', start)]
+    named = set(re.findall(r'"Variable": "\$\.read_type", "StringEquals": "(\w+)"', choice))
+    assert named == set(tasks.READ_TYPES)
+    long_choice = choice[choice.index('"Or": [') :]
+    assert set(re.findall(r'"StringEquals": "(\w+)"', long_choice)) == set(tasks.LONG_READ_TYPES)
+    default = asl[asl.index('"Default_Read_Type": {') :]
+    assert re.search(r'"Result": "(\w+)"', default).group(1) == tasks.DEFAULT_READ_TYPE
+    long_aligner = asl[asl.index('"Set_Long_Read_Aligner": {') :]
+    assert re.search(r'"Result": "([\w-]+)"', long_aligner).group(1) == tasks.MINIMAP2
 
 
 def test_the_giraffe_job_definition_uses_the_apps_kmc_default():

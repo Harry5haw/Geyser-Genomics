@@ -159,6 +159,8 @@ TEMPLATE_VARS["align_sizes"] = json.dumps(align_override_sizes())
 TEMPLATE_VARS["variant_region_window_min"] = "5000000"
 TEMPLATE_VARS["variant_region_window_max"] = "250000000"
 BATCH_TASKS = ("Quality_Control", "Align_Genome", "Plan_Regions", "Call_Shard", "Call_Variants", "Quality_Gate")
+# The bcftools jobs that get the run's READ_TYPE (mpileup's error model; long reads, docs/long-read.md).
+READ_TYPE_TASKS = ("Call_Shard", "Call_Variants")
 # What Read_Regions gets from S3 in the tests: the planner's JSON list, as GetObject returns it (a string).
 REGIONS = ["chr20:1-50000000", "chr20:50000001-64444167", "chr21:1-46709983"]
 # What Read_Manifest gets from S3 on the large route: the pre-flight's manifest (schema 1), three chunks.
@@ -574,6 +576,7 @@ def run_case(
     input_bytes=_UNSET,
     from_alignment=_UNSET,
     annotate=_UNSET,
+    read_type=_UNSET,
 ):
     """Start one mocked execution and wait for it. Returns (description, history events)."""
     client, arn, name = sfn
@@ -594,6 +597,8 @@ def run_case(
         run_input["from_alignment"] = from_alignment
     if annotate is not _UNSET:  # likewise (Check_Annotate validates it)
         run_input["annotate"] = annotate
+    if read_type is not _UNSET:  # likewise (Check_Read_Type validates it)
+        run_input["read_type"] = read_type
     try:
         execution = client.start_execution(
             stateMachineArn=f"{arn}#{case}",
@@ -884,6 +889,8 @@ def test_every_stage_gets_the_execution_name_as_run_name(sfn):
             expected.append({"Name": "GATE_MODE", "Value": "warn"})
             # No gate_profile in the input: the default thresholds (the app expands the variable).
             expected.append({"Name": "GATE_CONFIG", "Value": "$GATE_THRESHOLDS_DIR/default.toml"})
+        if state in READ_TYPE_TASKS:  # bcftools' error model; no read_type in the input: short reads
+            expected.append({"Name": "READ_TYPE", "Value": "short"})
         assert p["ContainerOverrides"]["Environment"] == expected, state
 
 
@@ -943,9 +950,11 @@ def test_caller_deepvariant_runs_deepvariant_on_the_gpu_queue(sfn):
         "ref.fa",
     ]
     # PIPELINE_CALLER: DeepVariant is this run's caller, so its PASS-call stats become the sample's (#147).
+    # READ_TYPE picks DeepVariant's model (short: WGS); no read_type in the input is short reads.
     assert dv["ContainerOverrides"]["Environment"] == [
         {"Name": "RUN_NAME", "Value": desc["name"]},
         {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+        {"Name": "READ_TYPE", "Value": "short"},
     ]
     # deepvariant_timeout_seconds (v2.0, was a fixed 3600): long enough for a genome's call_variants.
     assert dv["Timeout"]["AttemptDurationSeconds"] == 14400
@@ -1009,6 +1018,7 @@ def test_split_mode_runs_one_cpu_part_per_dv_part_then_the_gpu_job_on_their_exam
             {"Name": "RUN_NAME", "Value": desc["name"]},
             {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
             {"Name": "DEEPVARIANT_SHARDS", "Value": "24"},
+            {"Name": "READ_TYPE", "Value": "short"},
         ]
     # The GPU job comes after every part, on their examples, as the single job otherwise.
     by_id = {e["id"]: e for e in events}
@@ -1027,6 +1037,7 @@ def test_split_mode_runs_one_cpu_part_per_dv_part_then_the_gpu_job_on_their_exam
     assert dv["ContainerOverrides"]["Environment"] == [
         {"Name": "RUN_NAME", "Value": desc["name"]},
         {"Name": "PIPELINE_CALLER", "Value": "deepvariant"},
+        {"Name": "READ_TYPE", "Value": "short"},
     ]
     assert "Plan_Regions" not in entered(events)
     assert json.loads(desc["output"])["run_settings"]["dv_parts"] == 3
@@ -1156,7 +1167,10 @@ def test_the_map_calls_every_region_once_then_merges(sfn):
             "ref.fa",
             "--region",
         ]
-        assert p["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
+        assert p["ContainerOverrides"]["Environment"] == [
+            {"Name": "RUN_NAME", "Value": desc["name"]},
+            {"Name": "READ_TYPE", "Value": "short"},
+        ]
         assert re.fullmatch(rf"CallVariantsShard-[0-2]-{desc['name']}", p["JobName"])
     # The merge comes after every shard, and reads the regions the planner wrote for this run.
     by_id = {e["id"]: e for e in events}
@@ -1473,6 +1487,131 @@ def test_an_unknown_aligner_fails_the_run_without_aligning(sfn, aligner):
     assert_closed_before_notifying(desc, events, error="UnknownAligner")
 
 
+# --- long reads: read_type in the input (docs/long-read.md) ---------------------------------------------
+
+
+def job_env(params) -> dict:
+    return {e["Name"]: e["Value"] for e in params["ContainerOverrides"]["Environment"]}
+
+
+@pytest.mark.parametrize("aligner", [_UNSET, "minimap2"])
+def test_hifi_aligns_with_minimap2_and_deepvariant_gets_its_read_type(sfn, aligner):
+    desc, events = run_case(
+        sfn,
+        "DeepVariantOk",
+        sample="SAMPLE7",
+        reference="ref.fa",
+        caller="deepvariant",
+        aligner=aligner,
+        read_type="hifi",
+    )
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert states.index("Check_Read_Type") < states.index("Set_Long_Read_Aligner") < states.index("Choose_Start")
+    assert "Prepare_Minimap2_Command" in states and "Prepare_Align_Command" not in states
+    (align,) = batch_calls(events, "Align_Genome")
+    # The app's job definition (geyser-app has minimap2), the align stage's command, name and size.
+    assert align["JobDefinition"] == TEMPLATE_VARS["job_definition"]
+    assert align["ContainerOverrides"]["Command"] == ["python", "tasks.py", "align", "SAMPLE7", "ref.fa"]
+    assert re.fullmatch(rf"AlignGenome-SAMPLE7-{desc['name']}", align["JobName"])
+    assert align["ContainerOverrides"]["Environment"] == [
+        {"Name": "RUN_NAME", "Value": desc["name"]},
+        {"Name": "ALIGNER", "Value": "minimap2"},
+        {"Name": "READ_TYPE", "Value": "hifi"},
+    ]
+    sizes = {r["Type"]: r["Value"] for r in align["ContainerOverrides"]["ResourceRequirements"]}
+    assert sizes == {"VCPU": TEMPLATE_VARS["align_vcpu"], "MEMORY": TEMPLATE_VARS["align_memory_mb"]}
+    # READ_TYPE=hifi: DeepVariant's PACBIO model (the app maps it; the state machine never sets the model).
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert job_env(dv)["READ_TYPE"] == "hifi"
+    # QC is unchanged: the same reports for any read type.
+    (qc,) = batch_calls(events, "Quality_Control")
+    assert "READ_TYPE" not in job_env(qc)
+
+
+def test_ont_with_bcftools_passes_the_read_type_to_every_calling_job(sfn):
+    # bcftools on long reads (mpileup -X ont / -X pacbio-ccs) is supported by the app, the weaker caller.
+    desc, events = run_case(sfn, "HappyPath", read_type="ont")
+    assert desc["status"] == "SUCCEEDED"
+    (align,) = batch_calls(events, "Align_Genome")
+    assert job_env(align) == {"RUN_NAME": desc["name"], "ALIGNER": "minimap2", "READ_TYPE": "ont"}
+    for state in READ_TYPE_TASKS:
+        calls = batch_calls(events, state)
+        assert calls, state
+        for p in calls:
+            assert job_env(p)["READ_TYPE"] == "ont", state
+    (plan,) = batch_calls(events, "Plan_Regions")
+    assert "READ_TYPE" not in job_env(plan)
+
+
+def test_a_hifi_run_whose_deepvariant_fails_falls_back_to_bcftools_with_the_hifi_model(sfn):
+    desc, events = run_case(sfn, "DeepVariantFallsBack", caller="deepvariant", read_type="hifi")
+    assert desc["status"] == "SUCCEEDED"
+    for state in READ_TYPE_TASKS:
+        calls = batch_calls(events, state)
+        assert calls, state
+        for p in calls:
+            assert job_env(p)["READ_TYPE"] == "hifi", state
+
+
+def test_the_dv_split_parts_get_the_read_type(sfn):
+    desc, events = run_case(
+        sfn, "DeepVariantSplitOk", caller="deepvariant", overrides={"dv_parts": 3}, read_type="hifi"
+    )
+    assert desc["status"] == "SUCCEEDED"
+    parts = batch_calls(events, "Make_Examples_Part")
+    assert len(parts) == 3
+    for p in parts:
+        assert job_env(p)["READ_TYPE"] == "hifi"
+    (dv,) = batch_calls(events, "DeepVariant")
+    assert job_env(dv)["READ_TYPE"] == "hifi"
+
+
+@pytest.mark.parametrize("read_type", [_UNSET, "short"])
+def test_short_reads_align_as_before(sfn, read_type):
+    desc, events = run_case(sfn, "HappyPath", read_type=read_type)
+    assert desc["status"] == "SUCCEEDED"
+    states = entered(events)
+    assert "Prepare_Align_Command" in states and "Prepare_Minimap2_Command" not in states
+    (align,) = batch_calls(events, "Align_Genome")
+    assert align["ContainerOverrides"]["Environment"] == [{"Name": "RUN_NAME", "Value": desc["name"]}]
+    for state in READ_TYPE_TASKS:
+        for p in batch_calls(events, state):
+            assert job_env(p)["READ_TYPE"] == "short", state
+
+
+def test_minimap2_on_short_reads_uses_its_short_read_preset(sfn):
+    # aligner = minimap2 without read_type: minimap2 -ax sr (the app's preset for READ_TYPE=short).
+    desc, events = run_case(sfn, "HappyPath", aligner="minimap2")
+    assert desc["status"] == "SUCCEEDED"
+    (align,) = batch_calls(events, "Align_Genome")
+    assert job_env(align) == {"RUN_NAME": desc["name"], "ALIGNER": "minimap2", "READ_TYPE": "short"}
+
+
+@pytest.mark.parametrize("read_type", ["HiFi", "long", "pacbio", "", 7, None, ["hifi"]])
+def test_an_unknown_read_type_fails_the_run_before_any_job(sfn, read_type):
+    desc, events = run_case(sfn, "AlignerUnknown", read_type=read_type)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert "Prepare_Read_Type_Error" in entered(events) and not batch_parameters(events)
+    assert_closed_before_notifying(desc, events, error="UnknownReadType")
+
+
+@pytest.mark.parametrize("aligner", ["bwa-mem2", "giraffe", "bwa", 7])
+def test_long_reads_with_a_short_read_aligner_fail_before_any_job(sfn, aligner):
+    desc, events = run_case(sfn, "AlignerUnknown", read_type="hifi", aligner=aligner)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert "Prepare_Long_Read_Aligner_Error" in entered(events) and not batch_parameters(events)
+    assert_closed_before_notifying(desc, events, error="AlignerNotForLongReads")
+
+
+def test_long_reads_never_take_the_large_chunked_route(sfn):
+    # The large route aligns chunks with bwa-mem2 only: a large long-read input fails before any job.
+    desc, events = run_case(sfn, "AlignerUnknown", read_type="hifi", input_bytes=LARGE)
+    assert desc["status"] == "FAILED" and failure_error(events) == "PipelineStageFailed"
+    assert "Prepare_Large_Aligner_Error" in entered(events) and not batch_parameters(events)
+    assert_closed_before_notifying(desc, events, error="AlignerNotOnLargeRoute")
+
+
 # --- the reference genome per upload: checked before any job ----------------------------------------
 
 
@@ -1622,6 +1761,8 @@ OVERRIDE_CHAIN = [
     "Inspect_Run_Setting_Values",
     "Check_Run_Setting_Values",
     "Set_Run_Settings",
+    "Check_Read_Type",  # long reads: no read_type in the input...
+    "Default_Read_Type",  # ...is short reads
     "Choose_Start",  # v2.0: without from_alignment, on to the routes
     "Choose_Route",  # v1.3: small inputs go on to QC_and_Align as before
 ]
@@ -1856,7 +1997,13 @@ def test_small_inputs_take_todays_path_unchanged(sfn, input_bytes):
     assert desc["status"] == "SUCCEEDED"
     states = entered(events)
     at = states.index("Set_Run_Settings")
-    assert states[at + 1 : at + 4] == ["Choose_Start", "Choose_Route", "QC_and_Align"]
+    assert states[at + 1 : at + 6] == [
+        "Check_Read_Type",
+        "Default_Read_Type",
+        "Choose_Start",
+        "Choose_Route",
+        "QC_and_Align",
+    ]
     assert not set(LARGE_STATES) & set(states)
     assert set(batch_parameters(events)) == set(BATCH_TASKS)  # the same jobs as before v1.3
 
