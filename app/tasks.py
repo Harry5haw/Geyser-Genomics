@@ -88,15 +88,27 @@ ALIGNERS = (*ALIGNER_INDEX_EXTS, MINIMAP2, GIRAFFE)
 # same base on the same strand are almost never copies of one molecule, while markdup, which has only position
 # and strand to go on for single-end reads, would still flag those coincidences as duplicates.
 # mpileup_config: bcftools mpileup -X, its tuned settings for each platform's error profile.
+# deepvariant_models: the DeepVariant models that fit the read type, the first being the default (short reads
+# may also be an exome: WES).
 READ_TYPES = {
-    "short": {"preset": "sr", "deepvariant_model": "WGS", "mark_duplicates": True, "mpileup_config": None},
+    "short": {
+        "preset": "sr",
+        "deepvariant_models": ("WGS", "WES"),
+        "mark_duplicates": True,
+        "mpileup_config": None,
+    },
     "hifi": {
         "preset": "map-hifi",
-        "deepvariant_model": "PACBIO",
+        "deepvariant_models": ("PACBIO",),
         "mark_duplicates": False,
         "mpileup_config": "pacbio-ccs",
     },
-    "ont": {"preset": "lr:hq", "deepvariant_model": "ONT_R104", "mark_duplicates": False, "mpileup_config": "ont"},
+    "ont": {
+        "preset": "lr:hq",
+        "deepvariant_models": ("ONT_R104",),
+        "mark_duplicates": False,
+        "mpileup_config": "ont",
+    },
 }
 DEFAULT_READ_TYPE = "short"
 LONG_READ_TYPES = tuple(r for r in READ_TYPES if r != DEFAULT_READ_TYPE)
@@ -389,11 +401,12 @@ def check_read_type_name(read_type: str) -> str:
     return read_type
 
 
-def aligner_from_env() -> str:
-    """The aligner named by ALIGNER: default bwa-mem2 for short reads, minimap2 for long ones (READ_TYPE).
+def aligner_from_env(read_type: str = None) -> str:
+    """The aligner named by ALIGNER: default bwa-mem2 for short reads, minimap2 for long ones.
 
-    Unknown names, and an aligner that can't take the read type (bwa on HiFi reads), fail before any download."""
-    read_type = read_type_from_env()
+    read_type: the stage's read type, already parsed (default: READ_TYPE). Unknown names, and an aligner that
+    can't take the read type (bwa on HiFi reads), fail before any download."""
+    read_type = read_type or read_type_from_env()
     default = MINIMAP2 if read_type in LONG_READ_TYPES else DEFAULT_ALIGNER
     return check_read_type(check_aligner(os.environ.get("ALIGNER", "").strip() or default), read_type)
 
@@ -408,24 +421,51 @@ def check_read_type(aligner: str, read_type: str) -> str:
     return aligner
 
 
-def deepvariant_model_type(env=None) -> str:
-    """DeepVariant's --model_type: READ_TYPE's model (WGS, PACBIO, ONT_R104), or DEEPVARIANT_MODEL_TYPE.
+def deepvariant_model_type(env=None, read_type: str = None) -> str:
+    """DeepVariant's --model_type: DEEPVARIANT_MODEL_TYPE if it fits the read type, else the read type's default.
 
-    Both set and disagreeing (READ_TYPE=hifi with DEEPVARIANT_MODEL_TYPE=WGS) is a ValueError, so a run can't
-    call HiFi reads with the short-read model. With READ_TYPE unset, DEEPVARIANT_MODEL_TYPE passes through as
-    before (so do model types READ_TYPE doesn't cover: WES, HYBRID_PACBIO_ILLUMINA, MASSEQ), default WGS."""
+    read_type: the sample's (calling_read_type); default READ_TYPE from env. A model that doesn't fit it
+    (READ_TYPE=hifi with DEEPVARIANT_MODEL_TYPE=WGS) is a ValueError, so a run can't call HiFi reads with the
+    short-read model; short reads take WGS (default) or WES. With no read type at all (older runs),
+    DEEPVARIANT_MODEL_TYPE passes through as before (so do HYBRID_PACBIO_ILLUMINA and MASSEQ), default WGS.
+    Model names are case-insensitive."""
     env = os.environ if env is None else env
-    explicit = env.get("DEEPVARIANT_MODEL_TYPE", "").strip()
-    read_type = env.get("READ_TYPE", "").strip().lower()
+    explicit = env.get("DEEPVARIANT_MODEL_TYPE", "").strip().upper()
+    read_type = read_type or env.get("READ_TYPE", "").strip().lower()
     if not read_type:
-        return explicit or READ_TYPES[DEFAULT_READ_TYPE]["deepvariant_model"]
-    implied = READ_TYPES[check_read_type_name(read_type)]["deepvariant_model"]
-    if explicit and explicit != implied:
+        return explicit or READ_TYPES[DEFAULT_READ_TYPE]["deepvariant_models"][0]
+    models = READ_TYPES[check_read_type_name(read_type)]["deepvariant_models"]
+    if explicit and explicit not in models:
         raise ValueError(
-            f"DEEPVARIANT_MODEL_TYPE={explicit} disagrees with READ_TYPE={read_type} (model {implied}): "
+            f"DEEPVARIANT_MODEL_TYPE={explicit} doesn't fit READ_TYPE={read_type} (models {', '.join(models)}): "
             f"set one of them, or both to agree"
         )
-    return implied
+    return explicit or models[0]
+
+
+def calling_read_type(sample_id: str):
+    """The read type to call this sample's alignment as: the one its align stage recorded in the run record.
+
+    READ_TYPE, if set, must agree with it: HiFi reads called with the Illumina error model (or the reverse)
+    would be wrong calls, not an error, so a mismatch fails before any download. None when neither says
+    (an alignment from before read types were recorded: short reads)."""
+    requested = os.environ.get("READ_TYPE", "").strip().lower() or None
+    if requested:
+        check_read_type_name(requested)
+    part = provenance.read_part(storage(), sample_id, "Align") or {}
+    aligned = part.get("read_type") if part.get("read_type") in READ_TYPES else None
+    if requested and aligned and requested != aligned:
+        raise ValueError(
+            f"READ_TYPE={requested}, but {sample_id} was aligned as READ_TYPE={aligned} (its run record): "
+            f"call it as {aligned}, or align it again"
+        )
+    return requested or aligned
+
+
+def check_long_read_layout(sample_id: str, read_type: str, layout: str) -> None:
+    """Long reads are single-end: a paired upload with READ_TYPE=hifi|ont is a LayoutError (before any download)."""
+    if read_type in LONG_READ_TYPES and layout != "single":
+        raise LayoutError(f"{sample_id}: READ_TYPE={read_type} reads are single-end: upload {sample_id}.fastq.gz")
 
 
 def mpileup_options(read_type: str) -> str:
@@ -897,12 +937,14 @@ def qc_command(fastqs, html: str, json_path: str, threads: int, sample_id: str) 
 @timed_stage("QualityControl")
 def qc_task(sample_id):
     """fastp report (HTML + JSON) for the sample's gzipped read file(s): one report, either layout."""
+    read_type = read_type_from_env()
     layout = sample_layout(sample_id)
+    check_long_read_layout(sample_id, read_type, layout)  # QC runs beside align: refuse as early as it does
     keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
         fastqs = download_raw_reads(keys, wd)
-        provenance.note(layout=layout)
+        provenance.note(layout=layout, read_type=read_type)
         provenance.note_tools("fastp")
         html, json_path = (os.path.join(wd, os.path.basename(keys[k])) for k in ("qc_html", "qc_json"))
         # Bounded in case fastp ever hangs; keep in step with the stage's Step Functions timeout.
@@ -1128,7 +1170,7 @@ def align_task(sample_id, reference_name):
 
     Short reads are duplicate-marked; long reads (READ_TYPE=hifi|ont, minimap2) are not (see READ_TYPES)."""
     read_type = read_type_from_env()
-    aligner = aligner_from_env()  # a bad ALIGNER or READ_TYPE fails here, before any download
+    aligner = aligner_from_env(read_type)  # a bad ALIGNER or READ_TYPE fails here, before any download
     giraffe = giraffe_settings(reference_name) if aligner == GIRAFFE else None  # so do bad GIRAFFE_* settings
     if giraffe:
         kmc_memory = kmc_memory_gb() if giraffe["sampling"] else None
@@ -1138,8 +1180,7 @@ def align_task(sample_id, reference_name):
                 f"ALIGNER=giraffe needs {' and '.join(missing)}: run it in the geyser-giraffe image"
             )
     layout = sample_layout(sample_id)
-    if read_type in LONG_READ_TYPES and layout != "single":
-        raise LayoutError(f"{sample_id}: READ_TYPE={read_type} reads are single-end: upload {sample_id}.fastq.gz")
+    check_long_read_layout(sample_id, read_type, layout)
     keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
@@ -1413,7 +1454,7 @@ def streamable_alignment(sample_id: str, wd: str):
 @timed_stage(SHARD_METRIC, run_record=False)
 def variants_shard_task(sample_id, reference_name, region):
     """bcftools on one region of the sample's alignment -> intermediate/variant-parts/{id}/<run>/<region>.vcf.gz."""
-    read_type = read_type_from_env()  # mpileup's error model (READ_TYPES); a bad READ_TYPE fails before any download
+    read_type = calling_read_type(sample_id) or DEFAULT_READ_TYPE  # mpileup's error model; a mismatch fails here
     wd = work_dir(sample_id)
     try:
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
@@ -1465,7 +1506,7 @@ def variants_task(sample_id, reference_name, window=None):
     """
     keys = keys_for(sample_id)
     annotate_mode()  # a mistyped ANNOTATE fails now, not after a chromosome's worth of calling
-    read_type = read_type_from_env()  # mpileup's error model (READ_TYPES)
+    read_type = calling_read_type(sample_id) or DEFAULT_READ_TYPE  # mpileup's error model; a mismatch fails here
     wd = work_dir(sample_id)
     try:
         provenance.note_tools("bcftools")
@@ -2363,8 +2404,16 @@ def align_merge_task(sample_id, reference_name, threads=None):
         raise FileNotFoundError(f"{len(missing)} chunk BAM(s) missing, e.g. {', '.join(missing[:3])}")
     layout = manifest["layout"]
     keys = keys_for(sample_id, layout)
-    provenance.note(aligner=aligner_from_env(), layout=layout, chunks=manifest["chunk_count"])
-    provenance.note_tools(aligner_from_env(), "samtools", "mosdepth")
+    aligner = aligner_from_env()
+    # The chunked route is bwa-mem2 / bwa only (chunk_align_command): short reads, duplicates marked once here.
+    provenance.note(
+        aligner=aligner,
+        layout=layout,
+        chunks=manifest["chunk_count"],
+        read_type=DEFAULT_READ_TYPE,
+        duplicates_marked=True,
+    )
+    provenance.note_tools(aligner, "samtools", "mosdepth")
     for c in manifest["chunks"]:
         provenance.note_input(c["aligned"])
     wd = work_dir(sample_id)

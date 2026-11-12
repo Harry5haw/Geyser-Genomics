@@ -380,8 +380,10 @@ def main(argv=None):
         p.error("--leading-gap must be >= 0")
     if a.long_reads and (a.paired or a.duplicate_rate):
         p.error("--long-reads are single-end reads without planted duplicates (no --paired, no --duplicate-rate)")
-    if a.long_reads and not 100 <= a.long_read_length <= a.length // 4:
-        p.error(f"--long-read-length must be between 100 and a quarter of --length ({a.length // 4})")
+    # At least 4 x MIN_LONG_READ: reads come out at mean/4 or longer, so every read is kept (a mean near
+    # MIN_LONG_READ would drop most of them, and one below it would never reach the coverage: a hang).
+    if a.long_reads and not 4 * MIN_LONG_READ <= a.long_read_length <= a.length // 4:
+        p.error(f"--long-read-length must be between {4 * MIN_LONG_READ} and a quarter of --length ({a.length // 4})")
 
     rng = random.Random(a.seed)
     reference = make_reference(rng, a.length)

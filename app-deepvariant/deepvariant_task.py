@@ -67,6 +67,7 @@ from tasks import (
     _log_summary,
     _run_stats_tool,
     _safe_name,
+    calling_read_type,
     deepvariant_model_type,
     ensure_reference_local,
     fetch_alignment,
@@ -81,7 +82,7 @@ from tasks import (
 )
 
 # DeepVariant's long-read models (READ_TYPE=hifi|ont, tasks.READ_TYPES): the pangenome-aware caller has none.
-LONG_READ_MODELS = tuple(READ_TYPES[r]["deepvariant_model"] for r in LONG_READ_TYPES)
+LONG_READ_MODELS = tuple(m for r in LONG_READ_TYPES for m in READ_TYPES[r]["deepvariant_models"])
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
 RUN_PANGENOME_DEEPVARIANT = os.environ.get(
     "RUN_PANGENOME_DEEPVARIANT", "/opt/deepvariant/bin/run_pangenome_aware_deepvariant"
@@ -922,7 +923,9 @@ def _call_variants(sample_id, reference_name, pangenome=None):
     wd = work_dir(sample_id)
     try:
         limits = WrapperLimits.from_env()  # a bad value fails here, before any download
-        model_type = deepvariant_model_type()  # so does a READ_TYPE / DEEPVARIANT_MODEL_TYPE mismatch
+        # As the sample was aligned (its run record), so DeepVariant's model matches the reads; a READ_TYPE or
+        # DEEPVARIANT_MODEL_TYPE that disagrees fails here, before any download.
+        model_type = deepvariant_model_type(read_type=calling_read_type(sample_id))
         if pangenome and model_type in LONG_READ_MODELS:
             raise ValueError(
                 f"pangenome-aware DeepVariant is a short-read caller; model {model_type} (READ_TYPE) needs the linear one"

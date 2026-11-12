@@ -47,7 +47,12 @@ RUN curl -fsSL "https://github.com/brentp/mosdepth/releases/download/v${MOSDEPTH
 # Only the binary is kept (the tarball also ships k8 + paftools.js, which the pipeline doesn't run).
 ARG MINIMAP2_VERSION=2.28
 ARG MINIMAP2_SHA256=51f2cf0e486d0f9f88ace1aa58fdc56571382a676ea0889ae607301c60693377
-RUN curl -fsSL "https://github.com/lh3/minimap2/releases/download/v${MINIMAP2_VERSION}/minimap2-${MINIMAP2_VERSION}_x64-linux.tar.bz2"         -o /tmp/minimap2.tar.bz2 &&     echo "${MINIMAP2_SHA256}  /tmp/minimap2.tar.bz2" | sha256sum -c - &&     tar -xjf /tmp/minimap2.tar.bz2 -C /tmp --no-same-owner &&     install -m 0755 "/tmp/minimap2-${MINIMAP2_VERSION}_x64-linux/minimap2" /opt/minimap2 &&     rm -rf /tmp/minimap2.tar.bz2 "/tmp/minimap2-${MINIMAP2_VERSION}_x64-linux"
+RUN curl -fsSL "https://github.com/lh3/minimap2/releases/download/v${MINIMAP2_VERSION}/minimap2-${MINIMAP2_VERSION}_x64-linux.tar.bz2" \
+        -o /tmp/minimap2.tar.bz2 && \
+    echo "${MINIMAP2_SHA256}  /tmp/minimap2.tar.bz2" | sha256sum -c - && \
+    tar -xjf /tmp/minimap2.tar.bz2 -C /tmp --no-same-owner && \
+    install -m 0755 "/tmp/minimap2-${MINIMAP2_VERSION}_x64-linux/minimap2" /opt/minimap2 && \
+    rm -rf /tmp/minimap2.tar.bz2 "/tmp/minimap2-${MINIMAP2_VERSION}_x64-linux"
 
 # ---------------------------------------------------------------------------------------------- gate
 # The quality gate (gate/, #144): one static binary (musl), so the final image gets the binary and no
@@ -87,7 +92,8 @@ COPY --from=gate /gate/thresholds /opt/geyser-gate/thresholds
 # The run record (app/provenance.py) shows the pinned releases next to the versions the binaries report.
 ENV PATH="/opt/bwa-mem2:${PATH}" \
     GEYSER_BWA_MEM2_RELEASE=${BWA_MEM2_VERSION} \
-    GEYSER_MOSDEPTH_RELEASE=${MOSDEPTH_VERSION}     GEYSER_MINIMAP2_RELEASE=${MINIMAP2_VERSION} \
+    GEYSER_MOSDEPTH_RELEASE=${MOSDEPTH_VERSION} \
+    GEYSER_MINIMAP2_RELEASE=${MINIMAP2_VERSION} \
     GATE_THRESHOLDS_DIR=/opt/geyser-gate/thresholds
 RUN bwa-mem2 version && mosdepth --version && minimap2 --version && geyser-gate --version
 

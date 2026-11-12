@@ -188,8 +188,15 @@ def test_mpileup_options_per_read_type():
     assert tasks.mpileup_options("ont") == "-X ont "
 
 
+def align_part(root, read_type):
+    """The run-record part an align stage writes (only the field calling_read_type reads, plus its task)."""
+    put(root, "runs/S1.provenance/Align.json", json.dumps({"task": "Align", "read_type": read_type}).encode())
+
+
 def test_variants_stage_uses_the_long_read_error_model(local_env, tool_calls, shell_commands, monkeypatch):
-    monkeypatch.setenv("READ_TYPE", "hifi")
+    # No READ_TYPE here: the variants stage calls the reads as the align stage recorded them (e.g. a re-run with
+    # --skip-to-variants, or a cloud run whose later stages don't get READ_TYPE).
+    align_part(local_env, "hifi")
     monkeypatch.setenv("ANNOTATE", "off")
     put(local_env, f"reference/{REF}", b">c\nACGT\n")
     put(local_env, "alignments/S1.cram")
@@ -217,6 +224,8 @@ def test_variants_stage_uses_the_long_read_error_model(local_env, tool_calls, sh
         ({"READ_TYPE": "hifi", "DEEPVARIANT_MODEL_TYPE": "PACBIO"}, "PACBIO"),  # agreeing is fine
         ({"DEEPVARIANT_MODEL_TYPE": "WES"}, "WES"),  # without READ_TYPE, any model passes through (as before)
         ({"DEEPVARIANT_MODEL_TYPE": "HYBRID_PACBIO_ILLUMINA"}, "HYBRID_PACBIO_ILLUMINA"),
+        ({"READ_TYPE": "short", "DEEPVARIANT_MODEL_TYPE": "WES"}, "WES"),  # an exome is short reads too
+        ({"READ_TYPE": "hifi", "DEEPVARIANT_MODEL_TYPE": "pacbio"}, "PACBIO"),  # model names are case-insensitive
     ],
 )
 def test_deepvariant_model_type(env, model):
@@ -224,7 +233,7 @@ def test_deepvariant_model_type(env, model):
 
 
 def test_deepvariant_model_type_refuses_a_mismatch():
-    with pytest.raises(ValueError, match="DEEPVARIANT_MODEL_TYPE=WGS disagrees with READ_TYPE=hifi"):
+    with pytest.raises(ValueError, match="DEEPVARIANT_MODEL_TYPE=WGS doesn't fit READ_TYPE=hifi"):
         tasks.deepvariant_model_type({"READ_TYPE": "hifi", "DEEPVARIANT_MODEL_TYPE": "WGS"})
     with pytest.raises(ValueError, match="Unknown read type"):
         tasks.deepvariant_model_type({"READ_TYPE": "pacbio"})
@@ -285,7 +294,10 @@ def test_make_test_data_long_reads(tmp_path):
     assert all(mtd.LONG_READ_MEAN <= s["pos"] <= 50_000 - mtd.LONG_READ_MEAN for s in truth["snps"])
 
 
-@pytest.mark.parametrize("extra", [["--paired"], ["--duplicate-rate", "0.1"], ["--long-read-length", "50000"]])
+@pytest.mark.parametrize(
+    "extra",
+    [["--paired"], ["--duplicate-rate", "0.1"], ["--long-read-length", "50000"], ["--long-read-length", "100"]],
+)
 def test_make_test_data_long_reads_rejects_conflicting_options(tmp_path, extra):
     mtd = load_module("make_test_data_lr2", "scripts", "make_test_data.py")
     with pytest.raises(SystemExit):
@@ -300,3 +312,41 @@ def test_long_read_errors_are_substitutions_and_small_indels():
     noisy = mtd.add_long_read_errors(random.Random(1), seq, 0.01, 0.3)
     assert noisy != seq and abs(len(noisy) - len(seq)) < 60  # indels change the length a little, not a lot
     assert mtd.add_long_read_errors(random.Random(1), seq, 0, 0.3) == seq
+
+
+# --- calling as aligned (the run record) ------------------------------------------------------------------
+
+
+def test_calling_read_type_follows_the_alignment(local_env, monkeypatch):
+    assert tasks.calling_read_type("S1") is None  # no record: an older alignment, called as short reads
+    align_part(local_env, "ont")
+    assert tasks.calling_read_type("S1") == "ont"
+    monkeypatch.setenv("READ_TYPE", "ont")
+    assert tasks.calling_read_type("S1") == "ont"  # agreeing is fine
+
+
+def test_calling_with_another_read_type_than_the_alignment_fails(local_env, monkeypatch):
+    align_part(local_env, "hifi")
+    monkeypatch.setenv("READ_TYPE", "short")
+    with pytest.raises(ValueError, match="aligned as READ_TYPE=hifi"):
+        tasks.calling_read_type("S1")
+    monkeypatch.setattr(tasks, "fetch_alignment", lambda *a, **k: pytest.fail("downloaded before the read-type check"))
+    with pytest.raises(ValueError, match="aligned as READ_TYPE=hifi"):
+        tasks.variants_task("S1", REF)
+
+
+def test_deepvariant_model_follows_the_alignment():
+    assert tasks.deepvariant_model_type({}, read_type="hifi") == "PACBIO"
+    assert tasks.deepvariant_model_type({}, read_type="ont") == "ONT_R104"
+    with pytest.raises(ValueError, match="doesn't fit READ_TYPE=hifi"):
+        tasks.deepvariant_model_type({"DEEPVARIANT_MODEL_TYPE": "WGS"}, read_type="hifi")
+
+
+def test_qc_refuses_paired_long_reads_before_any_download(local_env, monkeypatch):
+    # QC runs beside align (a Parallel state in the cloud): it refuses the same upload, just as early.
+    monkeypatch.setenv("READ_TYPE", "hifi")
+    put(local_env, "raw_reads/S1_R1.fastq.gz")
+    put(local_env, "raw_reads/S1_R2.fastq.gz")
+    monkeypatch.setattr(tasks, "download_raw_reads", lambda *a: pytest.fail("downloaded before the layout check"))
+    with pytest.raises(tasks.LayoutError, match="READ_TYPE=hifi reads are single-end"):
+        tasks.qc_task("S1")

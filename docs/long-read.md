@@ -36,10 +36,16 @@ says the same thing explicitly, which is what the long-read benchmark uses.
 - **No stored minimap2 index.** A `.mmi` index is built for one preset's k-mer and window sizes, so storing one
   would mean one file per preset. minimap2 indexes a chromosome in seconds and a whole genome in a few minutes,
   which is small next to aligning the reads. So `reference/` keeps no minimap2 index, and the bwa-mem2#262
-  fallback (a bwa-mem2 bug) does not apply.
+  fallback (a bwa-mem2 bug) does not apply. This holds for a chromosome. For a whole genome, building the index
+  in the job takes several GB of memory on top of the alignment, which is one reason the cloud route below needs
+  its own sizing (or one stored `.mmi` per long-read preset).
 - **Long reads are single-end.** A paired upload (`_R1`/`_R2`) with `READ_TYPE=hifi|ont` is a `LayoutError`,
-  raised before anything is downloaded. A short-read aligner (`bwa-mem2`, `bwa`, `giraffe`) with a long read type
-  is refused the same way.
+  raised by QC and by align before anything is downloaded. A short-read aligner (`bwa-mem2`, `bwa`, `giraffe`)
+  with a long read type is refused the same way.
+- **Variant calling follows the alignment.** The align stage records its read type in the run record. Calling
+  (bcftools or DeepVariant) uses that value, so a re-run of the calling stages, or a later stage that wasn't given
+  `READ_TYPE`, still calls HiFi reads as HiFi. A `READ_TYPE` that contradicts the record fails before any
+  download, instead of quietly calling with the wrong error model.
 - **No duplicate marking for long reads.** Long-read libraries are PCR-free, and their fragments are sheared at
   random over kilobases. Two reads that start at the same base on the same strand are almost never copies of
   one molecule. `samtools markdup` has only position and strand to go on for single-end reads, so it would still
@@ -47,9 +53,13 @@ says the same thing explicitly, which is what the long-read benchmark uses.
   `duplicates_marked: false`.
 - **ONT means R10.4.1, Q20+.** `lr:hq` is minimap2's preset for accurate long reads (2.27+). `ONT_R104` is the
   DeepVariant model for that chemistry. Older, noisier ONT data would want `map-ont` and another caller.
-- **DeepVariant follows `READ_TYPE`.** `DEEPVARIANT_MODEL_TYPE` still works on its own. Set together with
-  `READ_TYPE`, the two must agree (`READ_TYPE=hifi` with `DEEPVARIANT_MODEL_TYPE=WGS` fails before any download).
-  Pangenome-aware DeepVariant is a short-read caller, so it refuses long reads.
+- **DeepVariant follows the read type.** `DEEPVARIANT_MODEL_TYPE` still works on its own, but it must fit the read
+  type: `WGS` or `WES` for short reads, `PACBIO` for `hifi`, `ONT_R104` for `ont`. `READ_TYPE=hifi` with
+  `DEEPVARIANT_MODEL_TYPE=WGS` fails before any download. Model names are case-insensitive. Pangenome-aware
+  DeepVariant is a short-read caller, so it refuses long reads.
+- **QC still uses fastp.** It reads multi-kb reads, and the report's totals and base qualities are right. Its
+  per-cycle plots and duplication estimate are short-read measures, though, and mean little for long reads.
+  fastplong is the long-read equivalent; switching QC to it is future work.
 
 ## What the run record shows
 
@@ -60,7 +70,8 @@ lists `minimap2` with its version under `tools`.
 
 - **Unit tests** ([`tests/test_long_read.py`](../tests/test_long_read.py)): aligner defaults and refusals, the
   presets, the paired-long-read layout error, the command with no markdup, mpileup's `-X`, DeepVariant's model
-  (including the mismatch error), the run record, `run_local --read-type` and `make_test_data --long-reads`.
+  (including the mismatch error), calling as aligned, QC's layout refusal, the run record, `run_local --read-type`
+  and `make_test_data --long-reads`.
 - **Docker end-to-end** ([`tests/test_e2e_docker.py`](../tests/test_e2e_docker.py), `test_long_reads_*`): the real
   minimap2, samtools and bcftools in the image recover all 10 planted SNPs and call nothing else. No read is
   flagged as a duplicate. Sharded calling gives exactly the single job's records.
