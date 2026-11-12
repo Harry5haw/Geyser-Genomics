@@ -1,0 +1,41 @@
+# GitLab CI for the mirror (pushed from GitHub by .github/workflows/gitlab-mirror.yml; GitHub is the source of
+# truth). The offline checks, the same as GitHub Actions' lint and unit jobs: ruff and the unit tests. No Docker,
+# no AWS, no end-to-end runs (those stay on GitHub). About 2-3 minutes, well inside the free tier's 400 CI
+# minutes a month.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+stages:
+  - test
+
+test:
+  stage: test
+  image: python:3.11-slim
+  timeout: 15 minutes
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    DEBIAN_FRONTEND: noninteractive
+  cache:
+    key:
+      files:
+        - requirements-dev.txt
+        - app/requirements.txt
+        - web/requirements.txt
+        - requirements-figures.txt
+    paths:
+      - .cache/pip
+  script:
+    # git: one unit test (the benchmark history) reads the commit it runs on.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git > /dev/null
+    - pip install -q -r requirements-dev.txt
+    - ruff check --output-format=gitlab . > gl-code-quality-report.json || (ruff check . && false)
+    - ruff format --check .
+    - pytest -q
+  artifacts:
+    when: always
+    reports:
+      codequality: gl-code-quality-report.json
