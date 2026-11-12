@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The web UI's page-weight budget and a summary of the Lighthouse CI runs (.github/workflows/web-perf.yml).
 
-Lighthouse CI asserts the timing budgets itself (lighthouserc.json: LCP, CLS, TBT on the median run). What it
+Lighthouse CI asserts the timing budgets itself (lighthouserc.json: LCP, CLS, TBT, each on its median over the runs). What it
 can't assert is the combined weight of a page's HTML, CSS and JS, which is the budget the web plan sets
 (<= 30 KB transferred, data downloads excluded). This script reads the runs `lhci collect` stored
 (.lighthouseci/lhr-*.json), and per page:

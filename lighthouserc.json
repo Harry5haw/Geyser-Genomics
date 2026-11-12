@@ -13,9 +13,9 @@
     },
     "assert": {
       "assertions": {
-        "largest-contentful-paint": ["error", { "maxNumericValue": 999, "aggregationMethod": "median-run" }],
-        "cumulative-layout-shift": ["error", { "maxNumericValue": 0, "aggregationMethod": "median-run" }],
-        "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median-run" }],
+        "largest-contentful-paint": ["error", { "maxNumericValue": 999, "aggregationMethod": "median" }],
+        "cumulative-layout-shift": ["error", { "maxNumericValue": 0, "aggregationMethod": "median" }],
+        "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median" }],
         "errors-in-console": ["error", { "minScore": 1, "aggregationMethod": "pessimistic" }],
         "categories:accessibility": ["error", { "minScore": 0.95, "aggregationMethod": "median-run" }]
       }
