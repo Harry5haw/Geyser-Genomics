@@ -18,6 +18,7 @@ test:
   variables:
     PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    DEBIAN_FRONTEND: noninteractive
   cache:
     key:
       files:
