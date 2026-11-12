@@ -88,7 +88,7 @@ python scripts/benchmark_happy.py --sample HG005_chr20 --reference GRCh38_chr20.
 python scripts/benchmark_history.py report
 ```
 
-**Benchmark history:** every hap.py result so far, 22 configurations across HG003 and HG005, is in one tracked series, [`docs/benchmarks/history.csv`](benchmarks/history.csv), with the [report](benchmarks/README.md) and a figure-ready CSV. The tables below are excerpts.
+**Benchmark history:** every hap.py result so far, 27 configurations across HG002, HG003 and HG005, is in one tracked series, [`docs/benchmarks/history.csv`](benchmarks/history.csv), with the [report](benchmarks/README.md) and a figure-ready CSV. The tables below are excerpts.
 
 **Accuracy: HG003 chr20, hap.py.** HG003 is NovaSeq PCR-free 35x, scored against GIAB v4.2.1 confident regions. These are the same settings Google's case studies use (`--engine=vcfeval --pass-only`):
 
@@ -191,6 +191,41 @@ python scripts/benchmark_calls.py --root <root> --preset google-case-studies --r
 ```
 
 Small datasets (exact-match counts): synthetic data, 10/10 planted SNPs and 0 extra calls for both callers; NA12878 slice, bcftools 45 TP / 4 FN / 4 FP and DeepVariant 49 TP / 0 FN / 0 FP. DeepVariant's accuracy is identical on GPU and CPU.
+
+**Long reads: PacBio HiFi, HG002 chr20, hap.py.** GIAB's HG002 Sequel II HiFi reads (15 kb + 20 kb libraries, about 52x genome-wide), only the chr20 region fetched over HTTPS from GIAB's GRCh38 BAM, downsampled to 29.9x, realigned with minimap2 `-ax map-hifi` and called with DeepVariant 1.10.0 (GPU image, `--model_type=PACBIO`). Scored against GIAB v4.2.1 confident regions with hap.py (vcfeval, PASS only), as above:
+
+| Type | TP | Missed (FN) | False (FP) | Recall | Precision | F1 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SNP | 71,282 | 51 | 16 | 0.999285 | 0.999776 | **0.999530** |
+| Indel | 11,174 | 82 | 90 | 0.992715 | 0.992283 | **0.992499** |
+
+| Region (chr20) | SNP FN / FP (F1) | Indel FN / FP (F1) |
+| :--- | :--- | :--- |
+| Outside all difficult regions | 5 / 0 (0.99996) | 0 / 0 (1.00000) |
+| All difficult regions | 46 / 16 (0.99717) | 82 / 90 (0.98935) |
+| Segmental duplications | 34 / 1 (0.98828) | 1 / 0 (0.99647) |
+| Low mappability (all) | 34 / 1 (0.99353) | 1 / 1 (0.99361) |
+
+- **It reproduces Google's published result.** Google's DeepVariant 1.10 PacBio case study (HG003, Revio SPRQ, 32x, chr20, v4.2.1 truth) reports SNP F1 0.999067 and indel F1 0.993679 ([case study, r1.10](https://github.com/google/deepvariant/blob/r1.10/docs/deepvariant-pacbio-model-case-study.md)). Here: 0.999530 and 0.992499, with a different sample and older chemistry.
+- **Long reads against short reads.** On SNPs, HiFi makes about 5× fewer errors than our short-read 30x HG003 run (67 against 354, F1 0.99953 against 0.99747). On indels it is slightly behind (F1 0.9925 against 0.9958). Every indel error, missed or false, is in a GIAB difficult region, the class that holds tandem repeats and homopolymers, where HiFi's length errors are known to cluster. Outside difficult regions HiFi made 5 errors in 63,782 truth variants. Different samples and truth sets, so this comparison is indicative, not head-to-head.
+- **Caveat: the truth set has seen these reads' technology.** GIAB v4.2.1 for HG002 integrates HiFi evidence, so a HiFi caller is scored against a benchmark partly built from HiFi data. HG003 (Google's case study) is a cleaner test of that.
+- **Time and memory** (RTX 3080 10 GB, 16 CPUs): minimap2 533 s (peak 8.4 GB, 14 threads); DeepVariant 11 min 13 s in total (`make_examples` 7:25 with 12 shards, `call_variants` 2:51 on the GPU at `batch_size=256`, `postprocess_variants` 0:42), container peak 14.0 GiB, GPU memory peak 9.05 GB; hap.py 36 s. At 12 shards the PACBIO `make_examples` pushed Windows to its commit limit (about 1.2 GiB per shard at peak), so use 8 shards on a 32 GB host.
+- **Commands:**
+
+```bash
+# reads: chr20 only from GIAB's 121 GB HG002 BAM (GRCh38 no-alt, chr names), then downsample (seed 42) and realign
+URL=https://ftp-trace.ncbi.nlm.nih.gov/ReferenceSamples/giab/data/AshkenazimTrio/HG002_NA24385_son/PacBio_CCS_15kb_20kb_chemistry2/GRCh38/HG002.SequelII.merged_15kb_20kb.GRCh38.duplomap.bam
+samtools view -b -o HG002_hifi_chr20.bam "$URL" chr20                      # 2.5 GB, 56.4x on chr20
+samtools view -u -F 0x900 -s 42.532 HG002_hifi_chr20.bam | samtools fastq -0 HG002_hifi_chr20_30x.fastq.gz -
+minimap2 -t 14 -ax map-hifi -R '@RG\tID:HG002_hifi\tSM:HG002\tPL:PACBIO' GRCh38_chr20.fa HG002_hifi_chr20_30x.fastq.gz \
+  | samtools sort -m 1G -o HG002_hifi_chr20_30x.minimap2.bam -        # minimap2 2.28 (quay.io/biocontainers/minimap2:2.28--he4a0461_0)
+run_deepvariant --model_type=PACBIO --ref GRCh38_chr20.fa --reads HG002_hifi_chr20_30x.minimap2.bam --regions chr20 \
+  --num_shards 8 --call_variants_extra_args=batch_size=256 --output_vcf HG002_hifi_chr20_30x.vcf.gz   # google/deepvariant:1.10.0-gpu
+python scripts/benchmark_happy.py --sample HG002_hifi_chr20_30x --reference GRCh38_chr20.fa --region chr20 \
+  --callers deepvariant --stratification stratifications/GRCh38_chr20.tsv --aligner minimap2 --coverage 30x
+```
+
+Truth: GIAB `NISTv4.2.1/GRCh38/HG002_GRCh38_1_22_v4.2.1_benchmark.vcf.gz` and `_noinconsistent.bed`, cut to chr20 (73,389 SNPs, 12,608 indels, 56.9 Mb). The reads are realigned from FASTQ, so the source BAM's Duplomap realignment of segmental-duplication reads does not affect these results. The measured run used 12 shards; 8 is the recommendation above.
 
 **Pangenome-aware DeepVariant: time and memory** (HG003 chr20, RTX 3080 10 GB, 16 CPUs, 6 `make_examples` workers):
 
