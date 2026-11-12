@@ -97,6 +97,41 @@ jobs:
       # no dependencies. The runner image's Node is enough (20+).
       - run: node --test web/tests/js/*.test.js
 
+  # Cohort QC (Hail) and the run-record cohort table (PySpark, the Glue job's code) on tiny synthetic fixtures. A job of
+  # its own because Hail's wheel is ~130 MB and Spark needs a JVM: the unit job skips these tests.
+  cohort:
+    name: Cohort QC (Hail, PySpark)
+    runs-on: ubuntu-latest
+    needs: unit
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # On a PR, only when something the cohort code reads or is built from changed (it takes a few minutes for a
+      # side analysis). Pushes to main, the weekly run and manual runs always run it. app/provenance.py defines the
+      # record layout and the VCF keys these scripts read.
+      - name: Cohort files changed?
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then echo "run=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+          pattern='^(scripts/cohort_|scripts/glue/|tests/test_cohort_|app-cohort/|requirements-(cohort|dev)\.txt$|app/provenance\.py$|\.github/workflows/tests\.yml$)'
+          if echo "$files" | grep -Eq "$pattern"; then echo "run=true" >> "$GITHUB_OUTPUT"; else echo "run=false" >> "$GITHUB_OUTPUT"; fi
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - if: steps.changed.outputs.run == 'true'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # Hail 0.2.139 is built and tested with Java 11 (Glue 5.0 runs cohort_runs.py on 17: plain Spark, no Hail).
+          java-version: "11"
+      - if: steps.changed.outputs.run == 'true'
+        run: pip install -r requirements-dev.txt -r requirements-cohort.txt
+      - if: steps.changed.outputs.run == 'true'
+        run: pytest tests/test_cohort_qc.py tests/test_cohort_runs.py -v -rs
+
   end-to-end:
     name: Pipeline end-to-end (Docker, synthetic data)
     # Skipped on draft PRs (the image build is the expensive part); runs when the PR is marked ready.
