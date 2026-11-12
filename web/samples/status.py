@@ -169,18 +169,9 @@ def read_metrics(storage) -> list:
     return records
 
 
-def build_sample(
-    sample_id: str, present: set, metrics: list, run: dict | None, layout: str = SINGLE, record: dict | None = None
-) -> SampleView:
-    """record: the provenance run record, when there is one. When DeepVariant was the run's caller (#125) its
-    VCF, not bcftools', is the variants stage's output, and its metric (DeepVariant) the stage's time."""
-    keys = keys_for(sample_id, layout)
-    vcf_key = sample_vcf_key(record, sample_id)
-    variant_metric = (record or {}).get("variant_stage") or "CallVariants"
-    since = None
-    if run and run.get("started"):
-        since = run["started"] - CLOCK_SLACK_SECONDS
-
+def _latest_metrics(sample_id: str, metrics: list, run: dict | None) -> dict:
+    """task -> the sample's latest metric record, ignoring those from before its current local run started."""
+    since = run["started"] - CLOCK_SLACK_SECONDS if run and run.get("started") else None
     latest = {}
     for rec in metrics:
         if rec.get("sample_id") != sample_id:
@@ -191,6 +182,35 @@ def build_sample(
         task = rec["task"]
         if task not in latest or ts >= (latest[task].get("timestamp") or 0):
             latest[task] = rec
+    return latest
+
+
+def _updated(latest: dict, run: dict | None) -> float | None:
+    """When the sample was last active: the sample list's sort key."""
+    times = [rec.get("timestamp") or 0 for rec in latest.values()]
+    if run:
+        times += [run.get(k) or 0 for k in ("queued", "started", "finished")]
+    return max(times) if any(times) else None
+
+
+def list_order(storage) -> list:
+    """Sample IDs in load_all's order (most recently active first) without building each sample: no output
+    listings or run records, so a sample page can link its neighbours cheaply."""
+    ids = sample_layouts(storage.list_keys(RAW_PREFIX))
+    metrics, runs = read_metrics(storage), read_all_runs(storage)
+    when = {i: _updated(_latest_metrics(i, metrics, runs.get(i)), runs.get(i)) for i in ids}
+    return sorted(ids, key=lambda i: (when[i] or 0, i), reverse=True)
+
+
+def build_sample(
+    sample_id: str, present: set, metrics: list, run: dict | None, layout: str = SINGLE, record: dict | None = None
+) -> SampleView:
+    """record: the provenance run record, when there is one. When DeepVariant was the run's caller (#125) its
+    VCF, not bcftools', is the variants stage's output, and its metric (DeepVariant) the stage's time."""
+    keys = keys_for(sample_id, layout)
+    vcf_key = sample_vcf_key(record, sample_id)
+    variant_metric = (record or {}).get("variant_stage") or "CallVariants"
+    latest = _latest_metrics(sample_id, metrics, run)
 
     # In the cloud (no worker record) there are no local metrics: a stage's time comes from its run record part.
     recorded = ((record or {}).get("stages") or {}) if run is None else {}
@@ -253,16 +273,13 @@ def build_sample(
         for view in ready[:1] if run else ready:
             view.state = "running"
 
-    times = [rec.get("timestamp") or 0 for rec in latest.values()]
-    if run:
-        times += [run.get(k) or 0 for k in ("queued", "started", "finished")]
     durations = [s.duration for s in stages if s.duration is not None]
     return SampleView(
         sample_id=sample_id,
         state=state,
         stages=stages,
         run=run,
-        updated=max(times) if any(times) else None,
+        updated=_updated(latest, run),
         # Local runs are sequential, so their metric times add up. In the cloud QC and align run side by side, so a sum
         # of the record's stage times would overstate the run: no total there (each stage shows its own time).
         duration=sum(durations) if durations and not from_record else None,

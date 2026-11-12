@@ -199,6 +199,13 @@ def upload_page(request):
 
 @require_GET
 @gzip_page
+def about_page(request):
+    """How it works: what the pipeline does, in plain English, with links to the code, releases and benchmarks."""
+    return render(request, "samples/about.html")
+
+
+@require_GET
+@gzip_page
 def figures_page(request):
     """The signature figures as 3D terrains: each card shows its inline-SVG poster; the renderer and the grid load
     in the browser only when a card scrolls into view (geyser.js)."""
@@ -271,6 +278,19 @@ def _load_sample_or_404(storage, sample_id, static=None):
     if sample is None:
         raise Http404("No such sample")
     return sample
+
+
+def _neighbours(storage, sample_id, static=None):
+    """(previous, next) sample IDs in the sample list's order (most recently active first), for the links at the
+    foot of a sample page. Published: only finished samples, the ones with a page (a running sample has none yet)."""
+    if static:
+        order = [i for i, s in static.samples.items() if not s.active]
+    else:
+        order = status_mod.list_order(storage)
+    if sample_id not in order:
+        return None, None
+    at = order.index(sample_id)
+    return (order[at - 1] if at else None), (order[at + 1] if at + 1 < len(order) else None)
 
 
 def _log_tail(storage, sample_id):
@@ -467,6 +487,7 @@ def sample_detail(request, sample_id, page=None):
     else:
         qc_href = reverse("samples:file", args=[sample_id, "qc_html"]) + "?inline=1"
     shown_calls = static.max_pages * size if static else None
+    prev_sample, next_sample = _neighbours(storage, sample_id, static)
     context = {
         **_status_context(storage, sample, static),
         "truth": truth,
@@ -485,6 +506,8 @@ def sample_detail(request, sample_id, page=None):
         "variant_pager": _pager(sample_id, variants, size, static.max_pages if static else None),
         # The static site publishes the first max_pages pages; past that, the VCF download has the rest.
         "calls_shown": shown_calls if static and variants and variants.total > shown_calls else None,
+        "prev_sample": prev_sample,
+        "next_sample": next_sample,
     }
     return render(request, "samples/detail.html", context)
 

@@ -11,6 +11,26 @@
     input.setAttribute("aria-invalid", tooBig ? "true" : "false");
   });
 
+  // Header menus: aria-expanded + .open on its aria-controls; Escape or a click outside closes.
+  const toggles = document.querySelectorAll(".site-head [aria-controls]");
+  const expand = (b, open) => {
+    b.setAttribute("aria-expanded", String(open));
+    document.getElementById(b.getAttribute("aria-controls")).classList.toggle("open", open);
+  };
+  for (const b of toggles) {
+    b.addEventListener("click", () => {
+      const open = b.getAttribute("aria-expanded") !== "true";
+      for (const o of toggles) expand(o, o === b && open);
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    for (const b of toggles) if (b.getAttribute("aria-expanded") === "true") { expand(b, false); b.focus(); }
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".site-head")) for (const b of toggles) expand(b, false);
+  });
+
   // The sample list's shortcuts (All / DeepVariant / AlphaGenome / Failed): shown only when this script runs; a
   // button sets data-filter on #samples (outside the polled table, so a refresh keeps it) and CSS hides the rest.
   const filters = document.querySelectorAll("#samples .filters")[0];

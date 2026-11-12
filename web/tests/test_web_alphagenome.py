@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 
 import pytest
 
@@ -296,10 +297,16 @@ def test_a_sample_never_annotated_has_no_panel_on_the_published_page(storage, tm
 
 
 def test_the_panel_adds_no_inline_style_so_the_csp_hashes_stay_the_same(storage, tmp_path):
-    # The hosted CSP lists the inline blocks' hashes (a CloudFront apply to change): the panel uses site.css's classes.
-    plain = publish_mod.csp_hashes({"p": published_page(storage, tmp_path / "a", run_record=record())})
+    # The hosted CSP lists the inline blocks' hashes (a CloudFront apply to change). A page with a motif panel carries
+    # the motif CSS (_motifs.css, left off plain sample pages for LCP): one fixed second variant, whatever the panel
+    # shows. The panel's rows themselves add no inline style.
+    style = re.compile(r"<style>(.*?)</style>", re.S)
+    plain = published_page(storage, tmp_path / "a", run_record=record())
     annotated = published_page(storage, tmp_path / "b", fixture_text(), record({"status": "Success"}))
-    assert publish_mod.csp_hashes({"p": annotated}) == plain and ' style="' not in annotated
+    failed = published_page(storage, tmp_path / "c", run_record=record({"status": "Failed", "error": "quota"}))
+    assert ' style="' not in annotated
+    assert "mag-" not in style.search(plain).group(1) and "mag-" in style.search(annotated).group(1)
+    assert publish_mod.csp_hashes({"p": annotated}) == publish_mod.csp_hashes({"p": failed})
 
 
 def test_atlas_only_rows_without_an_avi_keep_the_tables_rank(client, storage):

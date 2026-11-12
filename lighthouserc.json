@@ -6,19 +6,34 @@
         "http://127.0.0.1:8001/", "http://127.0.0.1:8001/samples/SYNTH001/", "http://127.0.0.1:8001/figures/",
         "http://127.0.0.1:8001/uploads/"
       ],
-      "numberOfRuns": 3,
+      "numberOfRuns": 5,
       "settings": {
         "chromeFlags": "--no-sandbox --headless=new"
       }
     },
     "assert": {
-      "assertions": {
-        "largest-contentful-paint": ["error", { "maxNumericValue": 999, "aggregationMethod": "median-run" }],
-        "cumulative-layout-shift": ["error", { "maxNumericValue": 0, "aggregationMethod": "median-run" }],
-        "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median-run" }],
-        "errors-in-console": ["error", { "minScore": 1, "aggregationMethod": "pessimistic" }],
-        "categories:accessibility": ["error", { "minScore": 0.95, "aggregationMethod": "median-run" }]
-      }
+      "assertMatrix": [
+        {
+          "matchingUrlPattern": "^http://127\\.0\\.0\\.1:8001/",
+          "assertions": {
+            "largest-contentful-paint": ["error", { "maxNumericValue": 999, "aggregationMethod": "median" }],
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0, "aggregationMethod": "median" }],
+            "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median" }],
+            "errors-in-console": ["error", { "minScore": 1, "aggregationMethod": "pessimistic" }],
+            "categories:accessibility": ["error", { "minScore": 0.95, "aggregationMethod": "median-run" }]
+          }
+        },
+        {
+          "matchingUrlPattern": "^http://127\\.0\\.0\\.1:8000/",
+          "assertions": {
+            "largest-contentful-paint": ["error", { "maxNumericValue": 1099, "aggregationMethod": "median" }],
+            "cumulative-layout-shift": ["error", { "maxNumericValue": 0, "aggregationMethod": "median" }],
+            "total-blocking-time": ["error", { "maxNumericValue": 49, "aggregationMethod": "median" }],
+            "errors-in-console": ["error", { "minScore": 1, "aggregationMethod": "pessimistic" }],
+            "categories:accessibility": ["error", { "minScore": 0.95, "aggregationMethod": "median-run" }]
+          }
+        }
+      ]
     },
     "upload": {
       "target": "filesystem",

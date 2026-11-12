@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The web UI's page-weight budget and a summary of the Lighthouse CI runs (.github/workflows/web-perf.yml).
 
-Lighthouse CI asserts the timing budgets itself (lighthouserc.json: LCP, CLS, TBT on the median run). What it
+Lighthouse CI asserts the timing budgets itself (lighthouserc.json: LCP, CLS, TBT, each on its median over the runs). What it
 can't assert is the combined weight of a page's HTML, CSS and JS, which is the budget the web plan sets
 (<= 30 KB transferred, data downloads excluded). This script reads the runs `lhci collect` stored
 (.lighthouseci/lhr-*.json), and per page:
@@ -18,6 +18,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import statistics
 import sys
 
@@ -49,11 +50,23 @@ def page_weight(lhr: dict) -> tuple:
     return sum(int(i.get("transferSize") or 0) for i in counted), len(counted)
 
 
-def limits_from_config(path: str) -> dict:
-    """{audit id: maxNumericValue} from lighthouserc.json's assertions (the one copy of the timing budgets)."""
+def limits_from_config(path: str) -> list:
+    """[(URL pattern, {audit id: maxNumericValue})] from lighthouserc.json (the one copy of the timing budgets): its
+    assertMatrix, one entry per site, or its plain assertions for every URL."""
     with open(path, encoding="utf-8") as fh:
-        assertions = json.load(fh)["ci"]["assert"]["assertions"]
-    return {audit: opts[1]["maxNumericValue"] for audit, opts in assertions.items() if audit in METRICS}
+        config = json.load(fh)["ci"]["assert"]
+    entries = config.get("assertMatrix") or [{"matchingUrlPattern": ".*", "assertions": config["assertions"]}]
+    return [
+        (e["matchingUrlPattern"], {a: o[1]["maxNumericValue"] for a, o in e["assertions"].items() if a in METRICS})
+        for e in entries
+    ]
+
+
+def limits_for(limits, url: str) -> dict:
+    """The limits that apply to url: a dict is the same for every page; a list is limits_from_config's entries."""
+    if isinstance(limits, dict):
+        return limits
+    return next((lim for pattern, lim in limits if re.search(pattern, url)), {})
 
 
 def summarise(runs: list, budget_bytes: int, limits: dict) -> list:
@@ -71,11 +84,13 @@ def summarise(runs: list, budget_bytes: int, limits: dict) -> list:
             "requests": int(statistics.median(w[1] for w in weights)),
         }
         row["weight_ok"] = row["bytes"] <= budget_bytes
+        page_limits = limits_for(limits, url)
         for audit in METRICS:
             values = [r["audits"][audit]["numericValue"] for r in page_runs if audit in r["audits"]]
             value = statistics.median(values) if values else None
             row[audit] = value
-            row[f"{audit}_ok"] = None if value is None or audit not in limits else value <= limits[audit]
+            ok = None if value is None or audit not in page_limits else value <= page_limits[audit]
+            row[f"{audit}_ok"] = ok
         rows.append(row)
     return rows
 
@@ -84,17 +99,19 @@ def _mark(ok) -> str:
     return "" if ok is None else (" ✅" if ok else " ❌")
 
 
-def markdown(rows: list, budget_bytes: int, limits: dict) -> str:
-    def limit(audit):
+def markdown(rows: list, budget_bytes: int, limits) -> str:
+    def limit(audit, lim):
         label, unit = METRICS[audit]
-        return f"{label} ≤ {limits[audit]:g}{(' ' + unit) if unit else ''}" if audit in limits else label
+        return f"{label} ≤ {lim[audit]:g}{(' ' + unit) if unit else ''}" if audit in lim else label
 
+    sets = [("", limits)] if isinstance(limits, dict) else limits
+    timing = "; ".join(
+        (f"`{pattern}`: " if len(sets) > 1 else "") + ", ".join(limit(a, lim) for a in METRICS) for pattern, lim in sets
+    )
     lines = [
         "## Web performance (Lighthouse CI, mobile)",
         "",
-        f"Budgets: HTML+CSS+JS ≤ {budget_bytes / 1024:g} KB transferred, "
-        + ", ".join(limit(a) for a in METRICS)
-        + ". Median of the runs per page.",
+        f"Budgets: HTML+CSS+JS ≤ {budget_bytes / 1024:g} KB transferred; {timing}. Median of the runs per page.",
         "",
         "| Page | HTML+CSS+JS | Requests | LCP | CLS | TBT |",
         "| :--- | ---: | ---: | ---: | ---: | ---: |",

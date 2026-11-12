@@ -118,4 +118,9 @@ def test_the_footer_names_bwa_mem2_and_the_hosted_site_says_how_it_runs(client, 
     publish_mod.publish(sample_ids=["C21"], out=str(out), log=lambda m: None)
     hosted = (out / "samples" / "C21" / "index.html").read_text(encoding="utf-8")
     assert "BWA-MEM" not in hosted and "Storage:" not in hosted
-    assert "published when the run ends" in hosted and "Failed" in hosted
+    assert "Failed" in hosted
+    # How it runs is on the How it works page, which every hosted page's header and footer link to.
+    footer = hosted.split("<footer", 1)[1]
+    assert 'href="/about/">How it works' in footer
+    about = (out / "about" / "index.html").read_text(encoding="utf-8")
+    assert "bwa-mem2" in about and "published to this site when the run ends" in about

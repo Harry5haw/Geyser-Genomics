@@ -8,6 +8,7 @@ import pytest
 from samples.status import deepvariant_state
 
 from .test_web_alphagenome import fixture_text, record, sample_with
+from .web_helpers import fastq_gz, put, vcf_gz
 
 TEMPLATES = os.path.join(os.path.dirname(__file__), "..", "samples", "templates", "samples")
 
@@ -108,6 +109,14 @@ def test_motif_css_is_transform_and_opacity_only_and_sample_pages_only():
     for shared in ("_site.css", "_samples.css"):  # the detail page's own sheet only: 0 bytes on the other pages
         assert "mdv" not in read(shared) and "mag-" not in read(shared)
     assert "@media (prefers-reduced-motion:reduce)" in read("_site.css")  # stops every animation, these included
+
+
+def test_motif_css_only_on_sample_pages_that_show_a_motif(client, storage):
+    """No DeepVariant card and no AlphaGenome panel: no motif CSS (about a fifth of the page's CSS, LCP)."""
+    put(storage, "raw_reads/S1.fastq.gz", fastq_gz())
+    put(storage, "variants/S1.vcf.gz", vcf_gz([(100, "A", "G")]))
+    body = client.get("/samples/S1/").content.decode()
+    assert "mdv" not in body and "mag-" not in body
 
 
 @pytest.mark.parametrize("name", ["_motif_dv.html", "_motif_ag.html"])

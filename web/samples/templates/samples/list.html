@@ -36,7 +36,7 @@
       <button type="submit">Generate demo sample</button>
     </form>
   </div>
-  <div class="card">
+  <div class="card" id="upload">
     <h3>Upload reads</h3>
     <form method="post" action="{% url 'samples:upload' %}" enctype="multipart/form-data">
       {% csrf_token %}
