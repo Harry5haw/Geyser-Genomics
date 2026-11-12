@@ -98,6 +98,10 @@ BWA_MEM2_SAFE_N_PREFIX = 1000
 QC_MAX_THREADS = 16
 # samtools sort RAM budget in the align stage (see align_command).
 SORT_MAX_THREADS = 4
+# bwa / bwa-mem2 read their input in batches of -K bases and estimate the paired-end insert size per batch. The
+# default batch is 10,000,000 x threads, so an alignment depended on the job's CPU count (#232). A fixed -K makes
+# it the same on any number of threads. 100 Mb: about 660k 150 bp read pairs per batch (a few hundred MB of RAM).
+BWA_BATCH_BASES = 100_000_000
 SORT_MEMORY_PER_THREAD = "512M"
 
 # Backends are created on first use so importing this module never needs AWS credentials.
@@ -872,7 +876,7 @@ def align_command(
         raise ValueError("giraffe is not a bwa-style 'mem' aligner: the align stage runs it via giraffe_align")
     read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
     stages = [
-        f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+        f"{aligner} mem -t {threads} -K {BWA_BATCH_BASES} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
         + " ".join(shlex.quote(f) for f in fastqs)
     ]
     return " | ".join(stages + postprocess_stages(ref, out, threads, tmp_dir, paired=len(fastqs) == 2))
@@ -2144,7 +2148,7 @@ def chunk_align_command(
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))
     tmp = os.path.join(tmp_dir, "tmp")
     stages = [
-        f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+        f"{aligner} mem -t {threads} -K {BWA_BATCH_BASES} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
         + " ".join(shlex.quote(f) for f in fastqs)
     ]
     if len(fastqs) == 2:
