@@ -47,6 +47,8 @@ def local_env(tmp_path, monkeypatch):
         "METRICS_BACKEND",
         "METRICS_FILE",
         "ALIGNER",
+        "READ_TYPE",
+        "DEEPVARIANT_MODEL_TYPE",
         "GIRAFFE_GRAPH",
         "GIRAFFE_SAMPLING",
         "KMC_MEMORY_GB",
