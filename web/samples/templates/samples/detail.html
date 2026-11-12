@@ -2,16 +2,18 @@
 {% load static %}
 {% block scripts %}<script src="{% static 'samples/progress.js' %}" defer></script>{% endblock %}
 {% load geyser %}
-{% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_progress.css" %}{% inline_css "samples/_motifs.css" %}{% endblock %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_progress.css" %}{% if deepvariant or alphagenome %}{% inline_css "samples/_motifs.css" %}{% endif %}{% inline_css "samples/_sample_nav.css" %}{% endblock %}
 {% load geyser %}
 {% block title %}{{ sample.sample_id }} · Geyser Genomics{% endblock %}
 {% block content %}
-<p><a href="{% url 'samples:list' %}">← All samples</a></p>
+<nav aria-label="Breadcrumb"><ol class="crumbs"><li><a href="{% url 'samples:list' %}#samples">Samples</a></li><li aria-current="page">{{ sample.sample_id }}</li></ol></nav>
+{# Sticky: the sections this run has (the same conditions as the sections below); geyser.js marks the one in view. #}
+<nav class="onpage" aria-label="On this page"><a href="#run-status">Status</a>{% if gate %}<a href="#gate">Gate</a>{% endif %}{% if deepvariant %}<a href="#deepvariant">DeepVariant</a>{% endif %}{% if variants %}<a href="#variants">Variants</a>{% endif %}{% if alphagenome %}<a href="#alphagenome">AlphaGenome</a>{% endif %}{% if qc_summary or qc_report %}<a href="#qc">QC</a>{% endif %}{% if record %}<a href="#record">Run record</a>{% endif %}{% if downloads %}<a href="#files">Files</a>{% endif %}</nav>
 
 {% include "samples/_status.html" %}
 
 {% if gate %}
-  <section class="panel gate-{{ gate.state }}" aria-labelledby="gate-heading">
+  <section class="panel gate-{{ gate.state }}" id="gate" aria-labelledby="gate-heading">
     <h2 id="gate-heading">Quality gate <span class="badge {{ gate.css }}">{{ gate.label }}</span></h2>
     {% if gate.state == "pass" %}
       <p>Every configured check passed.</p>
@@ -142,7 +144,7 @@
 {% endif %}
 
 {% if qc_summary or qc_report %}
-  <section class="panel">
+  <section class="panel" id="qc">
     <h2>Quality control</h2>
     {% if qc_summary %}
     <table class="kv">
@@ -160,7 +162,7 @@
 {% endif %}
 
 {% if record %}
-  <section class="panel" aria-labelledby="record-heading">
+  <section class="panel" id="record" aria-labelledby="record-heading">
     <h2 id="record-heading">Run record{% if record.status %} <span class="badge {{ record.status }}">{{ record.status }}</span>{% endif %}</h2>
     <table class="kv">
       <tbody>
@@ -194,7 +196,7 @@
 {% endif %}
 
 {% if downloads %}
-  <section class="panel">
+  <section class="panel" id="files">
     <h2>Files</h2>
     <ul class="files">
       {% for d in downloads %}
@@ -203,5 +205,9 @@
       {% endfor %}
     </ul>
   </section>
+{% endif %}
+
+{% if prev_sample or next_sample %}
+  <nav class="pn" aria-label="Previous and next sample">{% if prev_sample %}<a href="{% url 'samples:detail' prev_sample %}" rel="prev">← {{ prev_sample }}</a>{% endif %}{% if next_sample %}<a href="{% url 'samples:detail' next_sample %}" rel="next">{{ next_sample }} →</a>{% endif %}</nav>
 {% endif %}
 {% endblock %}

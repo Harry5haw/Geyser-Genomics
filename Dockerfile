@@ -2,7 +2,7 @@
 #
 # The pipeline image: every stage (qc, align, variants) runs in it, locally and on AWS Batch (Fargate).
 # Kept to what the stages run, because each Fargate task pulls the whole image before it starts (#141):
-# fastp, bwa, samtools, bcftools (Debian), bwa-mem2 and mosdepth (upstream, checksum-pinned), Python
+# fastp, bwa, samtools, bcftools (Debian), bwa-mem2, minimap2 and mosdepth (upstream, checksum-pinned), Python
 # with boto3, and the quality gate (gate/, built from source in its own stage). Everything only needed
 # to fetch or build those (curl, bzip2, the Rust toolchain) stays in the earlier stages.
 #
@@ -41,6 +41,19 @@ RUN curl -fsSL "https://github.com/brentp/mosdepth/releases/download/v${MOSDEPTH
     echo "${MOSDEPTH_SHA256}  /opt/mosdepth" | sha256sum -c - && \
     chmod +x /opt/mosdepth
 
+# minimap2: the long-read aligner (ALIGNER=minimap2, READ_TYPE=hifi|ont; #long-read). Debian 13 packages 2.28
+# too, but the upstream static binary is checksum-pinned like the tools above and matches the biocontainer
+# (minimap2 2.28) the long-read benchmark uses, so cloud, local and benchmark runs align with the same build.
+# Only the binary is kept (the tarball also ships k8 + paftools.js, which the pipeline doesn't run).
+ARG MINIMAP2_VERSION=2.28
+ARG MINIMAP2_SHA256=51f2cf0e486d0f9f88ace1aa58fdc56571382a676ea0889ae607301c60693377
+RUN curl -fsSL "https://github.com/lh3/minimap2/releases/download/v${MINIMAP2_VERSION}/minimap2-${MINIMAP2_VERSION}_x64-linux.tar.bz2" \
+        -o /tmp/minimap2.tar.bz2 && \
+    echo "${MINIMAP2_SHA256}  /tmp/minimap2.tar.bz2" | sha256sum -c - && \
+    tar -xjf /tmp/minimap2.tar.bz2 -C /tmp --no-same-owner && \
+    install -m 0755 "/tmp/minimap2-${MINIMAP2_VERSION}_x64-linux/minimap2" /opt/minimap2 && \
+    rm -rf /tmp/minimap2.tar.bz2 "/tmp/minimap2-${MINIMAP2_VERSION}_x64-linux"
+
 # ---------------------------------------------------------------------------------------------- gate
 # The quality gate (gate/, #144): one static binary (musl), so the final image gets the binary and no
 # Rust toolchain. The Rust version must match gate/rust-toolchain.toml (bump both together; Dependabot
@@ -69,8 +82,10 @@ RUN apt-get update && \
 
 ARG BWA_MEM2_VERSION=2.3
 ARG MOSDEPTH_VERSION=0.3.15
+ARG MINIMAP2_VERSION=2.28
 COPY --from=download /opt/bwa-mem2 /opt/bwa-mem2
 COPY --from=download /opt/mosdepth /usr/local/bin/mosdepth
+COPY --from=download /opt/minimap2 /usr/local/bin/minimap2
 # The gate and its shipped thresholds (GATE_CONFIG=$GATE_THRESHOLDS_DIR/synthetic.toml for the test data).
 COPY --from=gate /usr/local/bin/geyser-gate /usr/local/bin/geyser-gate
 COPY --from=gate /gate/thresholds /opt/geyser-gate/thresholds
@@ -78,8 +93,9 @@ COPY --from=gate /gate/thresholds /opt/geyser-gate/thresholds
 ENV PATH="/opt/bwa-mem2:${PATH}" \
     GEYSER_BWA_MEM2_RELEASE=${BWA_MEM2_VERSION} \
     GEYSER_MOSDEPTH_RELEASE=${MOSDEPTH_VERSION} \
+    GEYSER_MINIMAP2_RELEASE=${MINIMAP2_VERSION} \
     GATE_THRESHOLDS_DIR=/opt/geyser-gate/thresholds
-RUN bwa-mem2 version && mosdepth --version && geyser-gate --version
+RUN bwa-mem2 version && mosdepth --version && minimap2 --version && geyser-gate --version
 
 WORKDIR /app
 

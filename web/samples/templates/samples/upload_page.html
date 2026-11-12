@@ -32,8 +32,10 @@
   <form id="upload-form" data-api="{{ api_base }}" data-existing="{{ existing|join:' ' }}" novalidate>
     <label>
       Upload token
+      {# Text until first focus (upload.js makes it a password field then): a password field at load sets Chrome's #}
+      {# password manager parsing the form during first paint, a 70-80 ms task that broke the TBT budget. #}
       {# one-time-code: browsers otherwise offer to save a password field (the token must not be stored). #}
-      <input type="password" id="up-token" autocomplete="one-time-code" spellcheck="false" required>
+      <input type="text" id="up-token" autocomplete="one-time-code" spellcheck="false" required>
     </label>
     <fieldset>
       <legend>Reads</legend>

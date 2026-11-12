@@ -1,0 +1,10 @@
+/* A sample page's way around (detail.html only): the breadcrumb, the sticky "On this page" chips (geyser.js marks
+the section in view with aria-current) and the previous/next sample links at the foot */
+.crumbs{display:flex;flex-wrap:wrap;gap:.4rem;margin:0 0 .5rem;padding:0;list-style:none;color:var(--muted);font-size:.9rem}
+.crumbs li+li::before{content:"›";margin-right:.4rem}
+.onpage{position:sticky;top:0;z-index:3;display:flex;gap:.4rem;overflow-x:auto;margin:0 -1rem 1rem;padding:.5rem 1rem;background:var(--bg)}
+.onpage a{flex:none;padding:.25rem .8rem;border:1px solid var(--frame);border-radius:999px;font-size:.85rem;color:var(--text);text-decoration:none}
+.onpage a:hover{background:var(--hover)}.onpage [aria-current]{color:var(--run);background:var(--run-bg);border-color:currentColor}
+main [id]{scroll-margin-top:3.5rem}
+.pn{display:flex;justify-content:space-between;gap:1rem;margin-bottom:1.5rem;font-weight:500}.pn [rel=next]{margin-left:auto}
+:root[data-theme=contrast] .onpage a{padding:.55rem 1rem;border-width:2px}

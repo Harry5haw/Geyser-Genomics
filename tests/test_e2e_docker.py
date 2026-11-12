@@ -434,3 +434,49 @@ def test_calling_shards_read_their_region_in_place(tmp_path, capfd, monkeypatch)
     assert _vcf_records(streamed / "variants" / "SYNTH001.vcf.gz") == _vcf_records(
         downloaded / "variants" / "SYNTH001.vcf.gz"
     )
+
+
+# --- long reads (READ_TYPE=hifi, ALIGNER=minimap2) ---------------------------------------------------------
+
+
+def test_long_reads_hifi_recover_planted_snps(tmp_path, capfd):
+    # HiFi-like long reads (make_test_data --long-reads): minimap2 map-hifi, no duplicate marking, bcftools with
+    # mpileup -X pacbio-ccs. --check: all 10 planted SNPs and nothing else, from the real tools in the image.
+    import tasks
+
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root), "--sample", "HIFI001", "--long-reads"])
+
+    exit_code, log = _run(root, "HIFI001", capfd, "--read-type", "hifi")
+
+    assert exit_code == 0, log
+    assert "Aligning with minimap2 (READ_TYPE=hifi)" in log
+    assert "samtools markdup" not in log and "bwa-mem2#262" not in log
+    record = json.loads((root / "runs" / "HIFI001.provenance.json").read_text())
+    assert record["status"] == "succeeded" and record["aligner"] == "minimap2", record["stages"]
+    assert record["read_type"] == "hifi" and record["minimap2_preset"] == "map-hifi"
+    assert record["duplicates_marked"] is False
+    assert record["tools"].get("minimap2", "").startswith("2.28") and record["tools"]["minimap2 release"] == "2.28"
+    stats = {
+        name: (root / key).read_text() for name, key in tasks.keys_for("HIFI001").items() if name in tasks.STATS_FILES
+    }
+    flagstat = tasks.parse_flagstat(stats["flagstat"])
+    assert flagstat["mapped_pct"] >= 99.5 and flagstat["duplicates"] == 0  # nothing flagged as a duplicate
+    depth = tasks.parse_mosdepth_summary(stats["mosdepth_summary"])["mean_depth"]
+    assert 25 <= depth <= 35, depth  # simulated 30x; long reads thin out towards the contig ends
+    variants = tasks.parse_bcftools_stats(stats["bcftools_stats"])
+    assert variants["snps"] == 10 and variants["indels"] == 0  # the 1 bp indel errors are noise, not calls
+    assert (root / "alignments" / "HIFI001.cram.crai").exists() and (root / "variants" / "HIFI001.vcf.gz.tbi").exists()
+
+
+def test_long_reads_sharded_calling_gives_the_same_calls(tmp_path, capfd):
+    root = tmp_path / "bucket"
+    make_test_data.main(["--root", str(root), "--sample", "HIFI001", "--long-reads"])
+    exit_code, log = _run(root, "HIFI001", capfd, "--read-type", "hifi")
+    assert exit_code == 0, log
+    unsharded = _vcf_records(root / "variants" / "HIFI001.vcf.gz")
+
+    exit_code, log = _run(root, "HIFI001", capfd, "--read-type", "hifi", "--skip-to-variants", "--shard-window", "7000")
+
+    assert exit_code == 0, log
+    assert _vcf_records(root / "variants" / "HIFI001.vcf.gz") == unsharded and len(unsharded) == 10

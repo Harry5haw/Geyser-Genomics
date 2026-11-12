@@ -49,7 +49,8 @@ For eighteen years I lived with an illness nobody could name. Then my mother, my
   <a href="https://github.com/Harry5haw/Geyser-Genomics/releases"><img src="https://img.shields.io/badge/Releases-v0.3%20to%20v3.0-1A73E8?style=for-the-badge" alt="Releases"></a>
 </p>
 
-<p><a href="https://github.com/Harry5haw/Geyser-Genomics/actions/workflows/web-perf.yml"><img src="https://img.shields.io/github/actions/workflow/status/Harry5haw/Geyser-Genomics/web-perf.yml?branch=main&style=flat-square&label=Web%20performance%20budgets" alt="Web performance budgets (Lighthouse CI on main)"></a></p>
+<p><a href="https://github.com/Harry5haw/Geyser-Genomics/actions/workflows/web-perf.yml"><img src="https://img.shields.io/github/actions/workflow/status/Harry5haw/Geyser-Genomics/web-perf.yml?branch=main&style=flat-square&label=Web%20performance%20budgets" alt="Web performance budgets (Lighthouse CI on main)"></a>
+  <a href="https://gitlab.com/Harry5haw/geyser-genomics/-/pipelines"><img src="https://gitlab.com/Harry5haw/geyser-genomics/badges/main/pipeline.svg?key_text=GitLab%20CI%20(mirror)&amp;key_width=110" alt="GitLab CI on the mirror (ruff and the unit tests)"></a></p>
 
 </div>
 
@@ -74,6 +75,7 @@ For eighteen years I lived with an illness nobody could name. Then my mother, my
 
 **The genomics**
 - **Accuracy against the GIAB truth sets:** GPU DeepVariant cut SNP errors by 57% and indel errors by 90% against bcftools on the HG003 whole genome. Graph alignment (vg giraffe, Human Pangenome Reference Consortium graphs) halved DeepVariant's errors against BWA on chr20 (−51%).
+- **Long reads (PacBio HiFi, Oxford Nanopore):** one setting, `READ_TYPE`, switches the pipeline to minimap2, the right duplicate handling, the caller's long-read error model and DeepVariant's matching model, with variant calling held to the read type the alignment recorded. Tested end to end on simulated HiFi reads ([how it works](docs/long-read.md)).
 - **A quality gate in Rust** fails a run that succeeded but isn't good enough, with named reasons, against thresholds calibrated on real genomes. **AlphaGenome annotation** scores the variants of interest, with an evaluation [pre-registered](docs/prereg/rp1-alphagenome.md) before any results.
 
 **How it was built:** the code was written with Claude Code (Anthropic's AI coding agent); I designed the system and directed the work. The decisions and reviews were mine, and infrastructure changes ran under rules I set: Claude's applies needed a reviewed plan or a narrow standing approval, and account-level, compute and CDN changes were mine. The agents worked under a [bounded AWS role with its own kill switch](docs/design/claude-guardrails.md), and an AI-assistance log is kept with the project's write-up.
@@ -104,6 +106,7 @@ Needs Docker and Python 3.11. More options (paired-end, sharded calling, DeepVar
 | [The full story](docs/story.md) | The Odyssey: 18 years to a diagnosis, and the maths of a 1 in 256 million chance |
 | [Architecture and features](docs/architecture.md) | How it works, the diagrams, what each technology does, design goals, the repository layout |
 | [Results and benchmarks](docs/results.md) | Accuracy (hap.py against GIAB), pangenome and graph alignment, cost and turnaround, GPU timing |
+| [Long reads](docs/long-read.md) | PacBio HiFi and Oxford Nanopore: minimap2, no duplicate marking, the long-read DeepVariant models |
 | [Run it locally](docs/local-development.md) | The offline pipeline, tests, the quality gate, DeepVariant on a local GPU |
 | [Deployment](docs/deployment.md) · [Operations runbook](docs/operations.md) | Deploying with Terraform, starting and watching runs, monitoring, rollback |
 | [Web UI](docs/web-ui.md) | The Django app and the published static site |

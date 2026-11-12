@@ -61,7 +61,7 @@ def pairs(t: dict, name: str) -> list:
     out += [(f"--{s} chip", t[s], t[f"{s}-bg"]) for s in ("done", "run", "fail", "warn", "queue", "pend")]
     out += [("button", t["on-primary"], t["primary"]), ("theme switch, pressed", t["on-primary"], t["primary"])]
     out += [("text on row hover", t["text"], t["hover"]), ("link on row hover", t["link"], t["hover"])]
-    out += [("Samples pill", t["run"], t["run-bg"]), ("Samples pill, hover", t["tube-hover-text"], t["tube-hover"])]
+    out += [("Current nav link", t["run"], t["run-bg"]), ("Nav link, hover", t["text"], t["hover"])]
     out += [(f"done pill on --stage-{s}", t["on"], t[f"stage-{s}"]) for s in ("qc", "align", "variants")]
     chips = "nt-a-bg" in t and t["bg"] != "#1f1f1f"  # every theme but dark draws the bases as chips
     if not chips:  # dark: coloured letters straight on the table rows

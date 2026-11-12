@@ -144,8 +144,8 @@ def test_align_command_runs_bwa_when_asked():
 
 
 def test_align_command_rejects_unknown_aligner():
-    with pytest.raises(ValueError, match="minimap2"):
-        tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1", aligner="minimap2")
+    with pytest.raises(ValueError, match="bowtie2"):
+        tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1", aligner="bowtie2")
 
 
 @pytest.mark.parametrize(
