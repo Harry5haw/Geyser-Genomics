@@ -19,15 +19,15 @@
   <script src="{% static 'samples/theme.js' %}" defer></script>
   <style>{% inline_css "samples/_site.css" %}{% block page_css %}{% endblock %}</style>
   <script src="{% static 'samples/geyser.js' %}" defer></script>
+  {% block scripts %}{% endblock %}
   {# Chromium prerenders a same-site page on hover (moderate eagerness), so the click shows it at once. #}
   {# Never a download, an upload/demo POST target, the fastp report or a status/rows fragment. #}
   <script type="speculationrules">{"prerender":[{"where":{"and":[{"or":[{"href_matches":"/*"},{"href_matches":"/*\\?*"}]},{"not":{"href_matches":"/samples/*/files/*"}},{"not":{"href_matches":"/samples/*/status/*"}},{"not":{"href_matches":"/samples/rows/*"}},{"not":{"href_matches":"/upload/*"}},{"not":{"href_matches":"/demo/*"}},{"not":{"href_matches":"/figures/*.csv"}},{"not":{"selector_matches":"[download], [rel~=nofollow], [target=_blank]"}}]},"eagerness":"moderate"}]}</script>
 </head>
 <body>
-  {% block sprite %}{% endblock %}
   <header class="site-head">
     <nav class="wrap" aria-label="Site">
-      <a class="brand" href="{% url 'samples:list' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" width="180" height="40" alt="Geyser Genomics"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-retro" src="{% static 'samples/geyser-lockup-retro.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy">
+      <a class="brand" href="{% url 'samples:list' %}"><span><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-light.svg' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" data-erupt="{% static 'samples/geyser-erupt-light.svg' %}" width="180" height="40" alt="Geyser Genomics"></picture><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-dark.svg' %}"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" data-erupt="{% static 'samples/geyser-erupt-dark.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"></picture><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-retro.svg' %}"><img class="logo-retro" src="{% static 'samples/geyser-lockup-retro.svg' %}" data-erupt="{% static 'samples/geyser-erupt-retro.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"></picture><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-contrast.svg' %}"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" data-erupt="{% static 'samples/geyser-erupt-contrast.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"></picture></span>
         <i>FASTQ → VCF pipeline</i></a>
       <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
       <div class="head-actions">

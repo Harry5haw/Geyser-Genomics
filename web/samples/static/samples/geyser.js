@@ -11,23 +11,73 @@
     input.setAttribute("aria-invalid", tooBig ? "true" : "false");
   });
 
-  // Status polling: an element with data-poll="<url>" is replaced by the server's fresh copy every
-  // data-poll-seconds. The copy keeps polling only while it still has data-poll (a finished sample table
-  // doesn't). A response with a Geyser-Refresh header means the run finished: reload to show the results.
+  // The sample list's shortcuts (All / DeepVariant / AlphaGenome / Failed): shown only when this script runs; a
+  // button sets data-filter on #samples (outside the polled table, so a refresh keeps it) and CSS hides the rest.
+  const filters = document.querySelectorAll("#samples .filters")[0];
+  if (filters) {
+    filters.dataset.ready = "1"; // its space was kept (no layout shift); now it can be seen
+    filters.addEventListener("click", (e) => {
+      const b = e.target.closest("[data-filter-choice]");
+      if (!b) return;
+      filters.closest("#samples").dataset.filter = b.dataset.filterChoice;
+      for (const o of filters.querySelectorAll("[data-filter-choice]")) o.setAttribute("aria-pressed", String(o === b));
+    });
+  }
+
+  // A poll's fresh copy replaces the element, except the progress bar: while the same run is in the same state, the
+  // live bar node stays in the page (its flow animation and drawn length carry on) and takes the copy's data, labels
+  // and text; the rest of the element is swapped around it. Returns the element now in the page.
+  const swap = (el, next) => {
+    const old = el.querySelector(".hp");
+    const fresh = next.querySelector(".hp");
+    const going = (s) => s === "queued" || s === "running"; // one live bar from queued to the end of the run
+    const same = old && fresh && old.parentNode === el && fresh.parentNode === next
+      && old.dataset.key === fresh.dataset.key
+      && (old.dataset.state === fresh.dataset.state || (going(old.dataset.state) && going(fresh.dataset.state)));
+    if (!same) {
+      el.replaceWith(next);
+      return next;
+    }
+    for (const a of [...old.attributes]) if (a.name.startsWith("data-") && !fresh.hasAttribute(a.name)) old.removeAttribute(a.name);
+    for (const a of [...fresh.attributes]) old.setAttribute(a.name, a.value);
+    old.removeAttribute("data-offset"); // recomputed from the copy's server clock
+    for (const sel of [".hp-labels", ".hp-now"]) {
+      const o = old.querySelector(sel);
+      const f = fresh.querySelector(sel);
+      if (o && f) o.replaceWith(f);
+    }
+    for (const a of [...next.attributes]) el.setAttribute(a.name, a.value);
+    for (const child of [...el.childNodes]) if (child !== old) child.remove();
+    let before = true;
+    for (const child of [...next.childNodes]) {
+      if (child === fresh) before = false;
+      else if (before) el.insertBefore(child, old);
+      else el.appendChild(child);
+    }
+    return el;
+  };
+
+  // Status polling: an element with data-poll="<url>" is refreshed from the server's copy every data-poll-seconds
+  // (swap above). The copy keeps polling only while it still has data-poll (a finished sample table doesn't). A
+  // Geyser-Refresh header means the run finished: its copy shows the end (the bar's finish or failure plays), then
+  // the page reloads to show the results.
   const poll = (el) => {
     const every = (Number(el.dataset.pollSeconds) || 3) * 1000;
     const tick = async () => {
       if (!document.hidden) {
         try {
           const r = await fetch(el.dataset.poll, { cache: "no-store" });
-          if (r.headers.get("Geyser-Refresh")) return location.reload();
+          const refresh = r.headers.get("Geyser-Refresh");
+          if (refresh && r.status === 204) return location.reload();
           if (r.ok) {
             const t = document.createElement("template");
             t.innerHTML = (await r.text()).trim();
             const next = t.content.firstElementChild;
             if (next) {
-              el.replaceWith(next);
-              if (next.dataset.poll) poll(next);
+              const live = swap(el, next);
+              if (window.GeyserProgress) window.GeyserProgress(live); // the bar: no frame of the raw copy
+              if (refresh) return setTimeout(() => location.reload(), 2200); // after the finish plays
+              if (live.dataset.poll) poll(live);
               return;
             }
           }
@@ -161,5 +211,35 @@
     };
     document.addEventListener("mouseover", prefetch, { passive: true });
     document.addEventListener("touchstart", prefetch, { passive: true });
+  }
+  // The header logo's eruption (scripts/build_logo_burst.py). The header's <picture> already shows the empty geyser
+  // at first paint where motion is allowed and scripts run (its <source>; else the full lockup <img>): nothing runs
+  // at load or on a timer, so page-load measurements see a static page. On the first hover or focus (on a screen
+  // without hover, the first touch or scroll) the <img> becomes the animated lockup, which plays once (SMIL: the
+  // jets surge, the helices fly up and land) and holds the full logo. Once a session: later pages drop the <source>
+  // (the full logo), as does a browser without storage. data-erupt = the animated file's hashed URL.
+  const logos = document.querySelectorAll(".brand img[data-erupt]");
+  const ERUPTED = "geyser-erupted";
+  const media = (q) => Boolean(window.matchMedia && window.matchMedia(q).matches);
+  const full = (img) => {
+    const pic = img.parentNode;
+    if (pic && pic.tagName === "PICTURE") pic.querySelectorAll("source").forEach((s) => s.remove());
+  };
+  let erupted;
+  try { erupted = sessionStorage.getItem(ERUPTED); } catch (_) { erupted = "1"; /* no storage: keep it still */ }
+  if (logos.length && erupted) logos.forEach(full);
+  else if (logos.length && !media("(prefers-reduced-motion: reduce)")) {
+    const brand = logos[0].closest(".brand");
+    const touch = media("(hover: none)") && window.addEventListener ? ["touchstart", "scroll"] : [];
+    const erupt = () => {
+      brand.removeEventListener("pointerover", erupt);
+      brand.removeEventListener("focusin", erupt);
+      touch.forEach((t) => window.removeEventListener(t, erupt));
+      try { sessionStorage.setItem(ERUPTED, "1"); } catch (_) { /* private mode: it may erupt again */ }
+      logos.forEach((img) => { full(img); img.src = img.dataset.erupt; });
+    };
+    brand.addEventListener("pointerover", erupt);
+    brand.addEventListener("focusin", erupt);
+    touch.forEach((t) => window.addEventListener(t, erupt, { passive: true }));
   }
 })();

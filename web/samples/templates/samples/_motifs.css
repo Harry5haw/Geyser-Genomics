@@ -1,0 +1,34 @@
+/* ---- Motion motifs (T2): DeepVariant net (_motif_dv.html), AlphaGenome strip (_motif_ag.html). Decorative,
+aria-hidden, transform/opacity only (the DeepVariant nodes also hand their fill colour on, continuously); static under prefers-reduced-motion (_site.css's last rule). Original artwork. ---- */
+.mdv-art{flex:1 1 10rem;min-width:10rem;height:50px;width:100%}
+.mdv .edges{stroke:var(--muted);stroke-width:.8;opacity:.22}
+.mdv .nodes circle{transform-box:fill-box;transform-origin:center;opacity:.6}
+.mdv .cm use{fill:none;stroke-linecap:round;stroke-linejoin:round;animation:mdv-comet 4s linear infinite}.mdv .cm .tr{stroke-width:3;stroke-dasharray:18 182;opacity:.35;animation-name:mdv-trail}.mdv .hd{stroke-width:2.5;stroke-dasharray:3 197}
+.mdv .r1{stroke:var(--c1);fill:var(--c1)}.mdv .r2{stroke:var(--c2);fill:var(--c2)}.mdv .r3{stroke:var(--c4);fill:var(--c4)}.mdv .cm .r2{animation-delay:-2.67s}.mdv .cm .r3{animation-delay:-1.33s}
+.mdv .nodes .g{opacity:0}.mdv .g.r1{animation:mdv-g1 4s linear infinite}.mdv .g.r2{animation:mdv-g2 4s linear infinite}.mdv .g.r3{animation:mdv-g3 4s linear infinite}
+.mdv .k1{animation:mdv-c1 4s linear infinite}.mdv .k2{animation:mdv-c2 4s linear infinite}.mdv .k3{animation:mdv-c3 4s linear infinite}.mdv .k4{animation:mdv-c4 4s linear infinite}
+.mdv{--c1:var(--blue);--c2:var(--red);--c3:var(--yellow);--c4:var(--green)}.mdv .k1{fill:var(--c1)}.mdv .k2{fill:var(--c2)}.mdv .k3{fill:var(--c3)}.mdv .k4{fill:var(--c4)}
+.mdv .nodes>g:nth-child(2)>*{animation-delay:0.12s}.mdv .nodes>g:nth-child(3)>*{animation-delay:0.28s}.mdv .nodes>g:nth-child(4)>*{animation-delay:0.40s}.mdv .nodes>g:nth-child(5)>*{animation-delay:0.53s}.mdv .nodes>g:nth-child(6)>*{animation-delay:0.68s}.mdv .nodes>g:nth-child(7)>*{animation-delay:0.80s}.mdv .nodes>g:nth-child(8)>*{animation-delay:0.93s}.mdv .nodes>g:nth-child(9)>*{animation-delay:1.07s}.mdv .nodes>g:nth-child(10)>*{animation-delay:1.20s}.mdv .nodes>g:nth-child(11)>*{animation-delay:1.33s}.mdv .nodes>g:nth-child(12)>*{animation-delay:1.47s}.mdv .nodes>g:nth-child(13)>*{animation-delay:1.60s}.mdv .nodes>g:nth-child(14)>*{animation-delay:1.72s}.mdv .nodes>g:nth-child(15)>*{animation-delay:1.88s}.mdv .nodes>g:nth-child(16)>*{animation-delay:2.00s}.mdv .nodes>g:nth-child(17)>*{animation-delay:2.12s}.mdv .nodes>g:nth-child(18)>*{animation-delay:2.27s}.mdv .nodes>g:nth-child(19)>*{animation-delay:2.40s}.mdv .nodes>g:nth-child(20)>*{animation-delay:2.52s}.mdv .nodes>g:nth-child(21)>*{animation-delay:2.68s}.mdv .nodes>g:nth-child(22)>*{animation-delay:2.80s}.mdv .nodes>g:nth-child(23)>*{animation-delay:2.92s}.mdv .nodes>g:nth-child(24)>*{animation-delay:3.08s}.mdv .nodes>g:nth-child(25)>*{animation-delay:3.20s}.mdv .nodes>g:nth-child(26)>*{animation-delay:3.33s}.mdv .nodes>g:nth-child(27)>*{animation-delay:3.47s}.mdv .nodes>g:nth-child(28)>*{animation-delay:3.60s}.mdv .nodes>g:nth-child(29)>*{animation-delay:3.73s}.mdv .nodes>g:nth-child(30)>*{animation-delay:3.88s}
+@keyframes mdv-comet{from{stroke-dashoffset:3}to{stroke-dashoffset:-100}}
+@keyframes mdv-trail{from{stroke-dashoffset:18}to{stroke-dashoffset:-85}}
+@keyframes mdv-g1{0%{opacity:0;transform:scale(.6)}2%{opacity:1;transform:scale(1.45)}14%,100%{opacity:0;transform:scale(.6)}}
+@keyframes mdv-g2{0%,33.3%{opacity:0;transform:scale(.6)}35.3%{opacity:1;transform:scale(1.45)}47.3%,100%{opacity:0;transform:scale(.6)}}
+@keyframes mdv-g3{0%,66.7%{opacity:0;transform:scale(.6)}68.7%{opacity:1;transform:scale(1.45)}80.7%,100%{opacity:0;transform:scale(.6)}}
+@keyframes mdv-c1{0%{fill:var(--c1)}25%{fill:var(--c2)}50%{fill:var(--c3)}75%{fill:var(--c4)}100%{fill:var(--c1)}}
+@keyframes mdv-c2{0%{fill:var(--c2)}25%{fill:var(--c3)}50%{fill:var(--c4)}75%{fill:var(--c1)}100%{fill:var(--c2)}}
+@keyframes mdv-c3{0%{fill:var(--c3)}25%{fill:var(--c4)}50%{fill:var(--c1)}75%{fill:var(--c2)}100%{fill:var(--c3)}}
+@keyframes mdv-c4{0%{fill:var(--c4)}25%{fill:var(--c1)}50%{fill:var(--c2)}75%{fill:var(--c3)}100%{fill:var(--c4)}}
+:root[data-theme=contrast] .mdv{--c1:#ffd600;--c2:#fff;--c3:#ffd600;--c4:#fff}:root[data-theme=contrast] .mdv .edges{stroke:#fff;opacity:.5}
+:root[data-theme=retro] .mdv{--c1:#8a8a8a;--c2:#fff;--c3:#8a8a8a;--c4:#fff}:root[data-theme=retro] .mdv .edges{stroke:#c8c8c8;opacity:1}:root[data-theme=retro] .mdv .nodes circle{stroke:#9a9a9a;stroke-width:1.2}
+.mhead{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1.25rem}.mhead h2{margin:0;flex:0 1 auto}
+.mag-art{flex:1 1 10rem;min-width:10rem;height:40px;width:100%}
+.mag-art .seq{font:700 9px var(--mono);text-anchor:middle}.mag-art .bA{fill:var(--nt-a)}.mag-art .bC{fill:var(--nt-c)}.mag-art .bG{fill:var(--nt-g)}.mag-art .bT{fill:var(--nt-t)}
+.mag-art .tr{fill-opacity:.16;stroke-width:1.6;stroke-linejoin:round}.mag-art .t1{stroke:var(--blue);fill:var(--blue)}.mag-art .t2{stroke:var(--red);fill:var(--red)}.mag-art .t3{stroke:var(--green);fill:var(--green)}
+.mag-art .tr{transform-box:fill-box;transform-origin:bottom}.mag-art :is(.seq,.sc){animation:mag-scroll 24s linear infinite}
+.mag-art .t1{animation:mag-rise 3.2s ease-in-out infinite}.mag-art .t2{animation:mag-rise 4.1s ease-in-out -1.3s infinite}.mag-art .t3{animation:mag-rise 3.7s ease-in-out -2.4s infinite}
+@keyframes mag-scroll{to{transform:translateX(-240px)}}
+@keyframes mag-rise{0%,100%{transform:scaleY(.35);opacity:.65}50%{transform:scaleY(1);opacity:1}}
+:root[data-theme=dark] .mag-art .t1{stroke:#8ab4f8;fill:#8ab4f8}:root[data-theme=dark] .mag-art .t2{stroke:#f28b82;fill:#f28b82}:root[data-theme=dark] .mag-art .t3{stroke:#81c995;fill:#81c995}
+:root[data-theme=contrast] .mag-art :is(.t1,.t3){stroke:#ffd600;fill:#ffd600}:root[data-theme=contrast] .mag-art .t2{stroke:#fff;fill:#fff}
+:root[data-theme=retro] .mag-art .tr{stroke:#000;fill:#000}:root[data-theme=retro] .mag-art .t2{stroke-dasharray:3 2}:root[data-theme=retro] .mag-art .t3{stroke-width:2.4}
+:root[data-theme=retro] .mdv :is(.r1,.r2,.r3){stroke:#000}:root[data-theme=retro] .mdv .cm .tr{stroke-width:1.2}:root[data-theme=retro] .mdv .cm .hd{stroke-width:1.4}:root[data-theme=retro] .mdv .nodes .g{fill:none;stroke:#000;stroke-width:1.2}

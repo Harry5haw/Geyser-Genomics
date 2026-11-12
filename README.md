@@ -1,10 +1,16 @@
 <div align="center">
 
-<img src="docs/assets/Github social media banner v9.png" alt="Geyser Genomics banner: technologies for DNA sequencing" width="85%"/>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/geyser-erupt-dark.gif">
+  <img src="docs/assets/geyser-erupt-light.gif" alt="Geyser Genomics" width="425" height="112">
+</picture>
 
-<h1>🌋 Geyser Genomics🌋</h1>
+<h2>Upload a genome. Get your variants. In the cloud, for pennies.</h2>
 
-<p><strong>An event-driven AWS pipeline that turns raw DNA sequencing reads into a list of genetic variants,<br/>built and tested offline first.</strong></p>
+<p>Geyser Genomics takes the raw reads from a DNA sequencer and finds where that genome differs from the human reference: the <b>variants</b>.<br/>
+Every run is checked for quality, can be explained by AI, and gets its own web page. It runs on AWS on demand and costs nothing while it waits.</p>
+
+<p><a href="https://d1bp7nfasxklsf.cloudfront.net"><img src="https://img.shields.io/badge/See%20it%20live-the%20results%20site-1A73E8?style=for-the-badge" alt="See it live: the results site"></a></p>
 
 <p>
   <a href="#️-project-status--features"><img src="https://img.shields.io/badge/Status-Cloud%20verified%20·%20actively%20developed-2E7D32?style=for-the-badge" alt="Status: verified in the cloud, actively developed"></a>
@@ -24,27 +30,49 @@
   <img src="https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=github-actions&logoColor=white" alt="GitHub Actions">
 </p>
 
-<p>
-  <a href="#-run-it-locally-in-2-minutes-no-aws"><b>🚀 Quickstart</b></a> &nbsp;·&nbsp;
-  <a href="#️-how-it-works-the-architecture"><b>🏗️ Architecture</b></a> &nbsp;·&nbsp;
-  <a href="#️-project-status--features"><b>🗺️ Status</b></a> &nbsp;·&nbsp;
-  <a href="#deepvariant-on-a-local-nvidia-gpu"><b>🧠 DeepVariant</b></a> &nbsp;·&nbsp;
-  <a href="#️-roadmap"><b>🛣️ Roadmap</b></a>
-</p>
-
 <table>
   <tr>
-    <td align="center" width="20%"><h3>~$0.07</h3>per real chr20 sample<br/>(HG003, 30-35x), cloud</td>
-    <td align="center" width="20%"><h3>11 / 11</h3>quality-gate checks passed<br/>on those real runs</td>
-    <td align="center" width="20%"><h3>10 / 10</h3>planted SNPs recovered<br/>in every CI run</td>
-    <td align="center" width="20%"><h3>−51%</h3>variant errors: graph<br/>alignment vs BWA*</td>
-    <td align="center" width="20%"><h3>0</h3>stored AWS keys<br/>in CI (OIDC)</td>
+    <td align="center" width="20%"><h2>~3 h</h2>a whole human genome,<br/>reads to variants</td>
+    <td align="center" width="20%"><h2>~$0.07</h2>one chromosome,<br/>in about 22 minutes</td>
+    <td align="center" width="20%"><h2>−57% / −90%</h2>SNP / indel errors<br/>with DeepVariant</td>
+    <td align="center" width="20%"><h2>AI</h2>AlphaGenome effect<br/>scores, live (v3.0)</td>
+    <td align="center" width="20%"><h2>0</h2>stored AWS keys<br/>(CI signs in with OIDC)</td>
   </tr>
 </table>
 
-<sub>* HG003 chr20, linear DeepVariant on Google's published case-study alignments: vg giraffe (graph) against BWA, 186 SNP + indel errors against 378, scored with hap.py (vcfeval, PASS only) against GIAB v4.2.1 confident regions, the method of Google's case studies (<a href="https://github.com/Harry5haw/Geyser-Genomics/pull/145">#145</a>). The giraffe BAM is not duplicate-marked and the BWA one is. Aligning only the reads BWA had placed on chr20 with this project's own giraffe step gave a smaller gain (368 errors, <a href="https://github.com/Harry5haw/Geyser-Genomics/pull/129">#129</a>). Cloud cost at Fargate on-demand list prices.</sub>
+<sub>Measured on the GIAB reference genomes: HG003 whole genome at 30x in 2 h 59 min; HG003/HG005 chr20 in 21-23 min for $0.071-0.079; DeepVariant against bcftools on the HG003 whole genome, scored with hap.py (SNP F1 0.9959, indel F1 0.9950). <a href="docs/releases/README.md">Release notes</a> have every run.</sub>
 
 </div>
+
+## 🚀 Try it
+
+- **See real results:** the [live site](https://d1bp7nfasxklsf.cloudfront.net) has a page for every cloud run: quality checks, coverage, the variants, and the AI annotation where it ran.
+- **Run it on your laptop in 2 minutes, no AWS account:** [the quickstart](#-run-it-locally-in-2-minutes-no-aws) builds a small genome with 10 planted mutations and finds all 10.
+- **See what changed:** [the release notes](docs/releases/README.md), latest v3.0 "Alpha Genome".
+
+## 🧬 Built on the shoulders of giants
+
+Geyser is the plumbing: it runs proven open tools at cloud scale, checks their results and shows them. The science comes from these projects.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>DeepVariant (Google)</h3>
+      <img src="docs/assets/third-party/deepvariant/how-deepvariant-works.png" alt="DeepVariant's two steps: align the sequencer's reads to the reference genome, then infer the true sequence where the reads differ from it" width="100%"/>
+      <img src="docs/assets/third-party/deepvariant/pileup-channels.png" alt="The six channels DeepVariant sees for one candidate variant: read base, base quality, mapping quality, strand, read supports variant, base differs from reference" width="100%"/>
+      <p>A neural network that looks at the reads around each candidate variant as an image and decides the genotype. In Geyser it runs on a cloud GPU and cuts errors against the classic caller by more than half.<br/>
+      <sub>Images from the <a href="https://google.github.io/deepvariant/">DeepVariant blog</a>, © Google, BSD-3-Clause (<a href="docs/assets/third-party/deepvariant/NOTICE.md">notice</a>). Not affiliated with or endorsed by Google.</sub></p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>AlphaGenome (Google DeepMind)</h3>
+      <img src="docs/assets/alphagenome-panel-cloud026.png" alt="Geyser's own AlphaGenome panel for cloud run CLOUD026: 10 variants scored, the research-only notice and the AlphaGenome output terms notice; the scores themselves are blurred here" width="100%"/>
+      <p>An AI model that predicts how a DNA change may affect gene regulation. Geyser scores a run's variants of interest with it and shows them on the run's page, for research use only.<br/>
+      <sub>Our own screenshot (CLOUD026), scores blurred: the live site shows them with the <a href="https://deepmind.google.com/science/alphagenome/output-terms">AlphaGenome output terms</a>. Read DeepMind's post on the <a href="https://deepmind.google/blog/alphagenome-atlas-a-predictive-map-of-every-possible-dna-letter-change-in-the-human-genome/">AlphaGenome Atlas</a>.</sub></p>
+    </td>
+  </tr>
+</table>
+
+Also: [fastp](https://github.com/OpenGene/fastp) (quality control), [bwa-mem2](https://github.com/bwa-mem2/bwa-mem2) (alignment), [samtools and bcftools](https://www.htslib.org/) (files and variant calling), [vg giraffe](https://github.com/vgteam/vg) (pangenome alignment) and the [GIAB](https://www.nist.gov/programs-projects/genome-bottle) truth sets that every number above is scored against.
 
 ---
 
@@ -211,6 +239,9 @@ Three levels of "done", kept separate: **☁️ verified in the cloud** (applied
 ## 📊 Results
 
 Real chromosome 20 data (GIAB HG003 and HG005), drawn by scripts from small derived CSVs, never by hand. Sources, commands and the numbers behind each figure are in [docs/figures](docs/figures/README.md). Click a figure for the SVG.
+
+**Graph alignment:** vg giraffe cut DeepVariant's errors by about half against BWA (−51%, 186 SNP + indel errors against 378).
+<sub>HG003 chr20, linear DeepVariant on Google's published case-study alignments: vg giraffe (graph) against BWA, 186 SNP + indel errors against 378, scored with hap.py (vcfeval, PASS only) against GIAB v4.2.1 confident regions, the method of Google's case studies (<a href="https://github.com/Harry5haw/Geyser-Genomics/pull/145">#145</a>). The giraffe BAM is not duplicate-marked and the BWA one is. Aligning only the reads BWA had placed on chr20 with this project's own giraffe step gave a smaller gain (368 errors, <a href="https://github.com/Harry5haw/Geyser-Genomics/pull/129">#129</a>). Cloud cost at Fargate on-demand list prices.</sub>
 
 <a href="docs/figures/cost-surface.svg"><img src="docs/figures/cost-surface.png" alt="Heatmaps of cost per run and turnaround over align vCPUs (1, 2, 4) and calling shards (1, 2, 4, 8) for 25 cloud runs of HG003 30x chr20, with the Pareto front: 2 vCPU x 4 shards cheapest, 4 vCPU x 4 shards fastest" width="100%"/></a>
 

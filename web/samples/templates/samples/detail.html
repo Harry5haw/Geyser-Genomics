@@ -1,7 +1,8 @@
 {% extends "samples/base.html" %}
+{% load static %}
+{% block scripts %}<script src="{% static 'samples/progress.js' %}" defer></script>{% endblock %}
 {% load geyser %}
-{% block page_css %}{% inline_css "samples/_samples.css" %}{% endblock %}
-{% block sprite %}{% include "samples/_dna_sprite.html" %}{% endblock %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_progress.css" %}{% inline_css "samples/_motifs.css" %}{% endblock %}
 {% load geyser %}
 {% block title %}{{ sample.sample_id }} · Geyser Genomics{% endblock %}
 {% block content %}
@@ -53,6 +54,15 @@
   <p class="muted">Demo sample with {{ truth.snps|length }} planted SNPs. The truth check appears here once variants are called.</p>
 {% endif %}
 
+{% if deepvariant %}
+  <section class="panel dv-card" id="deepvariant" aria-labelledby="deepvariant-heading">
+    <div class="mhead"><h2 id="deepvariant-heading">Variant calling · DeepVariant{% if deepvariant.state == "running" %} <small class="muted">(calling…)</small>{% endif %}</h2>
+      {% include "samples/_motif_dv.html" with state=deepvariant.state %}</div>
+    {% if deepvariant.facts %}<table class="kv"><tbody>{% for label, value in deepvariant.facts %}<tr><th scope="row">{{ label }}</th><td>{{ value }}</td></tr>{% endfor %}</tbody></table>{% endif %}
+    <p class="muted"><small>DeepVariant is Google's open-source caller; Geyser is independent.</small></p>
+  </section>
+{% endif %}
+
 {% if variants %}
   <section class="panel" id="variants">
     <h2>Variants <small class="muted">({{ variants.total }} call{{ variants.total|pluralize }})</small></h2>
@@ -83,8 +93,9 @@
 
 {% if alphagenome %}
   <section class="panel" id="alphagenome" aria-labelledby="alphagenome-heading">
-    <h2 id="alphagenome-heading">Variants of interest <small class="muted">(AlphaGenome{% if alphagenome.total %}, {{ alphagenome.total }} scored{% endif %})</small>
+    <div class="mhead"><h2 id="alphagenome-heading">Variants of interest <small class="muted">(AlphaGenome{% if alphagenome.total %}, {{ alphagenome.total }} scored{% endif %})</small>
       {% if alphagenome.test_data %}<span class="badge warn">Test data</span>{% endif %}</h2>
+      {% include "samples/_motif_ag.html" %}</div>
     <p class="note" role="note"><strong>Research use only, not for clinical use.</strong>
       These are AlphaGenome's predictions of how each variant may change gene regulation (expression, splicing, chromatin).
       They are not a diagnosis and have not been clinically validated.</p>

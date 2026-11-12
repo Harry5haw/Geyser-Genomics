@@ -1,7 +1,6 @@
 {% extends "samples/base.html" %}
 {% load geyser %}
 {% block page_css %}{% inline_css "samples/_samples.css" %}{% endblock %}
-{% block sprite %}{% include "samples/_dna_sprite.html" %}{% endblock %}
 {% block content %}
 <section>
   <h1>From raw reads to variants</h1>
@@ -67,8 +66,12 @@
 </section>
 {% endif %}
 
-<section class="panel" id="samples">
+<section class="panel" id="samples" data-filter="all">
   <h2>Samples</h2>
+  {# Shortcuts: geyser.js shows them and switches data-filter; CSS hides the other rows (works on the static site). #}
+  <div class="filters" role="group" aria-label="Show samples">
+    <button type="button" data-filter-choice="all" aria-pressed="true">All</button><button type="button" data-filter-choice="deepvariant" aria-pressed="false">DeepVariant results</button><button type="button" data-filter-choice="alphagenome" aria-pressed="false">AlphaGenome results</button><button type="button" data-filter-choice="failed" aria-pressed="false">Failed</button>
+  </div>
   {% include "samples/_sample_table.html" %}
 </section>
 {% endblock %}
