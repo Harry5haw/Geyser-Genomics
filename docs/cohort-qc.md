@@ -124,8 +124,8 @@ test order doesn't matter. Without Hail, pyspark or Java they skip, so the main 
 From the project's own chr20 call sets, 12 Nov 2026: three samples (two GIAB individuals, HG003 at two depths:
 Google's case-study BAM and the 30x set; and HG005), three callers each. "Cohort" here means a set of samples
 analysed together, not a cohort in the population-genetics sense. 9 call sets, PASS only, each call counted once.
-The run took 6.6 min in `geyser-cohort` (4 CPUs, 4 GB driver), including the run-record table, before the
-combined MatrixTable was checkpointed (each output re-read every VCF then).
+The run takes 2.0 min in `geyser-cohort` (4 CPUs, 4 GB driver), including the run-record table. Before the combined
+MatrixTable was checkpointed, every output re-imported every VCF, and it took 6.6 min with identical results.
 
 | Sample | Caller | PASS calls | SNPs | Indels | Ti/Tv | Het/hom | Unique to caller | Shared by all 3 |
 |---|---|---|---|---|---|---|---|---|
