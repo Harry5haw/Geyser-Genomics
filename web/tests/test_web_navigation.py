@@ -5,6 +5,7 @@ import re
 
 from django.core.management import call_command
 
+from samples import status as status_mod
 from samples.context_processors import GITHUB_URL, nav_here
 
 from .web_helpers import fastq_gz, metric, put, vcf_gz, write_metrics
@@ -96,3 +97,10 @@ def test_published_upload_link_only_with_an_api(storage, tmp_path, settings):
     call_command("publish", "--all", "--out", str(out), "--api-base", "https://api.example")
     nav = header((out / "about/index.html").read_text(encoding="utf-8"))
     assert 'href="/uploads/">Upload' in nav
+
+
+def test_list_order_is_the_lists_order_without_building_samples(storage):
+    three_samples(storage)
+    put(storage, "raw_reads/FRESH.fastq.gz", fastq_gz())  # no metrics yet: last
+    assert status_mod.list_order(storage) == [s.sample_id for s in status_mod.load_all(storage)]
+    assert status_mod.list_order(storage)[:3] == ["NEW", "MID", "OLD"]

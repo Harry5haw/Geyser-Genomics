@@ -286,7 +286,7 @@ def _neighbours(storage, sample_id, static=None):
     if static:
         order = [i for i, s in static.samples.items() if not s.active]
     else:
-        order = [s.sample_id for s in status_mod.load_all(storage)]
+        order = status_mod.list_order(storage)
     if sample_id not in order:
         return None, None
     at = order.index(sample_id)
