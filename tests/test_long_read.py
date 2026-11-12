@@ -240,6 +240,33 @@ def test_run_local_knows_the_read_types_and_passes_read_type_on():
     assert "minimap2" in run_local.ALIGNERS
 
 
+def test_run_local_read_type_reaches_every_job_without_touching_the_environment(tmp_path, monkeypatch):
+    # main() runs in-process in the E2E tests: setting os.environ there would turn every later run into HiFi.
+    run_local = load_module("run_local_lr2", "scripts", "run_local.py")
+    monkeypatch.delenv("READ_TYPE", raising=False)
+    (tmp_path / "raw_reads").mkdir()
+    (tmp_path / "raw_reads" / "S1.fastq.gz").write_bytes(b"")
+    (tmp_path / "reference").mkdir()
+    (tmp_path / "reference" / "r.fa").write_text(">r\nACGT\n")
+    seen = []
+
+    def fake_run_job(job, runner, root, dv_memory=None, env=None, *args, **kwargs):
+        seen.append((job["name"], env or {}))
+        return 0
+
+    monkeypatch.setattr(run_local, "run_job", fake_run_job)
+
+    argv = ["--root", str(tmp_path), "--sample", "S1", "--reference", "r.fa"]
+    assert run_local.main([*argv, "--read-type", "hifi"]) == 0
+
+    assert [name for name, _ in seen] == ["qc", "align", "variants", "gate"]
+    assert all(env["READ_TYPE"] == "hifi" for _, env in seen)
+    assert "READ_TYPE" not in os.environ
+    seen.clear()
+    assert run_local.main(argv) == 0  # a later run without --read-type is a short-read run again
+    assert all("READ_TYPE" not in env for _, env in seen)
+
+
 def test_make_test_data_long_reads(tmp_path):
     mtd = load_module("make_test_data_lr", "scripts", "make_test_data.py")
     mtd.main(["--root", str(tmp_path), "--sample", "HIFI001", "--long-reads"])

@@ -714,9 +714,6 @@ def main(argv=None):
     if a.dv_split is not None and a.dv_split < 1:
         p.error("--dv-split must be >= 1")
 
-    if a.read_type:
-        os.environ["READ_TYPE"] = a.read_type  # passed to every stage container (PIPELINE_ENV_VARS)
-
     trigger = load_trigger()
     keys = sample_keys(trigger, a.root, a.sample)
     if not keys:
@@ -774,6 +771,8 @@ def main(argv=None):
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             env = {**run_env(sample_id, job["image"]), "RUN_NAME": run_name}
+            if a.read_type:  # every stage, DeepVariant included; per job, so main() leaves os.environ alone
+                env["READ_TYPE"] = a.read_type
             if run_job(job, a.runner, a.root, a.dv_memory, env, a.memory, a.docker_label) != 0:
                 if job.get("optional"):
                     print(f"\nWARNING: optional stage '{job['name']}' failed for {sample_id}; the run is unaffected")
