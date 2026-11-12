@@ -116,8 +116,8 @@ def cohort_frame(records):
     cpu = [F.coalesce(F.col(f"{s}_cpu_seconds"), F.lit(0.0)) for s in STAGES]
     memory = [F.col(f"{s}_peak_memory_mib") for s in STAGES]
     flat = (
-        flat.withColumn("stage_seconds_total", sum(seconds[1:], seconds[0]))
-        .withColumn("cpu_seconds_total", sum(cpu[1:], cpu[0]))
+        flat.withColumn("stage_seconds_total", F.round(sum(seconds[1:], seconds[0]), 2))
+        .withColumn("cpu_seconds_total", F.round(sum(cpu[1:], cpu[0]), 2))
         # greatest() skips nulls; all-null (no stage reported resources) stays null.
         .withColumn("peak_memory_mib_max", F.greatest(*memory))
         .withColumn("duplicate_pct", F.round(100.0 * F.col("duplicates") / F.col("reads_total"), 2))

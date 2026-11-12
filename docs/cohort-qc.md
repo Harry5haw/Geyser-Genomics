@@ -103,4 +103,35 @@ cohort files, and on every push to main.
 
 ## Results
 
-Filled in from the run over the project's chr20 call sets (HG003 at two coverages and HG005, three callers each).
+From the project's own chr20 call sets, 12 Nov 2026: HG003 (Google's case-study BAM, and the 30x set) and HG005,
+three callers each. 9 call sets, PASS only, counted per site. The run took 6.6 min in `geyser-cohort` (4 CPUs,
+4 GB driver), including the run-record table.
+
+| Sample | Caller | PASS calls | SNPs | Indels | Ti/Tv | Het/hom | Unique to caller | Shared by all 3 |
+|---|---|---|---|---|---|---|---|---|
+| HG003 | bcftools | 133,624 | 113,108 | 20,516 | 1.843 | 2.973 | 29,167 | 99,979 |
+| HG003 | DeepVariant | 107,189 | 85,648 | 21,537 | 2.067 | 1.949 | 2,141 | 99,979 |
+| HG003 | pangenome DV | 108,291 | 87,159 | 21,126 | 2.010 | 1.850 | 3,235 | 99,979 |
+| HG003 30x | bcftools | 132,603 | 112,223 | 20,380 | 1.852 | 2.954 | 27,851 | 99,867 |
+| HG003 30x | DeepVariant | 107,617 | 86,198 | 21,416 | 2.065 | 1.976 | 2,106 | 99,867 |
+| HG003 30x | pangenome DV | 108,093 | 87,040 | 21,049 | 2.014 | 1.864 | 3,163 | 99,867 |
+| HG005 | bcftools | 130,337 | 109,943 | 20,394 | 1.848 | 2.278 | 26,318 | 99,138 |
+| HG005 | DeepVariant | 106,645 | 85,391 | 21,243 | 2.048 | 1.492 | 2,099 | 99,138 |
+| HG005 | pangenome DV | 107,166 | 86,216 | 20,934 | 2.008 | 1.432 | 3,161 | 99,138 |
+
+What the table shows:
+
+- **About 100,000 calls are shared by all three callers** in every sample (93% of DeepVariant's PASS calls).
+- **bcftools makes about 26,000-29,000 calls no other caller makes**, nearly all of them SNPs (HG003: 27,815 of
+  29,167). Its Ti/Tv is lower (1.84-1.85 against 2.01-2.07), and its het/hom ratio is high. Both are signs of
+  false-positive heterozygous SNPs. This fits the hap.py benchmark, where bcftools' SNP F1 is 0.9915 against
+  DeepVariant's 0.99775 on HG003.
+- **The pangenome caller has about 1,000 more unique calls than linear DeepVariant** (3,235 against 2,141 on
+  HG003), and a slightly lower Ti/Tv. That fits the hap.py result: fewer false negatives, more false positives.
+- **The callers agree across the two HG003 datasets** to within 1% in every column, and HG005 (another individual)
+  has a lower het/hom ratio for all three callers.
+
+The run-record table over the six real-input cloud runs (`geyser-data/real-inputs/results/bucket/runs`) has six rows,
+all succeeded. The 15x negative control shows mean depth 16.1 (the gate's depth failure). The single-end runs have
+higher duplicate rates (13-17% against 9.5-11% paired: without mates, markdup flags reads that start at the same
+position by chance).

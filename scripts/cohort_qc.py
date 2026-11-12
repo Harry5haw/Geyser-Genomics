@@ -108,7 +108,10 @@ def load_call_set(cs: CallSet, reference_genome: str | None):
     else:
         dp = hl.missing(hl.tint32)
     mt = mt.select_entries(GT=mt.GT, DP=dp)
-    mt = hl.split_multi_hts(mt)
+    # permit_shuffle: bcftools can write a multi-allelic record and another record at the same position (HG003's
+    # chr20:136,668: G>T,... and G>GCAGG...). Split, those keys are out of order, which Hail only accepts with a
+    # shuffle. It costs a sort, nothing more, on a single-sample VCF.
+    mt = hl.split_multi_hts(mt, permit_shuffle=True)
     mt = mt.select_rows()
     # Every VCF names its sample its own way (HG003, HG003_chr20, ...): the column key is the call set instead.
     mt = mt.key_cols_by(s=hl.literal(cs.column))

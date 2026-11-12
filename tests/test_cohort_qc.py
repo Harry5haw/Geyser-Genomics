@@ -74,7 +74,16 @@ S1 = {
         (800, "A", "C", "PASS", "1/1"),
     ],
 }
-S2 = {"bcftools": [(100, "A", "G", ".", "0/1")]}
+# S2's 900: a multi-allelic SNP record and a separate indel record at the same position, as bcftools writes them
+# (chr20:136,668 in the real HG003 calls). Split, the keys come out of order (G>C, G>T, then G>GA), which Hail
+# refuses unless the split may shuffle.
+S2 = {
+    "bcftools": [
+        (100, "A", "G", ".", "0/1"),
+        (900, "G", "C,T", ".", "1/2"),
+        (900, "G", "GA", ".", "0/1"),
+    ]
+}
 
 
 def write_storage(root):
@@ -210,9 +219,9 @@ def test_unique_and_shared_calls(result):
     assert rows["S1", "deepvariant"]["unique_to_caller"] == 0
     assert rows["S1", "pangenome"]["unique_to_caller"] == 1  # 800
     assert rows["S1", "bcftools"]["shared_by_all_callers"] == 1  # 100
-    # One caller only: "shared by all" means nothing, so it's blank; its one call is unique.
+    # One caller only: "shared by all" means nothing, so it's blank; all its calls are unique.
     assert rows["S2", "bcftools"]["shared_by_all_callers"] is None
-    assert rows["S2", "bcftools"]["unique_to_caller"] == 1
+    assert rows["S2", "bcftools"]["unique_to_caller"] == 4  # 100, and 900's G>C, G>T, G>GA
 
 
 def test_outputs_are_written(result):
@@ -241,8 +250,8 @@ def test_variant_table_counts_samples_per_caller(hail, result):
     assert row["variant_type"] == "SNP"
     # The RefCall and NoCall candidates never become rows.
     assert variants.where("`locus.position` IN (500, 600)").count() == 0
-    # 100, 200, 300, 400 x2, 700, 800
-    assert variants.count() == 7
+    # 100, 200, 300, 400 x2, 700, 800, and S2's 900 x3 (multi-allelic split + a duplicate locus)
+    assert variants.count() == 10
 
 
 def test_duplicate_call_sets_are_refused(hail, tmp_path):
