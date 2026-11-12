@@ -82,6 +82,17 @@ def test_align_command_marks_duplicates_after_coordinate_sort():
     assert markdup[markdup.index("-@") + 1] == "4"
 
 
+def test_both_align_routes_fix_the_bwa_batch_size_so_threads_dont_change_the_result():
+    # bwa / bwa-mem2 estimate the insert size per input batch; the default batch scales with -t (#232).
+    for threads in (2, 4, 16):
+        for cmd in (
+            tasks.align_command("/w/ref.fa", ["/w/a_R1.fq.gz", "/w/a_R2.fq.gz"], "/w/S1.cram", threads, "/w", "S1"),
+            tasks.chunk_align_command("/w/ref.fa", ["/w/a.fq.gz"], "/w/o.bam", threads, "/w", "S1", "bwa"),
+        ):
+            bwa = shlex.split(cmd.split(" | ")[0])
+            assert bwa[bwa.index("-K") + 1] == str(tasks.BWA_BATCH_BASES) == "100000000"
+
+
 def test_align_command_marks_but_never_removes_duplicates():
     markdup = _align_stages(tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1"))[-1]
     assert "-r" not in markdup and "--remove" not in markdup
@@ -133,8 +144,8 @@ def test_align_command_runs_bwa_when_asked():
 
 
 def test_align_command_rejects_unknown_aligner():
-    with pytest.raises(ValueError, match="minimap2"):
-        tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1", aligner="minimap2")
+    with pytest.raises(ValueError, match="bowtie2"):
+        tasks.align_command("r.fa", "s.fq", "o.bam", 1, "/w", "S1", aligner="bowtie2")
 
 
 @pytest.mark.parametrize(

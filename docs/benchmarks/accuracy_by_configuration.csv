@@ -1,4 +1,5 @@
 sample,coverage,run,configuration,aligner,caller,caller_settings,snp_f1,indel_f1,snp_fn,snp_fp,indel_fn,indel_fp,errors,snp_errors_alldifficultregions,snp_errors_segdups,snp_errors_lowmappabilityall,date,source
+HG002,30x,HG002_hifi_chr20_30x,"minimap2 + linear DV, model_type=PACBIO",minimap2,deepvariant,model_type=PACBIO,0.99953,0.992499,51,16,82,90,239,62,35,35,2026-11-12,benchmark_happy.py
 HG003,30x,HG003_30x_chr20,bwa + bcftools,bwa,bcftools,,0.991795,0.94893,397,758,609,497,2261,1022,462,635,2026-11-02,#95
 HG003,30x,HG003_30x_chr20,bwa + linear DV,bwa,deepvariant,,0.997474,0.995766,273,81,63,28,445,314,66,286,2026-11-02,#95
 HG003,30x,HG003_30x_chr20,bwa + pangenome DV,bwa,pangenome,,0.997575,0.996235,250,90,53,28,421,307,38,277,2026-11-02,#95

@@ -31,6 +31,41 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Docs-only PRs (markdown anywhere, or anything under docs/: figures, CSVs) skip the heavy jobs below: the
+  # Rust gate, the Docker end-to-end suites and Step Functions Local, which can't be affected by them. Lint and
+  # the unit tests still run (some unit tests read docs/). A skipped job counts as passed for the ruleset's
+  # required checks, so such a PR is mergeable in ~2 minutes instead of ~8.
+  # Fail-safe: each heavy job runs unless this job SUCCEEDED and said docs_only=true, so a failure here means
+  # the full suite runs, never that it is skipped. Pushes to main, the weekly run and manual runs never skip.
+  changes:
+    name: Changed files (docs only?)
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.diff.outputs.docs_only }}
+      cohort: ${{ steps.diff.outputs.cohort }}
+    steps:
+      - uses: actions/checkout@v7
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then printf 'docs_only=false\ncohort=true\n' >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(git diff --name-only "$BASE...$HEAD")
+          echo "$files"
+          if [ -n "$files" ] && ! echo "$files" | grep -Evq '^docs/|\.md$'; then docs_only=true; else docs_only=false; fi
+          echo "docs_only=$docs_only" | tee -a "$GITHUB_OUTPUT"
+          # The cohort job (Hail, a few minutes) only when something it runs, imports or installs changed:
+          # its own files, any requirements file (requirements-dev.txt pulls in app/, web/ and figures'),
+          # app/ (provenance.py's record layout, tasks.py's stats keys), tests/conftest.py, this workflow.
+          cohort_files='^(scripts/cohort_|scripts/glue/|tests/test_cohort_|tests/conftest\.py$|app-cohort/|app/|(.*/)?requirements[^/]*\.txt$|\.github/workflows/tests\.yml$)'
+          if echo "$files" | grep -Eq "$cohort_files"; then cohort=true; else cohort=false; fi
+          echo "cohort=$cohort" | tee -a "$GITHUB_OUTPUT"
+
   # Quality gates, no AWS: ruff (config in pyproject.toml) and Terraform formatting/validation.
   # validate runs with -backend=false: it downloads the providers but never touches state.
   lint:
@@ -67,6 +102,8 @@ jobs:
   # gate/rust-toolchain.toml on first use.
   gate:
     name: Quality gate (Rust fmt, clippy, tests)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -97,12 +134,37 @@ jobs:
       # no dependencies. The runner image's Node is enough (20+).
       - run: node --test web/tests/js/*.test.js
 
+  # Cohort QC (Hail) and the run-record cohort table (PySpark, the Glue job's code) on tiny synthetic fixtures. A job of
+  # its own because Hail's wheel is ~130 MB and Spark needs a JVM: the unit job skips these tests.
+  cohort:
+    name: Cohort QC (Hail, PySpark)
+    runs-on: ubuntu-latest
+    # On a PR only when the changes job saw a file the cohort code runs, imports or installs (a few minutes for a side
+    # analysis); pushes to main, the weekly run and manual runs always run it.
+    needs: [changes, unit]
+    if: ${{ needs.changes.outputs.cohort == 'true' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          # Hail 0.2.139 is built and tested with Java 11 (Glue 5.0 runs cohort_runs.py on 17: plain Spark, no Hail).
+          java-version: "11"
+      - run: pip install -r requirements-dev.txt -r requirements-cohort.txt
+      - run: pytest tests/test_cohort_qc.py tests/test_cohort_runs.py -v -rs
+
   end-to-end:
     name: Pipeline end-to-end (Docker, synthetic data)
     # Skipped on draft PRs (the image build is the expensive part); runs when the PR is marked ready.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # !cancelled() + the explicit unit check: see the changes job (a failed changes job must not skip this).
+    if: >-
+      ${{ !cancelled() && needs.unit.result == 'success' && needs.changes.outputs.docs_only != 'true'
+      && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ubuntu-latest
-    needs: unit
+    needs: [unit, changes]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -142,8 +204,9 @@ jobs:
   # run in Step Functions Local with Batch and SNS mocked: no AWS, no credentials.
   state-machine:
     name: State machine (Step Functions Local, mocked Batch/SNS)
+    if: ${{ !cancelled() && needs.unit.result == 'success' && needs.changes.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
-    needs: unit
+    needs: [unit, changes]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -160,10 +223,11 @@ jobs:
   giraffe:
     name: Giraffe align end-to-end (Docker, synthetic graph)
     if: >-
-      (github.event_name == 'pull_request' && !github.event.pull_request.draft)
-      || github.event_name == 'workflow_dispatch'
+      ${{ !cancelled() && needs.unit.result == 'success' && needs.changes.outputs.docs_only != 'true'
+      && ((github.event_name == 'pull_request' && !github.event.pull_request.draft)
+      || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
-    needs: unit
+    needs: [unit, changes]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -194,10 +258,11 @@ jobs:
   deepvariant-cpu:
     name: DeepVariant end-to-end (CPU image, synthetic data)
     if: >-
-      (github.event_name == 'pull_request' && !github.event.pull_request.draft)
-      || github.event_name == 'workflow_dispatch'
+      ${{ !cancelled() && needs.unit.result == 'success' && needs.changes.outputs.docs_only != 'true'
+      && ((github.event_name == 'pull_request' && !github.event.pull_request.draft)
+      || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
-    needs: unit
+    needs: [unit, changes]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

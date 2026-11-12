@@ -116,6 +116,7 @@ TOOL_VERSION_COMMANDS = {
     "bwa": (["bwa"], r"Version: (\S+)"),
     "fastp": (["fastp", "--version"], r"fastp (\S+)"),
     "mosdepth": (["mosdepth", "--version"], r"mosdepth (\S+)"),
+    "minimap2": (["minimap2", "--version"], r"(?m)^(\d+\.\d+\S*)\s*$"),  # prints e.g. "2.28-r1209"
     "geyser-gate": (["geyser-gate", "--version"], r"geyser-gate (\S+)"),
     # ALIGNER=giraffe (the geyser-giraffe image): vg prints "vg version v1.55.0 ..."; kmc with no
     # arguments prints its usage, headed "K-Mer Counter (KMC) ver. 3.2.4 (...)".
@@ -127,6 +128,7 @@ TOOL_VERSION_COMMANDS = {
 TOOL_RELEASE_ENV = {
     "bwa-mem2": "GEYSER_BWA_MEM2_RELEASE",
     "mosdepth": "GEYSER_MOSDEPTH_RELEASE",
+    "minimap2": "GEYSER_MINIMAP2_RELEASE",
     "vg": "GEYSER_VG_RELEASE",
     "kmc": "GEYSER_KMC_RELEASE",
 }
@@ -528,7 +530,17 @@ def build(storage, sample_id: str, part_keys=None) -> dict:
     for p in sorted(run, key=lambda p: p.get("finished") or ""):  # later stages win on a clash
         record["tools"].update(p.get("tools") or {})
         record["stats"].update(p.get("stats") or {})
-        for field in ("reference", "layout", "aligner", "annotation", "gate", "alphagenome"):
+        for field in (
+            "reference",
+            "layout",
+            "aligner",
+            "read_type",  # short / hifi / ont (tasks.READ_TYPES), and what it set up for this run:
+            "minimap2_preset",
+            "duplicates_marked",
+            "annotation",
+            "gate",
+            "alphagenome",
+        ):
             if p.get(field) is not None:
                 record[field] = p[field]
     if caller:

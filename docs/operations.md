@@ -224,7 +224,7 @@ its jobs.
 
 The outputs are in the same bucket: `qc_reports/<id>.fastp.{html,json}`, `alignments/<id>.cram` + `.crai`,
 `variants/<id>.vcf.gz` + `.tbi` (or `variants_deepvariant/` when DeepVariant was the caller), and `stats/<id>/`.
-The [README](../README.md#2-how-to-use-the-platform-event-driven) has the full table.
+The [deployment guide](deployment.md#2-how-to-use-the-platform-event-driven) has the full table.
 
 **The run record** says what produced them: the inputs, the reference with its MD5, tool versions, the image
 (`app_version`), each stage's status and timings, the outputs, the headline QC stats and the gate's verdict

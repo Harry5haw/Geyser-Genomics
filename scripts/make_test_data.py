@@ -16,6 +16,11 @@ Deterministic for a given --seed, needs only the standard library, and runs in a
     python scripts/make_test_data.py --root local_bucket
     python scripts/make_test_data.py --root local_bucket --sample PAIRED001 --paired
     python scripts/make_test_data.py --root local_bucket --pangenome    # + graph (vg in Docker)
+    python scripts/make_test_data.py --root local_bucket --sample HIFI001 --long-reads   # HiFi-like long reads
+
+--long-reads simulates single-end long reads instead (HiFi-like: lengths around --long-read-length, a low error
+rate of mostly substitutions with some 1 bp indels), for run_local.py --read-type hifi (minimap2 map-hifi). The
+planted SNPs keep a margin of one mean read length from the contig ends, so long reads cover each of them fully.
 
 --pangenome writes the graph as GFA (standard library) and converts it to GBZ with vg in Docker, as
 fetch_dv_testdata.py does for the HPRC chr20 graph. The reference is the GRCh38 path (the sample name
@@ -40,6 +45,11 @@ GRAPH_REFERENCE = "GRCh38"
 DECOY_SNPS = 5
 VG_IMAGE = "quay.io/vgteam/vg:v1.55.0"
 COMPLEMENT = str.maketrans("ACGT", "TGCA")
+# --long-reads: the default mean read length (HiFi libraries are ~15-20 kb; 5 kb keeps the 50 kb synthetic genome
+# covered by many reads) and the share of errors that are 1 bp indels rather than substitutions.
+LONG_READ_MEAN = 5000
+LONG_READ_INDEL_FRACTION = 0.3
+MIN_LONG_READ = 500  # --long-reads: shorter pieces clipped at a contig end are dropped
 
 
 def make_reference(rng, length):
@@ -69,6 +79,55 @@ def simulate_reads(rng, genome, coverage, read_length, error_rate):
         if rng.random() < 0.5:
             seq = seq.translate(COMPLEMENT)[::-1]
         yield f"read{i}", add_errors(rng, seq, error_rate), "I" * read_length
+
+
+def long_read_length(rng, mean, genome_length):
+    """A HiFi-like read length: normal around mean (sd mean/4), at least mean/4, at most half the genome."""
+    return max(mean // 4, min(genome_length // 2, int(rng.gauss(mean, mean / 4))))
+
+
+def simulate_long_reads(rng, genome, coverage, mean_length, error_rate, indel_fraction=LONG_READ_INDEL_FRACTION):
+    """Single-end long reads, either strand, until coverage x the genome is covered.
+
+    Errors: error_rate per base, indel_fraction of them a 1 bp insertion or deletion (HiFi's residual errors
+    are mostly small indels in homopolymers), the rest substitutions. Qualities are flat: the callers' error
+    models (mpileup -X pacbio-ccs, DeepVariant PACBIO) don't need realistic ones to call the planted SNPs.
+
+    A read may start up to one read length before the contig and run past its end; the part off the contig is
+    clipped. Otherwise coverage would thin out over the last read length at each end (a 50 kb contig with 5 kb
+    reads: 1-2x at the very ends), and a single read's error there becomes a call, which a real chromosome,
+    whose molecules don't stop at an artificial edge, wouldn't show. Clipped pieces under MIN_LONG_READ bases
+    are dropped."""
+    target, i, total = len(genome) * coverage, 0, 0
+    while total < target:
+        length = long_read_length(rng, mean_length, len(genome))
+        start = rng.randrange(-length + 1, len(genome))
+        seq = genome[max(0, start) : min(len(genome), start + length)]
+        if len(seq) < MIN_LONG_READ:
+            continue
+        length = len(seq)
+        if rng.random() < 0.5:
+            seq = seq.translate(COMPLEMENT)[::-1]
+        seq = add_long_read_errors(rng, seq, error_rate, indel_fraction)
+        yield f"lread{i}", seq, "I" * len(seq)
+        i += 1
+        total += length
+
+
+def add_long_read_errors(rng, seq, error_rate, indel_fraction):
+    if not error_rate:
+        return seq
+    out = []
+    for base in seq:
+        if rng.random() >= error_rate:
+            out.append(base)
+        elif rng.random() < indel_fraction:
+            if rng.random() < 0.5:
+                out.append(base + rng.choice(BASES))  # insertion after this base
+            # else: deletion (the base is dropped)
+        else:
+            out.append(rng.choice([b for b in BASES if b != base]))
+    return "".join(out)
 
 
 def add_errors(rng, seq, error_rate):
@@ -284,6 +343,18 @@ def main(argv=None):
     )
     p.add_argument("--insert-size", type=int, default=400, help="mean fragment length for --paired")
     p.add_argument(
+        "--long-reads",
+        action="store_true",
+        help="simulate single-end HiFi-like long reads (for run_local.py --read-type hifi) instead of short ones; "
+        "--read-length is ignored, --error-rate applies (default 0.001, ~Q30)",
+    )
+    p.add_argument(
+        "--long-read-length",
+        type=int,
+        default=LONG_READ_MEAN,
+        help="mean read length for --long-reads (default: %(default)s)",
+    )
+    p.add_argument(
         "--gff",
         action="store_true",
         help="also write gene models, reference/<reference>.gff3.gz: two genes around planted SNPs 2-5, "
@@ -307,10 +378,18 @@ def main(argv=None):
     a = p.parse_args(argv)
     if a.leading_gap < 0:
         p.error("--leading-gap must be >= 0")
+    if a.long_reads and (a.paired or a.duplicate_rate):
+        p.error("--long-reads are single-end reads without planted duplicates (no --paired, no --duplicate-rate)")
+    # At least 4 x MIN_LONG_READ: reads come out at mean/4 or longer, so every read is kept (a mean near
+    # MIN_LONG_READ would drop most of them, and one below it would never reach the coverage: a hang).
+    if a.long_reads and not 4 * MIN_LONG_READ <= a.long_read_length <= a.length // 4:
+        p.error(f"--long-read-length must be between {4 * MIN_LONG_READ} and a quarter of --length ({a.length // 4})")
 
     rng = random.Random(a.seed)
     reference = make_reference(rng, a.length)
-    sample_genome, snps = plant_snps(rng, reference, a.snps, a.read_length)
+    # Long reads: SNPs at least one mean read length from the ends (plant_snps keeps 2 x its read_length).
+    margin_length = a.long_read_length // 2 if a.long_reads else a.read_length
+    sample_genome, snps = plant_snps(rng, reference, a.snps, margin_length)
     # The gap goes into the FASTA only, after simulation, so the reads (and the rng) are unchanged.
     for snp in snps:
         snp["pos"] += a.leading_gap
@@ -341,6 +420,9 @@ def main(argv=None):
     if a.paired:
         records = simulate_pairs(rng, sample_genome, a.coverage, a.read_length, a.error_rate, a.insert_size)
         fastq_paths = [os.path.join(raw_dir, f"{a.sample}_{mate}.fastq.gz") for mate in ("R1", "R2")]
+    elif a.long_reads:
+        records = simulate_long_reads(rng, sample_genome, a.coverage, a.long_read_length, a.error_rate)
+        fastq_paths = [os.path.join(raw_dir, f"{a.sample}.fastq.gz")]
     else:
         records = simulate_reads(rng, sample_genome, a.coverage, a.read_length, a.error_rate)
         fastq_paths = [os.path.join(raw_dir, f"{a.sample}.fastq.gz")]
@@ -368,6 +450,7 @@ def main(argv=None):
                 "contig": a.contig,
                 "snps": snps,
                 "planted_duplicates": n_dup,
+                **({"read_type": "hifi"} if a.long_reads else {}),  # --long-reads only: other truth files unchanged
                 **({"genes": genes} if genes else {}),  # --gff only: the default truth file is unchanged
             },
             fh,
@@ -383,10 +466,11 @@ def main(argv=None):
         subprocess.run(gbz_command(a.root, gfa_key, gbz_key), check=True)
         graph_note = f"{gbz_key} ({len(PANEL_HAPLOTYPES)} panel haplotypes, {DECOY_SNPS} decoy SNPs)"
 
-    unit = "pairs" if a.paired else "reads"
+    unit = "pairs" if a.paired else "long reads" if a.long_reads else "reads"
+    length_note = f"~{a.long_read_length:,}" if a.long_reads else f"{a.read_length}"
     gap = f", starting with {a.leading_gap:,} Ns" if a.leading_gap else ""
     print(f"reference : {os.path.join(a.root, 'reference', a.reference)} ({a.length + a.leading_gap:,} bp{gap})")
-    print(f"reads     : {', '.join(fastq_paths)} ({n:,} {unit} x {a.read_length} bp, {n_dup:,} planted duplicates)")
+    print(f"reads     : {', '.join(fastq_paths)} ({n:,} {unit} x {length_note} bp, {n_dup:,} planted duplicates)")
     print(f"truth     : {truth_path} ({len(snps)} SNPs)")
     if graph_note:
         print(f"pangenome : {os.path.join(a.root, graph_note)}")

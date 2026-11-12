@@ -70,7 +70,48 @@ DEFAULT_ALIGNER = "bwa-mem2"
 # ALIGNER_INDEX_EXTS: the graph is pangenome/<graph>.gbz (GIRAFFE_GRAPH, default <reference stem>.gbz:
 # the key the pangenome-aware caller and make_test_data.py --pangenome use) with its indexes beside it.
 GIRAFFE = "giraffe"
-ALIGNERS = (*ALIGNER_INDEX_EXTS, GIRAFFE)
+# minimap2: the long-read aligner (READ_TYPE=hifi|ont; also short reads with its `sr` preset). It has no stored
+# index: a minimap2 index (.mmi) is built for one preset's k-mer and window sizes (map-hifi and lr:hq k19/w19,
+# sr k21/w11), so a stored one would be one file per preset, and minimap2 indexes a FASTA on the fly in
+# seconds for a chromosome and a few minutes for a whole genome, which is small next to aligning the long
+# reads. So it is not in ALIGNER_INDEX_EXTS, and prepare_aligner builds nothing for it.
+MINIMAP2 = "minimap2"
+ALIGNERS = (*ALIGNER_INDEX_EXTS, MINIMAP2, GIRAFFE)
+# READ_TYPE: what the sequencer produced. One setting picks minimap2's preset, whether duplicates are marked,
+# bcftools mpileup's error model and DeepVariant's model, so they can't disagree.
+#   short: Illumina-style short reads (the default; bwa-mem2 unless ALIGNER says otherwise).
+#   hifi:  PacBio HiFi (CCS) reads, ~15-20 kb at Q20-Q30+: minimap2 map-hifi, DeepVariant PACBIO.
+#   ont:   Oxford Nanopore R10.4.1 (Q20+ chemistry, what DeepVariant's ONT_R104 model was trained on):
+#          minimap2 lr:hq, its preset for accurate long reads (minimap2 2.27+; map-ont suits older, noisier reads).
+# Long reads are single-end by nature: a paired long-read sample is a LayoutError. Duplicates are NOT marked for
+# hifi/ont: long-read libraries are PCR-free and sheared at random over kilobases, so two reads starting at the
+# same base on the same strand are almost never copies of one molecule, while markdup, which has only position
+# and strand to go on for single-end reads, would still flag those coincidences as duplicates.
+# mpileup_config: bcftools mpileup -X, its tuned settings for each platform's error profile.
+# deepvariant_models: the DeepVariant models that fit the read type, the first being the default (short reads
+# may also be an exome: WES).
+READ_TYPES = {
+    "short": {
+        "preset": "sr",
+        "deepvariant_models": ("WGS", "WES"),
+        "mark_duplicates": True,
+        "mpileup_config": None,
+    },
+    "hifi": {
+        "preset": "map-hifi",
+        "deepvariant_models": ("PACBIO",),
+        "mark_duplicates": False,
+        "mpileup_config": "pacbio-ccs",
+    },
+    "ont": {
+        "preset": "lr:hq",
+        "deepvariant_models": ("ONT_R104",),
+        "mark_duplicates": False,
+        "mpileup_config": "ont",
+    },
+}
+DEFAULT_READ_TYPE = "short"
+LONG_READ_TYPES = tuple(r for r in READ_TYPES if r != DEFAULT_READ_TYPE)
 PANGENOME_PREFIX = "pangenome/"
 # Graph index files next to pangenome/<stem>.gbz (each fetched if stored), per mode (GIRAFFE_SAMPLING):
 #   on (default; Google's VG case study and the #129 benchmark): haplotype sampling. kmc counts the sample's
@@ -98,6 +139,10 @@ BWA_MEM2_SAFE_N_PREFIX = 1000
 QC_MAX_THREADS = 16
 # samtools sort RAM budget in the align stage (see align_command).
 SORT_MAX_THREADS = 4
+# bwa / bwa-mem2 read their input in batches of -K bases and estimate the paired-end insert size per batch. The
+# default batch is 10,000,000 x threads, so an alignment depended on the job's CPU count (#232). A fixed -K makes
+# it the same on any number of threads. 100 Mb: about 660k 150 bp read pairs per batch (a few hundred MB of RAM).
+BWA_BATCH_BASES = 100_000_000
 SORT_MEMORY_PER_THREAD = "512M"
 
 # Backends are created on first use so importing this module never needs AWS credentials.
@@ -345,9 +390,89 @@ def timed_stage(task_name, run_record=True):
     return decorator
 
 
-def aligner_from_env() -> str:
-    """The aligner named by ALIGNER (default bwa-mem2). Unknown names fail before any download."""
-    return check_aligner(os.environ.get("ALIGNER", "").strip() or DEFAULT_ALIGNER)
+def read_type_from_env() -> str:
+    """READ_TYPE (short, hifi or ont; default short). Unknown values fail before any download."""
+    return check_read_type_name(os.environ.get("READ_TYPE", "").strip().lower() or DEFAULT_READ_TYPE)
+
+
+def check_read_type_name(read_type: str) -> str:
+    if read_type not in READ_TYPES:
+        raise ValueError(f"Unknown read type {read_type!r} (READ_TYPE); expected one of {sorted(READ_TYPES)}")
+    return read_type
+
+
+def aligner_from_env(read_type: str = None) -> str:
+    """The aligner named by ALIGNER: default bwa-mem2 for short reads, minimap2 for long ones.
+
+    read_type: the stage's read type, already parsed (default: READ_TYPE). Unknown names, and an aligner that
+    can't take the read type (bwa on HiFi reads), fail before any download."""
+    read_type = read_type or read_type_from_env()
+    default = MINIMAP2 if read_type in LONG_READ_TYPES else DEFAULT_ALIGNER
+    return check_read_type(check_aligner(os.environ.get("ALIGNER", "").strip() or default), read_type)
+
+
+def check_read_type(aligner: str, read_type: str) -> str:
+    """aligner if it can align read_type: long reads need minimap2 (bwa mem and giraffe are short-read tools)."""
+    if read_type in LONG_READ_TYPES and aligner != MINIMAP2:
+        raise ValueError(
+            f"READ_TYPE={read_type} needs ALIGNER=minimap2 (or ALIGNER unset), not {aligner}: "
+            f"{aligner} is a short-read aligner"
+        )
+    return aligner
+
+
+def deepvariant_model_type(env=None, read_type: str = None) -> str:
+    """DeepVariant's --model_type: DEEPVARIANT_MODEL_TYPE if it fits the read type, else the read type's default.
+
+    read_type: the sample's (calling_read_type); default READ_TYPE from env. A model that doesn't fit it
+    (READ_TYPE=hifi with DEEPVARIANT_MODEL_TYPE=WGS) is a ValueError, so a run can't call HiFi reads with the
+    short-read model; short reads take WGS (default) or WES. With no read type at all (older runs),
+    DEEPVARIANT_MODEL_TYPE passes through as before (so do HYBRID_PACBIO_ILLUMINA and MASSEQ), default WGS.
+    Model names are case-insensitive."""
+    env = os.environ if env is None else env
+    explicit = env.get("DEEPVARIANT_MODEL_TYPE", "").strip().upper()
+    read_type = read_type or env.get("READ_TYPE", "").strip().lower()
+    if not read_type:
+        return explicit or READ_TYPES[DEFAULT_READ_TYPE]["deepvariant_models"][0]
+    models = READ_TYPES[check_read_type_name(read_type)]["deepvariant_models"]
+    if explicit and explicit not in models:
+        raise ValueError(
+            f"DEEPVARIANT_MODEL_TYPE={explicit} doesn't fit READ_TYPE={read_type} (models {', '.join(models)}): "
+            f"set one of them, or both to agree"
+        )
+    return explicit or models[0]
+
+
+def calling_read_type(sample_id: str):
+    """The read type to call this sample's alignment as: the one its align stage recorded in the run record.
+
+    READ_TYPE, if set, must agree with it: HiFi reads called with the Illumina error model (or the reverse)
+    would be wrong calls, not an error, so a mismatch fails before any download. None when neither says
+    (an alignment from before read types were recorded: short reads)."""
+    requested = os.environ.get("READ_TYPE", "").strip().lower() or None
+    if requested:
+        check_read_type_name(requested)
+    part = provenance.read_part(storage(), sample_id, "Align") or {}
+    aligned = part.get("read_type") if part.get("read_type") in READ_TYPES else None
+    if requested and aligned and requested != aligned:
+        raise ValueError(
+            f"READ_TYPE={requested}, but {sample_id} was aligned as READ_TYPE={aligned} (its run record): "
+            f"call it as {aligned}, or align it again"
+        )
+    return requested or aligned
+
+
+def check_long_read_layout(sample_id: str, read_type: str, layout: str) -> None:
+    """Long reads are single-end: a paired upload with READ_TYPE=hifi|ont is a LayoutError (before any download)."""
+    if read_type in LONG_READ_TYPES and layout != "single":
+        raise LayoutError(f"{sample_id}: READ_TYPE={read_type} reads are single-end: upload {sample_id}.fastq.gz")
+
+
+def mpileup_options(read_type: str) -> str:
+    """bcftools mpileup's -X preset for read_type, with a trailing space ('' for short reads: bcftools' own
+    defaults are tuned for Illumina)."""
+    config = READ_TYPES[check_read_type_name(read_type)]["mpileup_config"]
+    return f"-X {config} " if config else ""
 
 
 def check_aligner(name: str) -> str:
@@ -433,6 +558,8 @@ def prepare_aligner(reference_name: str, local_ref: str, requested: str) -> str:
     """
     if requested == GIRAFFE:
         raise ValueError("giraffe has no FASTA index: it aligns to a pangenome graph (prepare_graph)")
+    if requested == MINIMAP2:
+        return MINIMAP2  # it indexes the FASTA itself, for its preset (see MINIMAP2)
     aligner = effective_aligner(requested, local_ref)
     _ensure_aligner_index(reference_name, local_ref, aligner)
     return aligner
@@ -810,12 +937,14 @@ def qc_command(fastqs, html: str, json_path: str, threads: int, sample_id: str) 
 @timed_stage("QualityControl")
 def qc_task(sample_id):
     """fastp report (HTML + JSON) for the sample's gzipped read file(s): one report, either layout."""
+    read_type = read_type_from_env()
     layout = sample_layout(sample_id)
+    check_long_read_layout(sample_id, read_type, layout)  # QC runs beside align: refuse as early as it does
     keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
         fastqs = download_raw_reads(keys, wd)
-        provenance.note(layout=layout)
+        provenance.note(layout=layout, read_type=read_type)
         provenance.note_tools("fastp")
         html, json_path = (os.path.join(wd, os.path.basename(keys[k])) for k in ("qc_html", "qc_json"))
         # Bounded in case fastp ever hangs; keep in step with the stage's Step Functions timeout.
@@ -829,7 +958,14 @@ def qc_task(sample_id):
 
 
 def align_command(
-    ref: str, fastqs, out: str, threads: int, tmp_dir: str, sample_id: str, aligner: str = DEFAULT_ALIGNER
+    ref: str,
+    fastqs,
+    out: str,
+    threads: int,
+    tmp_dir: str,
+    sample_id: str,
+    aligner: str = DEFAULT_ALIGNER,
+    read_type: str = DEFAULT_READ_TYPE,
 ) -> str:
     """Shell pipeline: bwa mem -> [fixmate] -> coordinate sort -> mark (not remove) duplicates -> out.
 
@@ -854,6 +990,10 @@ def align_command(
     Duplicates are flagged (0x400), not removed: bcftools mpileup and DeepVariant (incl. the
     pangenome-aware model, #51) both skip flagged reads by default.
 
+    minimap2 (READ_TYPE=hifi|ont, or short reads with its sr preset): `minimap2 -ax <preset>` instead of
+    `mem`, with the same read group and the same tail, except that long reads (single-end only) are sorted
+    but not duplicate-marked (see READ_TYPES).
+
     The read group (-R) names the sample in the BAM, so callers that read SM report sample_id.
     fixmate and sort pass uncompressed BAM (-u) down the pipe so nothing is compressed twice; sort
     and markdup keep their temporary files in tmp_dir (the stage's work dir), and markdup prints
@@ -870,24 +1010,50 @@ def align_command(
         raise ValueError(f"align_command needs 1 (single-end) or 2 (paired-end) FASTQs, got {len(fastqs)}")
     if aligner == GIRAFFE:
         raise ValueError("giraffe is not a bwa-style 'mem' aligner: the align stage runs it via giraffe_align")
-    read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: bwa turns it into tabs
-    stages = [
-        f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
-        + " ".join(shlex.quote(f) for f in fastqs)
-    ]
-    return " | ".join(stages + postprocess_stages(ref, out, threads, tmp_dir, paired=len(fastqs) == 2))
+    check_read_type(aligner, check_read_type_name(read_type))
+    if read_type in LONG_READ_TYPES and len(fastqs) == 2:
+        raise LayoutError(f"READ_TYPE={read_type}: long reads are single-end, got two mates")
+    tail = postprocess_stages(
+        ref,
+        out,
+        threads,
+        tmp_dir,
+        paired=len(fastqs) == 2,
+        mark_duplicates=READ_TYPES[read_type]["mark_duplicates"],
+    )
+    return " | ".join([aligner_stage(ref, fastqs, threads, sample_id, aligner, read_type), *tail])
 
 
-def postprocess_stages(ref: str, out: str, threads: int, tmp_dir: str, paired: bool) -> list:
-    """[fixmate (paired only)], sort, markdup: the align stage's tail after any aligner (see align_command).
+def aligner_stage(ref: str, fastqs: list, threads: int, sample_id: str, aligner: str, read_type: str) -> str:
+    """The align pipeline's first command: SAM records carrying the sample's read group, on stdout.
+
+    bwa-mem2 / bwa: `mem` with a fixed batch size (-K, so the alignments don't depend on the thread count).
+    minimap2: `-ax <preset>` for read_type (READ_TYPES); its -R takes the same read-group line as bwa's."""
+    read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"  # literal backslash-t: the aligner turns it into tabs
+    reads = " ".join(shlex.quote(f) for f in fastqs)
+    if aligner == MINIMAP2:
+        preset = READ_TYPES[read_type]["preset"]
+        return f"minimap2 -ax {preset} -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} {reads}"
+    return f"{aligner} mem -t {threads} -K {BWA_BATCH_BASES} -R {shlex.quote(read_group)} {shlex.quote(ref)} {reads}"
+
+
+def postprocess_stages(
+    ref: str, out: str, threads: int, tmp_dir: str, paired: bool, mark_duplicates: bool = True
+) -> list:
+    """[fixmate (paired only)], sort, [markdup]: the align stage's tail after any aligner (see align_command).
 
     Reads a name-grouped BAM/SAM stream on stdin and writes out (CRAM against ref if out ends in .cram).
+    mark_duplicates=False (long reads, READ_TYPES): sort writes out itself.
     """
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))
     tmp = os.path.join(tmp_dir, "tmp")
     stages = ["samtools fixmate -m -u - -"] if paired else []
-    stages.append(f"samtools sort -u -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')} -")
+    sort = f"samtools sort -@ {sort_threads} -m {SORT_MEMORY_PER_THREAD} -T {shlex.quote(tmp + '.sort')}"
     cram = f"--reference {shlex.quote(ref)} -O cram " if out.endswith(".cram") else ""
+    if not mark_duplicates:
+        stages.append(f"{sort} {cram}-o {shlex.quote(out)} -")
+        return stages
+    stages.append(f"{sort} -u -")
     stages.append(f"samtools markdup -s -@ {threads} -T {shlex.quote(tmp + '.markdup')} {cram}- {shlex.quote(out)}")
     return stages
 
@@ -1000,8 +1166,11 @@ def alignment_stats(ref: str, cram: str, wd: str, threads: int, keys: dict) -> l
 
 @timed_stage("Align")
 def align_task(sample_id, reference_name):
-    """bwa-mem2 (or ALIGNER=bwa / giraffe) on the gzipped reads -> coordinate-sorted, duplicate-marked CRAM + .crai."""
-    aligner = aligner_from_env()  # a bad ALIGNER fails here, before any download
+    """bwa-mem2 (or ALIGNER=bwa / giraffe / minimap2) on the gzipped reads -> coordinate-sorted CRAM + .crai.
+
+    Short reads are duplicate-marked; long reads (READ_TYPE=hifi|ont, minimap2) are not (see READ_TYPES)."""
+    read_type = read_type_from_env()
+    aligner = aligner_from_env(read_type)  # a bad ALIGNER or READ_TYPE fails here, before any download
     giraffe = giraffe_settings(reference_name) if aligner == GIRAFFE else None  # so do bad GIRAFFE_* settings
     if giraffe:
         kmc_memory = kmc_memory_gb() if giraffe["sampling"] else None
@@ -1011,6 +1180,7 @@ def align_task(sample_id, reference_name):
                 f"ALIGNER=giraffe needs {' and '.join(missing)}: run it in the geyser-giraffe image"
             )
     layout = sample_layout(sample_id)
+    check_long_read_layout(sample_id, read_type, layout)
     keys = keys_for(sample_id, layout)
     wd = work_dir(sample_id)
     try:
@@ -1023,15 +1193,23 @@ def align_task(sample_id, reference_name):
             files = prepare_graph(os.path.dirname(ref), giraffe["graph"], giraffe["sampling"])
         else:
             aligner = prepare_aligner(reference_name, ref, aligner)
-        print(f"Aligning with {aligner}", flush=True)
-        provenance.note(aligner=aligner, layout=layout)
+        long_note = f" (READ_TYPE={read_type})" if read_type in LONG_READ_TYPES else ""  # short reads: log unchanged
+        print(f"Aligning with {aligner}{long_note}", flush=True)
+        provenance.note(
+            aligner=aligner,
+            layout=layout,
+            read_type=read_type,
+            duplicates_marked=READ_TYPES[read_type]["mark_duplicates"],
+        )
+        if aligner == MINIMAP2:
+            provenance.note(minimap2_preset=READ_TYPES[read_type]["preset"])
         if giraffe:
             provenance.note(graph={"name": giraffe["graph"], "haplotype_sampling": giraffe["sampling"]})
             provenance.note_tools("vg", *(["kmc"] if giraffe["sampling"] else []), "samtools", "mosdepth")
             giraffe_align(ref, fastqs, cram, threads, wd, sample_id, files, giraffe["sampling"], kmc_memory)
         else:
             provenance.note_tools(aligner, "samtools", "mosdepth")
-            run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner))
+            run_shell(align_command(ref, fastqs, cram, threads, wd, sample_id, aligner, read_type))
         run_shell(f"samtools index -@ {threads} -o {shlex.quote(crai)} {shlex.quote(cram)}")
         stats = alignment_stats(ref, cram, wd, threads, keys)
         for path, key in stats:  # before the CRAM: a sample that shows as aligned has its stats
@@ -1276,6 +1454,7 @@ def streamable_alignment(sample_id: str, wd: str):
 @timed_stage(SHARD_METRIC, run_record=False)
 def variants_shard_task(sample_id, reference_name, region):
     """bcftools on one region of the sample's alignment -> intermediate/variant-parts/{id}/<run>/<region>.vcf.gz."""
+    read_type = calling_read_type(sample_id) or DEFAULT_READ_TYPE  # mpileup's error model; a mismatch fails here
     wd = work_dir(sample_id)
     try:
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
@@ -1284,7 +1463,8 @@ def variants_shard_task(sample_id, reference_name, region):
 
         def call(source):
             run_shell(
-                f"bcftools mpileup -f {shlex.quote(ref)} -r {shlex.quote(region)} {shlex.quote(source)} "
+                f"bcftools mpileup {mpileup_options(read_type)}-f {shlex.quote(ref)} -r {shlex.quote(region)} "
+                f"{shlex.quote(source)} "
                 f"| bcftools call -mv -Oz -o {shlex.quote(part)}"
             )
 
@@ -1326,15 +1506,17 @@ def variants_task(sample_id, reference_name, window=None):
     """
     keys = keys_for(sample_id)
     annotate_mode()  # a mistyped ANNOTATE fails now, not after a chromosome's worth of calling
+    read_type = calling_read_type(sample_id) or DEFAULT_READ_TYPE  # mpileup's error model; a mismatch fails here
     wd = work_dir(sample_id)
     try:
         provenance.note_tools("bcftools")
+        provenance.note(read_type=read_type)
         vcf = os.path.join(wd, os.path.basename(keys["vcf"]))
         ref = ensure_reference_local(reference_name, wd, need_bwa_index=False)
         if window is None:
             alignment = fetch_alignment(sample_id, wd)  # mpileup reads it front to back: no index needed
             run_shell(
-                f"bcftools mpileup -f {shlex.quote(ref)} {shlex.quote(alignment)} "
+                f"bcftools mpileup {mpileup_options(read_type)}-f {shlex.quote(ref)} {shlex.quote(alignment)} "
                 f"| bcftools call -mv -Oz -o {shlex.quote(vcf)}"
             )
         else:
@@ -2138,13 +2320,13 @@ def chunk_align_command(
     The read group is the sample's, as in align_command, so the merged CRAM has one read group, as a single job's.
     """
     check_aligner(aligner)
-    if aligner == GIRAFFE:
-        raise ValueError("the chunked route aligns with bwa-mem2 or bwa; giraffe isn't supported there yet")
+    if aligner in (GIRAFFE, MINIMAP2):
+        raise ValueError(f"the chunked route aligns with bwa-mem2 or bwa; {aligner} isn't supported there yet")
     read_group = rf"@RG\tID:{sample_id}\tSM:{sample_id}"
     sort_threads = max(1, min(threads, SORT_MAX_THREADS))
     tmp = os.path.join(tmp_dir, "tmp")
     stages = [
-        f"{aligner} mem -t {threads} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
+        f"{aligner} mem -t {threads} -K {BWA_BATCH_BASES} -R {shlex.quote(read_group)} {shlex.quote(ref)} "
         + " ".join(shlex.quote(f) for f in fastqs)
     ]
     if len(fastqs) == 2:
@@ -2222,8 +2404,16 @@ def align_merge_task(sample_id, reference_name, threads=None):
         raise FileNotFoundError(f"{len(missing)} chunk BAM(s) missing, e.g. {', '.join(missing[:3])}")
     layout = manifest["layout"]
     keys = keys_for(sample_id, layout)
-    provenance.note(aligner=aligner_from_env(), layout=layout, chunks=manifest["chunk_count"])
-    provenance.note_tools(aligner_from_env(), "samtools", "mosdepth")
+    aligner = aligner_from_env()
+    # The chunked route is bwa-mem2 / bwa only (chunk_align_command): short reads, duplicates marked once here.
+    provenance.note(
+        aligner=aligner,
+        layout=layout,
+        chunks=manifest["chunk_count"],
+        read_type=DEFAULT_READ_TYPE,
+        duplicates_marked=True,
+    )
+    provenance.note_tools(aligner, "samtools", "mosdepth")
     for c in manifest["chunks"]:
         provenance.note_input(c["aligned"])
     wd = work_dir(sample_id)

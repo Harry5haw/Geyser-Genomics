@@ -104,6 +104,13 @@ QC_Large runs alongside the chunk Map, so the chunks get 40 of the 48 vCPU: 5 at
 
 ## Equivalence with a single align job, and its tolerance
 
+**Since #232, the bwa batch size is fixed.** bwa and bwa-mem2 estimate the paired-end insert size per input batch,
+and the default batch (`-K`) is 10,000,000 bases × threads. Both align routes now pass `-K 100000000`
+(`tasks.BWA_BATCH_BASES`), so an alignment no longer depends on the job's CPU count: a 4-vCPU job and a 16-thread
+one align the same reads identically. The chunked route can still differ slightly from a single job, because each
+chunk starts its own batches at its first read. Cutting chunks at 100 Mb batch boundaries in `preflight` would
+remove that, and is not done yet. The numbers below were measured before #232, with the default batch.
+
 **Synthetic data (the Docker E2E):** the chunked route gives **identical** VCF records and the same flagstat totals
 as one align job, single-end and paired-end.
 

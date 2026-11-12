@@ -271,7 +271,7 @@ def test_the_stored_copy_is_used_only_without_parts(store):
 
 
 def test_unknown_tool_is_none_not_an_error(store):
-    assert provenance.tool_version("minimap2") is None
+    assert provenance.tool_version("bowtie2") is None
 
 
 def test_a_hung_version_command_is_killed(monkeypatch):
