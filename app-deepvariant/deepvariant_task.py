@@ -29,7 +29,8 @@ Split mode (v1.5: make_examples on CPU jobs, the rest on the GPU job; contract i
         writes the same outputs as the single job (variants_deepvariant/{id}.vcf.gz, stats, the GPU figures)
 
 Environment:
-    DEEPVARIANT_MODEL_TYPE   default WGS
+    READ_TYPE                short (default), hifi or ont: picks the model (WGS, PACBIO, ONT_R104; tasks.READ_TYPES)
+    DEEPVARIANT_MODEL_TYPE   the model when READ_TYPE is unset (default WGS); set with READ_TYPE, it must agree
     DEEPVARIANT_SHARDS       make_examples parallelism, default: CPUs in the container (split mode: tasks in all,
                              default parts x CPUs; the GPU job takes it from the parts' manifests)
     DEEPVARIANT_EXTRA_ARGS   extra run_deepvariant flags, e.g. --disable_small_model=true
@@ -61,9 +62,12 @@ import time
 
 import provenance
 from tasks import (
+    LONG_READ_TYPES,
+    READ_TYPES,
     _log_summary,
     _run_stats_tool,
     _safe_name,
+    deepvariant_model_type,
     ensure_reference_local,
     fetch_alignment,
     index_alignment,
@@ -76,6 +80,8 @@ from tasks import (
     work_dir,
 )
 
+# DeepVariant's long-read models (READ_TYPE=hifi|ont, tasks.READ_TYPES): the pangenome-aware caller has none.
+LONG_READ_MODELS = tuple(READ_TYPES[r]["deepvariant_model"] for r in LONG_READ_TYPES)
 RUN_DEEPVARIANT = os.environ.get("RUN_DEEPVARIANT", "/opt/deepvariant/bin/run_deepvariant")
 RUN_PANGENOME_DEEPVARIANT = os.environ.get(
     "RUN_PANGENOME_DEEPVARIANT", "/opt/deepvariant/bin/run_pangenome_aware_deepvariant"
@@ -916,6 +922,11 @@ def _call_variants(sample_id, reference_name, pangenome=None):
     wd = work_dir(sample_id)
     try:
         limits = WrapperLimits.from_env()  # a bad value fails here, before any download
+        model_type = deepvariant_model_type()  # so does a READ_TYPE / DEEPVARIANT_MODEL_TYPE mismatch
+        if pangenome and model_type in LONG_READ_MODELS:
+            raise ValueError(
+                f"pangenome-aware DeepVariant is a short-read caller; model {model_type} (READ_TYPE) needs the linear one"
+            )
         vcf = os.path.join(wd, f"{sample_id}.{'pangenome' if pangenome else 'deepvariant'}.vcf.gz")
         intermediate = os.path.join(wd, "intermediate")
         os.makedirs(intermediate)
@@ -931,7 +942,6 @@ def _call_variants(sample_id, reference_name, pangenome=None):
 
         shards = int(os.environ.get("DEEPVARIANT_SHARDS") or os.cpu_count() or 1)
         gpu = gpu_name()
-        model_type = os.environ.get("DEEPVARIANT_MODEL_TYPE", "WGS")
         extra_args = os.environ.get("DEEPVARIANT_EXTRA_ARGS", "")
         cmd = build_run_deepvariant_cmd(
             ref,
@@ -1048,7 +1058,7 @@ def part_command(command, first, last, shards):
 
 def split_settings(env=None):
     env = os.environ if env is None else env
-    return env.get("DEEPVARIANT_MODEL_TYPE", "WGS"), env.get("DEEPVARIANT_EXTRA_ARGS", "")
+    return deepvariant_model_type(env), env.get("DEEPVARIANT_EXTRA_ARGS", "")
 
 
 def task_files(names, shards):
