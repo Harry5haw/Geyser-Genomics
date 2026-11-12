@@ -103,8 +103,9 @@ cohort files, and on every push to main.
 
 ## Results
 
-From the project's own chr20 call sets, 12 Nov 2026: HG003 (Google's case-study BAM, and the 30x set) and HG005,
-three callers each. 9 call sets, PASS only, counted per site. The run took 6.6 min in `geyser-cohort` (4 CPUs,
+From the project's own chr20 call sets, 12 Nov 2026: three samples (two GIAB individuals, HG003 at two depths:
+Google's case-study BAM and the 30x set; and HG005), three callers each. "Cohort" here means a set of samples
+analysed together, not a cohort in the population-genetics sense. 9 call sets, PASS only, counted per site. The run took 6.6 min in `geyser-cohort` (4 CPUs,
 4 GB driver), including the run-record table.
 
 | Sample | Caller | PASS calls | SNPs | Indels | Ti/Tv | Het/hom | Unique to caller | Shared by all 3 |
