@@ -1,12 +1,13 @@
 name: GitLab mirror
 
 # One-way mirror: GitHub is the source of truth, and this workflow pushes main and the v* release tags to
-# gitlab.com/<GITLAB_NAMESPACE>/Geyser-Genomics, where .gitlab-ci.yml runs lint and the unit tests on GitLab's
+# gitlab.com/<GITLAB_NAMESPACE>/<GITLAB_PROJECT>, where .gitlab-ci.yml runs lint and the unit tests on GitLab's
 # runners. GitLab's free tier can't pull-mirror from GitHub, so GitHub pushes.
 #
 # Needs, set by the maintainer (never in a file, never printed):
 #   secret   GITLAB_TOKEN      a GitLab project access token: role Maintainer, scope write_repository
 #   variable GITLAB_NAMESPACE  the GitLab user or group that owns the project
+#   variable GITLAB_PROJECT    optional: the project's path (its URL slug), default geyser-genomics
 # Without either, the job ends with a notice instead of failing (forks, or before the mirror is set up).
 on:
   push:
@@ -57,7 +58,8 @@ jobs:
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
           GITLAB_NAMESPACE: ${{ vars.GITLAB_NAMESPACE }}
+          GITLAB_PROJECT: ${{ vars.GITLAB_PROJECT || 'geyser-genomics' }}
         run: |
-          remote="https://oauth2:${GITLAB_TOKEN}@gitlab.com/${GITLAB_NAMESPACE}/Geyser-Genomics.git"
+          remote="https://oauth2:${GITLAB_TOKEN}@gitlab.com/${GITLAB_NAMESPACE}/${GITLAB_PROJECT}.git"
           git push "$remote" "refs/remotes/origin/main:refs/heads/main" 'refs/tags/v*:refs/tags/v*'
-          echo "Mirrored main ($(git rev-parse --short origin/main)) and $(git tag -l 'v*' | wc -l) v* tags to gitlab.com/${GITLAB_NAMESPACE}/Geyser-Genomics"
+          echo "Mirrored main ($(git rev-parse --short origin/main)) and $(git tag -l 'v*' | wc -l) v* tags to gitlab.com/${GITLAB_NAMESPACE}/${GITLAB_PROJECT}"
