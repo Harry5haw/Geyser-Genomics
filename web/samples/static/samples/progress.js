@@ -3,6 +3,25 @@
 (() => {
   "use strict";
 
+  // The sample page's "On this page" chips: the one whose section crosses the middle of the window is current.
+  const chips = document.querySelectorAll(".onpage")[0];
+  if (chips && typeof IntersectionObserver === "function") {
+    const links = [...chips.querySelectorAll("a")];
+    const seen = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        for (const a of links) {
+          if (a.hash === "#" + e.target.id) a.setAttribute("aria-current", "true");
+          else a.removeAttribute("aria-current");
+        }
+      }
+    }, { rootMargin: "-45% 0px -50% 0px" });
+    for (const a of links) {
+      const section = document.getElementById(a.hash.slice(1));
+      if (section) seen.observe(section);
+    }
+  }
+
   // The progress helix (samples/_progress.html, samples/progress.py). The drawn length is kept here per sample (data-key)
   // across polls, so it never jumps: it eases towards the server's truth (about a second to catch up) and never moves
   // back. Between polls the running stage keeps growing from its start and expected time (share(): linear, then easing

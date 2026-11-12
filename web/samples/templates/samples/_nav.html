@@ -3,4 +3,4 @@
 <li><a href="{% url 'samples:figures' %}"{% if here and nav_here == "figures" %} aria-current="page"{% endif %}>Results (3D)</a></li>
 {% if upload_href %}<li><a href="{{ upload_href }}"{% if here and nav_here == "upload" %} aria-current="page"{% endif %}>Upload</a></li>{% endif %}
 <li><a href="{% url 'samples:about' %}"{% if here and nav_here == "about" %} aria-current="page"{% endif %}>How it works</a></li>
-<li><a href="{{ github_url }}" rel="noopener">GitHub</a></li>
+<li><a href="{{ github_url }}">GitHub</a></li>

@@ -52,13 +52,8 @@
   </main>
   <footer class="wrap">
     <nav aria-label="Footer"><ul class="nav">{% include "samples/_nav.html" %}</ul></nav>
-    <p>{% if published %}
-    Each run goes through fastp, an aligner (bwa-mem2 by default; the run record names the one used) and a variant
-    caller on AWS Batch, then the quality gate; these pages are published when the run ends.
-    {% else %}
-    Each upload runs fastp and an aligner (bwa-mem2 by default) on the gzipped reads, then a variant caller, in the
-    same container images AWS Batch runs in the cloud. Storage: <code>{{ storage_backend }}</code>.
-    {% endif %}</p>
+    {% if not published %}<p>Each upload runs fastp and an aligner (bwa-mem2 by default) on the gzipped reads, then a variant
+    caller, in the same container images AWS Batch runs in the cloud. Storage: <code>{{ storage_backend }}</code>.</p>{% endif %}
     <p>Geyser Genomics {{ site_version }} · Independent project; DeepVariant and AlphaGenome are Google tools ·
       <a href="{{ alphagenome_terms_url }}" rel="noopener noreferrer" target="_blank">AlphaGenome output terms</a></p>
   </footer>
