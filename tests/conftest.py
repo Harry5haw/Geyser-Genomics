@@ -47,6 +47,8 @@ def local_env(tmp_path, monkeypatch):
         "METRICS_BACKEND",
         "METRICS_FILE",
         "ALIGNER",
+        "READ_TYPE",
+        "DEEPVARIANT_MODEL_TYPE",
         "GIRAFFE_GRAPH",
         "GIRAFFE_SAMPLING",
         "KMC_MEMORY_GB",
@@ -138,3 +140,44 @@ def uploads(local_env, monkeypatch):
     real = store.upload
     monkeypatch.setattr(store, "upload", lambda path, key, **kw: keys.append(key) or real(path, key, **kw))
     return keys
+
+
+@pytest.fixture(scope="session")
+def cohort_spark(tmp_path_factory):
+    """One Spark session for the cohort tests (tests/test_cohort_*.py), skipped without pyspark or a JVM.
+
+    When Hail is installed it starts the session (hl.init), whichever cohort test runs first: a plain SparkContext
+    started first would lack Hail's JAR and configuration, and Hail can't attach to it. Returns (spark, hail module or
+    None). Never stopped: one SparkContext per process.
+    """
+    pytest.importorskip("pyspark")
+    import shutil
+
+    if not (shutil.which("java") or os.environ.get("JAVA_HOME")):
+        pytest.skip("Spark needs a JVM (Java 11)")
+    if os.name == "nt":
+        pytest.skip("Hail has no Windows build and Spark needs winutils there: run in app-cohort/Dockerfile")
+    from pyspark.sql import SparkSession
+
+    try:
+        import hail as hl
+    except ImportError:
+        hl = None
+    if hl is not None:
+        tmp = str(tmp_path_factory.mktemp("hail"))
+        hl.init(
+            master="local[2]",
+            quiet=True,
+            tmp_dir=tmp,
+            local_tmpdir=tmp,
+            log=os.path.join(tmp, "hail.log"),
+            spark_conf={"spark.sql.session.timeZone": "UTC", "spark.ui.enabled": "false"},
+            idempotent=True,
+        )
+    spark = (
+        SparkSession.builder.master("local[2]")
+        .config("spark.sql.session.timeZone", "UTC")
+        .config("spark.ui.enabled", "false")
+        .getOrCreate()
+    )
+    return spark, hl
