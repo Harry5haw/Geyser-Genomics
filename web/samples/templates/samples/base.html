@@ -25,35 +25,42 @@
   <script type="speculationrules">{"prerender":[{"where":{"and":[{"or":[{"href_matches":"/*"},{"href_matches":"/*\\?*"}]},{"not":{"href_matches":"/samples/*/files/*"}},{"not":{"href_matches":"/samples/*/status/*"}},{"not":{"href_matches":"/samples/rows/*"}},{"not":{"href_matches":"/upload/*"}},{"not":{"href_matches":"/demo/*"}},{"not":{"href_matches":"/figures/*.csv"}},{"not":{"selector_matches":"[download], [rel~=nofollow], [target=_blank]"}}]},"eagerness":"moderate"}]}</script>
 </head>
 <body>
+  <a class="skip" href="#main">Skip to content</a>
   <header class="site-head">
-    <nav class="wrap" aria-label="Site">
+    <div class="wrap">
       <a class="brand" href="{% url 'samples:list' %}"><span><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-light.svg' %}"><img class="logo-light" src="{% static 'samples/geyser-lockup.svg' %}" data-erupt="{% static 'samples/geyser-erupt-light.svg' %}" width="180" height="40" alt="Geyser Genomics"></picture><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-dark.svg' %}"><img class="logo-dark" src="{% static 'samples/geyser-lockup-dark.svg' %}" data-erupt="{% static 'samples/geyser-erupt-dark.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"></picture><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-retro.svg' %}"><img class="logo-retro" src="{% static 'samples/geyser-lockup-retro.svg' %}" data-erupt="{% static 'samples/geyser-erupt-retro.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"></picture><picture><source media="(prefers-reduced-motion: no-preference) and (scripting: enabled)" srcset="{% static 'samples/geyser-empty-contrast.svg' %}"><img class="logo-contrast" src="{% static 'samples/geyser-lockup-contrast.svg' %}" data-erupt="{% static 'samples/geyser-erupt-contrast.svg' %}" width="180" height="40" alt="Geyser Genomics" loading="lazy"></picture></span>
         <i>FASTQ → VCF pipeline</i></a>
       <div class="helix" aria-hidden="true">{% for i in helix_base_pairs %}<span><i></i></span>{% endfor %}</div>
-      <div class="head-actions">
-        <div class="themes" role="group" aria-label="Colour theme">
+      <nav class="site-nav" aria-label="Site">
+        {# Narrow screens: CSS folds the links behind this button only where scripts run (geyser.js opens it). #}
+        <button type="button" class="hb menu-btn" aria-expanded="false" aria-controls="nav-links">☰ Menu</button>
+        <ul class="nav" id="nav-links">{% include "samples/_nav.html" with here=1 %}</ul>
+      </nav>
+      <div class="theme-menu">
+        <button type="button" class="hb" aria-expanded="false" aria-controls="themes">Theme</button>
+        <div class="themes" id="themes" role="group" aria-label="Colour theme">
           <button type="button" data-theme-choice="light" aria-pressed="false">Light</button><button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button><button type="button" data-theme-choice="retro" aria-pressed="false">Retro</button><button type="button" data-theme-choice="contrast" aria-pressed="false">High contrast</button>
         </div>
-        <a class="tube" href="{% url 'samples:list' %}#samples">Samples</a>
       </div>
-    </nav>
+    </div>
   </header>
-  <main class="wrap">
+  <main class="wrap" id="main">
     {% for message in messages %}
       <p role="alert" class="msg {{ message.tags }}"><small>{{ message }}</small></p>
     {% endfor %}
     {% block content %}{% endblock %}
   </main>
   <footer class="wrap">
+    <nav aria-label="Footer"><ul class="nav">{% include "samples/_nav.html" %}</ul></nav>
     <p>{% if published %}
     Each run goes through fastp, an aligner (bwa-mem2 by default; the run record names the one used) and a variant
     caller on AWS Batch, then the quality gate; these pages are published when the run ends.
     {% else %}
     Each upload runs fastp and an aligner (bwa-mem2 by default) on the gzipped reads, then a variant caller, in the
     same container images AWS Batch runs in the cloud. Storage: <code>{{ storage_backend }}</code>.
-    {% endif %}
-    <a href="{% url 'samples:figures' %}">Results in 3D</a>.</p>
-    <p>DeepVariant and AlphaGenome are Google tools; Geyser is an independent project.</p>
+    {% endif %}</p>
+    <p>Geyser Genomics {{ site_version }} · Independent project; DeepVariant and AlphaGenome are Google tools ·
+      <a href="{{ alphagenome_terms_url }}" rel="noopener noreferrer" target="_blank">AlphaGenome output terms</a></p>
   </footer>
 </body>
 </html>

@@ -9,7 +9,7 @@ checks every theme's tokens). Windows High Contrast (forced-colors) gets the sys
 --text:#1f1f1f;--muted:#5f6368;--primary:#1a73e8;--primary-hover:#1765cc;--link:#1a65c9;
 --done:#137333;--done-bg:#e6f4ea;--run:#1967d2;--run-bg:#e8f0fe;--fail:#c5221f;--fail-bg:#fce8e6;
 --warn:#9c5700;--warn-bg:#fef7e0;--warn-line:#f9ab00;--pend:#5f6368;--pend-bg:#f1f3f4;--queue:#9c5700;--queue-bg:#fef7e0;
---blue:#4285f4;--red:#ea4335;--yellow:#fbbc04;--green:#34a853;--on:#1f1f1f;--on-primary:#fff;--tube-hover:#d2e3fc;--tube-hover-text:#174ea6;
+--blue:#4285f4;--red:#ea4335;--yellow:#fbbc04;--green:#34a853;--on:#1f1f1f;--on-primary:#fff;
 --stage-qc:var(--blue);--stage-align:var(--green);--stage-variants:var(--yellow);--nt-a:#1f1f1f;--nt-c:#1f1f1f;--nt-g:#1f1f1f;--nt-t:#1f1f1f;--nt-a-bg:#ceead6;--nt-c-bg:#d2e3fc;--nt-g-bg:#feefc3;--nt-t-bg:#fad2cf;--nt-a-line:#188038;--nt-c-line:#1967d2;--nt-g-line:#c26401;--nt-t-line:#c5221f;
 --shadow:0 1px 2px rgba(60,64,67,.15),0 1px 3px 1px rgba(60,64,67,.08);
 --sans:"Google Sans",Roboto,"Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
@@ -18,18 +18,18 @@ checks every theme's tokens). Windows High Contrast (forced-colors) gets the sys
 :root[data-theme=dark]{--bg:#1f1f1f;--deep:#262626;--ink:#1f1f1f;--card:#2d2d2d;--line:#3c4043;--frame:#5f6368;--zebra:#292929;
 --hover:#353c48;--text:#e3e3e3;--muted:#bdc1c6;--primary:#8ab4f8;--primary-hover:#aecbfa;--link:#8ab4f8;--on-primary:#1f1f1f;
 --done:#81c995;--done-bg:#24382b;--run:#8ab4f8;--run-bg:#283447;--fail:#f28b82;--fail-bg:#412b2a;--warn:#fdd663;
---warn-bg:#3d3520;--warn-line:#fdd663;--pend:#bdc1c6;--pend-bg:#3c4043;--queue:#fdd663;--queue-bg:#3d3520;--tube-hover:#344459;--tube-hover-text:#aecbfa;
+--warn-bg:#3d3520;--warn-line:#fdd663;--pend:#bdc1c6;--pend-bg:#3c4043;--queue:#fdd663;--queue-bg:#3d3520;
 --nt-a:#81c995;--nt-c:#8ab4f8;--nt-g:#fdd663;--nt-t:#f28b82;--shadow:0 1px 3px rgba(0,0,0,.6);color-scheme:dark}
 /* Retro: black on white, no tinted surfaces, every card bordered, links underlined, a 3 px focus ring */
 :root[data-theme=retro]{--bg:#fff;--deep:#fff;--ink:#fff;--card:#fff;--line:#000;--frame:#000;--zebra:#fff;--hover:#fff;
 --text:#000;--muted:#333;--primary:#0842a0;--primary-hover:#062e70;--link:#0842a0;--on-primary:#fff;
 --done:#0b5323;--done-bg:#fff;--run:#0842a0;--run-bg:#fff;--fail:#8c0d0d;--fail-bg:#fff;--warn:#5c3300;--warn-bg:#fff;
---warn-line:#000;--pend:#333;--pend-bg:#fff;--queue:#5c3300;--queue-bg:#fff;--tube-hover:#fff;--tube-hover-text:#0842a0;--on:#000;
+--warn-line:#000;--pend:#333;--pend-bg:#fff;--queue:#5c3300;--queue-bg:#fff;--on:#000;
 --stage-qc:#aecbfa;--stage-align:#a8dab5;--stage-variants:#fde293;
 --nt-a:#000;--nt-c:#000;--nt-g:#000;--nt-t:#000;--shadow:none;color-scheme:light}
 :root[data-theme=retro] a:not(.brand){text-decoration:underline}
 :root[data-theme=retro] :focus-visible{outline:3px solid #000;outline-offset:2px}
-:root[data-theme=retro] :is(.badge,.tube,.msg,.note,.flow b){border:2px solid currentColor}
+:root[data-theme=retro] :is(.badge,.nav [aria-current],.msg,.note,.flow b){border:2px solid currentColor}
 :root[data-theme=retro] .timeline>div{background:var(--card);border-color:#000}
 /* High contrast, for low vision: white text on black, yellow links and focus, cyan accents; state by icon and word
 as well as colour; 2-3 px white borders, no shadows or gradients behind text; text 15% larger, bolder, 1.6 line
@@ -37,15 +37,15 @@ height; every control at least 44 px. Motion already stops under prefers-reduced
 :root[data-theme=contrast]{--bg:#000;--deep:#000;--ink:#000;--card:#000;--line:#fff;--frame:#fff;--zebra:#000;--hover:#262626;
 --text:#fff;--muted:#e6e6e6;--primary:#ffd600;--primary-hover:#fff176;--link:#ffd600;--on-primary:#000;
 --done:#8cff8c;--done-bg:#000;--run:#00e5ff;--run-bg:#000;--fail:#ff8a80;--fail-bg:#000;--warn:#ffd600;--warn-bg:#000;
---warn-line:#ffd600;--pend:#e6e6e6;--pend-bg:#000;--queue:#ffd600;--queue-bg:#000;--tube-hover:#262626;--tube-hover-text:#ffd600;
+--warn-line:#ffd600;--pend:#e6e6e6;--pend-bg:#000;--queue:#ffd600;--queue-bg:#000;
 --on:#000;--stage-qc:#00e5ff;--stage-align:#00e5ff;--stage-variants:#00e5ff;
 --nt-a:#000;--nt-c:#000;--nt-g:#000;--nt-t:#000;--nt-a-bg:#8cff8c;--nt-c-bg:#00e5ff;--nt-g-bg:#ffd600;--nt-t-bg:#ff8a80;--nt-a-line:#fff;--nt-c-line:#fff;--nt-g-line:#fff;--nt-t-line:#fff;--shadow:none;color-scheme:dark;font-size:115%}
 :root[data-theme=contrast] body{line-height:1.6;font-weight:500}
 :root[data-theme=contrast] :is(h1,h2,h3,label,legend,th,.badge,.pill,.flow b){font-weight:700}
 :root[data-theme=contrast] a:not(.brand){text-decoration:underline;text-decoration-thickness:2px}
 :root[data-theme=contrast] :focus-visible{outline:4px solid #ffd600;outline-offset:3px}
-:root[data-theme=contrast] :is(.panel,.card,.frame,.files li,.truth,.msg,.note,.timeline>div,input,select,button,.tube,.themes){border:2px solid #fff}
-:root[data-theme=contrast] :is(button,.tube,input,select,.themes button,.pager a){min-height:44px}
+:root[data-theme=contrast] :is(.panel,.card,.frame,.files li,.truth,.msg,.note,.timeline>div,input,select,button,.themes){border:2px solid #fff}
+:root[data-theme=contrast] :is(button,.nav a,input,select,.themes button,.pager a){min-height:44px}
 :root[data-theme=contrast] .themes button{min-width:44px;padding:.5rem .9rem}
 :root[data-theme=contrast] :is(.badge,.flow b,.pill){border:2px solid currentColor}
 :root[data-theme=contrast] .timeline>div,:root[data-theme=contrast] .pill.running{background:var(--card)}
@@ -54,7 +54,7 @@ height; every control at least 44 px. Motion already stops under prefers-reduced
 :root[data-theme=contrast] .helix{display:none}
 :root[data-theme=contrast] button:hover{color:#000;background:#fff}
 /* Windows High Contrast and other forced palettes: the system chooses the colours; keep shapes and state legible */
-@media (forced-colors:active){:root{--shadow:none}.panel,.card,.frame,.badge,.pill,.tube,.flow b,.msg,.note{border:1px solid CanvasText}
+@media (forced-colors:active){:root{--shadow:none}.panel,.card,.frame,.badge,.pill,.nav [aria-current],.flow b,.msg,.note{border:1px solid CanvasText}
 .themes button[aria-pressed=true]{outline:2px solid Highlight}.brand img{forced-color-adjust:none}}
 *,::before,::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
@@ -80,22 +80,24 @@ background:linear-gradient(90deg,var(--blue) 0 25%,var(--red) 25% 50%,var(--yell
 :root[data-theme=dark] .brand .logo-dark,:root[data-theme=retro] .brand .logo-retro,:root[data-theme=contrast] .brand .logo-contrast{display:block}
 .brand i{display:block;padding-left:1rem;border-left:1px solid var(--line);font:500 .75rem/1 var(--sans);letter-spacing:.12em;
 text-transform:uppercase;font-style:normal;color:var(--muted);white-space:nowrap}
-/* "Samples": a tonal pill with a four-colour dot */
-.tube{flex:none;display:inline-flex;align-items:center;gap:.6rem;height:2.5rem;padding:0 1.25rem;border-radius:999px;
-color:var(--run);background:var(--run-bg);font-weight:500;text-decoration:none}
-.tube::before{content:"";width:.8rem;height:.8rem;border-radius:50%;
-background:conic-gradient(var(--blue) 0 25%,var(--red) 0 50%,var(--yellow) 0 75%,var(--green) 0)}
-.tube:hover{color:var(--tube-hover-text);background:var(--tube-hover)}
-/* The theme switch: a segmented button group (aria-pressed), hidden when theme.js didn't run */
-.themes{flex:none;display:inline-flex;border:1px solid var(--frame);border-radius:999px;overflow:hidden}
-:root:not([data-theme]) .themes{display:none}
-.themes button{width:auto;padding:.4rem .8rem;font:500 .8rem/1 var(--sans);color:var(--text);background:transparent;border:0;
-border-radius:0;box-shadow:none}
-.themes button+button{border-left:1px solid var(--frame)}.themes button:hover{background:var(--hover)}
-.themes button[aria-pressed=true]{color:var(--on-primary);background:var(--primary)}
-.head-actions{display:flex;align-items:center;gap:.75rem}
-@media (max-width:576px){.brand{gap:.6rem}.brand img{height:32px}.brand i{display:none}.tube{padding:0 1rem}
-.site-head .wrap{flex-wrap:wrap}.head-actions{width:100%;justify-content:space-between}}
+/* Site links: tonal pills, the current page (or section) tinted; the skip link shows on keyboard focus */
+.skip{position:absolute;left:-999px;z-index:9;padding:.5rem 1rem;background:var(--card)}.skip:focus{left:1rem}
+.site-nav{margin-left:auto;flex:none}.nav{display:flex;flex-wrap:wrap;gap:.25rem;margin:0;padding:0;list-style:none}
+.nav a{display:flex;align-items:center;padding:.45rem .8rem;border-radius:999px;color:var(--text);font-weight:500;text-decoration:none}
+.nav a:hover{background:var(--hover)}.site-head [aria-current]{color:var(--run);background:var(--run-bg)}
+/* The menu and Theme buttons (geyser.js: aria-expanded, .open on the panel); Escape or a click outside closes */
+.hb{width:auto;padding:.45rem .9rem;font-size:.9rem;color:var(--text);background:0;border:1px solid var(--frame);box-shadow:none}
+.hb:hover,.hb[aria-expanded=true]{background:var(--hover)}
+.menu-btn,:root:not([data-theme]) .theme-menu{display:none}.theme-menu{position:relative}
+.themes{position:absolute;right:0;top:calc(100% + .4rem);z-index:5;display:flex;flex-direction:column;border:1px solid var(--frame);
+border-radius:.75rem;overflow:hidden;background:var(--card)}.themes:not(.open){display:none}
+.themes button{padding:.6rem 1rem;font-size:.9rem;white-space:nowrap;color:var(--text);background:0;border-radius:0;box-shadow:none}
+.themes button+button{border-top:1px solid var(--frame)}.themes button:hover{background:var(--hover)}
+.themes [aria-pressed=true]{color:var(--on-primary);background:var(--primary)}
+@media (max-width:760px){.site-head .wrap{flex-wrap:wrap}.site-nav{flex:auto}}@media (max-width:576px){.brand{gap:.6rem}.brand img{height:32px}}
+/* Narrow, with scripts: the links fold behind the menu button and open as a panel under the header (no shift) */
+@media (max-width:760px) and (scripting:enabled){.site-nav{flex:none}.menu-btn{display:block}.theme-menu{position:static}.themes{top:100%;right:1rem}.site-nav .nav{position:absolute;z-index:5;inset:100% 0 auto;
+flex-direction:column;padding:.5rem 1rem 1rem;background:var(--card);box-shadow:var(--shadow)}.site-nav .nav:not(.open){display:none}}
 /* Rotating double helix: two strand dots per base pair, half a turn apart, and a rung whose length follows |cos| */
 .helix{--t:2.6s;display:flex;align-items:center;gap:6px;height:48px;flex:0 1 22rem;min-width:0;margin:0 2rem;overflow:hidden;
 -webkit-mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent)}
@@ -110,9 +112,9 @@ border-radius:0;box-shadow:none}
 @keyframes hs{0%,100%{transform:translateY(0) scale(.8);opacity:.8;z-index:1}25%{transform:translateY(20px) scale(1.2);opacity:1;z-index:2}
 50%{transform:translateY(40px) scale(.8);opacity:.8;z-index:1}75%{transform:translateY(20px) scale(.45);opacity:.35;z-index:0}}
 @keyframes hr{0%,50%,100%{transform:scaleY(1)}25%,75%{transform:scaleY(0)}}
-@media (max-width:1100px){.helix{display:none}}
+@media (max-width:1320px){.helix,.brand i{display:none}}
 footer{margin-top:3rem;padding-block:1rem 2rem;border-top:1px solid var(--line);color:var(--muted);font-size:.85rem}
-footer p{margin:0 0 .35rem}
+footer p{margin:0 0 .35rem}footer .nav a{padding:.3rem .9rem .5rem 0}
 /* Cards */
 .panel,.card{background:var(--card);border:1px solid var(--line);border-radius:1rem;padding:1.25rem 1.5rem;margin-bottom:1.5rem;box-shadow:var(--shadow)}
 .msg{padding:.75rem 1rem;margin-bottom:1rem;border-radius:.75rem;background:var(--run-bg);border-left:4px solid var(--primary)}

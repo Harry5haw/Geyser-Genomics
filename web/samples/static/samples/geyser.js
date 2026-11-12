@@ -11,6 +11,46 @@
     input.setAttribute("aria-invalid", tooBig ? "true" : "false");
   });
 
+  // Header disclosures (the narrow-screen menu, the Theme menu): a button with aria-expanded opens the element its
+  // aria-controls names (.open; CSS shows it). One open at a time; Escape or a click outside the header closes.
+  const toggles = document.querySelectorAll(".site-head [aria-controls]");
+  const expand = (b, open) => {
+    b.setAttribute("aria-expanded", String(open));
+    document.getElementById(b.getAttribute("aria-controls")).classList.toggle("open", open);
+  };
+  for (const b of toggles) {
+    b.addEventListener("click", () => {
+      const open = b.getAttribute("aria-expanded") !== "true";
+      for (const o of toggles) expand(o, o === b && open);
+    });
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    for (const b of toggles) if (b.getAttribute("aria-expanded") === "true") { expand(b, false); b.focus(); }
+  });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".site-head")) for (const b of toggles) expand(b, false);
+  });
+
+  // A sample page's "On this page" chips: the one whose section crosses the middle of the window is current.
+  const chips = document.querySelectorAll(".onpage")[0];
+  if (chips && window.IntersectionObserver) {
+    const links = [...chips.querySelectorAll("a")];
+    const seen = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        for (const a of links) {
+          if (a.hash === "#" + e.target.id) a.setAttribute("aria-current", "true");
+          else a.removeAttribute("aria-current");
+        }
+      }
+    }, { rootMargin: "-45% 0px -50% 0px" });
+    for (const a of links) {
+      const section = document.getElementById(a.hash.slice(1));
+      if (section) seen.observe(section);
+    }
+  }
+
   // The sample list's shortcuts (All / DeepVariant / AlphaGenome / Failed): shown only when this script runs; a
   // button sets data-filter on #samples (outside the polled table, so a refresh keeps it) and CSS hides the rest.
   const filters = document.querySelectorAll("#samples .filters")[0];
