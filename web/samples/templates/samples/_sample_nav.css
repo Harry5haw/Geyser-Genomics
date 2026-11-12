@@ -6,5 +6,5 @@ the section in view with aria-current) and the previous/next sample links at the
 .onpage a{flex:none;padding:.25rem .8rem;border:1px solid var(--frame);border-radius:999px;font-size:.85rem;color:var(--text);text-decoration:none}
 .onpage a:hover{background:var(--hover)}.onpage [aria-current]{color:var(--run);background:var(--run-bg);border-color:currentColor}
 main [id]{scroll-margin-top:3.5rem}
-.pn{display:flex;justify-content:space-between;gap:1rem;font-weight:500}.pn [rel=next]{margin-left:auto}
+.pn{display:flex;justify-content:space-between;gap:1rem;margin-bottom:1.5rem;font-weight:500}.pn [rel=next]{margin-left:auto}
 :root[data-theme=contrast] .onpage a{padding:.55rem 1rem;border-width:2px}
