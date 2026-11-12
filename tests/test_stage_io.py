@@ -135,8 +135,8 @@ def test_the_default_index_path_applies_the_bwa_mem2_guard(local_env, tool_calls
 
 def test_unknown_aligner_argument_fails_before_the_download(local_env, tool_calls, tmp_path):
     # No reference stored: reaching the download would raise FileNotFoundError instead.
-    with pytest.raises(ValueError, match="minimap2"):
-        tasks.ensure_reference_local(REF, str(tmp_path), aligner="minimap2")
+    with pytest.raises(ValueError, match="bowtie2"):
+        tasks.ensure_reference_local(REF, str(tmp_path), aligner="bowtie2")
 
 
 def test_variant_calling_skips_the_bwa_index(local_env, tool_calls, tmp_path):

@@ -101,10 +101,13 @@ DEEPVARIANT_ENV_VARS = (
 )
 # Passed to every pipeline-stage container: ALIGNER=bwa runs the align stage with bwa instead of bwa-mem2
 # (--aligner sets it too); GIRAFFE_GRAPH, GIRAFFE_SAMPLING and KMC_MEMORY_GB tune ALIGNER=giraffe (tasks.py);
+# READ_TYPE (short | hifi | ont; --read-type sets it) picks minimap2's preset, duplicate marking, mpileup's error
+# model and DeepVariant's model for long reads (tasks.READ_TYPES), so every stage, DeepVariant included, gets it;
 # ANNOTATE=off skips consequence annotation even when the reference has gene models (.gff3.gz);
 # GATE_MODE (warn | fail) and GATE_CONFIG (a thresholds file) set up the quality gate.
 PIPELINE_ENV_VARS = (
     "ALIGNER",
+    "READ_TYPE",
     "GIRAFFE_GRAPH",
     "GIRAFFE_SAMPLING",
     "KMC_MEMORY_GB",
@@ -113,7 +116,8 @@ PIPELINE_ENV_VARS = (
     "GATE_CONFIG",
     "GEYSER_STREAM_REGIONS",  # 0: calling shards download the CRAM instead of reading their region in place
 )
-ALIGNERS = ("bwa-mem2", "bwa", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
+ALIGNERS = ("bwa-mem2", "bwa", "minimap2", "giraffe")  # tasks.ALIGNERS (a test keeps them equal)
+READ_TYPES = ("short", "hifi", "ont")  # tasks.READ_TYPES (a test keeps them equal)
 # --annotate alphagenome (3.0): the AlphaGenome sources (app/alphagenome_annotation.py SOURCES; a test keeps them equal).
 # Offline the default is fake: deterministic test data, not predictions. atlas and api need the key in the
 # host's environment, which is passed to the container by name only (never on a command line):
@@ -631,6 +635,13 @@ def main(argv=None):
         help="align stage's aligner (sets ALIGNER for it; default: $ALIGNER, else bwa-mem2). giraffe runs in "
         "--giraffe-image",
     )
+    p.add_argument(
+        "--read-type",
+        choices=READ_TYPES,
+        help="what the sequencer produced (sets READ_TYPE for every stage; default: $READ_TYPE, else short). "
+        "hifi / ont align with minimap2 (map-hifi / lr:hq), skip duplicate marking and pick DeepVariant's "
+        "PACBIO / ONT_R104 model; make_test_data.py --long-reads writes matching test data",
+    )
     p.add_argument("--giraffe-image", default="geyser-giraffe", help="image for --aligner giraffe (app-giraffe/)")
     p.add_argument(
         "--pg-shm-size",
@@ -760,6 +771,8 @@ def main(argv=None):
         for job in jobs:
             print(f"\n>>> [{job['image']}] {' '.join(job['cmd'])}", flush=True)
             env = {**run_env(sample_id, job["image"]), "RUN_NAME": run_name}
+            if a.read_type:  # every stage, DeepVariant included; per job, so main() leaves os.environ alone
+                env["READ_TYPE"] = a.read_type
             if run_job(job, a.runner, a.root, a.dv_memory, env, a.memory, a.docker_label) != 0:
                 if job.get("optional"):
                     print(f"\nWARNING: optional stage '{job['name']}' failed for {sample_id}; the run is unaffected")
