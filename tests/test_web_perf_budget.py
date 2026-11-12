@@ -67,10 +67,14 @@ def test_the_timing_limits_come_from_lighthouserc():
 
 
 @pytest.mark.parametrize("audit", list(budget.METRICS))
-def test_lighthouserc_asserts_each_timing_budget_on_the_median_run(audit):
+def test_lighthouserc_asserts_each_timing_budget_on_its_median_over_five_runs(audit):
+    # Each metric's own median (not "median-run", which took every metric from the median-score run, so one TBT
+    # spike in that run failed the job), over 5 runs: the same medians the summary table reports.
     with open(os.path.join(REPO_ROOT, "lighthouserc.json"), encoding="utf-8") as fh:
-        level, options = json.load(fh)["ci"]["assert"]["assertions"][audit]
-    assert level == "error" and options["aggregationMethod"] == "median-run"
+        ci = json.load(fh)["ci"]
+    level, options = ci["assert"]["assertions"][audit]
+    assert level == "error" and options["aggregationMethod"] == "median"
+    assert ci["collect"]["numberOfRuns"] >= 5
 
 
 def test_the_workflow_measures_both_pages_with_pinned_tools():
