@@ -2,7 +2,7 @@
 {% load static %}
 {% block scripts %}<script src="{% static 'samples/progress.js' %}" defer></script>{% endblock %}
 {% load geyser %}
-{% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_progress.css" %}{% inline_css "samples/_motifs.css" %}{% inline_css "samples/_sample_nav.css" %}{% endblock %}
+{% block page_css %}{% inline_css "samples/_samples.css" %}{% inline_css "samples/_progress.css" %}{% if deepvariant or alphagenome %}{% inline_css "samples/_motifs.css" %}{% endif %}{% inline_css "samples/_sample_nav.css" %}{% endblock %}
 {% load geyser %}
 {% block title %}{{ sample.sample_id }} · Geyser Genomics{% endblock %}
 {% block content %}

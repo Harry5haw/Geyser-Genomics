@@ -10,7 +10,8 @@ name: Web performance
 #
 # Budgets, per page, on Lighthouse's mobile defaults (emulated phone, simulated slow 4G and CPU throttling):
 #   - HTML+CSS+JS <= 30 KB transferred (scripts/web_perf_budget.py; data downloads don't count);
-#   - LCP < 1 s, CLS 0, TBT < 50 ms (lighthouserc.json, asserted by lhci on the median of 3 runs);
+#   - LCP < 1 s, CLS 0, TBT < 50 ms (lighthouserc.json, asserted by lhci on the median of 5 runs: 3 let
+#     one slow shared-runner run decide; the limits themselves are unchanged);
 #   - Lighthouse accessibility >= 0.95 (median run);
 #   - no console errors in any run (lhci's errors-in-console): under the strict CSP an inline block without its
 #     hash, or a style="" attribute, is blocked and logged there.
@@ -114,7 +115,7 @@ jobs:
             curl -fsS -o /dev/null "$url" || { cat site-server.log; exit 1; }
           done
 
-      - name: Lighthouse (3 runs per page)
+      - name: Lighthouse (5 runs per page)
         id: collect
         run: npx --yes @lhci/cli@0.16.0 collect --config=lighthouserc.json
       - name: Page weight budget and summary

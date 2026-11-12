@@ -6,7 +6,7 @@
         "http://127.0.0.1:8001/", "http://127.0.0.1:8001/samples/SYNTH001/", "http://127.0.0.1:8001/figures/",
         "http://127.0.0.1:8001/uploads/"
       ],
-      "numberOfRuns": 3,
+      "numberOfRuns": 5,
       "settings": {
         "chromeFlags": "--no-sandbox --headless=new"
       }
