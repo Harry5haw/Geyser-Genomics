@@ -1,0 +1,6 @@
+/* How it works (about.html only): the story's lists and the motif illustrations under two of the steps */
+.hero h1{max-width:46rem}
+.why,.facts{padding-left:1.1rem}.built{columns:2 18rem;padding-left:1.1rem}.built li{break-inside:avoid;margin-bottom:.3rem}.why li,.facts li,.steps li{margin-bottom:.6rem}
+.steps{padding-left:1.4rem}
+.art{display:flex;margin:.6rem 0 .2rem;overflow:hidden;border-radius:.5rem}
+.art svg{flex:1 1 auto;width:100%}

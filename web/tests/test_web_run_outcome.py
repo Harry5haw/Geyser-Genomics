@@ -123,4 +123,4 @@ def test_the_footer_names_bwa_mem2_and_the_hosted_site_says_how_it_runs(client, 
     footer = hosted.split("<footer", 1)[1]
     assert 'href="/about/">How it works' in footer
     about = (out / "about" / "index.html").read_text(encoding="utf-8")
-    assert "bwa-mem2" in about and "published to this site when the run ends" in about
+    assert "bwa-mem2" in about and "published here when the run ends" in about

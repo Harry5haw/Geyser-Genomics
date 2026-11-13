@@ -1,43 +1,121 @@
 {% extends "samples/base.html" %}
+{% load geyser %}
+{% block page_css %}{% inline_css "samples/_motifs.css" %}{% inline_css "samples/_about.css" %}{% endblock %}
 {% block title %}How it works · Geyser Genomics{% endblock %}
 {% block content %}
-<section>
-  <h1>How it works</h1>
-  <p class="lead">Geyser Genomics takes the raw reads from a DNA sequencer and finds where that genome differs from the
-    human reference: the <strong>variants</strong>. Every run is checked for quality and gets its own page here. It runs
-    on AWS on demand, so it costs nothing while it waits, and the same containers run on a laptop with no cloud at all.</p>
+<section class="hero">
+  <h1>From a sequencer's raw reads to the places where one genome differs</h1>
+  <p class="lead">Each of us carries a few million small differences from the human reference genome: the
+    <strong>variants</strong>. Nearly all are harmless, but a handful can explain a rare disease, guide a cancer
+    treatment or show how populations are related. Finding them reliably among billions of letters is the job of a
+    variant-calling pipeline. Geyser is one: upload the reads, and it returns the variants, checked for quality, on a
+    page like the ones on this site.</p>
 </section>
 
 <section class="panel">
-  <h2>From raw reads to variants</h2>
-  <ol class="steps">
-    <li><strong>Upload.</strong> A gzipped FASTQ (one file, or the R1 and R2 files of a pair) lands in storage, and that
-      alone starts the run: nobody launches the stages by hand.</li>
-    <li><strong>Quality control and alignment, side by side.</strong> fastp reports on the reads' quality while
-      bwa-mem2 places every read on the reference genome, sorts them and marks duplicates (a CRAM file).</li>
-    <li><strong>Variant calling.</strong> bcftools by default, split by region into jobs that run in parallel and are
-      merged into one VCF; or DeepVariant, Google's deep-learning caller, on a cloud GPU.</li>
-    <li><strong>The quality gate.</strong> A run can finish and still not be good enough: a small Rust program checks
-      read quality, mapping, duplicates, depth, breadth and Ti/Tv against calibrated thresholds and names every failed
-      check.</li>
-    <li><strong>Optional AI annotation.</strong> AlphaGenome, Google DeepMind's model, predicts how variants of interest
-      may change gene regulation. Research use only, not for clinical use.</li>
-    <li><strong>A page per run.</strong> The calls, QC, gate verdict and a run record (inputs, reference, tool versions,
-      each stage's timing) are published to this site when the run ends.</li>
-  </ol>
-  <p class="muted"><small>On AWS: an S3 upload event, a Lambda trigger, Step Functions and AWS Batch (Fargate, and EC2
-    GPUs for DeepVariant), all from Terraform. A 30x chromosome 20 sample takes about 22 minutes and costs about
-    $0.07.</small></p>
-</section>
-
-<section class="panel">
-  <h2>More</h2>
-  <ul>
-    <li><a href="{{ github_url }}" rel="noopener">The code on GitHub</a>, with a quickstart that runs the whole pipeline on a laptop in minutes</li>
-    <li><a href="{{ github_url }}/blob/main/docs/releases/README.md" rel="noopener">Release notes</a>: what each version added, with every cloud run measured</li>
-    <li><a href="{{ github_url }}/blob/main/docs/benchmarks/README.md" rel="noopener">Benchmarks</a>: accuracy (hap.py against the GIAB truth sets) by caller and configuration</li>
-    <li><a href="{% url 'samples:figures' %}">Results in 3D</a>: the project's signature figures</li>
+  <h2>Why the variants matter</h2>
+  <ul class="why">
+    <li><strong>Rare disease.</strong> Many rare conditions come down to a single change in one gene. Sequencing a
+      patient's genome and calling the variants is how the candidates are found.</li>
+    <li><strong>Cancer.</strong> Tumours acquire their own variants, and knowing which are present can point to the
+      treatments most likely to work.</li>
+    <li><strong>Population genomics.</strong> Comparing variants across many people shows how traits and diseases are
+      inherited, and how reference genomes can better represent everyone.</li>
   </ul>
-  <p class="muted"><small>Geyser is an independent project. DeepVariant and AlphaGenome are Google tools.</small></p>
+  <p class="muted"><small>Geyser is an independent engineering and research project. Its results are for research
+    use only, not for diagnosis.</small></p>
+</section>
+
+<section class="panel">
+  <h2>What happens to an upload</h2>
+  <ol class="steps">
+    <li><strong>Upload.</strong> A gzipped FASTQ file (or the two files of a paired-end run) lands in storage, and that
+      alone starts the run.</li>
+    <li><strong>Quality control and alignment, side by side.</strong> fastp reports on the reads' quality while
+      bwa-mem2 places every read on the reference genome (minimap2 for PacBio HiFi and Oxford Nanopore long reads).</li>
+    <li><strong>Variant calling.</strong> bcftools by default, split into regions that run in parallel; or
+      <strong>DeepVariant</strong>, Google's deep-learning caller, on a cloud GPU. DeepVariant looks at the evidence at
+      each position as an image and classifies it with a neural network.
+      <div class="art">{% include "samples/_motif_dv.html" with state="done" %}</div></li>
+    <li><strong>The quality gate.</strong> A run can finish and still not be good enough. A small Rust program checks
+      read quality, mapping, duplicates, depth and more against calibrated thresholds, and names every check that
+      failed.</li>
+    <li><strong>Optional AI annotation.</strong> <strong>AlphaGenome</strong>, Google DeepMind's model, predicts how
+      selected variants may change gene regulation. This step is optional and for research use only.
+      <div class="art">{% include "samples/_motif_ag.html" %}</div></li>
+    <li><strong>A page per run.</strong> The calls, the QC report, the gate's verdict and a full run record (inputs,
+      reference, tool versions, every stage's timing) are published here when the run ends.</li>
+  </ol>
+</section>
+
+<section class="panel">
+  <h2>What makes it different</h2>
+  <ul class="facts">
+    <li><strong>Measured against the truth.</strong> Accuracy is scored with hap.py against the Genome in a Bottle
+      (GIAB) truth sets, the community standard. On a whole human genome (HG003, 30x), DeepVariant made 57% fewer SNP
+      errors and 90% fewer indel errors than bcftools (F1 0.9959 and 0.9950).</li>
+    <li><strong>Fast and cheap in the cloud.</strong> A whole genome takes about 3 hours from reads to variants
+      (2 h 59 min). One chromosome takes about 22 minutes and about 7 cents at AWS on-demand list prices. Nothing runs,
+      or costs, between samples.</li>
+    <li><strong>More than one kind of sequencing.</strong> Short reads, and long reads from PacBio HiFi and Oxford
+      Nanopore. On PacBio HiFi (HG002, chromosome 20) the long-read route scored F1 0.9995 for SNPs and 0.9925 for
+      indels.</li>
+    <li><strong>Pangenome-aware, benchmarked.</strong> A pangenome reference combines many people's genomes instead of
+      one. Geyser benchmarks pangenome-aware DeepVariant on GIAB samples on a local GPU, and offers graph alignment
+      with vg giraffe locally and in the cloud.</li>
+    <li><strong>Offline first.</strong> Every stage runs in the same container on a laptop against a folder, and in AWS
+      against S3. That is how it is developed and tested: the cloud is a checkpoint, not the development loop.</li>
+  </ul>
+  <p class="muted"><small>Every number here comes from the project's own runs, recorded in its
+    <a href="{{ github_url }}/blob/main/docs/results.md" rel="noopener">results</a> and
+    <a href="{{ github_url }}/blob/main/docs/releases/README.md" rel="noopener">release notes</a>.</small></p>
+</section>
+
+<section class="panel" id="read-figures">
+  <h2>Reading the 3D figures</h2>
+  <p>The <a href="{% url 'samples:figures' %}">Results in 3D</a> page draws six measurements from the project's own
+    runs as landscapes you can turn over.</p>
+  <ul class="why">
+    <li><strong>Each ridge is one thing being compared:</strong> a sample's alignment, a read file, or a setting, named
+      in the key beside it. Across the figure runs the position on the chromosome, the sequencing cycle, or the
+      setting tried.</li>
+    <li><strong>Height and colour both show the value:</strong> blue is low and red is high (in the high-contrast
+      theme, dark to light). Drag to rotate, scroll or pinch to zoom, double-click to reset; the 2D button gives a flat view, and every value is in the figure's CSV.</li>
+    <li><strong>Coverage:</strong> how many reads cover each stretch of chromosome 20. Good is a flat plain at the
+      sequencing depth (about 30×); spikes are repeats where reads pile up.</li>
+    <li><strong>Base quality:</strong> how sure the sequencer was of each letter, cycle by cycle. Good is high and
+      level, falling gently towards the end of each read. Phred 30 means one error in 1,000 bases.</li>
+    <li><strong>DeepVariant tuning, cost and turnaround:</strong> how long the GPU caller takes for each setting, and
+      what one cloud run costs and how long it takes for each machine size. Lower is better.</li>
+  </ul>
+  <p class="muted"><small>For specialists: GRCh38 chromosome 20, GIAB HG003 and HG005. Coverage is mean depth in
+    500 kb windows per alignment (short-read and vg giraffe); base quality is fastp's per-cycle mean before
+    filtering; DeepVariant times are HG003 35x on a local RTX 3080; cost and turnaround are medians of 25 cloud runs
+    of HG003 30x at Fargate on-demand list prices.</small></p>
+</section>
+
+<section class="panel">
+  <h2>Built on</h2>
+  <p>Geyser is the plumbing: it runs proven open tools at cloud scale, checks their results and shows them. The
+    science comes from these projects.</p>
+  <ul class="built">
+    {% for name, url, role in built_on %}<li><a href="{{ url }}" rel="noopener">{{ name }}</a>: {{ role }}</li>{% endfor %}
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>Look closer</h2>
+  <ul>
+    <li><a href="{% url 'samples:list' %}#samples">The samples</a>: every published run, with its calls, quality report
+      and gate verdict</li>
+    <li><a href="{% url 'samples:figures' %}">Results in 3D</a>: coverage, read quality, GPU tuning, cost and speed, as
+      terrains you can turn over</li>
+    <li><a href="{{ github_url }}" rel="noopener">The code on GitHub</a>, with a quickstart that runs the whole pipeline
+      on a laptop in minutes</li>
+    <li><a href="{{ github_url }}/blob/main/docs/benchmarks/README.md" rel="noopener">Benchmarks</a>: accuracy by caller
+      and configuration</li>
+  </ul>
+  <p class="muted"><small>Geyser is an independent project. It uses these public tools and data; it isn't a partner of,
+    or endorsed by, the organisations behind them.</small></p>
 </section>
 {% endblock %}

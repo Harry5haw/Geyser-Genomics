@@ -22,6 +22,7 @@ from samples import publish as publish_mod
 from samples.alphagenome import TERMS_URL
 from samples.context_processors import GITHUB_URL
 from samples.publish import HTML_CACHE, IMMUTABLE, S3Writer, csp_hashes
+from samples.views import BUILT_ON
 
 from .web_helpers import FASTP_SINGLE, fastq_gz, gz, put
 
@@ -110,8 +111,9 @@ def test_only_allowlisted_outputs_are_published(site):
     assert "S1.cram" not in detail and "raw_reads" not in detail and "S1.fastq.gz" not in detail
 
 
-# The only links that leave the site: the code (header and footer) and the AlphaGenome output terms (footer).
-EXTERNAL = (GITHUB_URL, TERMS_URL)
+# The only links that leave the site: the code (header and footer), the AlphaGenome output terms (footer) and the
+# tools How it works credits (views.BUILT_ON).
+EXTERNAL = (GITHUB_URL, TERMS_URL, *(url for _, url, _ in BUILT_ON))
 
 
 def test_every_link_in_the_published_folder_resolves(site):
@@ -137,9 +139,8 @@ def test_no_inline_style_attributes_and_every_inline_block_is_hashed(site):
 def test_a_one_sample_publish_keeps_every_page_types_csp_hashes(storage, site, tmp_path):
     whole = json.loads((run_publish(tmp_path / "whole", "--all") / "csp-hashes.json").read_text())
     one = json.loads((run_publish(site, "S1") / "csp-hashes.json").read_text())
-    assert (
-        one == whole and len(one["style"]) == 4
-    )  # core (404); +samples (list, upload); +samples+progress+motifs (detail); +figures
+    # core (404); +samples (list, upload); +samples+progress (detail); +figures; +motifs+about (How it works)
+    assert one == whole and len(one["style"]) == 5
 
 
 def test_the_call_pages_stop_at_max_pages_and_point_at_the_vcf(storage, site):

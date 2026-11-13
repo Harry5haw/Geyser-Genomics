@@ -197,11 +197,30 @@ def upload_page(request):
     return render(request, "samples/upload_page.html", context)
 
 
+# How it works' "Built on" list: (name, official link, what Geyser uses it for). The only external links on the site
+# besides GitHub and the AlphaGenome terms (web/tests/test_web_publish.py allows exactly these).
+BUILT_ON = (
+    ("DeepVariant (Google)", "https://github.com/google/deepvariant", "deep-learning variant calling, on a GPU"),
+    ("AlphaGenome (Google DeepMind)", "https://deepmind.google/science/alphagenome/", "regulatory-effect predictions"),
+    ("Genome in a Bottle (NIST)", "https://www.nist.gov/programs-projects/genome-bottle", "truth sets for scoring"),
+    ("Human Pangenome Reference Consortium", "https://humanpangenome.org/", "the pangenome graphs"),
+    ("bwa-mem2", "https://github.com/bwa-mem2/bwa-mem2", "short-read alignment"),
+    ("minimap2", "https://github.com/lh3/minimap2", "long-read alignment"),
+    ("vg giraffe", "https://github.com/vgteam/vg", "alignment to the pangenome graph"),
+    ("fastp", "https://github.com/OpenGene/fastp", "read quality control"),
+    ("bcftools", "https://samtools.github.io/bcftools/", "variant calling and statistics"),
+    ("hap.py", "https://github.com/Illumina/hap.py", "accuracy against the truth sets"),
+    ("Hail", "https://hail.is/", "cohort quality control on Spark"),
+    ("AWS Step Functions and Batch", "https://aws.amazon.com/batch/", "the cloud pipeline, on Fargate and GPUs"),
+    ("Terraform", "https://www.terraform.io/", "every cloud resource, as code"),
+)
+
+
 @require_GET
 @gzip_page
 def about_page(request):
-    """How it works: what the pipeline does, in plain English, with links to the code, releases and benchmarks."""
-    return render(request, "samples/about.html")
+    """How it works: what the pipeline does and why it matters, in plain English, and what it is built on."""
+    return render(request, "samples/about.html", {"built_on": BUILT_ON})
 
 
 @require_GET
