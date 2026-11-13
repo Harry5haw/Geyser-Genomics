@@ -44,6 +44,7 @@ from .qc import read_qc_summary
 from .record import deepvariant_view, load_record, record_view
 from .runs import is_valid_sample_id, log_key, read_text
 from .static_site import GATE_PROFILES, PUBLIC_KINDS, static_of
+from .templatetags.geyser import inline_css
 from .vcf import check_truth, page_of, planted_positions, read_truth, read_variants, truth_key
 
 # Downloadable files: kind -> (label, description). Anything not listed here is a 404.
@@ -221,6 +222,18 @@ BUILT_ON = (
 def about_page(request):
     """How it works: what the pipeline does and why it matters, in plain English, and what it is built on."""
     return render(request, "samples/about.html", {"built_on": BUILT_ON})
+
+
+# How it works' own CSS (the motifs and its lists), served as a stylesheet rather than inlined: the page's inline
+# <style> is then the core CSS alone, the same block as 404.html, so it adds no CSP hash. Every hash is in the CSP
+# header of every response, and one more pushed the figures page over its 30 KB budget (#304). The CSP's style-src
+# allows 'self'. Published as about.css by publish.py.
+ABOUT_CSS = ("samples/_motifs.css", "samples/_about.css")
+
+
+@require_GET
+def about_css(request):
+    return HttpResponse("".join(inline_css(name) for name in ABOUT_CSS), content_type="text/css; charset=utf-8")
 
 
 @require_GET

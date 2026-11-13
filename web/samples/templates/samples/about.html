@@ -1,6 +1,7 @@
 {% extends "samples/base.html" %}
 {% load geyser %}
-{% block page_css %}{% inline_css "samples/_motifs.css" %}{% inline_css "samples/_about.css" %}{% endblock %}
+{# Its own CSS as a stylesheet (views.about_css), not inlined: no extra CSP hash on the site. #}
+{% block scripts %}<link rel="stylesheet" href="{% url 'samples:about_css' %}">{% endblock %}
 {% block title %}How it works · Geyser Genomics{% endblock %}
 {% block content %}
 <section class="hero">
