@@ -4,21 +4,25 @@
 {% block content %}
 <section>
   <h1>From raw reads to variants</h1>
-  <p class="lead">
+  <p class="lead">{% if static %}
+    A DNA sequencer produces millions of short reads. Geyser turns them into the list of places where that genome
+    differs from the reference, checks the result, and publishes it here. Every run has a page: the variants it found,
+    how good the reads were, and whether it passed the quality gate.{% else %}
     Upload a gzipped FASTQ and Geyser Genomics runs it through quality control, alignment and variant calling.
-    No data to hand? Generate a synthetic sample with known mutations and see whether the pipeline finds them all.
+    No data to hand? Generate a synthetic sample with known mutations and see whether the pipeline finds them all.{% endif %}
   </p>
   <p class="flow" aria-label="Pipeline stages">
-    <b>raw_reads/</b><i>→</i>
+    <b>Reads (FASTQ)</b><i>→</i>
     {% for st in stages %}<b class="s-{{ st.name }}">{{ st.label }}</b><i>→</i>{% endfor %}
-    <b>variants/*.vcf.gz</b>
+    <b>Variants (VCF)</b>
   </p>
-  <p><a href="{% url 'samples:figures' %}">See the project's results in 3D →</a></p>
+  <p><a href="{% url 'samples:about' %}">How it works and why it matters →</a> ·
+    <a href="{% url 'samples:figures' %}">The results in 3D →</a></p>
 </section>
 
 {% if static %}
-<p class="note" role="note">A read-only showcase: each sample's calls, QC, quality gate and run record, as the pipeline left them.
-  The raw reads and alignments aren't published.{% if static.api_base %}
+<p class="note" role="note">These pages are read-only. Each shows a run's variant calls, read-quality report, quality-gate
+  verdict and run record, exactly as the pipeline left them; the raw reads and alignments stay private.{% if static.api_base %}
   <a href="{% url 'samples:upload_page' %}">Upload reads</a> (needs the upload token).{% endif %}</p>
 {% else %}
 <section class="actions">

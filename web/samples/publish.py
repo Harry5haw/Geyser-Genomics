@@ -3,7 +3,7 @@
 Every page is the live UI's own view and template, rendered with a StaticSite on the request
 (samples/static_site.py), so the published pages and the Django pages can't drift apart:
 - index.html (the sample list), samples/<id>/index.html and samples/<id>/calls/<n>/index.html (the call pages,
-  up to max_pages per sample: past that the VCF has the rest), figures/ and about/ (every publish, so every page's link to
+  up to max_pages per sample: past that the VCF has the rest), figures/, about/ and about.css (every publish, so every page's link to
   them resolves; each figure's data when its CSV is here: they live in the repo, not the data lake), 404.html, and with an API base uploads/index.html (the
   token-gated upload page: the browser sends the reads to the data lake through the API);
 - the static files under static/ with their content-hashed names, as collectstatic writes them;
@@ -258,6 +258,9 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
         pages["figures/index.html"] = _render(views.figures_page, reverse("samples:figures"), site)
         # Every page's header links to it, so every publish writes it (as with the figures).
         pages["about/index.html"] = _render(views.about_page, reverse("samples:about"), site)
+        writer.put(
+            "about.css", _render(views.about_css, reverse("samples:about_css"), site).encode("utf-8"), HTML_CACHE
+        )
 
         request = RequestFactory().get("/404.html")
         request.geyser_static = site
@@ -274,7 +277,15 @@ def publish(sample_ids=(), everything=False, out="", api_base="", max_pages=20, 
 
     invalidated = []
     if distribution_id and isinstance(writer, S3Writer):
-        changed = ["/", "/index.html", "/404.html", "/figures/*", "/about/*", *(f"/samples/{i}/*" for i in targets)]
+        changed = [
+            "/",
+            "/index.html",
+            "/404.html",
+            "/figures/*",
+            "/about/*",
+            "/about.css",
+            *(f"/samples/{i}/*" for i in targets),
+        ]
         if site.api_base:
             changed.append("/uploads/*")  # it lists the IDs on the site (to ask before replacing one)
         invalidated = ["/*"] if everything else changed

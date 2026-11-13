@@ -22,6 +22,7 @@ from samples import publish as publish_mod
 from samples.alphagenome import TERMS_URL
 from samples.context_processors import GITHUB_URL
 from samples.publish import HTML_CACHE, IMMUTABLE, S3Writer, csp_hashes
+from samples.views import BUILT_ON
 
 from .web_helpers import FASTP_SINGLE, fastq_gz, gz, put
 
@@ -110,8 +111,9 @@ def test_only_allowlisted_outputs_are_published(site):
     assert "S1.cram" not in detail and "raw_reads" not in detail and "S1.fastq.gz" not in detail
 
 
-# The only links that leave the site: the code (header and footer) and the AlphaGenome output terms (footer).
-EXTERNAL = (GITHUB_URL, TERMS_URL)
+# The only links that leave the site: the code (header and footer), the AlphaGenome output terms (footer) and the
+# tools How it works credits (views.BUILT_ON).
+EXTERNAL = (GITHUB_URL, TERMS_URL, *(url for _, url, _ in BUILT_ON))
 
 
 def test_every_link_in_the_published_folder_resolves(site):
@@ -137,9 +139,9 @@ def test_no_inline_style_attributes_and_every_inline_block_is_hashed(site):
 def test_a_one_sample_publish_keeps_every_page_types_csp_hashes(storage, site, tmp_path):
     whole = json.loads((run_publish(tmp_path / "whole", "--all") / "csp-hashes.json").read_text())
     one = json.loads((run_publish(site, "S1") / "csp-hashes.json").read_text())
-    assert (
-        one == whole and len(one["style"]) == 4
-    )  # core (404); +samples (list, upload); +samples+progress+motifs (detail); +figures
+    # core (404, How it works); +samples (list, upload); +samples+progress (detail); +figures. How it works' own CSS
+    # is a stylesheet (about.css), so it adds no hash: every hash is in every response's CSP header.
+    assert one == whole and len(one["style"]) == 4
 
 
 def test_the_call_pages_stop_at_max_pages_and_point_at_the_vcf(storage, site):
@@ -277,7 +279,9 @@ def test_s3_objects_get_their_type_and_cache_lifetime(site, monkeypatch):
     assert list(fake.objects)[-1] == "pre/index.html"  # the list last, after the pages it links to
     vcf = fake.objects["pre/samples/S1/files/S1.vcf.gz"]
     assert vcf["streamed"] and vcf["ContentType"] == "application/gzip"  # big files: multipart, not in memory
-    assert invalidations == [("E123", ["/", "/index.html", "/404.html", "/figures/*", "/about/*", "/samples/S1/*"])]
+    assert invalidations == [
+        ("E123", ["/", "/index.html", "/404.html", "/figures/*", "/about/*", "/about.css", "/samples/S1/*"])
+    ]
 
 
 def test_out_defaults_to_the_site_bucket(site, monkeypatch):
@@ -408,3 +412,14 @@ def test_the_ui_never_picks_cloudwatch_from_local_storage(settings, monkeypatch)
     settings.GEYSER_STORAGE_BACKEND = "s3"
     with mock.patch("boto3.client"):
         assert isinstance(get_metrics(), CloudWatchMetrics)  # the Publish job: S3 storage on AWS
+
+
+def test_how_it_works_carries_its_css_as_a_stylesheet_not_inline(site):
+    root = run_publish(site, "--all")
+    css = (root / "about.css").read_text(encoding="utf-8")
+    assert ".mdv" in css and ".built" in css and "/*" not in css  # the motifs and its own rules, minified
+    about = (root / "about/index.html").read_text(encoding="utf-8")
+    assert '<link rel="stylesheet" href="/about.css">' in about
+    style = re.compile(r"<style>(.*?)</style>", re.S)
+    four_oh_four = (root / "404.html").read_text(encoding="utf-8")
+    assert style.search(about).group(1) == style.search(four_oh_four).group(1)  # the same inline block: same hash

@@ -85,7 +85,7 @@ def test_published_neighbours_skip_a_running_sample_and_the_site_has_about(stora
     new = (out / "samples/NEW/index.html").read_text(encoding="utf-8")
     assert "RUNNING" not in new.split('aria-label="Previous and next sample"', 1)[1]
     about = (out / "about/index.html").read_text(encoding="utf-8")
-    assert "<h1>How it works</h1>" in about
+    assert "<title>How it works · Geyser Genomics</title>" in about and "What happens to an upload" in about
     # No web API: nothing to upload to, so no Upload link anywhere on the published site.
     assert ">Upload<" not in header(about)
 
