@@ -3,7 +3,7 @@ from django.urls import reverse
 
 from .alphagenome import TERMS_URL
 
-HELIX_BASE_PAIRS = range(26)  # rungs in the decorative header helix (about 1.3 turns)
+HELIX_BASE_PAIRS = range(20)  # rungs in the decorative header helix: one full turn (2.6 s / 0.13 s per rung)
 SITE_VERSION = "v3.1"  # the release these pages belong to (footer); bump with each tagged release
 GITHUB_URL = "https://github.com/Harry5haw/Geyser-Genomics"
 
