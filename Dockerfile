@@ -11,7 +11,7 @@
 # new digest when the tag is rebuilt (Debian and Python security patches). Keep both FROM lines equal.
 
 # ---------------------------------------------------------------------------------------------- download
-FROM python:3.11-slim-trixie@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60 AS download
+FROM python:3.11-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535 AS download
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl bzip2 ca-certificates && \
@@ -59,7 +59,7 @@ RUN curl -fsSL "https://github.com/lh3/minimap2/releases/download/v${MINIMAP2_VE
 # Rust toolchain. The Rust version must match gate/rust-toolchain.toml (bump both together; Dependabot
 # ignores this tag for that reason). RUSTUP_TOOLCHAIN uses the image's toolchain as it is, instead of
 # letting the toolchain file download clippy and rustfmt, which a build doesn't need.
-FROM rust:1.99.1-slim-trixie@sha256:b8e062b1c3a80183df83d9ba187cadd2b5ab84bc78d453dbfeb2fccd5f982247 AS gate
+FROM rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS gate
 ENV RUSTUP_TOOLCHAIN=1.99.1
 RUN rustup target add x86_64-unknown-linux-musl
 WORKDIR /gate
@@ -69,7 +69,7 @@ RUN cargo build --release --locked --target x86_64-unknown-linux-musl && \
     geyser-gate --version
 
 # ---------------------------------------------------------------------------------------------- final
-FROM python:3.11-slim-trixie@sha256:673719e071ecf27434fd2635bbd8d00f49f4fdd81f243143438a42ced8bedf60
+FROM python:3.11-slim-trixie@sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535
 
 # Only the tools the stages run. fastp replaced FastQC (no Java). --no-install-recommends keeps out
 # perl, which bwa and bcftools only suggest for helper scripts the pipeline doesn't use. Not here any
