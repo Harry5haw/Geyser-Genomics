@@ -4,5 +4,5 @@
 # Install it on top of requirements-dev.txt for the tests (tests/conftest.py imports the pipeline modules).
 # Hail 0.2.139 is the last release on Spark 3.5 (0.2.140 moved to Spark 4 / Java 17+ / Python 3.12+).
 # pyspark 3.5.4 = AWS Glue 5.0's Spark, so cohort_runs.py behaves the same locally and on Glue.
-hail==0.2.139
-pyspark==3.5.4
+hail==0.2.140
+pyspark==4.3.0
